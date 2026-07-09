@@ -12,6 +12,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "clean": "pnpm -r exec rm -rf dist",
-    "engines:try": "node packages/engines/dist/harness.js"
+    "engines:try": "node packages/engines/dist/harness.js",
+    "start:prod": "NODE_ENV=production node apps/server/dist/main.js"
   }
 }

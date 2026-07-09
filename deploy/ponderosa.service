@@ -1,0 +1,37 @@
+# Ponderosa — systemd unit (SPEC §10).
+# Runs the Fastify daemon as your login user so the engine CLIs it spawns inherit
+# real fs/shell access, the on-disk subscription tokens (~/.codex), and each
+# project's md files — no bind mounts (SPEC §10/§11).
+#
+# Install:
+#   sudo cp deploy/ponderosa.service /etc/systemd/system/ponderosa.service
+#   # edit User=, WorkingDirectory=, and PONDEROSA_DATA_DIR below to match the host
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ponderosa
+#   systemctl status ponderosa
+#
+# Reachability (how a phone reaches this) is a separate deployment choice — see
+# deploy/README.md. Nothing here depends on Tailscale.
+
+[Unit]
+Description=Ponderosa coding-agent workbench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as your normal login user (NOT root) — engines inherit this user's access
+# and its `codex login` token under ~/.codex.
+User=khaleel
+WorkingDirectory=/home/khaleel/ponderosa
+Environment=NODE_ENV=production
+# The one greppable, portable data dir (event logs + SQLite projections, SPEC §7).
+Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
+# Optional: bind host/port (defaults 0.0.0.0:8787).
+# Environment=PONDEROSA_PORT=8787
+ExecStart=/usr/bin/node apps/server/dist/main.js
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
