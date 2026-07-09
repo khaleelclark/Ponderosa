@@ -12,14 +12,19 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -p tsconfig.json && cp -R src/migrations dist/migrations",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@ponderosa/core": "workspace:*"
+    "@ponderosa/core": "workspace:*",
+    "better-sqlite3": "^11.7.0",
+    "drizzle-orm": "^0.38.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
   }
 }
