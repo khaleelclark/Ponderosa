@@ -9,7 +9,6 @@
 // the `-c` config overrides. The `Adapter` interface hides the choice entirely.
 
 import { spawn as nodeSpawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
 import type {
   Adapter,
   AgentEvent,
@@ -20,10 +19,9 @@ import type {
   SeedOptions,
 } from "@ponderosa/core";
 import { mapCodexEvent } from "./events.js";
-import { parseJsonlChunks } from "./jsonl.js";
+import { streamProcess, type SpawnFn } from "./process.js";
 
-/** A minimal spawn signature so tests can inject a fake `codex`. */
-export type SpawnFn = typeof nodeSpawn;
+export type { SpawnFn };
 
 export interface CodexAdapterOptions {
   /** Path/name of the codex binary. Default: "codex". */
@@ -131,96 +129,16 @@ export class CodexAdapter implements Adapter {
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */
-  private async *run(
-    args: string[],
-    cwd: string,
-    signal: AbortSignal,
-  ): AsyncIterable<AgentEvent> {
-    if (signal.aborted) {
-      yield { type: "error", message: "run aborted before start" };
-      return;
-    }
-
-    const child: ChildProcess = this.spawnFn(this.bin, args, {
+  private run(args: string[], cwd: string, signal: AbortSignal): AsyncIterable<AgentEvent> {
+    return streamProcess({
+      bin: this.bin,
+      args,
       cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      signal,
+      spawnFn: this.spawnFn,
+      killGraceMs: this.killGraceMs,
+      map: mapCodexEvent,
+      label: "codex",
     });
-
-    let stderrTail = "";
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (d: string) => {
-      stderrTail = (stderrTail + d).slice(-8192);
-    });
-
-    let killTimer: NodeJS.Timeout | undefined;
-    const onAbort = (): void => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* already gone */
-      }
-      killTimer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* already gone */
-        }
-      }, this.killGraceMs);
-      killTimer.unref?.();
-    };
-    signal.addEventListener("abort", onAbort);
-
-    // spawn errors (e.g. codex not installed) surface as an 'error' on the child.
-    let spawnError: Error | undefined;
-    child.on("error", (err: Error) => {
-      spawnError = err;
-    });
-
-    try {
-      const stdout = child.stdout;
-      if (stdout) {
-        stdout.setEncoding("utf8");
-        for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
-          for (const ev of mapCodexEvent(raw, { cwd })) {
-            yield ev;
-          }
-        }
-      }
-
-      const code = await waitForClose(child);
-
-      if (spawnError) {
-        yield {
-          type: "error",
-          message: `failed to spawn ${this.bin}: ${spawnError.message}`,
-        };
-      } else if (signal.aborted) {
-        yield { type: "error", message: "run cancelled" };
-      } else if (code !== 0 && code !== null) {
-        const tail = stderrTail.trim();
-        yield {
-          type: "error",
-          message: `codex exited with code ${code}${tail ? `: ${tail}` : ""}`,
-        };
-      }
-    } finally {
-      signal.removeEventListener("abort", onAbort);
-      if (killTimer) clearTimeout(killTimer);
-    }
   }
-}
-
-/** Resolve with the process exit code once it has fully closed (or failed to spawn). */
-function waitForClose(child: ChildProcess): Promise<number | null> {
-  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (code: number | null): void => {
-      if (done) return;
-      done = true;
-      resolve(code);
-    };
-    child.once("close", (code) => finish(code));
-    child.once("error", () => finish(null)); // ENOENT etc. — 'close' may not fire
-  });
 }

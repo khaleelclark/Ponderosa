@@ -4,6 +4,7 @@
 // badge without Ponderosa reading token files (SPEC §8 /api/engines, §9).
 
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -40,6 +41,39 @@ export async function codexAuthStatus(
       authenticated: false,
       detail: `run \`codex login\` on the host for ChatGPT subscription auth (${message})`,
     };
+  }
+}
+
+/**
+ * Report whether Claude Code (`claude`) is logged in with a Claude Pro/Max
+ * subscription (an OAuth account in `~/.claude.json`). We never read the token —
+ * only the account's presence — and flag if `ANTHROPIC_API_KEY` is set, which would
+ * route Claude Code to billed API auth instead of the subscription (invariant 1).
+ */
+export async function claudeAuthStatus(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<EngineAuthStatus> {
+  if (env.ANTHROPIC_API_KEY && env.ANTHROPIC_API_KEY.trim() !== "") {
+    return {
+      authenticated: false,
+      detail:
+        "ANTHROPIC_API_KEY is set — unset it so Claude Code uses your Pro/Max subscription, not billed API auth",
+    };
+  }
+  const configPath = path.join(os.homedir(), ".claude.json");
+  try {
+    const raw = await readFile(configPath, "utf8");
+    const config = JSON.parse(raw) as { oauthAccount?: { emailAddress?: string } };
+    if (config.oauthAccount) {
+      const email = config.oauthAccount.emailAddress;
+      return {
+        authenticated: true,
+        detail: email ? `logged in as ${email} (subscription)` : "Claude subscription login present",
+      };
+    }
+    return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
+  } catch {
+    return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
   }
 }
 

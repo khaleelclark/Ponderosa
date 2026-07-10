@@ -10,8 +10,11 @@ normalized `AgentEvent` union from `@ponderosa/core`.
 |---|---|
 | `events.ts` | **The heart of the chunk.** `mapCodexEvent(raw, ctx)` maps one Codex JSONL event → 0..n `AgentEvent`s. Unit-tested per event type + against recorded fixtures. |
 | `jsonl.ts` | Robust JSONL stream parsing: partial lines across chunks, CRLF, non-JSON noise. |
-| `codex.ts` | `CodexAdapter implements Adapter` — spawns `codex exec --json` / `codex exec resume`, streams events, wires `AbortSignal` → SIGTERM → SIGKILL. |
-| `auth.ts` | `codexAuthStatus()` — reports whether `codex login status` says the CLI is using ChatGPT subscription auth. We never read token files. |
+| `codex.ts` | `CodexAdapter implements Adapter` — spawns `codex exec --json` / `codex exec resume`. |
+| `claude-events.ts` | `mapClaudeEvent(raw, ctx)` maps one Claude Code `stream-json` event → 0..n `AgentEvent`s. Unit-tested per event type. |
+| `claude.ts` | `ClaudeAdapter implements Adapter` — spawns `claude -p --output-format stream-json` / `--resume <id>`. |
+| `process.ts` | `streamProcess(...)` — shared spawn → JSONL stream → map → `AbortSignal` → SIGTERM → SIGKILL, used by both adapters. |
+| `auth.ts` | `codexAuthStatus()` / `claudeAuthStatus()` — report each CLI's subscription auth. We never read token files. |
 | `harness.ts` | The CLI test harness (`pnpm engines:try`). |
 
 ## Subscription auth only — the economic premise
@@ -37,6 +40,21 @@ outside `codex.ts`.
 - `continue()` → `codex exec resume <SESSION_ID> --json …`, same overrides, same cwd.
 - Session id = `thread.started.thread_id`, emitted as a `session` event and persisted by the thread store for resume.
 - Sandbox defaults to `workspace-write` (edit the project + run commands within it, headlessly). Override with `PONDEROSA_CODEX_SANDBOX=danger-full-access` for the full-access model in SPEC §11.
+
+## Claude adapter (SPEC §5 second engine) — subscription auth only
+
+`ClaudeAdapter` drives the **already-authenticated `claude` CLI** (Claude Code) via
+the on-disk Claude Pro/Max OAuth profile — **never** the Anthropic API and **never**
+an API key (invariant 1). We spawn the CLI (not the Agent SDK library) for the same
+reasons as Codex; the `Adapter` interface hides the choice. `claudeAuthStatus()`
+reports whether `~/.claude.json` has an OAuth account, and refuses if
+`ANTHROPIC_API_KEY` is set (that would route Claude Code to billed API auth).
+
+- `seed()` → `claude -p "<prompt>" --output-format stream-json --verbose --permission-mode bypassPermissions [--model m] [--effort e]`, spawned with `cwd` = the project dir.
+- `continue()` → same, plus `--resume <SESSION_ID>`.
+- Session id = `system/init`'s `session_id`; content blocks map as: `text`→text, `thinking`→reasoning, `tool_use` Bash→command, Write/Edit→file_change, other→tool_call; `user` `tool_result`→tool_result; `result`→turn_done (+usage).
+- Permission mode defaults to `bypassPermissions` (full headless access, SPEC §11). Override with `PONDEROSA_CLAUDE_PERMISSION_MODE`.
+- Models: `Claude default` (no `--model`), plus `opus`/`sonnet`/`haiku` aliases.
 
 ## The harness
 

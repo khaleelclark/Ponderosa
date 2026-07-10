@@ -769,6 +769,7 @@ export default function App(): JSX.Element {
   const [projectPath, setProjectPath] = useState("");
   const [threadDialogOpen, setThreadDialogOpen] = useState(false);
   const [threadTitle, setThreadTitle] = useState("");
+  const [threadEngine, setThreadEngine] = useState("");
   const [threadPendingDelete, setThreadPendingDelete] = useState<ThreadDto | undefined>();
   const detail = threadQuery.data;
   const threads = threadsQuery.data ?? [];
@@ -849,7 +850,7 @@ export default function App(): JSX.Element {
       if (!selectedProjectId) {
         throw new Error("No project selected");
       }
-      const engine = detail?.thread.activeEngine ?? enginesQuery.data?.[0]?.id ?? "codex";
+      const engine = threadEngine || enginesQuery.data?.[0]?.id || "codex";
       return api.createThread(selectedProjectId, {
         title: threadTitle.trim(),
         engine,
@@ -935,7 +936,10 @@ export default function App(): JSX.Element {
               threads={threads}
               selectedThreadId={selectedThreadId}
               onSelect={setSelectedThreadId}
-              onCreate={() => setThreadDialogOpen(true)}
+              onCreate={() => {
+                setThreadEngine(enginesQuery.data?.[0]?.id ?? "codex");
+                setThreadDialogOpen(true);
+              }}
               onDelete={setThreadPendingDelete}
             />
           </Box>
@@ -1025,6 +1029,22 @@ export default function App(): JSX.Element {
               autoFocus
               fullWidth
             />
+            <FormControl fullWidth size="small">
+              <InputLabel id="new-thread-engine-label">Engine</InputLabel>
+              <Select
+                labelId="new-thread-engine-label"
+                label="Engine"
+                value={threadEngine}
+                onChange={(event: SelectChangeEvent) => setThreadEngine(event.target.value)}
+              >
+                {(enginesQuery.data ?? []).map((engine) => (
+                  <MenuItem key={engine.id} value={engine.id} disabled={!engine.authenticated}>
+                    {engine.displayName}
+                    {engine.authenticated ? "" : " — not signed in"}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
             {createThread.isError ? <Alert severity="error">{String(createThread.error.message)}</Alert> : null}
           </Stack>
         </DialogContent>

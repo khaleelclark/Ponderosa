@@ -6,17 +6,22 @@
 
 export { CodexAdapter, renderSeedPrompt } from "./codex.js";
 export type { CodexAdapterOptions, SpawnFn } from "./codex.js";
+export { ClaudeAdapter } from "./claude.js";
+export type { ClaudeAdapterOptions } from "./claude.js";
 export { mapCodexEvent, mapFileChangeKind } from "./events.js";
+export { mapClaudeEvent } from "./claude-events.js";
 export type { CodexMapContext } from "./events.js";
+export { streamProcess } from "./process.js";
 export { LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
-export { codexAuthStatus, codexHome } from "./auth.js";
+export { codexAuthStatus, codexHome, claudeAuthStatus } from "./auth.js";
 
 // Re-export the Adapter contract from core so consumers import engines in one place.
 export type { Adapter, AgentEvent, EngineAuthStatus } from "@ponderosa/core";
 
 import type { Adapter, EngineAuthStatus } from "@ponderosa/core";
-import { codexAuthStatus } from "./auth.js";
+import { claudeAuthStatus, codexAuthStatus } from "./auth.js";
 import { CodexAdapter } from "./codex.js";
+import { ClaudeAdapter } from "./claude.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -28,6 +33,10 @@ export function defaultEngineRegistrations(): EngineRegistration[] {
     {
       adapter: new CodexAdapter(),
       authStatus: codexAuthStatus,
+    },
+    {
+      adapter: new ClaudeAdapter(),
+      authStatus: claudeAuthStatus,
     },
   ];
 }

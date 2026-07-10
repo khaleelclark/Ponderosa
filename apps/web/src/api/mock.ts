@@ -195,6 +195,24 @@ const engines: EngineDto[] = [
       { id: "xhigh", label: "XHigh" },
     ],
   },
+  {
+    id: "claude",
+    displayName: "Claude",
+    authenticated: true,
+    authDetail: "Subscription CLI session detected",
+    models: [
+      { id: "", label: "Claude default" },
+      { id: "opus", label: "Opus" },
+      { id: "sonnet", label: "Sonnet" },
+      { id: "haiku", label: "Haiku" },
+    ],
+    efforts: [
+      { id: "low", label: "Low" },
+      { id: "medium", label: "Medium" },
+      { id: "high", label: "High" },
+      { id: "xhigh", label: "XHigh" },
+    ],
+  },
 ];
 
 const subscribers = new Map<string, Set<StreamHandlers>>();
