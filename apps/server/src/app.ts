@@ -78,7 +78,9 @@ function masterChatPrompt(
 
   return [
     "You are replying as a teammate in a shared master chat.",
-    "The manager's latest message has already been acknowledged on your behalf.",
+    "Respond directly to the manager's latest message in your own words.",
+    "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
+    "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only your new update or result in a natural, conversational tone.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
     "",
@@ -389,16 +391,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text });
       publish(thread.id, userStored);
-
-      // A teammate acknowledges a direct request immediately; the completed turn
-      // later contributes only its update/result below.
-      if (thread.masterChatId) {
-        store.appendMasterChatMessage(
-          thread.masterChatId,
-          { role: "assistant", text: "Got it — I’m on it." },
-          thread.id,
-        );
-      }
 
       activeRuns.set(thread.id, { runId, controller });
 

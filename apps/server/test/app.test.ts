@@ -237,7 +237,8 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id);
 
-    expect(adapter.seeds[0]?.prompt).toContain("already been acknowledged on your behalf");
+    expect(adapter.seeds[0]?.prompt).toContain("Respond directly to the manager's latest message in your own words");
+    expect(adapter.seeds[0]?.prompt).toContain("never use a canned acknowledgment");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
 
@@ -253,7 +254,7 @@ describe("server chunk F", () => {
     expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("Do not repeat, recap, or answer with the whole conversation");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
-    expect(store.getMasterChatMessages(master.id)).toEqual(
+    expect(store.getMasterChatMessages(master.id)).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ authorThreadId: thread.id, text: "Got it — I’m on it." }),
       ]),
