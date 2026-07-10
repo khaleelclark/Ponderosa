@@ -127,6 +127,30 @@ export function ProjectShell({
 
   const loading = masterChatsQuery.isLoading || threadsQuery.isLoading;
 
+  if (masterChatsQuery.isError || threadsQuery.isError) {
+    return (
+      <Box sx={{ p: 2 }}>
+        <Alert
+          severity="error"
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => {
+                void masterChatsQuery.refetch();
+                void threadsQuery.refetch();
+              }}
+            >
+              Retry
+            </Button>
+          }
+        >
+          This project could not be loaded. Check the server connection and try again.
+        </Alert>
+      </Box>
+    );
+  }
+
   let main: JSX.Element;
   if (route.kind === "master-chat") {
     main = (

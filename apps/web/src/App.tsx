@@ -159,7 +159,27 @@ export default function App(): JSX.Element {
       </AppBar>
 
       <Box sx={{ minHeight: 0, display: "grid" }}>
-        {projects.length === 0 && !projectsQuery.isLoading ? (
+        {projectsQuery.isError || enginesQuery.isError ? (
+          <Box sx={{ p: 2 }}>
+            <Alert
+              severity="error"
+              action={
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={() => {
+                    void projectsQuery.refetch();
+                    void enginesQuery.refetch();
+                  }}
+                >
+                  Retry
+                </Button>
+              }
+            >
+              Ponderosa could not load its workspace data. Check the server connection and try again.
+            </Alert>
+          </Box>
+        ) : projects.length === 0 && !projectsQuery.isLoading ? (
           <Box sx={{ p: 2 }}>
             <Alert severity="info">Create a project to get started.</Alert>
           </Box>

@@ -187,6 +187,23 @@ export function MasterChatView({
     );
   }
 
+  if (detailQuery.isError) {
+    return (
+      <Box sx={{ p: 2 }}>
+        <Alert
+          severity="error"
+          action={
+            <Button color="inherit" size="small" onClick={() => void detailQuery.refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          This master chat could not be loaded. Check the server connection and try again.
+        </Alert>
+      </Box>
+    );
+  }
+
   if (!detailQuery.data || !masterChat) {
     return (
       <Box sx={{ p: 2 }}>
@@ -232,8 +249,13 @@ export function MasterChatView({
   return (
     <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto 1fr auto" }}>
       <Box sx={{ px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-          <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Stack
+          direction="row"
+          spacing={1}
+          useFlexGap
+          sx={{ alignItems: "center", minWidth: 0, flexWrap: { xs: "wrap", sm: "nowrap" } }}
+        >
+          <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "100%", sm: "auto" } }}>
             <Typography variant="h6" noWrap>
               {masterChat.title}
             </Typography>
@@ -462,6 +484,11 @@ export function MasterChatView({
       </Box>
 
       <Box>
+        {spawn.isError || reply.isError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            Message not sent. {String((spawn.error ?? reply.error) as Error)}
+          </Alert>
+        ) : null}
         {(mentioned.length > 0 || threads.length > 0) ? (
           <Box sx={{ px: 1.5, pt: 1, borderTop: 1, borderColor: "divider" }}>
             {mentioned.length > 0 ? (
@@ -510,6 +537,7 @@ export function MasterChatView({
             onChange={(event) => setRenameValue(event.target.value)}
             sx={{ mt: 1 }}
           />
+          {rename.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(rename.error)}</Alert> : null}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setRenameOpen(false)}>Cancel</Button>
@@ -530,6 +558,7 @@ export function MasterChatView({
             <Box component="strong">{masterChat.title}</Box> will be hidden from the sidebar. Its
             agents keep running and remain visible in the Agents tab.
           </Typography>
+          {archive.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(archive.error)}</Alert> : null}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setArchiveOpen(false)} disabled={archive.isPending}>
@@ -555,6 +584,7 @@ export function MasterChatView({
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
             its event log, tasks, and artifacts. Any in-flight run is stopped. This cannot be undone.
           </Typography>
+          {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setPendingDelete(undefined)} disabled={deleteAgent.isPending}>
