@@ -137,6 +137,23 @@ export function AgentDetail({
     );
   }
 
+  if (threadQuery.isError) {
+    return (
+      <Box sx={{ p: 2 }}>
+        <Alert
+          severity="error"
+          action={
+            <Button color="inherit" size="small" onClick={() => void threadQuery.refetch()}>
+              Retry
+            </Button>
+          }
+        >
+          This agent could not be loaded. Check the server connection and try again.
+        </Alert>
+      </Box>
+    );
+  }
+
   if (!detail) {
     return (
       <Box sx={{ p: 2 }}>
@@ -271,16 +288,24 @@ export function AgentDetail({
 
       <Box sx={{ minHeight: 0, overflow: tab === "chat" ? "hidden" : "auto" }}>{panes[tab]}</Box>
 
-      <Composer
-        disabled={running}
-        running={running}
-        placeholder="Message this agent directly"
-        onSend={(text) => {
-          sendMessage.mutate({ text, model: model || undefined, effort: effort || undefined });
-          setTab("chat");
-        }}
-        onCancel={() => cancelRun.mutate()}
-      />
+      <Box>
+        {sendMessage.isError || cancelRun.isError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            {sendMessage.isError ? "Message not sent." : "The agent could not be stopped."}{" "}
+            {String((sendMessage.error ?? cancelRun.error) as Error)}
+          </Alert>
+        ) : null}
+        <Composer
+          disabled={running}
+          running={running}
+          placeholder="Message this agent directly"
+          onSend={(text) => {
+            sendMessage.mutate({ text, model: model || undefined, effort: effort || undefined });
+            setTab("chat");
+          }}
+          onCancel={() => cancelRun.mutate()}
+        />
+      </Box>
 
       <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Delete agent?</DialogTitle>
@@ -289,6 +314,7 @@ export function AgentDetail({
             This permanently deletes <Box component="strong">{detail.thread.title}</Box>, including its
             event log, tasks, and artifacts. This cannot be undone.
           </Typography>
+          {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteOpen(false)} disabled={deleteAgent.isPending}>
@@ -308,9 +334,10 @@ export function AgentDetail({
             fullWidth
             value={renameValue}
             onChange={(event) => setRenameValue(event.target.value)}
-            helperText="A short single word is easiest to @mention (e.g. Weather)."
+            helperText="Spaces are supported; mention multi-word names with hyphens (for example, @Grand-Teton)."
             sx={{ mt: 1 }}
           />
+          {rename.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(rename.error)}</Alert> : null}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setRenameOpen(false)} disabled={rename.isPending}>
