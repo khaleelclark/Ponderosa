@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -401,17 +402,106 @@ describe("server chunk F", () => {
   it("rejects invalid agent mention relay depths", async () => {
     const { app, thread } = await createProjectAndThread();
 
-    for (const agentMentionDepth of [-1, 1.5, 5]) {
+    for (const agentMentionDepth of [-1, 1.5, 13]) {
       const response = await app.inject({
         method: "POST",
         url: `/api/threads/${thread.id}/messages`,
         payload: { text: "relay", agentMentionDepth },
       });
       expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ error: "agentMentionDepth must be an integer from 0 to 4" });
+      expect(response.json()).toEqual({ error: "agentMentionDepth must be an integer from 0 to 12" });
     }
 
     expect(adapter.seeds).toHaveLength(0);
+    await app.close();
+  });
+
+  it("rejects mismatched agent mention relay depth and trail state", async () => {
+    const { app, thread } = await createProjectAndThread();
+    const fingerprint = "a".repeat(64);
+
+    for (const payload of [
+      { text: "relay", agentMentionDepth: 0, agentMentionTrail: [fingerprint] },
+      { text: "relay", agentMentionDepth: 2, agentMentionTrail: [fingerprint] },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/threads/${thread.id}/messages`,
+        payload,
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        error: "agentMentionTrail must contain one relay fingerprint for each agentMentionDepth step",
+      });
+    }
+
+    expect(adapter.seeds).toHaveLength(0);
+    await app.close();
+  });
+
+  it("allows distinct agent handoffs beyond the former four-relay cutoff", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Review room" });
+    const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "@Pinnacles please review the updated availability fix.";
+
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/messages`,
+      payload: {
+        text: "Continue the review.",
+        agentMentionDepth: 4,
+        agentMentionTrail: ["1".repeat(64), "2".repeat(64), "3".repeat(64), "4".repeat(64)],
+      },
+    });
+    await waitForRun(author.id);
+    await waitForRun(reviewer.id);
+
+    expect(store.getMessages(reviewer.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", text: "@Pinnacles please review the updated availability fix." }),
+      ]),
+    );
+    await app.close();
+  });
+
+  it("blocks and visibly reports an exact repeated agent handoff cycle", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Review room" });
+    const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", masterChatId: master.id });
+    const repeatedText = "@Pinnacles please review the updated availability fix.";
+    adapter.responseText = repeatedText;
+    const fingerprint = createHash("sha256")
+      .update(author.id)
+      .update("\0")
+      .update(reviewer.id)
+      .update("\0")
+      .update(repeatedText.toLocaleLowerCase())
+      .digest("hex");
+
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/messages`,
+      payload: {
+        text: "Repeat the handoff.",
+        agentMentionDepth: 2,
+        agentMentionTrail: ["1".repeat(64), fingerprint],
+      },
+    });
+    await waitForRun(author.id);
+
+    expect(store.getMessages(reviewer.id)).toHaveLength(0);
+    expect(store.getMasterChatMessages(master.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: expect.stringContaining("the same handoff already occurred"),
+        }),
+      ]),
+    );
     await app.close();
   });
 
