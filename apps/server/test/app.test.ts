@@ -354,12 +354,19 @@ describe("server chunk F", () => {
   it("serves the web build with SPA fallback and scoped static paths", async () => {
     const webDist = mkdtempSync(path.join(tmpdir(), "pond-server-web-"));
     mkdirSync(path.join(webDist, "assets"));
+    mkdirSync(path.join(webDist, "static", "js"), { recursive: true });
     writeFileSync(path.join(webDist, "index.html"), "<main>app</main>", "utf8");
     writeFileSync(path.join(webDist, "assets", "app.js"), "console.log('app');\n", "utf8");
+    writeFileSync(path.join(webDist, "static", "js", "app.123.js"), "console.log('fingerprinted');\n", "utf8");
+    writeFileSync(path.join(webDist, "sw.js"), "self.addEventListener('install', () => {});\n", "utf8");
+    writeFileSync(path.join(webDist, "register-sw.js"), "console.log('register');\n", "utf8");
     const app = createServer({ dataDir, store, engines, webDist, logger: false });
 
     const index = await app.inject({ method: "GET", url: "/" });
     const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
+    const fingerprinted = await app.inject({ method: "GET", url: "/static/js/app.123.js" });
+    const serviceWorker = await app.inject({ method: "GET", url: "/sw.js" });
+    const registerSw = await app.inject({ method: "GET", url: "/register-sw.js" });
     const fallback = await app.inject({ method: "GET", url: "/threads/abc" });
     const apiMiss = await app.inject({ method: "GET", url: "/api/not-real" });
     const escape = await app.inject({ method: "GET", url: "/%5c..%5cpackage.json" });
@@ -368,6 +375,12 @@ describe("server chunk F", () => {
     expect(index.body).toContain("<main>app</main>");
     expect(asset.headers["content-type"]).toContain("text/javascript");
     expect(asset.body).toContain("console.log");
+    expect(index.headers["cache-control"]).toBe("no-cache");
+    expect(fallback.headers["cache-control"]).toBe("no-cache");
+    expect(serviceWorker.headers["cache-control"]).toBe("no-cache");
+    expect(registerSw.headers["cache-control"]).toBe("no-cache");
+    expect(fingerprinted.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+    expect(asset.headers["cache-control"]).toBe("public, max-age=3600");
     expect(fallback.body).toContain("<main>app</main>");
     expect(apiMiss.statusCode).toBe(404);
     expect(apiMiss.body).not.toContain("<main>app</main>");
