@@ -1,7 +1,13 @@
 import type {
   ArtifactContentDto,
+  CreateMasterChatMessageRequest,
+  CreateMasterChatRequest,
   CreateProjectRequest,
   CreateThreadRequest,
+  MasterChatDetailDto,
+  MasterChatDto,
+  UpdateMasterChatRequest,
+  UpdateThreadRequest,
   EngineDto,
   ProjectDto,
   SendMessageRequest,
@@ -10,6 +16,14 @@ import type {
   ThreadDetailDto,
   ThreadDto,
 } from "@ponderosa/core";
+
+/** User-facing options when spawning an agent (a thread) from the UI. */
+export interface CreateAgentOptions {
+  title: string;
+  engine: string;
+  model?: string;
+  effort?: string;
+}
 
 export interface StreamSubscription {
   close(): void;
@@ -24,8 +38,16 @@ export interface StreamHandlers {
 export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
+  listMasterChats(projectId: string): Promise<MasterChatDto[]>;
+  createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
+  getMasterChat(masterChatId: string): Promise<MasterChatDetailDto>;
+  updateMasterChat(masterChatId: string, patch: UpdateMasterChatRequest): Promise<MasterChatDto>;
+  sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   listThreads(projectId: string): Promise<ThreadDto[]>;
   createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;
+  /** User-facing wrapper around createThread that spawns an agent, optionally under a master chat. */
+  createAgent(projectId: string, masterChatId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
+  updateThread(threadId: string, patch: UpdateThreadRequest): Promise<ThreadDto>;
   deleteThread(threadId: string): Promise<void>;
   getThread(threadId: string): Promise<ThreadDetailDto>;
   listEngines(): Promise<EngineDto[]>;

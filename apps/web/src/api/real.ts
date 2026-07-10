@@ -1,7 +1,13 @@
 import type {
   ArtifactContentDto,
+  CreateMasterChatMessageRequest,
+  CreateMasterChatRequest,
   CreateProjectRequest,
   CreateThreadRequest,
+  MasterChatDetailDto,
+  MasterChatDto,
+  UpdateMasterChatRequest,
+  UpdateThreadRequest,
   EngineDto,
   ProjectDto,
   SendMessageRequest,
@@ -51,6 +57,30 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
   },
+  listMasterChats(projectId) {
+    return requestJson<MasterChatDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/master-chats");
+  },
+  createMasterChat(projectId, request) {
+    return requestJson<MasterChatDto>("/api/projects/" + encodeURIComponent(projectId) + "/master-chats", {
+      method: "POST",
+      body: JSON.stringify(request satisfies CreateMasterChatRequest),
+    });
+  },
+  getMasterChat(masterChatId) {
+    return requestJson<MasterChatDetailDto>("/api/master-chats/" + encodeURIComponent(masterChatId));
+  },
+  updateMasterChat(masterChatId, patch) {
+    return requestJson<MasterChatDto>("/api/master-chats/" + encodeURIComponent(masterChatId), {
+      method: "PATCH",
+      body: JSON.stringify(patch satisfies UpdateMasterChatRequest),
+    });
+  },
+  async sendMasterChatMessage(masterChatId, request) {
+    await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId) + "/messages", {
+      method: "POST",
+      body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
+    });
+  },
   listThreads(projectId) {
     return requestJson<ThreadDto[]>(`/api/projects/${encodeURIComponent(projectId)}/threads`);
   },
@@ -58,6 +88,21 @@ export const realApi: PonderosaApi = {
     return requestJson<ThreadDto>(`/api/projects/${encodeURIComponent(projectId)}/threads`, {
       method: "POST",
       body: JSON.stringify(request satisfies CreateThreadRequest),
+    });
+  },
+  createAgent(projectId, masterChatId, options) {
+    return this.createThread(projectId, {
+      title: options.title,
+      engine: options.engine as CreateThreadRequest["engine"],
+      masterChatId,
+      model: options.model,
+      effort: options.effort,
+    });
+  },
+  updateThread(threadId, patch) {
+    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch satisfies UpdateThreadRequest),
     });
   },
   async deleteThread(threadId) {

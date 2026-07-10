@@ -96,6 +96,39 @@ The load-bearing separations:
 - **Two kinds of context inside a thread:** conversation (Messages — intent,
   human-facing) vs. execution (Tasks/Artifacts/State — structured data, not chat).
 
+### UI vocabulary: Agents & Master Chats (replaces Projects → Threads navigation)
+The user-facing product presents **Agents** and **Master Chats**, not "Threads."
+The data model is unchanged — an **Agent is a `Thread`** (same event log, sessions,
+tasks, artifacts). This is a naming/navigation layer, not a migration.
+
+```
+Project
+├── Master Chats          ── project-level control rooms (a shared context pool)
+│   ├── Master Chat 1
+│   └── Master Chat 2
+└── Agents                ── every thread in the project, presented as an agent
+    ├── API Agent  (assigned to a master chat)
+    └── Test Agent (unassigned)
+```
+
+- **A Master Chat is a model-agnostic control room** (`master_chats` table). It is
+  **not** bound to any provider and is **never locked by a running agent** — you can
+  spawn many agents from one master chat concurrently. Its messages are a history
+  pool that new agents inherit as context; its optional default engine/model/effort
+  just prefill the spawn dialog and can be changed per agent at any time.
+- **An Agent is a `Thread`.** Threads with no `masterChatId` appear as **Unassigned**
+  agents — old threads need no migration. Threads with a `masterChatId` appear both
+  under their master chat and in the project-wide **Agents** tab.
+- **Where work happens:** an Agent's detail view (Chat · Live Log · Tasks · Artifacts)
+  drives the existing thread runtime; the Agents tab is where you cancel a run or
+  give an agent direct context. Sending a Master Chat message **only records** the
+  message today — it does not interpret it or launch an agent. A later orchestration
+  phase (needing master-chat runtime/streaming) would let a coordinator agent act on
+  those messages; the v1 UI must not imply that already works.
+- **Durable URLs** back navigation: `/projects/:projectId/master-chats/:masterChatId`,
+  `/projects/:projectId/agents`, `/projects/:projectId/agents/:agentId`. Only a
+  lightweight preference (last selected project) is persisted client-side.
+
 ### Project context = the project's own md files
 A project is a real repo on the host. When an agent works in a thread, its working
 directory is that project's path, so it **reads the project's own context files
