@@ -1,7 +1,7 @@
 # Ponderosa — systemd unit (SPEC §10).
 # Runs the Fastify daemon as your login user so the engine CLIs it spawns inherit
-# real fs/shell access, the on-disk subscription tokens (~/.codex), and each
-# project's md files — no bind mounts (SPEC §10/§11).
+# real fs/shell access, the on-disk subscription tokens (~/.codex, ~/.claude), and
+# each project's md files — no bind mounts (SPEC §10/§11).
 #
 # Install:
 #   sudo cp deploy/ponderosa.service /etc/systemd/system/ponderosa.service
@@ -29,6 +29,14 @@ Environment=NODE_ENV=production
 Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
 # Optional: bind host/port (defaults 0.0.0.0:8787).
 # Environment=PONDEROSA_PORT=8787
+#
+# IMPORTANT — engine binaries on PATH. Ponderosa spawns `codex` and `claude` by
+# name. systemd's default PATH is minimal and usually does NOT include npm-global
+# or a version-manager bin dir, so the engines fail with "failed to spawn …".
+# Set PATH to include wherever `which codex` / `which claude` resolve for User=.
+# (A system Node install puts npm globals in /usr/local/bin, already covered; nvm/
+# fnm/custom-prefix installs do NOT — add that dir here.)
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/khaleel/.npm-global/bin
 ExecStart=/usr/bin/node apps/server/dist/main.js
 Restart=on-failure
 RestartSec=3

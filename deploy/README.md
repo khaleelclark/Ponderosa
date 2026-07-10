@@ -9,28 +9,40 @@ default documented here, but **nothing requires it** — any HTTPS-fronting meth
 
 ## 1. Prerequisites (on the box)
 
-Install Node 20+ and pnpm:
+Install **Node 22 LTS** and pnpm. (Use 20 or 22 — **not** Node 26+: the SQLite
+native module `better-sqlite3` has no prebuilt binary for it yet and its source
+build fails against current V8 headers. 22 LTS is what this project is validated on
+and ships prebuilt binaries for Linux x64/arm64, so no compiler is needed.)
 
 ```bash
-# Node 20+ (nodesource, or your preferred method)
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+# Node 22 LTS (nodesource, or your preferred method)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs git
-sudo corepack enable            # provides pnpm
+node --version                  # should be v22.x
+sudo corepack enable            # provides pnpm (pinned to 11.x via packageManager)
 pnpm --version
 ```
 
-Install the Codex CLI (the v1 engine) and log in **as the service user** — this is
-the subscription auth that makes Ponderosa cheap (SPEC §9, AGENTS.md invariant 1):
+Install the **engine CLIs** and log in **as the service user** — subscription auth
+is what makes Ponderosa cheap (SPEC §9, AGENTS.md invariant 1; never an API key):
 
 ```bash
+# Codex (ChatGPT subscription)
 npm install -g @openai/codex     # or the documented Codex install method
-codex login                      # browser OAuth → stores a ChatGPT-subscription
-                                 # token under ~/.codex (never an API key)
+codex login                      # browser OAuth → token under ~/.codex
 codex login status               # should print: Logged in using ChatGPT
+
+# Claude (Claude Pro/Max subscription) — the second engine
+npm install -g @anthropic-ai/claude-code   # provides the `claude` CLI
+claude                           # run once, use /login to sign in to Pro/Max
+                                 # → OAuth account stored in ~/.claude.json
+# Do NOT set ANTHROPIC_API_KEY — that would route Claude to billed API auth.
 ```
 
-> The `codex login` token lives under `~/.codex` for the **same user** the service
-> runs as. Keep it off any image and out of git (already covered by `.gitignore`).
+> Both tokens live under the **same user** the service runs as (`~/.codex`,
+> `~/.claude*`). Keep them off any image and out of git (already gitignored).
+> Only the engine(s) you actually log into need to work — the other just shows
+> "not signed in" in the UI.
 
 ## 2. Clone & build
 
@@ -69,8 +81,16 @@ curl -s http://127.0.0.1:8787/api/health          # {"status":"ok",...}
 ```
 
 Logs: `journalctl -u ponderosa -f`. The unit runs as your login user (not root) so
-spawned engines inherit your access and `~/.codex` token (SPEC §11). It restarts on
-failure.
+spawned engines inherit your access and subscription tokens (SPEC §11). It restarts
+on failure.
+
+> **If runs fail with "failed to spawn codex"/"failed to spawn claude":** the
+> service can't find the engine binary on its `PATH`. systemd's default PATH is
+> minimal and excludes npm-global / nvm / fnm bin dirs. Check where they resolve
+> for the service user (`sudo -u khaleel which codex claude`) and add that dir to
+> the `Environment=PATH=…` line in the unit, then `daemon-reload` + `restart`.
+> A quick sanity check that the engines work under the service account:
+> `sudo -u khaleel bash -lc 'cd /home/khaleel/ponderosa && pnpm engines:try --cwd . "say hello and stop"'`
 
 ## 5. Reach it from your phone
 
