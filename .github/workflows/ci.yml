@@ -1,0 +1,70 @@
+name: CI and deploy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+  deploy:
+    name: Deploy to Pine
+    needs: verify
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: [self-hosted, linux, x64, pine]
+    timeout-minutes: 20
+    concurrency:
+      group: ponderosa-production
+      cancel-in-progress: false
+    steps:
+      - name: Build and restart the merged revision
+        env:
+          DEPLOY_DIR: /home/phoenix/khaleel/ponderosa
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git -C "$DEPLOY_DIR" fetch --prune origin master
+          git -C "$DEPLOY_DIR" checkout --detach "$DEPLOY_SHA"
+          cd "$DEPLOY_DIR"
+          pnpm install --frozen-lockfile
+          pnpm build
+          sudo -n /usr/bin/systemctl restart ponderosa.service
+
+      - name: Wait for the health check
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 10); do
+            if curl --fail --silent --show-error http://127.0.0.1:8787/api/health; then
+              exit 0
