@@ -14,6 +14,7 @@ class MockAdapter implements Adapter {
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
   mode: "normal" | "hang" = "normal";
+  responseText = "done";
 
   listModels(): ModelOption[] {
     return [{ id: "mock-model", label: "Mock Model" }];
@@ -34,7 +35,7 @@ class MockAdapter implements Adapter {
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
     yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
-    yield { type: "text", delta: "done" };
+    yield { type: "text", delta: this.responseText };
     yield { type: "turn_done" };
   }
 
@@ -285,6 +286,39 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
     expect(store.getMasterChatMessages(master.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "Check the first-run path." })]),
+    );
+    await app.close();
+  });
+
+  it("dispatches agent-authored mentions to another agent in the master chat", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
+    const grandTeton = store.createThread(project.id, {
+      title: "Grand Teton",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+    const yosemite = store.createThread(project.id, {
+      title: "Yosemite",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+    adapter.responseText = "@Yosemite can you review this?";
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/threads/${grandTeton.id}/messages`,
+      payload: { text: "Ask Yosemite for a review." },
+    });
+
+    expect(response.statusCode).toBe(200);
+    await waitForRun(grandTeton.id);
+    await waitForRun(yosemite.id);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.seeds[1]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
+    expect(store.getMessages(yosemite.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Yosemite can you review this?" })]),
     );
     await app.close();
   });
