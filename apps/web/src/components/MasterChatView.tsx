@@ -31,13 +31,13 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
-import { Composer } from "./panes";
+import { Composer, scrollChatToBottom } from "./panes";
 
 export function MasterChatView({
   masterChatId,
@@ -71,8 +71,16 @@ export function MasterChatView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
 
   const masterChat = detailQuery.data?.masterChat;
+  const messages = detailQuery.data?.messages ?? [];
+
+  useLayoutEffect(() => {
+    if (chatScrollRef.current) {
+      scrollChatToBottom(chatScrollRef.current);
+    }
+  }, [messages]);
 
   useEffect(() => {
     if (!masterChat || initializedFor.current === masterChat.id) {
@@ -187,7 +195,7 @@ export function MasterChatView({
     );
   }
 
-  const { messages, threads } = detailQuery.data;
+  const { threads } = detailQuery.data;
   const activeEngine = engines.find((candidate) => candidate.id === engine);
   const models = activeEngine?.models ?? [];
   const efforts = activeEngine?.efforts ?? [];
@@ -333,7 +341,7 @@ export function MasterChatView({
         </Stack>
       </Box>
 
-      <Box sx={{ minHeight: 0, overflow: "auto" }}>
+      <Box ref={chatScrollRef} sx={{ minHeight: 0, overflow: "auto" }}>
         <Box sx={{ p: 1.5 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             This is your team's group chat. A plain message spawns a new agent on the selected engine;
