@@ -38,6 +38,7 @@ import { pickAgentName } from "../parkNames";
 import { useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { ChatMarkdown, Composer, scrollChatToBottom } from "./panes";
+import { useMasterChatStreams } from "../hooks/useMasterChatStreams";
 
 export function MasterChatView({
   masterChatId,
@@ -78,12 +79,17 @@ export function MasterChatView({
 
   const masterChat = detailQuery.data?.masterChat;
   const messages = detailQuery.data?.messages ?? [];
+  const threads = detailQuery.data?.threads ?? [];
+  const runningIds = new Set(
+    threads.filter((thread) => statusByAgentId.get(thread.id) === "running").map((thread) => thread.id),
+  );
+  const { replies: liveReplies, pollingFallbackCount } = useMasterChatStreams(threads, runningIds);
 
   useLayoutEffect(() => {
     if (chatScrollRef.current) {
       scrollChatToBottom(chatScrollRef.current);
     }
-  }, [messages]);
+  }, [messages, liveReplies]);
 
   useEffect(() => {
     if (!masterChat || initializedFor.current === masterChat.id) {
@@ -226,7 +232,6 @@ export function MasterChatView({
     );
   }
 
-  const { threads } = detailQuery.data;
   const activeEngine = engines.find((candidate) => candidate.id === engine);
   const models = activeEngine?.models ?? [];
   const efforts = activeEngine?.efforts ?? [];
@@ -397,6 +402,12 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
+            {pollingFallbackCount > 0 ? (
+              <Alert severity="info">
+                {pollingFallbackCount} additional active {pollingFallbackCount === 1 ? "agent is" : "agents are"}
+                {" "}updating through polling to keep this chat responsive.
+              </Alert>
+            ) : null}
             {messages.length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 No messages yet. Send a task to spawn your first agent — it reports back here when
@@ -436,6 +447,21 @@ export function MasterChatView({
                 </Box>
               );
             })}
+            {liveReplies.map((reply) => (
+              <Box key={`live-${reply.threadId}`} sx={{ alignSelf: "flex-start", maxWidth: "min(680px, 92%)" }}>
+                <Link
+                  component="button"
+                  variant="caption"
+                  onClick={() => onOpenAgent(reply.threadId)}
+                  sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
+                >
+                  {agentTitle(reply.threadId)} · responding
+                </Link>
+                <Box sx={{ px: 1.5, py: 1, borderRadius: 2, bgcolor: "background.paper", border: 1, borderColor: "divider" }}>
+                  <ChatMarkdown>{reply.text}</ChatMarkdown>
+                </Box>
+              </Box>
+            ))}
           </Stack>
 
           <Divider sx={{ my: 1.5 }} />
