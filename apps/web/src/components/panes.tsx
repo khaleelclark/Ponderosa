@@ -46,8 +46,13 @@ export function shouldSendComposerKey(event: {
   key: string;
   shiftKey: boolean;
   isComposing: boolean;
+  repeat: boolean;
 }): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing && !event.repeat;
+}
+
+export function shouldIgnoreComposerKey(event: { key: string; isComposing: boolean }): boolean {
+  return event.key === "Enter" && event.isComposing;
 }
 
 export function taskStatusColor(status: TaskDto["status"]): "success" | "warning" | "info" {
@@ -657,6 +662,9 @@ export function Composer({
             onClick={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyUp={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyDown={(event) => {
+              if (shouldIgnoreComposerKey({ key: event.key, isComposing: event.nativeEvent.isComposing })) {
+                return;
+              }
               if (menuOpen && event.key === "ArrowDown") {
                 event.preventDefault();
                 setHighlighted((index) => (index + 1) % suggestions.length);
@@ -681,6 +689,7 @@ export function Composer({
                 key: event.key,
                 shiftKey: event.shiftKey,
                 isComposing: event.nativeEvent.isComposing,
+                repeat: event.repeat,
               }) && canSend) {
                 event.preventDefault();
                 send();
