@@ -6,6 +6,7 @@ import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
+import { pickAgentName } from "../parkNames";
 import { useMasterChats, useThreads } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -20,6 +21,7 @@ interface AgentDialogState {
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
+  defaultName?: string;
 }
 
 export function ProjectShell({
@@ -94,6 +96,8 @@ export function ProjectShell({
     },
   });
 
+  const suggestedName = () => pickAgentName(agents.map((agent) => agent.title));
+
   const openNewAgentFromMaster = (master: MasterChatDto) =>
     setAgentDialog({
       open: true,
@@ -101,6 +105,7 @@ export function ProjectShell({
       defaultEngine: master.defaultEngine,
       defaultModel: master.defaultModel,
       defaultEffort: master.defaultEffort,
+      defaultName: suggestedName(),
     });
 
   const sidebarSelection = {
@@ -155,7 +160,7 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         detailByAgentId={detailByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onNewAgent={() => setAgentDialog({ open: true })}
+        onNewAgent={() => setAgentDialog({ open: true, defaultName: suggestedName() })}
       />
     );
   } else {
@@ -186,6 +191,7 @@ export function ProjectShell({
         defaultEngine={agentDialog.defaultEngine}
         defaultModel={agentDialog.defaultModel}
         defaultEffort={agentDialog.defaultEffort}
+        defaultName={agentDialog.defaultName}
         pending={createAgent.isPending}
         error={createAgent.isError ? String(createAgent.error) : undefined}
         onClose={() => setAgentDialog({ open: false })}

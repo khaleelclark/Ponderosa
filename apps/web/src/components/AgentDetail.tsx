@@ -2,6 +2,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DifferenceIcon from "@mui/icons-material/Difference";
+import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import {
@@ -24,6 +25,7 @@ import {
   Stack,
   Tab,
   Tabs,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -63,6 +65,8 @@ export function AgentDetail({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
 
   const detail = threadQuery.data;
   const engine =
@@ -98,6 +102,16 @@ export function AgentDetail({
       queryClient.removeQueries({ queryKey: ["thread", agentId] });
       setDeleteOpen(false);
       onDeleted();
+    },
+  });
+
+  const rename = useMutation({
+    mutationFn: (title: string) => api.updateThread(agentId, { title }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
+      setRenameOpen(false);
     },
   });
 
@@ -169,6 +183,17 @@ export function AgentDetail({
               Cancel
             </Button>
           ) : null}
+          <Tooltip title="Rename agent">
+            <IconButton
+              aria-label="Rename agent"
+              onClick={() => {
+                setRenameValue(detail.thread.title);
+                setRenameOpen(true);
+              }}
+            >
+              <DriveFileRenameOutlineIcon />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Delete agent">
             <IconButton aria-label="Delete agent" onClick={() => setDeleteOpen(true)}>
               <DeleteOutlineIcon />
@@ -257,6 +282,32 @@ export function AgentDetail({
           </Button>
           <Button color="error" variant="contained" disabled={deleteAgent.isPending} onClick={() => deleteAgent.mutate()}>
             Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Rename agent</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            value={renameValue}
+            onChange={(event) => setRenameValue(event.target.value)}
+            helperText="A short single word is easiest to @mention (e.g. Weather)."
+            sx={{ mt: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRenameOpen(false)} disabled={rename.isPending}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            disabled={!renameValue.trim() || rename.isPending}
+            onClick={() => rename.mutate(renameValue.trim())}
+          >
+            Save
           </Button>
         </DialogActions>
       </Dialog>

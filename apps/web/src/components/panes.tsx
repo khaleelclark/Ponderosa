@@ -9,9 +9,13 @@ import {
   Box,
   Chip,
   CircularProgress,
+  ClickAwayListener,
   Divider,
   IconButton,
+  MenuItem,
+  MenuList,
   Paper,
+  Popper,
   Stack,
   Tab,
   Tabs,
@@ -21,7 +25,7 @@ import {
 } from "@mui/material";
 import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -433,18 +437,66 @@ export function Composer({
   disabled,
   running,
   placeholder,
+  mentionHandles,
   onSend,
   onCancel,
+  onChangeText,
 }: {
   disabled: boolean;
   running: boolean;
   placeholder?: string;
+  /** When provided, typing `@` autocompletes these agent handles (group chat). */
+  mentionHandles?: string[];
   onSend(text: string): void;
   onCancel?(): void;
+  onChangeText?(text: string): void;
 }): JSX.Element {
   const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
+  const [highlighted, setHighlighted] = useState(0);
+  const [suppressMenu, setSuppressMenu] = useState(false);
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = text.trim().length > 0 && !disabled && !running;
   const canCancel = running && Boolean(onCancel);
+
+  const update = (next: string) => {
+    setText(next);
+    onChangeText?.(next);
+  };
+
+  // The `@partial` token immediately left of the caret, if any.
+  const mentionMatch = /(?:^|\s)@(\w*)$/.exec(text.slice(0, caret));
+  const suggestions =
+    mentionMatch && mentionHandles && mentionHandles.length > 0
+      ? mentionHandles
+          .filter((handle) => handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()))
+          .slice(0, 6)
+      : [];
+  const menuOpen = suggestions.length > 0 && !suppressMenu;
+
+  const applyMention = (handle: string) => {
+    const start = caret - mentionMatch![0].length + mentionMatch![0].indexOf("@");
+    const next = `${text.slice(0, start)}@${handle} ${text.slice(caret)}`;
+    update(next);
+    setHighlighted(0);
+    // Restore focus and place the caret after the inserted handle.
+    const nextCaret = start + handle.length + 2;
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextCaret, nextCaret);
+        setCaret(nextCaret);
+      }
+    });
+  };
+
+  const send = () => {
+    onSend(text.trim());
+    update("");
+    setCaret(0);
+  };
 
   return (
     <Paper
@@ -460,22 +512,72 @@ export function Composer({
       }}
     >
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>
-        <TextField
-          fullWidth
-          multiline
-          minRows={1}
-          maxRows={5}
-          value={text}
-          disabled={disabled || running}
-          placeholder={running ? "Agent is working" : (placeholder ?? "Send a message")}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSend) {
-              onSend(text.trim());
-              setText("");
-            }
-          }}
-        />
+        <Box ref={anchorRef} sx={{ flex: 1 }}>
+          <TextField
+            fullWidth
+            multiline
+            minRows={1}
+            maxRows={5}
+            value={text}
+            inputRef={inputRef}
+            disabled={disabled || running}
+            placeholder={running ? "Agent is working" : (placeholder ?? "Send a message")}
+            onChange={(event) => {
+              update(event.target.value);
+              setCaret(event.target.selectionStart ?? event.target.value.length);
+              setHighlighted(0);
+              setSuppressMenu(false);
+            }}
+            onClick={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
+            onKeyUp={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
+            onKeyDown={(event) => {
+              if (menuOpen && event.key === "ArrowDown") {
+                event.preventDefault();
+                setHighlighted((index) => (index + 1) % suggestions.length);
+                return;
+              }
+              if (menuOpen && event.key === "ArrowUp") {
+                event.preventDefault();
+                setHighlighted((index) => (index - 1 + suggestions.length) % suggestions.length);
+                return;
+              }
+              if (menuOpen && (event.key === "Enter" || event.key === "Tab") && !event.metaKey && !event.ctrlKey) {
+                event.preventDefault();
+                applyMention(suggestions[highlighted]!);
+                return;
+              }
+              if (menuOpen && event.key === "Escape") {
+                event.preventDefault();
+                setSuppressMenu(true);
+                return;
+              }
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSend) {
+                event.preventDefault();
+                send();
+              }
+            }}
+          />
+          <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
+            <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
+              <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180 }}>
+                <MenuList dense>
+                  {suggestions.map((handle, index) => (
+                    <MenuItem
+                      key={handle}
+                      selected={index === highlighted}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        applyMention(handle);
+                      }}
+                    >
+                      @{handle}
+                    </MenuItem>
+                  ))}
+                </MenuList>
+              </Paper>
+            </ClickAwayListener>
+          </Popper>
+        </Box>
         {canCancel ? (
           <Tooltip title="Cancel run">
             <IconButton color="error" onClick={onCancel} aria-label="Cancel run">
@@ -485,15 +587,7 @@ export function Composer({
         ) : (
           <Tooltip title="Send">
             <span>
-              <IconButton
-                color="primary"
-                disabled={!canSend}
-                onClick={() => {
-                  onSend(text.trim());
-                  setText("");
-                }}
-                aria-label="Send message"
-              >
+              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label="Send message">
                 <SendIcon />
               </IconButton>
             </span>
