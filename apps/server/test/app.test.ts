@@ -265,7 +265,7 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id);
 
-    expect(adapter.seeds[0]?.prompt).toContain("Respond directly to the manager's latest message in your own words");
+    expect(adapter.seeds[0]?.prompt).toContain("whether it came from the manager or a teammate");
     expect(adapter.seeds[0]?.prompt).toContain("never use a canned acknowledgment");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
@@ -347,6 +347,120 @@ describe("server chunk F", () => {
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Yosemite can you review this?" })]),
     );
+    await app.close();
+  });
+
+  it("queues an agent-authored mention until the tagged agent finishes its active turn", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
+    const reviewer = store.createThread(project.id, {
+      title: "Pinnacles",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+    const author = store.createThread(project.id, {
+      title: "Badlands",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+
+    adapter.mode = "hang";
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${reviewer.id}/messages`,
+      payload: { text: "Review another change first." },
+    });
+
+    adapter.mode = "normal";
+    adapter.responseText = "@Pinnacles please review my completed change.";
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/messages`,
+      payload: { text: "Finish and request the security review." },
+    });
+    await waitForRun(author.id);
+
+    // The reviewer is still busy, so the follow-up must remain queued rather than
+    // being discarded. Finishing that turn should immediately activate it.
+    await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
+    await waitForRun(reviewer.id);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.continues[0]?.prompt).toContain(
+      "Latest message for you:\n@Pinnacles please review my completed change.",
+    );
+    expect(store.getMessages(reviewer.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", text: "@Pinnacles please review my completed change." }),
+      ]),
+    );
+    await app.close();
+  });
+
+  it("rejects invalid agent mention relay depths", async () => {
+    const { app, thread } = await createProjectAndThread();
+
+    for (const agentMentionDepth of [-1, 1.5, 5]) {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/threads/${thread.id}/messages`,
+        payload: { text: "relay", agentMentionDepth },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ error: "agentMentionDepth must be an integer from 0 to 4" });
+    }
+
+    expect(adapter.seeds).toHaveLength(0);
+    await app.close();
+  });
+
+  it("caps queued mention follow-ups and reports overflow to the master chat", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Busy review room" });
+    const reviewer = store.createThread(project.id, {
+      title: "Pinnacles",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+
+    adapter.mode = "hang";
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${reviewer.id}/messages`,
+      payload: { text: "Begin a long review." },
+    });
+
+    adapter.mode = "normal";
+    adapter.responseText = "@Pinnacles please review this follow-up.";
+    const authors = Array.from({ length: 51 }, (_, index) =>
+      store.createThread(project.id, {
+        title: `Author ${index}`,
+        engine: "codex",
+        masterChatId: master.id,
+      }),
+    );
+    for (const author of authors) {
+      await app.inject({
+        method: "POST",
+        url: `/api/threads/${author.id}/messages`,
+        payload: { text: "Finish and request review." },
+      });
+    }
+    await Promise.all(authors.map((author) => waitForRun(author.id)));
+
+    expect(store.getMasterChatMessages(master.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          text: "⚠️ @Pinnacles was not notified because their follow-up queue is full. Please retry after they finish some queued work.",
+        }),
+      ]),
+    );
+
+    await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
+    await waitForRun(reviewer.id, 50);
+    expect(adapter.continues).toHaveLength(50);
     await app.close();
   });
 

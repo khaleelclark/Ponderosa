@@ -38,6 +38,8 @@ interface ActiveRun {
 
 type Subscriber = (stored: StoredLogEvent) => void;
 
+const MAX_PENDING_MENTION_TURNS = 50;
+
 function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
   return event.type !== "user_message";
 }
@@ -94,7 +96,7 @@ function masterChatPrompt(
 
   return [
     "You are replying as a teammate in a shared master chat.",
-    "Respond directly to the manager's latest message in your own words.",
+    "Respond directly to the latest message addressed to you, whether it came from the manager or a teammate.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only your new update or result in a natural, conversational tone.",
@@ -203,9 +205,39 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
+  const pendingMentionTurns = new Map<string, Array<{ text: string; agentMentionDepth: number }>>();
   const subscribers = new Map<string, Set<Subscriber>>();
 
   const app = Fastify({ logger: opts.logger ?? true });
+
+  function queueMentionTurn(threadId: string, text: string, agentMentionDepth: number): boolean {
+    const pending = pendingMentionTurns.get(threadId) ?? [];
+    if (pending.length >= MAX_PENDING_MENTION_TURNS) return false;
+    pending.push({ text, agentMentionDepth });
+    pendingMentionTurns.set(threadId, pending);
+    return true;
+  }
+
+  async function dispatchNextMentionTurn(threadId: string): Promise<void> {
+    if (activeRuns.has(threadId)) return;
+    const pending = pendingMentionTurns.get(threadId);
+    const next = pending?.[0];
+    if (!pending || !next) return;
+    pending.shift();
+    if (pending.length === 0) pendingMentionTurns.delete(threadId);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/threads/${threadId}/messages`,
+      headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
+      payload: next,
+    });
+    if (response.statusCode === 409) {
+      const remaining = pendingMentionTurns.get(threadId) ?? [];
+      remaining.unshift(next);
+      pendingMentionTurns.set(threadId, remaining);
+    }
+  }
 
   app.addHook("onRequest", async (request, reply) => {
     if (!opts.authToken) return;
@@ -409,6 +441,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim();
       if (!text) return reply.code(400).send({ error: "text is required" });
+      const mentionDepth = request.body.agentMentionDepth;
+      if (
+        mentionDepth !== undefined &&
+        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > 4)
+      ) {
+        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 4" });
+      }
 
       const history: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
         role: message.role,
@@ -497,26 +536,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // display text. Relay them server-side because no browser submit
               // handler runs when an agent posts its final report-back. Bound the
               // relay depth so agents cannot accidentally create an endless loop.
-              const mentionDepth = request.body.agentMentionDepth ?? 0;
-              if (!runError && mentionDepth < 4) {
+              const relayDepth = request.body.agentMentionDepth ?? 0;
+              if (!runError && relayDepth < 4) {
                 const detail = store.getMasterChatDetail(thread.masterChatId);
                 const targets = detail
                   ? mentionedAgentThreads(statusText, detail.threads, thread.id)
                   : [];
                 for (const target of targets) {
-                  if (activeRuns.has(target.id)) continue;
-                  void app.inject({
-                    method: "POST",
-                    url: `/api/threads/${target.id}/messages`,
-                    headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
-                    payload: { text: statusText, agentMentionDepth: mentionDepth + 1 },
-                  });
+                  if (queueMentionTurn(target.id, statusText, relayDepth + 1)) {
+                    void dispatchNextMentionTurn(target.id);
+                  } else {
+                    // Never fail silently: the bounded queue protects server
+                    // availability while telling the room which handoff needs a retry.
+                    store.appendMasterChatMessage(thread.masterChatId, {
+                      role: "assistant",
+                      text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up queue is full. Please retry after they finish some queued work.`,
+                    });
+                  }
                 }
               }
             } catch {
               // Master chat may have been deleted mid-run; ignore.
             }
           }
+          // Mentions received while this agent was working are never dropped.
+          // Start the oldest queued follow-up as soon as its current turn closes.
+          void dispatchNextMentionTurn(thread.id);
         }
       })();
 
