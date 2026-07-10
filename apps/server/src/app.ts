@@ -11,7 +11,9 @@ import type {
   EngineDto,
   FilesResponse,
   HealthDto,
+  MasterChatMessageDto,
   SseEventEnvelope,
+  ThreadDto,
 } from "@ponderosa/core";
 import { artifactContentPath, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 
@@ -50,6 +52,42 @@ function summarizeFinalMessage(text: string): string | undefined {
   if (!trimmed) return undefined;
   const cap = 4000;
   return trimmed.length <= cap ? trimmed : `…${trimmed.slice(-cap)}`;
+}
+
+/**
+ * Give a master-chat agent the shared room context and a lightweight teammate
+ * response contract. This is intentionally part of the next user prompt (rather
+ * than engine-specific configuration) so new and resumed agents behave alike.
+ */
+function masterChatPrompt(
+  messages: MasterChatMessageDto[],
+  threads: ThreadDto[],
+  currentRequest: string,
+): string {
+  const names = new Map(threads.map((thread) => [thread.id, thread.title]));
+  const transcript = messages
+    .map((message) => {
+      const speaker = message.authorThreadId
+        ? names.get(message.authorThreadId) ?? "Agent"
+        : message.role === "user"
+          ? "Manager"
+          : "Team";
+      return `${speaker}: ${message.text}`;
+    })
+    .join("\n");
+
+  return [
+    "You are replying as a teammate in a shared master chat.",
+    "The manager's latest message has already been acknowledged on your behalf.",
+    "When this turn is complete, give only your new update or result in a natural, conversational tone.",
+    "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
+    "",
+    "Current master chat history:",
+    transcript || "(No earlier messages.)",
+    "",
+    "Latest message for you:",
+    currentRequest,
+  ].join("\n");
 }
 
 function envelope(threadId: string, stored: StoredLogEvent): SseEventEnvelope | undefined {
@@ -339,8 +377,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const resumeSessionId = store.resumeSessionId(thread.id);
       const mode = resumeSessionId ? "continue" : "seed";
 
+      // Master-chat turns always receive the room as it exists now. The web UI
+      // records the manager's message before calling this endpoint, so this covers
+      // both a newly spawned agent and an existing agent addressed with @mention.
+      const masterChat = thread.masterChatId
+        ? store.getMasterChatDetail(thread.masterChatId)
+        : undefined;
+      const prompt = masterChat
+        ? masterChatPrompt(masterChat.messages, masterChat.threads, text)
+        : text;
+
       const userStored = store.appendEvent(thread.id, { type: "user_message", text });
       publish(thread.id, userStored);
+
+      // A teammate acknowledges a direct request immediately; the completed turn
+      // later contributes only its update/result below.
+      if (thread.masterChatId) {
+        store.appendMasterChatMessage(
+          thread.masterChatId,
+          { role: "assistant", text: "Got it — I’m on it." },
+          thread.id,
+        );
+      }
 
       activeRuns.set(thread.id, { runId, controller });
 
@@ -356,7 +414,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             ? engine.adapter.continue({
                   threadId: thread.id,
                   cwd: project.hostPath,
-                  prompt: text,
+                  prompt,
                   resumeSessionId,
                   model: request.body.model,
                   effort: request.body.effort,
@@ -365,7 +423,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             : engine.adapter.seed({
                   threadId: thread.id,
                   cwd: project.hostPath,
-                  prompt: text,
+                  prompt,
                   history,
                   model: request.body.model,
                   effort: request.body.effort,
