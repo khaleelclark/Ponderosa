@@ -269,7 +269,7 @@ export function AgentDetail({
         <Tab value="artifacts" icon={<DifferenceIcon />} iconPosition="start" label="Artifacts" sx={{ minHeight: 48 }} />
       </Tabs>
 
-      <Box sx={{ minHeight: 0, overflow: "auto" }}>{panes[tab]}</Box>
+      <Box sx={{ minHeight: 0, overflow: tab === "chat" ? "hidden" : "auto" }}>{panes[tab]}</Box>
 
       <Composer
         disabled={running}

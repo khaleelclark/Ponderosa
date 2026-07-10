@@ -25,7 +25,7 @@ import {
 } from "@mui/material";
 import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -71,13 +71,28 @@ function compactPath(path: string): string {
   return `${parts[0]}/.../${parts.at(-1)}`;
 }
 
+export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "scrollTop">): void {
+  element.scrollTop = element.scrollHeight;
+}
+
 export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (scrollRef.current) {
+      scrollChatToBottom(scrollRef.current);
+    }
+  }, [chatMessages]);
 
   return (
-    <Stack spacing={1.25} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
+    <Stack
+      ref={scrollRef}
+      spacing={1.25}
+      sx={{ p: 1.5, pb: 3, height: "100%", minHeight: 0, overflowY: "auto" }}
+    >
       {chatMessages.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           Send a message to this agent to start the conversation.
