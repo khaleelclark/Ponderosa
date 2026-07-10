@@ -1,6 +1,6 @@
 import type { ThreadDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentMentionHandle, findMentionedAgent } from "../src/mentions";
+import { agentMentionHandle, findMentionedAgent, findMentionedAgents } from "../src/mentions";
 
 const thread = (title: string): ThreadDto => ({
   id: title,
@@ -28,5 +28,13 @@ describe("agent mentions", () => {
     const renamed = thread("Bryce");
     expect(findMentionedAgent("@Bryce status?", [renamed])).toBe(renamed);
     expect(findMentionedAgent("@OldName status?", [renamed])).toBeUndefined();
+  });
+
+  it("resolves every distinct agent mentioned in one message", () => {
+    const bryce = thread("Bryce Canyon");
+    const acadia = thread("Acadia");
+
+    expect(findMentionedAgents("@Bryce-Canyon and @Acadia compare notes @Acadia", [bryce, acadia]))
+      .toEqual([bryce, acadia]);
   });
 });

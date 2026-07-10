@@ -36,7 +36,7 @@ import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useMasterChat } from "../hooks/queries";
-import { agentMentionHandle, findMentionedAgent } from "../mentions";
+import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { Composer } from "./panes";
 
 export function MasterChatView({
@@ -134,13 +134,15 @@ export function MasterChatView({
   // Route a message to an existing agent (a follow-up turn) instead of spawning.
   // Recorded in the shared pool so it stays as context for future agents.
   const reply = useMutation({
-    mutationFn: async ({ agentId, text }: { agentId: string; text: string }) => {
+    mutationFn: async ({ agentIds, text }: { agentIds: string[]; text: string }) => {
       await api.sendMasterChatMessage(masterChatId, { text });
-      await api.sendMessage(agentId, { text });
+      await Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text })));
     },
     onSuccess: (_data, variables) => {
       invalidate();
-      void queryClient.invalidateQueries({ queryKey: ["thread", variables.agentId] });
+      for (const agentId of variables.agentIds) {
+        void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
+      }
     },
   });
 
@@ -195,21 +197,26 @@ export function MasterChatView({
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
   const mentionHandles = threads.map((thread) => agentMentionHandle(thread.title));
-  const findMentioned = (text: string): ThreadDto | undefined => findMentionedAgent(text, threads);
+  const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
   // Live target derived from what's currently typed (for the hint + guard).
   const mentioned = findMentioned(composerText);
-  const mentionedRunning = mentioned ? statusByAgentId.get(mentioned.id) === "running" : false;
+  const mentionedRunning = mentioned.some((agent) => statusByAgentId.get(agent.id) === "running");
+  const mentionedHandles = mentioned.map((agent) => `@${agentMentionHandle(agent.title)}`).join(", ");
+  const busyHandles = mentioned
+    .filter((agent) => statusByAgentId.get(agent.id) === "running")
+    .map((agent) => `@${agentMentionHandle(agent.title)}`)
+    .join(", ");
   // Replying to an existing agent needs it idle (routing a turn to a running agent
   // is the steering case, deferred). Spawning a new agent needs a signed-in engine.
-  const canSend = mentioned ? !mentionedRunning : engineReady;
+  const canSend = mentioned.length > 0 ? !mentionedRunning : engineReady;
   const busy = spawn.isPending || reply.isPending;
 
   const submit = (text: string) => {
-    const target = findMentioned(text);
-    if (target) {
-      if (statusByAgentId.get(target.id) === "running") return; // guarded in UI
-      reply.mutate({ agentId: target.id, text });
+    const targets = findMentioned(text);
+    if (targets.length > 0) {
+      if (targets.some((target) => statusByAgentId.get(target.id) === "running")) return;
+      reply.mutate({ agentIds: targets.map((target) => target.id), text });
     } else {
       spawn.mutate(text);
     }
@@ -448,17 +455,17 @@ export function MasterChatView({
       </Box>
 
       <Box>
-        {(mentioned || threads.length > 0) ? (
+        {(mentioned.length > 0 || threads.length > 0) ? (
           <Box sx={{ px: 1.5, pt: 1, borderTop: 1, borderColor: "divider" }}>
-            {mentioned ? (
+            {mentioned.length > 0 ? (
               mentionedRunning ? (
                 <Typography variant="caption" color="warning.main">
-                  @{agentMentionHandle(mentioned.title)} is busy — replying to a running agent needs steering
+                  {busyHandles} {busyHandles.includes(",") ? "are" : "is"} busy — replying to a running agent needs steering
                   (coming soon). Wait for it to finish, or send without a mention to spawn a new agent.
                 </Typography>
               ) : (
                 <Typography variant="caption" color="text.secondary">
-                  Replying to <Box component="strong">@{agentMentionHandle(mentioned.title)}</Box>
+                  Replying to <Box component="strong">{mentionedHandles}</Box>
                 </Typography>
               )
             ) : (
@@ -474,10 +481,10 @@ export function MasterChatView({
           mentionHandles={mentionHandles}
           onChangeText={setComposerText}
           placeholder={
-            mentioned
+            mentioned.length > 0
               ? mentionedRunning
-                ? `@${agentMentionHandle(mentioned.title)} is busy`
-                : `Reply to @${agentMentionHandle(mentioned.title)}`
+                ? `${busyHandles} ${busyHandles.includes(",") ? "are" : "is"} busy`
+                : `Reply to ${mentionedHandles}`
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
                 : "Select a signed-in engine to spawn agents"
