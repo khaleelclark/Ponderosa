@@ -39,7 +39,7 @@ outside `codex.ts`.
 - `seed()` → `codex exec --json --skip-git-repo-check -c sandbox_mode=… -c approval_policy="never" [-m model] "<prompt>"`, spawned with `cwd` = the project dir. The prompt is the thread's chat history rendered minimally (no packet — SPEC §4/§5); the agent reads the repo's md files and git state from its cwd itself.
 - `continue()` → `codex exec resume <SESSION_ID> --json …`, same overrides, same cwd.
 - Session id = `thread.started.thread_id`, emitted as a `session` event and persisted by the thread store for resume.
-- Sandbox defaults to `workspace-write` (edit the project + run commands within it, headlessly). Override with `PONDEROSA_CODEX_SANDBOX=danger-full-access` for the full-access model in SPEC §11.
+- Sandbox defaults to `workspace-write` for ad hoc local runs. The production systemd unit sets `PONDEROSA_CODEX_SANDBOX=danger-full-access` so agents get the full-access host model in SPEC §11, including outbound network operations such as GitHub pushes.
 
 ## Claude adapter (SPEC §5 second engine) — subscription auth only
 

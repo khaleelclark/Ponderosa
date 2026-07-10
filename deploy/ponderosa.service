@@ -27,6 +27,9 @@ WorkingDirectory=/home/khaleel/ponderosa
 Environment=NODE_ENV=production
 # The one greppable, portable data dir (event logs + SQLite projections, SPEC §7).
 Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
+# Codex agents need full access on the single-operator host so their shell commands
+# can use outbound network operations such as git push / gh pr create.
+Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 # Optional: bind host/port (defaults 0.0.0.0:8787).
 # Environment=PONDEROSA_PORT=8787
 #
