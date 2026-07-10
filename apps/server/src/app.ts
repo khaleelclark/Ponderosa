@@ -185,12 +185,67 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return project ?? reply.code(404).send({ error: "project not found" });
   });
 
+  app.get<{ Params: { id: string } }>("/api/projects/:id/master-chats", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    return store.listMasterChats(request.params.id);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { title: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
+  }>("/api/projects/:id/master-chats", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    if (!request.body?.title) return reply.code(400).send({ error: "title is required" });
+    if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
+      return reply.code(400).send({ error: "unknown engine" });
+    }
+    return store.createMasterChat(request.params.id, request.body);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
+    const detail = store.getMasterChatDetail(request.params.id);
+    return detail ?? reply.code(404).send({ error: "master chat not found" });
+  });
+
+  app.patch<{
+    Params: { id: string };
+    Body: {
+      title?: string;
+      defaultEngine?: string | null;
+      defaultModel?: string | null;
+      defaultEffort?: string | null;
+      archived?: boolean;
+    };
+  }>("/api/master-chats/:id", async (request, reply) => {
+    if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
+      return reply.code(400).send({ error: "unknown engine" });
+    }
+    const masterChat = store.updateMasterChat(request.params.id, request.body ?? {});
+    return masterChat ?? reply.code(404).send({ error: "master chat not found" });
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { role?: "user" | "assistant" | "system"; text: string };
+  }>("/api/master-chats/:id/messages", async (request, reply) => {
+    const text = request.body?.text?.trim();
+    if (!text) return reply.code(400).send({ error: "text is required" });
+    const message = store.appendMasterChatMessage(request.params.id, {
+      role: request.body.role,
+      text,
+    });
+    return message ?? reply.code(404).send({ error: "master chat not found" });
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/threads", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.listThreads(request.params.id);
   });
 
-  app.post<{ Params: { id: string }; Body: { title: string; engine: string; model?: string; effort?: string } }>(
+  app.post<{
+    Params: { id: string };
+    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string };
+  }>(
     "/api/projects/:id/threads",
     async (request, reply) => {
       if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
@@ -198,6 +253,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "title and engine are required" });
       }
       if (!engines.has(request.body.engine)) return reply.code(400).send({ error: "unknown engine" });
+      if (request.body.masterChatId) {
+        const masterChat = store.getMasterChat(request.body.masterChatId);
+        if (!masterChat || masterChat.projectId !== request.params.id) {
+          return reply.code(400).send({ error: "master chat does not belong to project" });
+        }
+      }
       return store.createThread(request.params.id, request.body);
     },
   );

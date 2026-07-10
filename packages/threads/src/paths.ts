@@ -6,6 +6,10 @@
 //     projects/
 //       <project-id>/
 //         project.json                 ← label, host path, createdAt
+//         master-chats/
+//           <master-chat-id>/
+//             master-chat.json         ← title, defaults, timestamps
+//             messages.jsonl           ← model-agnostic control chat
 //         threads/
 //           <thread-id>/
 //             thread.json              ← title, active engine, sessionIds, state, ts
@@ -29,6 +33,30 @@ export function projectDir(dataDir: string, projectId: string): string {
 
 export function projectJsonPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "project.json");
+}
+
+export function masterChatsDir(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "master-chats");
+}
+
+export function masterChatDir(dataDir: string, projectId: string, masterChatId: string): string {
+  return path.join(masterChatsDir(dataDir, projectId), masterChatId);
+}
+
+export function masterChatJsonPath(
+  dataDir: string,
+  projectId: string,
+  masterChatId: string,
+): string {
+  return path.join(masterChatDir(dataDir, projectId, masterChatId), "master-chat.json");
+}
+
+export function masterChatMessagesPath(
+  dataDir: string,
+  projectId: string,
+  masterChatId: string,
+): string {
+  return path.join(masterChatDir(dataDir, projectId, masterChatId), "messages.jsonl");
 }
 
 export function threadsDir(dataDir: string, projectId: string): string {

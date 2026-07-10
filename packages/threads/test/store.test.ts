@@ -22,7 +22,16 @@ afterEach(() => {
 /** Read every projection table as plain sorted rows (for equality snapshots). */
 function snapshot(s: ThreadStore): Record<string, unknown[]> {
   const db = s.sqlite;
-  const tables = ["projects", "threads", "messages", "tasks", "artifacts", "events"];
+  const tables = [
+    "projects",
+    "master_chats",
+    "master_chat_messages",
+    "threads",
+    "messages",
+    "tasks",
+    "artifacts",
+    "events",
+  ];
   const out: Record<string, unknown[]> = {};
   for (const t of tables) {
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY id`).all() as unknown[];
@@ -132,13 +141,57 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
 
     // Simulate SQLite loss: delete all projection rows, then rebuild from logs.
     const db = store.sqlite;
-    for (const t of ["projects", "threads", "messages", "tasks", "artifacts", "events"]) {
+    for (const t of [
+      "projects",
+      "master_chats",
+      "master_chat_messages",
+      "threads",
+      "messages",
+      "tasks",
+      "artifacts",
+      "events",
+    ]) {
       db.exec(`DELETE FROM ${t}`);
     }
     expect((snapshot(store).messages as unknown[]).length).toBe(0);
 
     store.rebuildProjections();
     expect(snapshot(store)).toEqual(before);
+  });
+
+  it("persists model-agnostic master chats and linked agent threads across rebuilds", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const masterChat = store.createMasterChat(project.id, {
+      title: "Release control room",
+      defaultEngine: "codex",
+      defaultModel: "gpt-5",
+      defaultEffort: "high",
+    });
+    const message = store.appendMasterChatMessage(masterChat.id, {
+      text: "Spin up one agent for API work and one for UI work.",
+    });
+    const thread = store.createThread(project.id, {
+      title: "API agent",
+      engine: "codex",
+      masterChatId: masterChat.id,
+    });
+
+    expect(message?.role).toBe("user");
+    expect(thread.masterChatId).toBe(masterChat.id);
+
+    const before = snapshot(store);
+    store.rebuildProjections();
+
+    expect(snapshot(store)).toEqual(before);
+    expect(store.getMasterChatDetail(masterChat.id)).toMatchObject({
+      masterChat: {
+        id: masterChat.id,
+        title: "Release control room",
+        defaultEngine: "codex",
+      },
+      messages: [{ text: "Spin up one agent for API work and one for UI work." }],
+      threads: [{ id: thread.id, masterChatId: masterChat.id }],
+    });
   });
 });
 

@@ -16,6 +16,7 @@ export const projects = sqliteTable("projects", {
 export const threads = sqliteTable("threads", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
+  masterChatId: text("master_chat_id"),
   title: text("title").notNull(),
   activeEngine: text("active_engine").notNull(),
   activeSessionId: text("active_session_id"),
@@ -25,6 +26,26 @@ export const threads = sqliteTable("threads", {
   updatedAt: text("updated_at").notNull(),
   // SQLite has no boolean: 0/1.
   archived: integer("archived").notNull().default(0),
+});
+
+export const masterChats = sqliteTable("master_chats", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  title: text("title").notNull(),
+  defaultEngine: text("default_engine"),
+  defaultModel: text("default_model"),
+  defaultEffort: text("default_effort"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  archived: integer("archived").notNull().default(0),
+});
+
+export const masterChatMessages = sqliteTable("master_chat_messages", {
+  id: text("id").primaryKey(),
+  masterChatId: text("master_chat_id").notNull(),
+  role: text("role").notNull(), // "user" | "assistant" | "system"
+  text: text("text").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 export const messages = sqliteTable("messages", {
@@ -68,6 +89,8 @@ export const events = sqliteTable("events", {
 
 export type ProjectRow = typeof projects.$inferSelect;
 export type ThreadRow = typeof threads.$inferSelect;
+export type MasterChatRow = typeof masterChats.$inferSelect;
+export type MasterChatMessageRow = typeof masterChatMessages.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;

@@ -38,10 +38,20 @@ function runMigrations(sqlite: Database.Database): void {
     if (applied.has(file)) continue;
     const sql = readFileSync(join(migrationsDir, file), "utf8");
     sqlite.transaction(() => {
+      if (file === "0001_master_chats.sql" && !hasColumn(sqlite, "threads", "master_chat_id")) {
+        sqlite.exec(`ALTER TABLE threads ADD COLUMN master_chat_id TEXT;`);
+      }
       sqlite.exec(sql);
       insert.run(file, new Date().toISOString());
     })();
   }
+}
+
+function hasColumn(sqlite: Database.Database, table: string, column: string): boolean {
+  return sqlite
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .some((row) => (row as { name: string }).name === column);
 }
 
 /**

@@ -93,6 +93,95 @@ async function waitForRun(threadId: string, expectedTurnDoneCount = 1): Promise<
 }
 
 describe("server chunk F", () => {
+  it("creates master chats, records control messages, and spawns linked agent threads", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const projectRes = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { label: "Demo", hostPath: repoDir },
+    });
+    const project = projectRes.json<{ id: string }>();
+
+    const masterRes = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/master-chats`,
+      payload: {
+        title: "Release control room",
+        defaultEngine: "codex",
+        defaultModel: "mock-model",
+        defaultEffort: "high",
+      },
+    });
+    expect(masterRes.statusCode).toBe(200);
+    const masterChat = masterRes.json<{ id: string; defaultEngine: string }>();
+    expect(masterChat.defaultEngine).toBe("codex");
+
+    const messageRes = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${masterChat.id}/messages`,
+      payload: { text: "Start an API agent." },
+    });
+    expect(messageRes.statusCode).toBe(200);
+
+    const threadRes = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/threads`,
+      payload: { title: "API agent", engine: "codex", masterChatId: masterChat.id },
+    });
+    expect(threadRes.statusCode).toBe(200);
+    const thread = threadRes.json<{ id: string; masterChatId: string }>();
+    expect(thread.masterChatId).toBe(masterChat.id);
+
+    const detailRes = await app.inject({
+      method: "GET",
+      url: `/api/master-chats/${masterChat.id}`,
+    });
+    expect(detailRes.statusCode).toBe(200);
+    expect(
+      detailRes.json<{
+        messages: { text: string }[];
+        threads: { id: string; masterChatId: string }[];
+      }>(),
+    ).toMatchObject({
+      messages: [{ text: "Start an API agent." }],
+      threads: [{ id: thread.id, masterChatId: masterChat.id }],
+    });
+
+    await app.close();
+  });
+
+  it("rejects linking an agent thread to another project's master chat", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const firstProjectRes = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { label: "One", hostPath: repoDir },
+    });
+    const secondProjectRes = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { label: "Two", hostPath: repoDir },
+    });
+    const firstProject = firstProjectRes.json<{ id: string }>();
+    const secondProject = secondProjectRes.json<{ id: string }>();
+    const masterRes = await app.inject({
+      method: "POST",
+      url: `/api/projects/${firstProject.id}/master-chats`,
+      payload: { title: "Project one control room" },
+    });
+    const masterChat = masterRes.json<{ id: string }>();
+
+    const threadRes = await app.inject({
+      method: "POST",
+      url: `/api/projects/${secondProject.id}/threads`,
+      payload: { title: "Wrong project", engine: "codex", masterChatId: masterChat.id },
+    });
+
+    expect(threadRes.statusCode).toBe(400);
+    expect(threadRes.json()).toEqual({ error: "master chat does not belong to project" });
+    await app.close();
+  });
+
   it("seeds first message, then continues with the captured session id", async () => {
     const { app, thread } = await createProjectAndThread();
     const first = await app.inject({
