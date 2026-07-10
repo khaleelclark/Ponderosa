@@ -219,6 +219,48 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("sends current master-chat context and teammate reply guidance on spawn and mention turns", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Release room" });
+    store.appendMasterChatMessage(master.id, { text: "Ship the API change." });
+    const thread = store.createThread(project.id, {
+      title: "Aspen",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "Ship the API change." },
+    });
+    await waitForRun(thread.id);
+
+    expect(adapter.seeds[0]?.prompt).toContain("already been acknowledged on your behalf");
+    expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
+    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
+
+    store.appendMasterChatMessage(master.id, { text: "@Aspen Is it tested?" });
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "@Aspen Is it tested?" },
+    });
+    await waitForRun(thread.id, 2);
+
+    expect(adapter.continues[0]?.prompt).toContain("Aspen: done");
+    expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).toContain("Do not repeat, recap, or answer with the whole conversation");
+    expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
+    expect(store.getMasterChatMessages(master.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ authorThreadId: thread.id, text: "Got it — I’m on it." }),
+      ]),
+    );
+    await app.close();
+  });
+
   it("rejects concurrent runs and cancel aborts the active run", async () => {
     adapter.mode = "hang";
     const { app, thread } = await createProjectAndThread();
