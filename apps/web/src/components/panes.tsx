@@ -1,5 +1,7 @@
 import ArticleIcon from "@mui/icons-material/Article";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import CheckIcon from "@mui/icons-material/Check";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import SendIcon from "@mui/icons-material/Send";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
@@ -25,7 +27,7 @@ import {
 } from "@mui/material";
 import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -75,6 +77,67 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
   element.scrollTop = element.scrollHeight;
 }
 
+export function codeBlockText(children: ReactNode): string {
+  if (typeof children === "string" || typeof children === "number") {
+    return String(children);
+  }
+  if (Array.isArray(children)) {
+    return children.map(codeBlockText).join("");
+  }
+  if (children && typeof children === "object" && "props" in children) {
+    return codeBlockText((children as { props: { children?: ReactNode } }).props.children);
+  }
+  return "";
+}
+
+function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const resetTimer = useRef<number>();
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current !== undefined) {
+        window.clearTimeout(resetTimer.current);
+      }
+    },
+    [],
+  );
+
+  async function copyCode(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(codeBlockText(children).replace(/\n$/, ""));
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
+    if (resetTimer.current !== undefined) {
+      window.clearTimeout(resetTimer.current);
+    }
+    resetTimer.current = window.setTimeout(() => setCopyState("idle"), 2000);
+  }
+
+  const label =
+    copyState === "copied" ? "Copied code" : copyState === "error" ? "Copy failed" : "Copy code";
+
+  return (
+    <Box sx={{ position: "relative", my: 1 }}>
+      <Tooltip title={label}>
+        <IconButton
+          aria-label={label}
+          size="small"
+          onClick={() => void copyCode()}
+          sx={{ position: "absolute", top: 6, right: 6, zIndex: 1, bgcolor: "background.paper" }}
+        >
+          {copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
+        </IconButton>
+      </Tooltip>
+      <Box component="pre" sx={{ m: 0, pr: 5 }}>
+        {children}
+      </Box>
+    </Box>
+  );
+}
+
 export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   return (
     <Box
@@ -92,13 +155,18 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
         "& blockquote": { my: 1, mx: 0, pl: 1.5, borderLeft: 3, borderColor: "divider" },
         "& code": { fontFamily: "monospace", fontSize: "0.875em" },
         "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
-        "& pre": { my: 1, p: 1.25, overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
+        "& pre": { p: 1.25, overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
         "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
         "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider" },
         "& a": { color: "inherit", textDecoration: "underline" },
       }}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{ pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock> }}
+      >
+        {children}
+      </ReactMarkdown>
     </Box>
   );
 }
