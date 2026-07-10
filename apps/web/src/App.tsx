@@ -436,23 +436,45 @@ function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
 
 function TasksPane({ tasks, timeline }: { tasks: TaskDto[]; timeline: ExecutionItem[] }): JSX.Element {
   return (
-    <Stack spacing={1.25} sx={{ p: 1.5, pb: 10 }}>
+    <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
+          Tasks
+        </Typography>
+        {tasks.length > 0 ? (
+          <Typography variant="caption" color="text.secondary">
+            {tasks.length}
+          </Typography>
+        ) : null}
+      </Stack>
       {tasks.length === 0 ? (
         <Alert severity="info">No execution tasks yet.</Alert>
       ) : (
-        tasks.map((task) => (
-          <Paper key={task.id} variant="outlined" sx={{ p: 1.25 }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-              <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0 }} noWrap>
-                {task.title}
+        // Its own scrollable window so a long task list never stretches the page.
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 1.25,
+            overflowY: "auto",
+            maxHeight: { xs: "32vh", md: "34vh" },
+            pr: 0.5,
+          }}
+        >
+          {tasks.map((task) => (
+            <Paper key={task.id} variant="outlined" sx={{ p: 1.25 }}>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0 }} noWrap>
+                  {task.title}
+                </Typography>
+                <Chip size="small" label={statusLabel(task.status)} color={statusColor(task.status)} />
+              </Stack>
+              <Typography variant="caption" color="text.secondary">
+                {task.engine} · {new Date(task.updatedAt).toLocaleTimeString()}
               </Typography>
-              <Chip size="small" label={statusLabel(task.status)} color={statusColor(task.status)} />
-            </Stack>
-            <Typography variant="caption" color="text.secondary">
-              {task.engine} · {new Date(task.updatedAt).toLocaleTimeString()}
-            </Typography>
-          </Paper>
-        ))
+            </Paper>
+          ))}
+        </Box>
       )}
       <Divider />
       <Typography variant="overline" color="text.secondary">
@@ -463,7 +485,21 @@ function TasksPane({ tasks, timeline }: { tasks: TaskDto[]; timeline: ExecutionI
           Commands, file changes, test results, and tool output will appear here.
         </Typography>
       ) : (
-        timeline.map((item) => <EventLine key={item.id} item={item} />)
+        // The timeline gets its own scrollable window too — it grows fastest during
+        // an active run, so bounding it is what keeps the Tasks pane compact.
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            overflowY: "auto",
+            maxHeight: { xs: "44vh", md: "48vh" },
+            pr: 0.5,
+          }}
+        >
+          {timeline.map((item) => (
+            <EventLine key={item.id} item={item} />
+          ))}
+        </Box>
       )}
     </Stack>
   );
