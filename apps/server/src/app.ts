@@ -299,6 +299,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return masterChat ?? reply.code(404).send({ error: "master chat not found" });
   });
 
+  app.delete<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
+    const deleted = store.deleteMasterChat(request.params.id);
+    return deleted ? reply.code(204).send() : reply.code(404).send({ error: "master chat not found" });
+  });
+
   app.post<{
     Params: { id: string };
     Body: { role?: "user" | "assistant" | "system"; text: string };

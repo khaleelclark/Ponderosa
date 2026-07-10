@@ -162,6 +162,7 @@ export function ProjectShell({
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={openNewAgentFromMaster}
         onArchived={() => navigate({ kind: "agents", projectId })}
+        onDeleted={() => navigate({ kind: "agents", projectId })}
       />
     );
   } else if (route.kind === "agent") {

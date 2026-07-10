@@ -46,6 +46,7 @@ export function MasterChatView({
   onOpenAgent,
   onNewAgent,
   onArchived,
+  onDeleted,
 }: {
   masterChatId: string;
   engines: EngineDto[];
@@ -53,12 +54,14 @@ export function MasterChatView({
   onOpenAgent(agentId: string): void;
   onNewAgent(master: MasterChatDto): void;
   onArchived(): void;
+  onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const detailQuery = useMasterChat(masterChatId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   // Mirror of the composer text so we can show a live @mention target + guard.
   // A message with no @mention spawns a new agent; @Handle routes to that agent.
@@ -170,6 +173,17 @@ export function MasterChatView({
     },
   });
 
+  const deleteMasterChat = useMutation({
+    mutationFn: () => api.deleteMasterChat(masterChatId),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: ["master-chat", masterChatId] });
+      void queryClient.invalidateQueries({ queryKey: ["master-chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["threads", masterChat?.projectId] });
+      setDeleteOpen(false);
+      onDeleted();
+    },
+  });
+
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteThread(agentId),
     onSuccess: (_data, agentId) => {
@@ -277,6 +291,11 @@ export function MasterChatView({
           <Tooltip title="Archive">
             <IconButton aria-label="Archive master chat" onClick={() => setArchiveOpen(true)}>
               <ArchiveOutlinedIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Delete">
+            <IconButton aria-label="Delete master chat" color="error" onClick={() => setDeleteOpen(true)}>
+              <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
           <Button
@@ -566,6 +585,32 @@ export function MasterChatView({
           </Button>
           <Button color="warning" variant="contained" disabled={archive.isPending} onClick={() => archive.mutate()}>
             Archive
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={deleteOpen}
+        onClose={() => {
+          if (!deleteMasterChat.isPending) setDeleteOpen(false);
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Delete master chat?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            This permanently deletes <Box component="strong">{masterChat.title}</Box> and its chat
+            history. Its agents are preserved in the Agents tab as unassigned agents. This cannot be undone.
+          </Typography>
+          {deleteMasterChat.isError ? (
+            <Alert severity="error" sx={{ mt: 1 }}>{String(deleteMasterChat.error)}</Alert>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteOpen(false)} disabled={deleteMasterChat.isPending}>Cancel</Button>
+          <Button color="error" variant="contained" disabled={deleteMasterChat.isPending} onClick={() => deleteMasterChat.mutate()}>
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

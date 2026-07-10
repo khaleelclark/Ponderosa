@@ -316,6 +316,16 @@ export const mockApi: PonderosaApi = {
     Object.assign(master, patch, { updatedAt: new Date().toISOString() });
     return delay(master);
   },
+  deleteMasterChat(masterChatId) {
+    const index = masterChats.findIndex((candidate) => candidate.id === masterChatId);
+    if (index === -1) return Promise.reject(new Error("Master chat not found"));
+    masterChats.splice(index, 1);
+    delete masterMessages[masterChatId];
+    for (const thread of threads) {
+      if (thread.masterChatId === masterChatId) thread.masterChatId = undefined;
+    }
+    return delay(undefined, 80);
+  },
   async sendMasterChatMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
     masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: request.text, createdAt: new Date().toISOString() }];

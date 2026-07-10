@@ -299,6 +299,25 @@ export class ThreadStore {
     return this.getMasterChat(id);
   }
 
+  /** Permanently remove a master chat while preserving its agents as unassigned threads. */
+  deleteMasterChat(id: string): boolean {
+    const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
+    if (!row) return false;
+    const linkedThreads = this.db.select().from(threads).where(eq(threads.masterChatId, id)).all();
+    this.db.transaction((tx) => {
+      tx.update(threads).set({ masterChatId: null }).where(eq(threads.masterChatId, id)).run();
+      tx.delete(masterChatMessages).where(eq(masterChatMessages.masterChatId, id)).run();
+      tx.delete(masterChats).where(eq(masterChats.id, id)).run();
+    });
+    for (const thread of linkedThreads) {
+      const path = threadJsonPath(this.dataDir, thread.projectId, thread.id);
+      const json = readJson<ThreadJson>(path);
+      writeJson(path, { ...json, masterChatId: undefined });
+    }
+    rmSync(masterChatDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+    return true;
+  }
+
   appendMasterChatMessage(
     masterChatId: string,
     input: CreateMasterChatMessageRequest,
