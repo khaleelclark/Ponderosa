@@ -1,10 +1,16 @@
 import AddIcon from "@mui/icons-material/Add";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -12,11 +18,14 @@ import {
   Stack,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { MasterChatDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { api } from "../api";
 import {
   agentActivity,
   agentStatusColor,
@@ -42,8 +51,20 @@ export function AgentsTab({
   onOpenAgent(agentId: string): void;
   onNewAgent(): void;
 }): JSX.Element {
+  const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [masterFilter, setMasterFilter] = useState<string>("all");
+  const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
+
+  const deleteAgent = useMutation({
+    mutationFn: (agentId: string) => api.deleteThread(agentId),
+    onSuccess: (_data, agentId) => {
+      queryClient.removeQueries({ queryKey: ["thread", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
+      setPendingDelete(undefined);
+    },
+  });
 
   const masterName = (id: string | undefined): string =>
     id ? (masterChats.find((master) => master.id === id)?.title ?? "Unknown master chat") : "Unassigned";
@@ -138,6 +159,18 @@ export function AgentsTab({
                       {agent.title}
                     </Typography>
                     <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
+                    <Tooltip title="Delete agent">
+                      <IconButton
+                        size="small"
+                        aria-label={`Delete agent ${agent.title}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setPendingDelete(agent);
+                        }}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                   </Stack>
                   <Stack
                     direction="row"
@@ -173,6 +206,38 @@ export function AgentsTab({
           </Stack>
         )}
       </Box>
+
+      <Dialog
+        open={Boolean(pendingDelete)}
+        onClose={() => {
+          if (!deleteAgent.isPending) setPendingDelete(undefined);
+        }}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Delete agent?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
+            its event log, tasks, and artifacts. Any in-flight run is stopped. This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setPendingDelete(undefined)} disabled={deleteAgent.isPending}>
+            Cancel
+          </Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={deleteAgent.isPending}
+            onClick={() => {
+              if (pendingDelete) deleteAgent.mutate(pendingDelete.id);
+            }}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
