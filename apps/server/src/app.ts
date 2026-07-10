@@ -303,7 +303,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string };
+    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string; initialMessage?: string };
   }>(
     "/api/projects/:id/threads",
     async (request, reply) => {
@@ -318,7 +318,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return reply.code(400).send({ error: "master chat does not belong to project" });
         }
       }
-      return store.createThread(request.params.id, request.body);
+      const initialMessage = request.body.initialMessage?.trim();
+      const thread = store.createThread(request.params.id, request.body);
+      if (initialMessage) {
+        if (thread.masterChatId) {
+          store.appendMasterChatMessage(thread.masterChatId, { text: initialMessage });
+        }
+        const turn = await app.inject({
+          method: "POST",
+          url: `/api/threads/${thread.id}/messages`,
+          headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
+          payload: { text: initialMessage, model: request.body.model, effort: request.body.effort },
+        });
+        if (turn.statusCode >= 400) {
+          store.deleteThread(thread.id);
+          return reply.code(turn.statusCode).send(turn.json());
+        }
+      }
+      return thread;
     },
   );
 

@@ -262,6 +262,33 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("starts a new master-chat agent with its initial message in the creation request", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Release room" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/threads`,
+      payload: {
+        title: "Acadia",
+        engine: "codex",
+        masterChatId: master.id,
+        initialMessage: "Check the first-run path.",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const thread = response.json<{ id: string }>();
+    await waitForRun(thread.id);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
+    expect(store.getMasterChatMessages(master.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "user", text: "Check the first-run path." })]),
+    );
+    await app.close();
+  });
+
   it("rejects concurrent runs and cancel aborts the active run", async () => {
     adapter.mode = "hang";
     const { app, thread } = await createProjectAndThread();

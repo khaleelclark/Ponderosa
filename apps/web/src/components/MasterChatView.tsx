@@ -118,14 +118,13 @@ export function MasterChatView({
       }
       // Record the message in the shared pool, spawn a park-named agent on the
       // selected engine, and hand it the message as its first turn.
-      await api.sendMasterChatMessage(masterChatId, { text });
       const agent = await api.createAgent(masterChat.projectId, masterChatId, {
         title: pickAgentName((detailQuery.data?.threads ?? []).map((thread) => thread.title)),
         engine,
         model: model || undefined,
         effort: effort || undefined,
+        initialMessage: text,
       });
-      await api.sendMessage(agent.id, { text, model: model || undefined, effort: effort || undefined });
       return agent;
     },
     onSuccess: invalidate,

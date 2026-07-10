@@ -113,6 +113,8 @@ export interface CreateThreadRequest {
   masterChatId?: string;
   model?: string;
   effort?: string;
+  /** Optional first turn, dispatched atomically with thread creation. */
+  initialMessage?: string;
 }
 
 /** PATCH /api/threads/:id body (rename / archive). */

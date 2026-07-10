@@ -23,6 +23,8 @@ export interface CreateAgentOptions {
   engine: string;
   model?: string;
   effort?: string;
+  /** Starts the first turn as part of creation, avoiding a stranded idle agent. */
+  initialMessage?: string;
 }
 
 export interface StreamSubscription {
