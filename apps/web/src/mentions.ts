@@ -8,11 +8,21 @@ export function agentMentionHandle(title: string): string {
     .replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
-/** Resolve the first @mention against the agents currently in a master chat. */
-export function findMentionedAgent(text: string, threads: ThreadDto[]): ThreadDto | undefined {
-  const match = /(?:^|\s)@([\p{L}\p{N}_-]+)/u.exec(text);
-  if (!match) return undefined;
+/** Resolve every distinct @mention against the agents currently in a master chat. */
+export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
+  const byHandle = new Map(
+    threads.map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread]),
+  );
+  const mentioned = new Map<string, ThreadDto>();
 
-  const handle = match[1]!.toLocaleLowerCase();
-  return threads.find((thread) => agentMentionHandle(thread.title).toLocaleLowerCase() === handle);
+  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu)) {
+    const thread = byHandle.get(match[1]!.toLocaleLowerCase());
+    if (thread) mentioned.set(thread.id, thread);
+  }
+
+  return [...mentioned.values()];
+}
+
+export function findMentionedAgent(text: string, threads: ThreadDto[]): ThreadDto | undefined {
+  return findMentionedAgents(text, threads)[0];
 }
