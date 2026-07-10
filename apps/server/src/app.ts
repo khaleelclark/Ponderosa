@@ -65,6 +65,13 @@ function contentTypeForStatic(file: string): string {
   return "application/octet-stream";
 }
 
+function cacheControlForStatic(file: string): string {
+  const base = path.basename(file);
+  if (base === "index.html" || base === "sw.js" || base === "register-sw.js" || base === "manifest.webmanifest") return "no-cache";
+  if (file.includes(`${path.sep}static${path.sep}`)) return "public, max-age=31536000, immutable";
+  return "public, max-age=3600";
+}
+
 function contentTypeForArtifact(file: string): ArtifactContentDto["contentType"] {
   if (file.endsWith(".md")) return "markdown";
   if (file.endsWith(".patch") || file.endsWith(".diff")) return "diff";
@@ -493,7 +500,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const targetExists = await pathExists(target);
         const file = targetExists ? target : path.join(root, "index.html");
         if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
-        return reply.type(contentTypeForStatic(file)).send(await fs.readFile(file));
+        return reply
+          .header("Cache-Control", cacheControlForStatic(file))
+          .type(contentTypeForStatic(file))
+          .send(await fs.readFile(file));
       } catch {
         return reply.code(404).send();
       }
