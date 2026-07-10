@@ -9,6 +9,9 @@
 // the `-c` config overrides. The `Adapter` interface hides the choice entirely.
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import type {
   Adapter,
   AgentEvent,
@@ -36,12 +39,56 @@ export interface CodexAdapterOptions {
   sandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
   /** ms to wait after SIGTERM before SIGKILL on cancel. Default 3000. */
   killGraceMs?: number;
+  /** Override the CLI model cache path. Primarily useful for tests. */
+  modelsCachePath?: string;
 }
 
 // Model availability differs by Codex version, account type, and subscription.
-// An empty id deliberately means "let the authenticated CLI choose"; hardcoded
-// model ids become stale and can be rejected for ChatGPT-backed accounts.
+// The authenticated CLI maintains this cache from its model-list response, so it
+// is a better source than a hardcoded catalog. Keep the default option as a safe
+// fallback when Codex has not populated the cache yet.
 const DEFAULT_MODELS: ModelOption[] = [{ id: "", label: "Codex default" }];
+
+interface CodexCachedModel {
+  slug?: unknown;
+  display_name?: unknown;
+  visibility?: unknown;
+}
+
+interface CodexModelsCache {
+  models?: unknown;
+}
+
+export function readCodexModels(cachePath: string): ModelOption[] {
+  try {
+    const cache = JSON.parse(readFileSync(cachePath, "utf8")) as CodexModelsCache;
+    if (!Array.isArray(cache.models)) return DEFAULT_MODELS;
+
+    const seen = new Set<string>();
+    const models = (cache.models as CodexCachedModel[]).flatMap((model) => {
+      if (
+        model.visibility !== "list" ||
+        typeof model.slug !== "string" ||
+        model.slug.trim() === "" ||
+        seen.has(model.slug)
+      ) {
+        return [];
+      }
+      seen.add(model.slug);
+      return [{
+        id: model.slug,
+        label:
+          typeof model.display_name === "string" && model.display_name.trim() !== ""
+            ? model.display_name
+            : model.slug,
+      }];
+    });
+
+    return models.length > 0 ? [...DEFAULT_MODELS, ...models] : DEFAULT_MODELS;
+  } catch {
+    return DEFAULT_MODELS;
+  }
+}
 
 const DEFAULT_EFFORTS: EffortOption[] = [
   { id: "minimal", label: "Minimal" },
@@ -73,6 +120,7 @@ export class CodexAdapter implements Adapter {
   private readonly spawnFn: SpawnFn;
   private readonly sandboxMode: string;
   private readonly killGraceMs: number;
+  private readonly modelsCachePath: string;
 
   constructor(opts: CodexAdapterOptions = {}) {
     this.bin = opts.bin ?? "codex";
@@ -80,10 +128,12 @@ export class CodexAdapter implements Adapter {
     this.sandboxMode =
       opts.sandboxMode ?? process.env.PONDEROSA_CODEX_SANDBOX ?? "workspace-write";
     this.killGraceMs = opts.killGraceMs ?? 3000;
+    const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
+    this.modelsCachePath = opts.modelsCachePath ?? path.join(codexHome, "models_cache.json");
   }
 
   listModels(): ModelOption[] {
-    return DEFAULT_MODELS;
+    return readCodexModels(this.modelsCachePath);
   }
 
   listEfforts(): EffortOption[] {
