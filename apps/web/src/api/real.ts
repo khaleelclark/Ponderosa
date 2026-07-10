@@ -99,6 +99,7 @@ export const realApi: PonderosaApi = {
       masterChatId,
       model: options.model,
       effort: options.effort,
+      initialMessage: options.initialMessage,
     });
   },
   updateThread(threadId, patch) {

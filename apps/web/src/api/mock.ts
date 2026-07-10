@@ -343,14 +343,23 @@ export const mockApi: PonderosaApi = {
     threadSeq.set(thread.id, 0);
     return delay(thread);
   },
-  createAgent(projectId, masterChatId, options) {
-    return this.createThread(projectId, {
+  async createAgent(projectId, masterChatId, options) {
+    const thread = await this.createThread(projectId, {
       title: options.title,
       engine: options.engine as ThreadDto["activeEngine"],
       masterChatId,
       model: options.model,
       effort: options.effort,
     });
+    if (options.initialMessage) {
+      if (masterChatId) await this.sendMasterChatMessage(masterChatId, { text: options.initialMessage });
+      await this.sendMessage(thread.id, {
+        text: options.initialMessage,
+        model: options.model,
+        effort: options.effort,
+      });
+    }
+    return thread;
   },
   updateThread(threadId, patch) {
     const thread = threads.find((candidate) => candidate.id === threadId);
