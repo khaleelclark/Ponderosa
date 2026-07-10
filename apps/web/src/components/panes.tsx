@@ -75,6 +75,34 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
   element.scrollTop = element.scrollHeight;
 }
 
+export function ChatMarkdown({ children }: { children: string }): JSX.Element {
+  return (
+    <Box
+      sx={{
+        overflowWrap: "anywhere",
+        "& > :first-of-type": { mt: 0 },
+        "& > :last-child": { mb: 0 },
+        "& p": { my: 0.75 },
+        "& h1, & h2, & h3, & h4": { mt: 1.5, mb: 0.75, lineHeight: 1.25 },
+        "& h1": { fontSize: "1.35rem" },
+        "& h2": { fontSize: "1.2rem" },
+        "& h3, & h4": { fontSize: "1.05rem" },
+        "& ul, & ol": { my: 0.75, pl: 3 },
+        "& li + li": { mt: 0.25 },
+        "& blockquote": { my: 1, mx: 0, pl: 1.5, borderLeft: 3, borderColor: "divider" },
+        "& code": { fontFamily: "monospace", fontSize: "0.875em" },
+        "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
+        "& pre": { my: 1, p: 1.25, overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
+        "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
+        "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider" },
+        "& a": { color: "inherit", textDecoration: "underline" },
+      }}
+    >
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+    </Box>
+  );
+}
+
 export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -114,9 +142,7 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
             boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
           }}
         >
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-            {message.text}
-          </Typography>
+          <ChatMarkdown>{message.text}</ChatMarkdown>
         </Box>
       ))}
     </Stack>

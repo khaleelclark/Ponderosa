@@ -37,7 +37,7 @@ import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } fr
 import { pickAgentName } from "../parkNames";
 import { useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
-import { Composer, scrollChatToBottom } from "./panes";
+import { ChatMarkdown, Composer, scrollChatToBottom } from "./panes";
 
 export function MasterChatView({
   masterChatId,
@@ -431,9 +431,7 @@ export function MasterChatView({
                       borderColor: "divider",
                     }}
                   >
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                      {message.text}
-                    </Typography>
+                    <ChatMarkdown>{message.text}</ChatMarkdown>
                   </Box>
                 </Box>
               );
