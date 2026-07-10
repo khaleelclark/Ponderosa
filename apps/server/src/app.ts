@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -39,6 +39,7 @@ interface ActiveRun {
 type Subscriber = (stored: StoredLogEvent) => void;
 
 const MAX_PENDING_MENTION_TURNS = 50;
+const MAX_AGENT_MENTION_RELAYS = 12;
 
 function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
   return event.type !== "user_message";
@@ -58,6 +59,16 @@ function summarizeFinalMessage(text: string): string | undefined {
 
 function agentMentionHandle(title: string): string {
   return title.trim().replace(/\s+/g, "-");
+}
+
+function mentionRelayFingerprint(authorThreadId: string, targetThreadId: string, text: string): string {
+  return createHash("sha256")
+    .update(authorThreadId)
+    .update("\0")
+    .update(targetThreadId)
+    .update("\0")
+    .update(text.trim().replace(/\s+/g, " ").toLocaleLowerCase())
+    .digest("hex");
 }
 
 function mentionedAgentThreads(text: string, threads: ThreadDto[], authorThreadId: string): ThreadDto[] {
@@ -205,15 +216,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
-  const pendingMentionTurns = new Map<string, Array<{ text: string; agentMentionDepth: number }>>();
+  const pendingMentionTurns = new Map<
+    string,
+    Array<{ text: string; agentMentionDepth: number; agentMentionTrail: string[] }>
+  >();
   const subscribers = new Map<string, Set<Subscriber>>();
 
   const app = Fastify({ logger: opts.logger ?? true });
 
-  function queueMentionTurn(threadId: string, text: string, agentMentionDepth: number): boolean {
+  function queueMentionTurn(
+    threadId: string,
+    text: string,
+    agentMentionDepth: number,
+    agentMentionTrail: string[],
+  ): boolean {
     const pending = pendingMentionTurns.get(threadId) ?? [];
     if (pending.length >= MAX_PENDING_MENTION_TURNS) return false;
-    pending.push({ text, agentMentionDepth });
+    pending.push({ text, agentMentionDepth, agentMentionTrail });
     pendingMentionTurns.set(threadId, pending);
     return true;
   }
@@ -428,7 +447,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; model?: string; effort?: string; agentMentionDepth?: number };
+    Body: {
+      text: string;
+      model?: string;
+      effort?: string;
+      agentMentionDepth?: number;
+      agentMentionTrail?: string[];
+    };
   }>(
     "/api/threads/:id/messages",
     async (request, reply) => {
@@ -444,9 +469,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&
-        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > 4)
+        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > MAX_AGENT_MENTION_RELAYS)
       ) {
-        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 4" });
+        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 12" });
+      }
+      const mentionTrail = request.body.agentMentionTrail ?? [];
+      if (
+        !Array.isArray(mentionTrail) ||
+        mentionTrail.length > MAX_AGENT_MENTION_RELAYS ||
+        mentionTrail.some((fingerprint) => !/^[a-f0-9]{64}$/.test(fingerprint)) ||
+        mentionTrail.length !== (mentionDepth ?? 0)
+      ) {
+        return reply.code(400).send({
+          error: "agentMentionTrail must contain one relay fingerprint for each agentMentionDepth step",
+        });
       }
 
       const history: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
@@ -535,15 +571,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // Agent-authored mentions are real collaboration requests, not just
               // display text. Relay them server-side because no browser submit
               // handler runs when an agent posts its final report-back. Bound the
-              // relay depth so agents cannot accidentally create an endless loop.
+              // a bounded fingerprint trail so exact repeated handoffs stop as
+              // cycles, while legitimate multi-step reviews can exceed four turns.
               const relayDepth = request.body.agentMentionDepth ?? 0;
-              if (!runError && relayDepth < 4) {
+              if (!runError) {
                 const detail = store.getMasterChatDetail(thread.masterChatId);
                 const targets = detail
                   ? mentionedAgentThreads(statusText, detail.threads, thread.id)
                   : [];
                 for (const target of targets) {
-                  if (queueMentionTurn(target.id, statusText, relayDepth + 1)) {
+                  const fingerprint = mentionRelayFingerprint(thread.id, target.id, statusText);
+                  const blockedReason = mentionTrail.includes(fingerprint)
+                    ? "the same handoff already occurred in this collaboration chain"
+                    : relayDepth >= MAX_AGENT_MENTION_RELAYS
+                      ? "the collaboration reached its 12-handoff safety limit"
+                      : undefined;
+                  if (blockedReason) {
+                    store.appendMasterChatMessage(thread.masterChatId, {
+                      role: "assistant",
+                      text: `⚠️ @${agentMentionHandle(target.title)} was not notified because ${blockedReason}. Please ask the manager to continue the conversation.`,
+                    });
+                  } else if (
+                    queueMentionTurn(target.id, statusText, relayDepth + 1, [...mentionTrail, fingerprint])
+                  ) {
                     void dispatchNextMentionTurn(target.id);
                   } else {
                     // Never fail silently: the bounded queue protects server
