@@ -1,0 +1,126 @@
+import AddIcon from "@mui/icons-material/Add";
+import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import GroupWorkIcon from "@mui/icons-material/GroupWork";
+import {
+  Badge,
+  Box,
+  Chip,
+  IconButton,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
+  Stack,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import type { MasterChatDto, ThreadDto } from "@ponderosa/core";
+import type { AgentStatus } from "../agents";
+
+export interface SidebarSelection {
+  masterChatId?: string;
+  agentsActive: boolean;
+}
+
+/**
+ * Project navigation: a "Master Chats" section plus a single "Agents" item.
+ * Master chats show a running dot when any of their agents is live; the Agents
+ * item shows the total agent count and a running count.
+ */
+export function Sidebar({
+  masterChats,
+  agents,
+  statusByAgentId,
+  selection,
+  onSelectMasterChat,
+  onSelectAgents,
+  onCreateMasterChat,
+}: {
+  masterChats: MasterChatDto[];
+  agents: ThreadDto[];
+  statusByAgentId: Map<string, AgentStatus>;
+  selection: SidebarSelection;
+  onSelectMasterChat(masterChatId: string): void;
+  onSelectAgents(): void;
+  onCreateMasterChat(): void;
+}): JSX.Element {
+  const runningAgentIds = new Set(
+    agents.filter((agent) => statusByAgentId.get(agent.id) === "running").map((agent) => agent.id),
+  );
+  const runningCount = runningAgentIds.size;
+
+  const masterHasRunning = (masterChatId: string): boolean =>
+    agents.some((agent) => agent.masterChatId === masterChatId && runningAgentIds.has(agent.id));
+
+  return (
+    <Box sx={{ minWidth: 0, py: 0.5 }}>
+      <Stack direction="row" sx={{ alignItems: "center", px: 1, py: 0.5 }}>
+        <Typography variant="overline" color="text.secondary" sx={{ flex: 1, px: 1 }}>
+          Master Chats
+        </Typography>
+        <Tooltip title="New master chat">
+          <IconButton size="small" onClick={onCreateMasterChat} aria-label="New master chat">
+            <AddIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+      <List dense disablePadding>
+        {masterChats.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" sx={{ px: 2, py: 0.5 }}>
+            No master chats yet.
+          </Typography>
+        ) : null}
+        {masterChats.map((master) => {
+          const count = agents.filter((agent) => agent.masterChatId === master.id).length;
+          return (
+            <ListItem key={master.id} disablePadding sx={{ mb: 0.5 }}>
+              <ListItemButton
+                selected={selection.masterChatId === master.id}
+                onClick={() => onSelectMasterChat(master.id)}
+                sx={{ borderRadius: 1, mx: 1 }}
+              >
+                <ChatBubbleOutlineIcon
+                  fontSize="small"
+                  color={masterHasRunning(master.id) ? "info" : "action"}
+                  sx={{ mr: 1 }}
+                />
+                <ListItemText
+                  primary={master.title}
+                  secondary={count > 0 ? `${count} agent${count === 1 ? "" : "s"}` : "No agents"}
+                  primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
+                  secondaryTypographyProps={{ noWrap: true }}
+                />
+                {masterHasRunning(master.id) ? (
+                  <Box
+                    sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "info.main", ml: 1 }}
+                  />
+                ) : null}
+              </ListItemButton>
+            </ListItem>
+          );
+        })}
+      </List>
+
+      <List dense disablePadding sx={{ mt: 1 }}>
+        <ListItem disablePadding>
+          <ListItemButton
+            selected={selection.agentsActive}
+            onClick={onSelectAgents}
+            sx={{ borderRadius: 1, mx: 1 }}
+          >
+            <GroupWorkIcon fontSize="small" sx={{ mr: 1 }} />
+            <ListItemText
+              primary="Agents"
+              primaryTypographyProps={{ fontWeight: 700 }}
+              secondary={runningCount > 0 ? `${runningCount} running` : undefined}
+            />
+            <Badge badgeContent={agents.length} color="default" showZero sx={{ mr: 1 }}>
+              <Box sx={{ width: 8 }} />
+            </Badge>
+            {runningCount > 0 ? <Chip size="small" color="info" label={runningCount} /> : null}
+          </ListItemButton>
+        </ListItem>
+      </List>
+    </Box>
+  );
+}

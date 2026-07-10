@@ -3,6 +3,8 @@ import type {
   ArtifactContentDto,
   ArtifactDto,
   EngineDto,
+  MasterChatDto,
+  MasterChatMessageDto,
   MessageDto,
   ProjectDto,
   SendMessageRequest,
@@ -32,10 +34,21 @@ const projects: ProjectDto[] = [
   },
 ];
 
+const masterChats: MasterChatDto[] = [
+  { id: "master-release", projectId: "ponderosa", title: "Release coordination", createdAt: now, updatedAt: now, archived: false },
+  { id: "master-mobile", projectId: "mobile", title: "Mobile quality", createdAt: now, updatedAt: now, archived: false },
+];
+
+const masterMessages: Record<string, MasterChatMessageDto[]> = {
+  "master-release": [{ id: "master-note-1", masterChatId: "master-release", role: "user", text: "Keep this release stable and split work into focused agents.", createdAt: now }],
+  "master-mobile": [],
+};
+
 const threads: ThreadDto[] = [
   {
     id: "thread-auth",
     projectId: "ponderosa",
+    masterChatId: "master-release",
     title: "Chunk G web PWA",
     activeEngine: "codex",
     state: { branch: "feature/web-pwa", commit: "local" },
@@ -283,6 +296,31 @@ export const mockApi: PonderosaApi = {
     projects.push(project);
     return delay(project);
   },
+  listMasterChats(projectId) {
+    return delay(masterChats.filter((master) => master.projectId === projectId && !master.archived));
+  },
+  createMasterChat(projectId, request) {
+    const master: MasterChatDto = { id: "master-" + Date.now(), projectId, title: request.title, defaultEngine: request.defaultEngine, defaultModel: request.defaultModel, defaultEffort: request.defaultEffort, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archived: false };
+    masterChats.push(master);
+    masterMessages[master.id] = [];
+    return delay(master);
+  },
+  getMasterChat(masterChatId) {
+    const masterChat = masterChats.find((master) => master.id === masterChatId);
+    if (!masterChat) return Promise.reject(new Error("Master chat not found"));
+    return delay({ masterChat, messages: masterMessages[masterChatId] ?? [], threads: threads.filter((thread) => thread.masterChatId === masterChatId) });
+  },
+  updateMasterChat(masterChatId, patch) {
+    const master = masterChats.find((candidate) => candidate.id === masterChatId);
+    if (!master) return Promise.reject(new Error("Master chat not found"));
+    Object.assign(master, patch, { updatedAt: new Date().toISOString() });
+    return delay(master);
+  },
+  async sendMasterChatMessage(masterChatId, request) {
+    if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: request.text, createdAt: new Date().toISOString() }];
+    await delay(undefined, 80);
+  },
   listThreads(projectId) {
     return delay(threads.filter((thread) => thread.projectId === projectId && !thread.archived));
   },
@@ -290,6 +328,7 @@ export const mockApi: PonderosaApi = {
     const thread: ThreadDto = {
       id: `thread-${Date.now()}`,
       projectId,
+      masterChatId: request.masterChatId,
       title: request.title,
       activeEngine: request.engine,
       state: {},
@@ -302,6 +341,23 @@ export const mockApi: PonderosaApi = {
     tasks[thread.id] = [];
     artifacts[thread.id] = [];
     threadSeq.set(thread.id, 0);
+    return delay(thread);
+  },
+  createAgent(projectId, masterChatId, options) {
+    return this.createThread(projectId, {
+      title: options.title,
+      engine: options.engine as ThreadDto["activeEngine"],
+      masterChatId,
+      model: options.model,
+      effort: options.effort,
+    });
+  },
+  updateThread(threadId, patch) {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (!thread) return Promise.reject(new Error("Thread not found"));
+    if (patch.title !== undefined) thread.title = patch.title;
+    if (patch.archived !== undefined) thread.archived = patch.archived;
+    thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
   deleteThread(threadId) {
