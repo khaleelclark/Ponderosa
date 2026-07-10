@@ -54,6 +54,22 @@ function summarizeFinalMessage(text: string): string | undefined {
   return trimmed.length <= cap ? trimmed : `…${trimmed.slice(-cap)}`;
 }
 
+function agentMentionHandle(title: string): string {
+  return title.trim().replace(/\s+/g, "-");
+}
+
+function mentionedAgentThreads(text: string, threads: ThreadDto[], authorThreadId: string): ThreadDto[] {
+  const byHandle = new Map(
+    threads.map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread]),
+  );
+  const mentioned = new Map<string, ThreadDto>();
+  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu)) {
+    const thread = byHandle.get(match[1]!.toLocaleLowerCase());
+    if (thread && thread.id !== authorThreadId) mentioned.set(thread.id, thread);
+  }
+  return [...mentioned.values()];
+}
+
 /**
  * Give a master-chat agent the shared room context and a lightweight teammate
  * response contract. This is intentionally part of the next user prompt (rather
@@ -373,7 +389,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     reply.code(501).send({ error: "search is a v2 endpoint" }),
   );
 
-  app.post<{ Params: { id: string }; Body: { text: string; model?: string; effort?: string } }>(
+  app.post<{
+    Params: { id: string };
+    Body: { text: string; model?: string; effort?: string; agentMentionDepth?: number };
+  }>(
     "/api/threads/:id/messages",
     async (request, reply) => {
       const thread = store.getThread(request.params.id);
@@ -468,6 +487,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 { role: "assistant", text: statusText },
                 thread.id,
               );
+
+              // Agent-authored mentions are real collaboration requests, not just
+              // display text. Relay them server-side because no browser submit
+              // handler runs when an agent posts its final report-back. Bound the
+              // relay depth so agents cannot accidentally create an endless loop.
+              const mentionDepth = request.body.agentMentionDepth ?? 0;
+              if (!runError && mentionDepth < 4) {
+                const detail = store.getMasterChatDetail(thread.masterChatId);
+                const targets = detail
+                  ? mentionedAgentThreads(statusText, detail.threads, thread.id)
+                  : [];
+                for (const target of targets) {
+                  if (activeRuns.has(target.id)) continue;
+                  void app.inject({
+                    method: "POST",
+                    url: `/api/threads/${target.id}/messages`,
+                    headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
+                    payload: { text: statusText, agentMentionDepth: mentionDepth + 1 },
+                  });
+                }
+              }
             } catch {
               // Master chat may have been deleted mid-run; ignore.
             }
