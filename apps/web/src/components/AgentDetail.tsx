@@ -30,7 +30,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDto } from "@ponderosa/core";
+import type { EngineDto, MasterChatDetailDto, MasterChatDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -107,7 +107,21 @@ export function AgentDetail({
 
   const rename = useMutation({
     mutationFn: (title: string) => api.updateThread(agentId, { title }),
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
+        current ? { ...current, thread: updated } : current,
+      );
+      queryClient.setQueriesData<ThreadDto[]>({ queryKey: ["threads"] }, (current) =>
+        current?.map((thread) => (thread.id === updated.id ? updated : thread)),
+      );
+      queryClient.setQueriesData<MasterChatDetailDto>({ queryKey: ["master-chat"] }, (current) =>
+        current
+          ? {
+              ...current,
+              threads: current.threads.map((thread) => (thread.id === updated.id ? updated : thread)),
+            }
+          : current,
+      );
       void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
       void queryClient.invalidateQueries({ queryKey: ["threads"] });
       void queryClient.invalidateQueries({ queryKey: ["master-chat"] });

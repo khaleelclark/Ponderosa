@@ -466,7 +466,7 @@ export function Composer({
   };
 
   // The `@partial` token immediately left of the caret, if any.
-  const mentionMatch = /(?:^|\s)@(\w*)$/.exec(text.slice(0, caret));
+  const mentionMatch = /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
   const suggestions =
     mentionMatch && mentionHandles && mentionHandles.length > 0
       ? mentionHandles

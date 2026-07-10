@@ -36,6 +36,7 @@ import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useMasterChat } from "../hooks/queries";
+import { agentMentionHandle, findMentionedAgent } from "../mentions";
 import { Composer } from "./panes";
 
 export function MasterChatView({
@@ -191,21 +192,10 @@ export function MasterChatView({
   const efforts = activeEngine?.efforts ?? [];
   const engineReady = Boolean(activeEngine?.authenticated);
 
-  const agentHandle = (title: string): string => title.trim().split(/\s+/)[0] ?? title;
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
-  const mentionHandles = threads.map((thread) => agentHandle(thread.title));
-
-  // Resolve the first @mention in a message to an agent in this chat.
-  const findMentioned = (text: string): ThreadDto | undefined => {
-    const match = /(?:^|\s)@(\w+)/.exec(text);
-    if (!match) return undefined;
-    const handle = match[1]!.toLowerCase();
-    return threads.find(
-      (thread) =>
-        thread.title.toLowerCase() === handle || agentHandle(thread.title).toLowerCase() === handle,
-    );
-  };
+  const mentionHandles = threads.map((thread) => agentMentionHandle(thread.title));
+  const findMentioned = (text: string): ThreadDto | undefined => findMentionedAgent(text, threads);
 
   // Live target derived from what's currently typed (for the hint + guard).
   const mentioned = findMentioned(composerText);
@@ -463,12 +453,12 @@ export function MasterChatView({
             {mentioned ? (
               mentionedRunning ? (
                 <Typography variant="caption" color="warning.main">
-                  @{agentHandle(mentioned.title)} is busy — replying to a running agent needs steering
+                  @{agentMentionHandle(mentioned.title)} is busy — replying to a running agent needs steering
                   (coming soon). Wait for it to finish, or send without a mention to spawn a new agent.
                 </Typography>
               ) : (
                 <Typography variant="caption" color="text.secondary">
-                  Replying to <Box component="strong">@{agentHandle(mentioned.title)}</Box>
+                  Replying to <Box component="strong">@{agentMentionHandle(mentioned.title)}</Box>
                 </Typography>
               )
             ) : (
@@ -486,8 +476,8 @@ export function MasterChatView({
           placeholder={
             mentioned
               ? mentionedRunning
-                ? `@${agentHandle(mentioned.title)} is busy`
-                : `Reply to @${agentHandle(mentioned.title)}`
+                ? `@${agentMentionHandle(mentioned.title)} is busy`
+                : `Reply to @${agentMentionHandle(mentioned.title)}`
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
                 : "Select a signed-in engine to spawn agents"
