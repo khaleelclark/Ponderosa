@@ -42,6 +42,14 @@ export function taskStatusLabel(status: TaskDto["status"]): string {
   return status[0] ? `${status[0].toUpperCase()}${status.slice(1)}` : status;
 }
 
+export function shouldSendComposerKey(event: {
+  key: string;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): boolean {
+  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
+}
+
 export function taskStatusColor(status: TaskDto["status"]): "success" | "warning" | "info" {
   if (status === "done") {
     return "success";
@@ -669,7 +677,11 @@ export function Composer({
                 setSuppressMenu(true);
                 return;
               }
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && canSend) {
+              if (shouldSendComposerKey({
+                key: event.key,
+                shiftKey: event.shiftKey,
+                isComposing: event.nativeEvent.isComposing,
+              }) && canSend) {
                 event.preventDefault();
                 send();
               }
