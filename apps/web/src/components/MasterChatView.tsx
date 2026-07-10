@@ -31,7 +31,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
@@ -67,6 +67,7 @@ export function MasterChatView({
   // Mirror of the composer text so we can show a live @mention target + guard.
   // A message with no @mention spawns a new agent; @Handle routes to that agent.
   const [composerText, setComposerText] = useState("");
+  const [dispatchedAgentIds, setDispatchedAgentIds] = useState<Set<string>>(new Set());
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -80,10 +81,22 @@ export function MasterChatView({
   const masterChat = detailQuery.data?.masterChat;
   const messages = detailQuery.data?.messages ?? [];
   const threads = detailQuery.data?.threads ?? [];
-  const runningIds = new Set(
-    threads.filter((thread) => statusByAgentId.get(thread.id) === "running").map((thread) => thread.id),
+  const runningIds = new Set([
+    ...dispatchedAgentIds,
+    ...threads.filter((thread) => statusByAgentId.get(thread.id) === "running").map((thread) => thread.id),
+  ]);
+  const handleStreamComplete = useCallback((threadId: string) => {
+    setDispatchedAgentIds((current) => {
+      const next = new Set(current);
+      next.delete(threadId);
+      return next;
+    });
+  }, []);
+  const { replies: liveReplies, pollingFallbackCount } = useMasterChatStreams(
+    threads,
+    runningIds,
+    handleStreamComplete,
   );
-  const { replies: liveReplies, pollingFallbackCount } = useMasterChatStreams(threads, runningIds);
 
   useLayoutEffect(() => {
     if (chatScrollRef.current) {
@@ -144,13 +157,17 @@ export function MasterChatView({
       });
       return agent;
     },
-    onSuccess: invalidate,
+    onSuccess: (agent) => {
+      setDispatchedAgentIds((current) => new Set(current).add(agent.id));
+      invalidate();
+    },
   });
 
   // Route a message to an existing agent (a follow-up turn) instead of spawning.
   // Recorded in the shared pool so it stays as context for future agents.
   const reply = useMutation({
     mutationFn: async ({ agentIds, text }: { agentIds: string[]; text: string }) => {
+      setDispatchedAgentIds((current) => new Set([...current, ...agentIds]));
       await api.sendMasterChatMessage(masterChatId, { text });
       await Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text })));
     },
@@ -159,6 +176,13 @@ export function MasterChatView({
       for (const agentId of variables.agentIds) {
         void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
       }
+    },
+    onError: (_error, variables) => {
+      setDispatchedAgentIds((current) => {
+        const next = new Set(current);
+        variables.agentIds.forEach((agentId) => next.delete(agentId));
+        return next;
+      });
     },
   });
 

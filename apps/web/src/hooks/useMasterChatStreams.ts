@@ -24,7 +24,11 @@ export function appendLiveReply(current: string, delta: string): string {
  * persisted master-chat message remains authoritative and replaces this
  * transient reply after turn completion.
  */
-export function useMasterChatStreams(threads: ThreadDto[], runningIds: ReadonlySet<string>): MasterChatStreamState {
+export function useMasterChatStreams(
+  threads: ThreadDto[],
+  runningIds: ReadonlySet<string>,
+  onComplete?: (threadId: string) => void,
+): MasterChatStreamState {
   const [replies, setReplies] = useState<Record<string, string>>({});
   const threadKey = threads.map((thread) => thread.id).join("\0");
   const runningKey = [...runningIds].sort().join("\0");
@@ -41,6 +45,15 @@ export function useMasterChatStreams(threads: ThreadDto[], runningIds: ReadonlyS
       void api.getThread(thread.id).then((detail) => {
         if (cancelled) return;
         const lastSeq = detail.messages.reduce((max, message) => Math.max(max, message.seq), 0);
+        const lastUserIndex = detail.messages.findLastIndex((message) => message.role === "user");
+        const partialText = detail.messages
+          .slice(lastUserIndex + 1)
+          .filter((message) => message.role === "assistant")
+          .map((message) => message.text)
+          .join("");
+        if (partialText) {
+          setReplies((current) => ({ ...current, [thread.id]: partialText.slice(-MAX_LIVE_REPLY_CHARS) }));
+        }
         subscriptions.push(api.subscribeThread(thread.id, lastSeq || undefined, {
           onEvent(envelope) {
             if (envelope.event.type === "text") {
@@ -50,6 +63,7 @@ export function useMasterChatStreams(threads: ThreadDto[], runningIds: ReadonlyS
                 [thread.id]: appendLiveReply(current[thread.id] ?? "", delta),
               }));
             } else if (envelope.event.type === "turn_done" || envelope.event.type === "error") {
+              onComplete?.(thread.id);
               setReplies((current) => {
                 const next = { ...current };
                 delete next[thread.id];
@@ -68,7 +82,7 @@ export function useMasterChatStreams(threads: ThreadDto[], runningIds: ReadonlyS
     };
   // Stable string keys intentionally drive reconnection as room membership/run state changes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadKey, runningKey]);
+  }, [threadKey, runningKey, onComplete]);
 
   return {
     replies: Object.entries(replies).map(([threadId, text]) => ({ threadId, text })),
