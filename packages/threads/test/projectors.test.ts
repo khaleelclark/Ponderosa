@@ -51,7 +51,7 @@ describe("projectEvent — routing (SPEC §5)", () => {
     expect(ops.some((o) => o.kind === "insert_message")).toBe(false);
   });
 
-  it("command → creates a Task (execution), no Chat message", () => {
+  it("command → creates a Task + log Artifact (execution), no Chat message", () => {
     let state = initProjectionState("codex");
     // open a run first
     state = projectEvent(T, state, stored(1, { type: "user_message", text: "go" })).state;
@@ -61,12 +61,19 @@ describe("projectEvent — routing (SPEC §5)", () => {
       cwd: "/p",
     }));
     expect(kinds(ops)).toContain("insert_task");
+    expect(kinds(ops)).toContain("insert_artifact");
     expect(ops.some((o) => o.kind === "insert_message")).toBe(false);
     const task = ops.find((o) => o.kind === "insert_task");
     if (task?.kind === "insert_task") {
       expect(task.row.status).toBe("running");
       expect(task.row.id).toBe("thread-1:t:1"); // keyed by opening user_message seq
       expect(task.row.title).toBe("go");
+    }
+    const artifact = ops.find((o) => o.kind === "insert_artifact");
+    if (artifact?.kind === "insert_artifact") {
+      expect(artifact.row.kind).toBe("log");
+      expect(artifact.row.path).toBe("000002-command.md");
+      expect(artifact.content).toContain("pnpm test");
     }
   });
 
@@ -82,8 +89,9 @@ describe("projectEvent — routing (SPEC §5)", () => {
     expect(art).toBeDefined();
     if (art?.kind === "insert_artifact") {
       expect(art.row.kind).toBe("diff");
-      expect(art.row.path).toBe("auth.ts");
+      expect(art.row.path).toBe("000002-diff.patch");
       expect(art.row.taskId).toBe("thread-1:t:1");
+      expect(art.content).toContain("No diff text was provided");
     }
   });
 
@@ -99,13 +107,13 @@ describe("projectEvent — routing (SPEC §5)", () => {
     expect(art?.kind === "insert_artifact" && art.row.kind).toBe("test_report");
   });
 
-  it("session → set_session with the active engine", () => {
+  it("session → set_session for engine-agnostic resume", () => {
     const { ops } = projectEvent(T, initProjectionState("codex"), stored(1, {
       type: "session",
       sessionId: "sess-9",
     }));
     const s = ops.find((o) => o.kind === "set_session");
-    expect(s).toEqual({ kind: "set_session", engine: "codex", sessionId: "sess-9" });
+    expect(s).toEqual({ kind: "set_session", sessionId: "sess-9" });
   });
 
   it("turn_done → closes the open task as done", () => {

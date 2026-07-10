@@ -50,7 +50,7 @@ projector — never write SQLite as a second source (AGENTS.md).
 | `file_change` | `tasks` + a `diff` `artifacts` row |
 | `test_result` | `tasks` + a `test_report` `artifacts` row |
 | `task_update` | explicit `tasks` upsert (if an engine emits it) |
-| `session` | thread's `codex_session_id` / `claude_session_id` |
+| `session` | thread's engine-agnostic `active_session_id` |
 | `turn_done` | closes the run's task as `done` |
 | *(all)* | one `events` index row (searchable log) |
 

@@ -116,12 +116,75 @@ describe("CodexAdapter.seed (fake codex)", () => {
   });
 });
 
+describe("CodexAdapter.continue argv", () => {
+  it("uses codex exec resume with the stored session id and next prompt only", async () => {
+    const calls: Array<{ bin: string; args: readonly string[]; cwd?: string }> = [];
+    const spawnFn = ((bin: string, args: readonly string[], opts: { cwd?: string }) => {
+      calls.push({ bin, args, cwd: opts.cwd });
+      return spawn(process.execPath, [fakeCodex, "seed"], opts);
+    }) as unknown as typeof spawn;
+
+    const controller = new AbortController();
+    const adapter = new CodexAdapter({ bin: "codex-test", spawnFn, killGraceMs: 50 });
+    await collect(
+      adapter.continue({
+        threadId: "t1",
+        cwd,
+        prompt: "second turn only",
+        resumeSessionId: "sess-abc",
+        model: "gpt-test",
+        effort: "high",
+        signal: controller.signal,
+      }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.bin).toBe("codex-test");
+    expect(calls[0]?.cwd).toBe(cwd);
+    expect(calls[0]?.args.slice(0, 4)).toEqual([
+      "exec",
+      "resume",
+      "sess-abc",
+      "--json",
+    ]);
+    expect(calls[0]?.args).toContain("--skip-git-repo-check");
+    expect(calls[0]?.args).toContain("-m");
+    expect(calls[0]?.args).toContain("gpt-test");
+    expect(calls[0]?.args).toContain("model_reasoning_effort=\"high\"");
+    expect(calls[0]?.args.at(-1)).toBe("second turn only");
+  });
+
+  it("lets the authenticated CLI choose its defaults when overrides are omitted", async () => {
+    const calls: Array<{ args: readonly string[] }> = [];
+    const spawnFn = ((_bin: string, args: readonly string[], opts: object) => {
+      calls.push({ args });
+      return spawn(process.execPath, [fakeCodex, "seed"], opts);
+    }) as unknown as typeof spawn;
+
+    const controller = new AbortController();
+    const adapter = new CodexAdapter({ spawnFn, killGraceMs: 50 });
+    await collect(
+      adapter.seed({
+        threadId: "t1",
+        cwd,
+        prompt: "use account defaults",
+        history: [],
+        signal: controller.signal,
+      }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).not.toContain("-m");
+    expect(calls[0]?.args.some((arg) => arg.startsWith("model_reasoning_effort="))).toBe(false);
+  });
+});
+
 describe("CodexAdapter surface", () => {
   it("exposes id, displayName, models, and efforts", () => {
     const a = new CodexAdapter();
     expect(a.id).toBe("codex");
     expect(a.displayName).toBe("Codex");
-    expect(a.listModels().length).toBeGreaterThan(0);
+    expect(a.listModels()).toEqual([{ id: "", label: "Codex default" }]);
     expect(a.listEfforts().map((e) => e.id)).toContain("high");
   });
 });

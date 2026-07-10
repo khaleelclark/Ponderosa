@@ -11,7 +11,7 @@ normalized `AgentEvent` union from `@ponderosa/core`.
 | `events.ts` | **The heart of the chunk.** `mapCodexEvent(raw, ctx)` maps one Codex JSONL event → 0..n `AgentEvent`s. Unit-tested per event type + against recorded fixtures. |
 | `jsonl.ts` | Robust JSONL stream parsing: partial lines across chunks, CRLF, non-JSON noise. |
 | `codex.ts` | `CodexAdapter implements Adapter` — spawns `codex exec --json` / `codex exec resume`, streams events, wires `AbortSignal` → SIGTERM → SIGKILL. |
-| `auth.ts` | `codexAuthStatus()` — reports whether `codex login` was done (presence of `$CODEX_HOME/auth.json`). We never read the token. |
+| `auth.ts` | `codexAuthStatus()` — reports whether `codex login status` says the CLI is using ChatGPT subscription auth. We never read token files. |
 | `harness.ts` | The CLI test harness (`pnpm engines:try`). |
 
 ## Subscription auth only — the economic premise
@@ -59,9 +59,9 @@ This confirms the whole economic premise (SPEC §15). On a machine where
 1. Ensure no API key is set: `unset OPENAI_API_KEY` (there must be **no**
    `OPENAI_API_KEY` in the server's environment — the adapter never uses one).
 2. Confirm login type is subscription, not API key:
-   `cat ~/.codex/auth.json` and verify it shows a ChatGPT/OAuth login (an
-   `OPENAI_API_KEY`-based auth would be the wrong, billed path). `codexAuthStatus()`
-   surfaces presence for the UI badge.
+   `codex login status` should say it is logged in using ChatGPT. An API-key or
+   access-token login is the wrong, billed path. `codexAuthStatus()` uses this
+   same CLI status check for the UI badge and never reads token file contents.
 3. Run a turn: `pnpm engines:try --cwd <a repo> "Say hello and stop."` — it should
    complete and print a `turn_done` with token usage.
 4. Check the ChatGPT side: your usage should be drawn from the **ChatGPT

@@ -1,24 +1,23 @@
-// @ponderosa/server — Fastify daemon (source of truth). Chunk A hello-world:
-// only /api/health. The full API surface (SPEC §8), SSE, and session manager
-// land in Chunk F.
-import Fastify from "fastify";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadConfig } from "@ponderosa/core/config";
+import { defaultEngineRegistrations } from "@ponderosa/engines";
+import { createServer } from "./app.js";
 
-const PORT = Number(process.env.PONDEROSA_PORT ?? 8787);
-const HOST = process.env.PONDEROSA_HOST ?? "0.0.0.0";
+const config = loadConfig();
+const here = path.dirname(fileURLToPath(import.meta.url));
+const webDist = path.resolve(here, "../../web/dist");
 
-const app = Fastify({ logger: true });
-
-app.get("/api/health", async () => {
-  return { status: "ok", service: "ponderosa", version: "0.0.0" };
+const app = createServer({
+  dataDir: config.dataDir,
+  engines: defaultEngineRegistrations(),
+  webDist,
+  authToken: process.env.PONDEROSA_AUTH_TOKEN,
 });
 
-async function main(): Promise<void> {
-  try {
-    await app.listen({ port: PORT, host: HOST });
-  } catch (err) {
-    app.log.error(err);
-    process.exit(1);
-  }
+try {
+  await app.listen({ port: config.port, host: config.host });
+} catch (err) {
+  app.log.error(err);
+  process.exit(1);
 }
-
-void main();

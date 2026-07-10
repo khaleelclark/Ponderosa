@@ -1,0 +1,443 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, promises as fs } from "node:fs";
+import path from "node:path";
+import Fastify, { type FastifyInstance } from "fastify";
+import type {
+  Adapter,
+  AgentEvent,
+  ArtifactContentDto,
+  ChatMessage,
+  EngineAuthStatus,
+  EngineDto,
+  FilesResponse,
+  HealthDto,
+  SseEventEnvelope,
+} from "@ponderosa/core";
+import { artifactContentPath, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+
+export interface EngineRegistration {
+  adapter: Adapter;
+  authStatus?: () => Promise<EngineAuthStatus>;
+}
+
+export interface CreateServerOptions {
+  dataDir: string;
+  store?: ThreadStore;
+  engines: EngineRegistration[];
+  webDist?: string;
+  authToken?: string;
+  logger?: boolean;
+}
+
+interface ActiveRun {
+  runId: string;
+  controller: AbortController;
+}
+
+type Subscriber = (stored: StoredLogEvent) => void;
+
+function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
+  return event.type !== "user_message";
+}
+
+function envelope(threadId: string, stored: StoredLogEvent): SseEventEnvelope | undefined {
+  if (!isAgentEvent(stored.event)) return undefined;
+  return { threadId, seq: stored.seq, ts: stored.ts, event: stored.event };
+}
+
+function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): void {
+  if (id !== undefined) res.write(`id: ${id}\n`);
+  res.write(`event: ${name}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function contentTypeForStatic(file: string): string {
+  if (file.endsWith(".html")) return "text/html; charset=utf-8";
+  if (file.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (file.endsWith(".css")) return "text/css; charset=utf-8";
+  if (file.endsWith(".json") || file.endsWith(".webmanifest")) return "application/json; charset=utf-8";
+  if (file.endsWith(".svg")) return "image/svg+xml";
+  if (file.endsWith(".png")) return "image/png";
+  if (file.endsWith(".jpg") || file.endsWith(".jpeg")) return "image/jpeg";
+  if (file.endsWith(".ico")) return "image/x-icon";
+  if (file.endsWith(".woff")) return "font/woff";
+  if (file.endsWith(".woff2")) return "font/woff2";
+  return "application/octet-stream";
+}
+
+function contentTypeForArtifact(file: string): ArtifactContentDto["contentType"] {
+  if (file.endsWith(".md")) return "markdown";
+  if (file.endsWith(".patch") || file.endsWith(".diff")) return "diff";
+  return "text";
+}
+
+async function pathExists(file: string): Promise<boolean> {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeRelativePath(input: string | undefined): string {
+  const value = input ?? "";
+  const normalized = path.posix.normalize(value.replaceAll("\\", "/"));
+  if (normalized === "." || normalized === "/") return "";
+  if (normalized.startsWith("../") || normalized === ".." || path.isAbsolute(value)) {
+    throw new Error("path escapes project");
+  }
+  return normalized;
+}
+
+async function readScopedPath(root: string, relInput: string | undefined): Promise<FilesResponse> {
+  const rel = safeRelativePath(relInput);
+  const rootReal = await fs.realpath(root);
+  const target = path.resolve(rootReal, rel);
+  const targetReal = await fs.realpath(target);
+  if (targetReal !== rootReal && !targetReal.startsWith(rootReal + path.sep)) {
+    throw new Error("path escapes project");
+  }
+
+  const stat = await fs.stat(targetReal);
+  if (stat.isDirectory()) {
+    const entries = await fs.readdir(targetReal, { withFileTypes: true });
+    return {
+      kind: "dir",
+      path: rel,
+      entries: entries
+        .filter((entry) => entry.isDirectory() || entry.isFile())
+        .map((entry) => ({
+          name: entry.name,
+          path: path.posix.join(rel, entry.name),
+          kind: entry.isDirectory() ? ("dir" as const) : ("file" as const),
+        }))
+        .sort((a, b) => Number(a.kind === "file") - Number(b.kind === "file") || a.name.localeCompare(b.name)),
+    };
+  }
+
+  const buffer = await fs.readFile(targetReal);
+  try {
+    return { kind: "file", path: rel, content: buffer.toString("utf8"), encoding: "utf-8" };
+  } catch {
+    return { kind: "file", path: rel, content: buffer.toString("base64"), encoding: "base64" };
+  }
+}
+
+export function createServer(opts: CreateServerOptions): FastifyInstance {
+  const store = opts.store ?? new ThreadStore(opts.dataDir);
+  const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
+  const activeRuns = new Map<string, ActiveRun>();
+  const subscribers = new Map<string, Set<Subscriber>>();
+
+  const app = Fastify({ logger: opts.logger ?? true });
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (!opts.authToken) return;
+    if (request.url === "/api/health") return;
+    const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    if (provided !== opts.authToken) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
+
+  app.addHook("onClose", async () => {
+    for (const run of activeRuns.values()) run.controller.abort();
+    store.close();
+  });
+
+  function publish(threadId: string, stored: StoredLogEvent): void {
+    for (const subscriber of subscribers.get(threadId) ?? []) subscriber(stored);
+  }
+
+  function subscribe(threadId: string, subscriber: Subscriber): () => void {
+    let set = subscribers.get(threadId);
+    if (!set) {
+      set = new Set();
+      subscribers.set(threadId, set);
+    }
+    set.add(subscriber);
+    return () => {
+      set?.delete(subscriber);
+      if (set?.size === 0) subscribers.delete(threadId);
+    };
+  }
+
+  app.get("/api/health", async (): Promise<HealthDto> => ({
+    status: "ok",
+    service: "ponderosa",
+    version: "0.0.0",
+  }));
+
+  app.get("/api/projects", async () => store.listProjects());
+  app.post<{ Body: { label: string; hostPath: string } }>("/api/projects", async (request, reply) => {
+    if (!request.body?.label || !request.body?.hostPath) {
+      return reply.code(400).send({ error: "label and hostPath are required" });
+    }
+    if (!(await pathExists(request.body.hostPath))) {
+      return reply.code(400).send({ error: "hostPath does not exist" });
+    }
+    return store.createProject(request.body);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    return project ?? reply.code(404).send({ error: "project not found" });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id/threads", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    return store.listThreads(request.params.id);
+  });
+
+  app.post<{ Params: { id: string }; Body: { title: string; engine: string; model?: string; effort?: string } }>(
+    "/api/projects/:id/threads",
+    async (request, reply) => {
+      if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+      if (!request.body?.title || !request.body?.engine) {
+        return reply.code(400).send({ error: "title and engine are required" });
+      }
+      if (!engines.has(request.body.engine)) return reply.code(400).send({ error: "unknown engine" });
+      return store.createThread(request.params.id, request.body);
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/api/threads/:id", async (request, reply) => {
+    const detail = store.getThreadDetail(request.params.id);
+    return detail ?? reply.code(404).send({ error: "thread not found" });
+  });
+
+  app.patch<{ Params: { id: string }; Body: { title?: string; archived?: boolean } }>(
+    "/api/threads/:id",
+    async (request, reply) => {
+      const thread = store.updateThread(request.params.id, request.body ?? {});
+      return thread ?? reply.code(404).send({ error: "thread not found" });
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>("/api/threads/:id", async (request, reply) => {
+    const { id } = request.params;
+    // Abort any in-flight run so its process is killed before we remove the log.
+    const run = activeRuns.get(id);
+    if (run) {
+      run.controller.abort();
+      activeRuns.delete(id);
+    }
+    const deleted = store.deleteThread(id);
+    if (!deleted) return reply.code(404).send({ error: "thread not found" });
+    return { deleted: true };
+  });
+
+  app.post("/api/threads/:id/switch-engine", async (_request, reply) =>
+    reply.code(501).send({ error: "switch-engine is a v2 endpoint" }),
+  );
+
+  app.get("/api/threads/:id/search", async (_request, reply) =>
+    reply.code(501).send({ error: "search is a v2 endpoint" }),
+  );
+
+  app.post<{ Params: { id: string }; Body: { text: string; model?: string; effort?: string } }>(
+    "/api/threads/:id/messages",
+    async (request, reply) => {
+      const thread = store.getThread(request.params.id);
+      if (!thread) return reply.code(404).send({ error: "thread not found" });
+      if (activeRuns.has(thread.id)) return reply.code(409).send({ error: "thread already has an active run" });
+      const project = store.getProject(thread.projectId);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      const engine = engines.get(thread.activeEngine);
+      if (!engine) return reply.code(400).send({ error: "unknown engine" });
+      const text = request.body?.text?.trim();
+      if (!text) return reply.code(400).send({ error: "text is required" });
+
+      const history: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+      }));
+      const runId = randomUUID();
+      const controller = new AbortController();
+      const resumeSessionId = store.resumeSessionId(thread.id);
+      const mode = resumeSessionId ? "continue" : "seed";
+
+      const userStored = store.appendEvent(thread.id, { type: "user_message", text });
+      publish(thread.id, userStored);
+
+      activeRuns.set(thread.id, { runId, controller });
+
+      void (async () => {
+        try {
+          const stream = resumeSessionId
+            ? engine.adapter.continue({
+                  threadId: thread.id,
+                  cwd: project.hostPath,
+                  prompt: text,
+                  resumeSessionId,
+                  model: request.body.model,
+                  effort: request.body.effort,
+                  signal: controller.signal,
+                })
+            : engine.adapter.seed({
+                  threadId: thread.id,
+                  cwd: project.hostPath,
+                  prompt: text,
+                  history,
+                  model: request.body.model,
+                  effort: request.body.effort,
+                  signal: controller.signal,
+                });
+
+          for await (const event of stream) {
+            const stored = store.appendEvent(thread.id, event);
+            publish(thread.id, stored);
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const stored = store.appendEvent(thread.id, { type: "error", message });
+          publish(thread.id, stored);
+        } finally {
+          activeRuns.delete(thread.id);
+        }
+      })();
+
+      return { runId, mode };
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { lastEventId?: string } }>(
+    "/api/threads/:id/stream",
+    async (request, reply) => {
+      if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
+      const lastEventId = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
+      const sinceSeq = Number(Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
+      const replayFrom = Number.isFinite(sinceSeq) ? sinceSeq : 0;
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no",
+      });
+      writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
+
+      let lastWrittenSeq = replayFrom;
+      let replaying = true;
+      const queued: StoredLogEvent[] = [];
+      const writeStored = (stored: StoredLogEvent): void => {
+        if (stored.seq <= lastWrittenSeq) return;
+        const env = envelope(request.params.id, stored);
+        lastWrittenSeq = stored.seq;
+        if (env) writeSse(reply.raw, "message", stored.seq, env);
+      };
+      const unsubscribe = subscribe(request.params.id, (stored) => {
+        if (replaying) {
+          queued.push(stored);
+          return;
+        }
+        writeStored(stored);
+      });
+
+      for (const stored of store.readEventsSince(request.params.id, replayFrom)) {
+        writeStored(stored);
+      }
+      replaying = false;
+      for (const stored of queued) writeStored(stored);
+
+      const heartbeat = setInterval(() => {
+        writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
+      }, 15000);
+
+      request.raw.on("close", () => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      });
+    },
+  );
+
+  app.post<{ Params: { id: string } }>("/api/threads/:id/cancel", async (request) => {
+    const run = activeRuns.get(request.params.id);
+    if (!run) return { cancelled: false };
+    run.controller.abort();
+    return { cancelled: true };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/threads/:id/tasks", async (request, reply) => {
+    if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
+    return store.getTasks(request.params.id);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/threads/:id/artifacts", async (request, reply) => {
+    if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
+    return store.getArtifacts(request.params.id);
+  });
+
+  app.get<{ Params: { id: string; aid: string } }>(
+    "/api/threads/:id/artifacts/:aid",
+    async (request, reply) => {
+      const thread = store.getThread(request.params.id);
+      if (!thread) return reply.code(404).send({ error: "thread not found" });
+      const artifact = store.getArtifact(thread.id, request.params.aid);
+      if (!artifact) return reply.code(404).send({ error: "artifact not found" });
+      const file = artifactContentPath(opts.dataDir, thread.projectId, thread.id, artifact.path);
+      const content = existsSync(file) ? await fs.readFile(file, "utf8") : "";
+      return { ...artifact, content, contentType: contentTypeForArtifact(artifact.path) };
+    },
+  );
+
+  app.get<{ Querystring: { projectId?: string; path?: string } }>("/api/files", async (request, reply) => {
+    const projectId = request.query.projectId;
+    if (!projectId) return reply.code(400).send({ error: "projectId is required" });
+    const project = store.getProject(projectId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    try {
+      return await readScopedPath(project.hostPath, request.query.path);
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : "invalid path" });
+    }
+  });
+
+  app.get("/api/engines", async (): Promise<EngineDto[]> => {
+    return Promise.all(
+      Array.from(engines.values()).map(async ({ adapter, authStatus }) => {
+        let status: EngineAuthStatus;
+        try {
+          status = authStatus ? await authStatus() : { authenticated: false };
+        } catch (err) {
+          status = {
+            authenticated: false,
+            detail: err instanceof Error ? err.message : "auth status check failed",
+          };
+        }
+        return {
+          id: adapter.id,
+          displayName: adapter.displayName,
+          models: adapter.listModels(),
+          efforts: adapter.listEfforts(),
+          authenticated: status.authenticated,
+          authDetail: status.detail,
+        };
+      }),
+    );
+  });
+
+  if (opts.webDist) {
+    app.get("/*", async (request, reply) => {
+      try {
+        const rawPath = request.url.split("?")[0] ?? "/";
+        if (rawPath === "/api" || rawPath.startsWith("/api/")) return reply.code(404).send();
+        const rel = rawPath === "/" ? "index.html" : safeRelativePath(decodeURIComponent(rawPath.slice(1)));
+        const target = path.resolve(opts.webDist!, rel);
+        const root = path.resolve(opts.webDist!);
+        if (target !== root && !target.startsWith(root + path.sep)) return reply.code(404).send();
+        const targetExists = await pathExists(target);
+        const file = targetExists ? target : path.join(root, "index.html");
+        if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
+        return reply.type(contentTypeForStatic(file)).send(await fs.readFile(file));
+      } catch {
+        return reply.code(404).send();
+      }
+    });
+  }
+
+  return app;
+}

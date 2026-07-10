@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>Ponderosa maskable</title>
+  <rect width="512" height="512" fill="#245c53"/>
+  <circle cx="256" cy="256" r="210" fill="#f6f7f4"/>
+  <path d="M150 342V142h124c54 0 92 33 92 81s-38 80-92 80h-68v39h-56Zm56-88h62c26 0 43-12 43-31s-17-32-43-32h-62v63Z" fill="#245c53"/>
+  <path d="M158 382h196" stroke="#8f4b2e" stroke-width="30" stroke-linecap="round"/>
+</svg>

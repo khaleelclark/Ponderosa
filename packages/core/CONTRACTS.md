@@ -56,7 +56,7 @@ v2 (501-stubbed) `SwitchEngineRequest`, `SearchResultDto`, `SearchResponse`.
 2. **`ChatMessage.role`** = `"user" | "assistant"` — Chat is human-facing intent only
    (SPEC §2). No `system` role in the chat history contract.
 3. **Engine session ids are persistence detail, not a public DTO field.** `ThreadDto`
-   exposes `activeEngine` + derived `state`, not `codex_session_id`/`claude_session_id`
+   exposes `activeEngine` + derived `state`, not internal session-storage columns
    (those live in the `threads` projection / `thread.json`, SPEC §7). Keeps the wire
    contract engine-agnostic (AGENTS.md invariant 2).
 4. **`defaultDataDir`** = `~/.ponderosa` on all OSes (honoring `XDG_DATA_HOME` when

@@ -13,3 +13,21 @@ export { codexAuthStatus, codexHome } from "./auth.js";
 
 // Re-export the Adapter contract from core so consumers import engines in one place.
 export type { Adapter, AgentEvent, EngineAuthStatus } from "@ponderosa/core";
+
+import type { Adapter, EngineAuthStatus } from "@ponderosa/core";
+import { codexAuthStatus } from "./auth.js";
+import { CodexAdapter } from "./codex.js";
+
+export interface EngineRegistration {
+  adapter: Adapter;
+  authStatus?: () => Promise<EngineAuthStatus>;
+}
+
+export function defaultEngineRegistrations(): EngineRegistration[] {
+  return [
+    {
+      adapter: new CodexAdapter(),
+      authStatus: codexAuthStatus,
+    },
+  ];
+}

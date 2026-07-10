@@ -9,6 +9,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -48,6 +49,7 @@ import {
 } from "./schema.js";
 import {
   artifactsDir,
+  artifactContentPath,
   attachmentsDir,
   dbPath,
   eventsPath,
@@ -223,6 +225,34 @@ export class ThreadStore {
     return this.rowToThreadDto(id);
   }
 
+  /**
+   * Permanently delete a thread: its projection rows AND its on-disk canonical
+   * log directory (`thread.json`, `events.jsonl`, artifacts, attachments). This is
+   * a whole-thread removal — a deliberate user action, distinct from the
+   * append-only rule (which forbids mutating events *within* a live thread, not
+   * discarding an entire thread). Returns false if the thread didn't exist.
+   */
+  deleteThread(id: string): boolean {
+    const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
+    if (!row) return false;
+
+    this.db.transaction((tx) => {
+      tx.delete(events).where(eq(events.threadId, id)).run();
+      tx.delete(artifacts).where(eq(artifacts.threadId, id)).run();
+      tx.delete(tasks).where(eq(tasks.threadId, id)).run();
+      tx.delete(messages).where(eq(messages.threadId, id)).run();
+      tx.delete(threads).where(eq(threads.id, id)).run();
+    });
+
+    // Remove the on-disk thread directory (the canonical log lives here).
+    rmSync(threadDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+
+    // Drop any cached log writer / projection state.
+    this.logs.delete(id);
+    this.states.delete(id);
+    return true;
+  }
+
   /** Full four-pane hydration for GET /api/threads/:id (SPEC §8). */
   getThreadDetail(id: string): ThreadDetailDto | undefined {
     const thread = this.rowToThreadDto(id);
@@ -323,7 +353,7 @@ export class ThreadStore {
     const state = this.stateFor(threadId, projectId);
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
-    this.applyOps(threadId, ops);
+    this.applyOps(threadId, projectId, ops);
     return stored;
   }
 
@@ -395,10 +425,15 @@ export class ThreadStore {
           .run();
 
         const logFile = eventsPath(this.dataDir, projectId, threadId);
+        rmSync(artifactsDir(this.dataDir, projectId, threadId), {
+          recursive: true,
+          force: true,
+        });
+        mkdirSync(artifactsDir(this.dataDir, projectId, threadId), { recursive: true });
         if (!existsSync(logFile)) continue;
         const stored = new EventLog(logFile).readAll();
         const ops = projectAll(threadId, stored, t.activeEngine);
-        this.applyOps(threadId, ops);
+        this.applyOps(threadId, projectId, ops);
       }
     }
   }
@@ -409,7 +444,15 @@ export class ThreadStore {
 
   // ─── internals ─────────────────────────────────────────────────────────────
 
-  private applyOps(threadId: string, ops: ProjectionOp[]): void {
+  private applyOps(threadId: string, projectId: string, ops: ProjectionOp[]): void {
+    for (const op of ops) {
+      if (op.kind === "insert_artifact" && op.content !== undefined) {
+        const target = artifactContentPath(this.dataDir, projectId, threadId, op.row.path);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, op.content, "utf8");
+      }
+    }
+
     // drizzle's transaction runs the callback immediately (all-or-nothing) and
     // provides a `tx` handle scoped to the transaction.
     this.db.transaction((tx) => {
@@ -446,11 +489,7 @@ export class ThreadStore {
             break;
           case "set_session":
             tx.update(threads)
-              .set(
-                op.engine === "claude"
-                  ? { claudeSessionId: op.sessionId }
-                  : { codexSessionId: op.sessionId },
-              )
+              .set({ activeSessionId: op.sessionId })
               .where(eq(threads.id, threadId))
               .run();
             break;
@@ -539,14 +578,12 @@ export class ThreadStore {
   resumeSessionId(threadId: string): string | undefined {
     const row = this.db
       .select({
-        engine: threads.activeEngine,
-        codex: threads.codexSessionId,
-        claude: threads.claudeSessionId,
+        sessionId: threads.activeSessionId,
       })
       .from(threads)
       .where(eq(threads.id, threadId))
       .get();
     if (!row) return undefined;
-    return (row.engine === "claude" ? row.claude : row.codex) ?? undefined;
+    return row.sessionId ?? undefined;
   }
 }

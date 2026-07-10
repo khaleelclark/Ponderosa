@@ -35,9 +35,9 @@ export type ProjectionOp =
   | { kind: "insert_message"; row: MessageRow }
   | { kind: "insert_task"; row: TaskRow }
   | { kind: "update_task"; id: string; status: TaskStatus; updatedAt: string }
-  | { kind: "insert_artifact"; row: ArtifactRow }
+  | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
-  | { kind: "set_session"; engine: string; sessionId: string }
+  | { kind: "set_session"; sessionId: string }
   | { kind: "set_state"; branch?: string; commit?: string }
   | { kind: "touch_thread"; updatedAt: string };
 
@@ -58,6 +58,10 @@ export function initProjectionState(activeEngine: string): ProjectionState {
 function truncate(s: string, n = 80): string {
   const t = s.trim().replace(/\s+/g, " ");
   return t.length <= n ? t : t.slice(0, n - 1) + "…";
+}
+
+function artifactPath(seq: number, suffix: string): string {
+  return `${String(seq).padStart(6, "0")}-${suffix}`;
 }
 
 /**
@@ -158,11 +162,24 @@ export function projectEvent(
       break;
 
     case "session":
-      ops.push({ kind: "set_session", engine: next.activeEngine, sessionId: event.sessionId });
+      ops.push({ kind: "set_session", sessionId: event.sessionId });
       break;
 
     case "command": {
-      ensureTask();
+      const tId = ensureTask();
+      ops.push({
+        kind: "insert_artifact",
+        row: {
+          id: artifactId(threadId, seq, 0),
+          threadId,
+          taskId: tId,
+          kind: "log",
+          path: artifactPath(seq, "command.md"),
+          summary: event.command,
+          createdAt: ts,
+        },
+        content: `# Command\n\n\`\`\`bash\n${event.command}\n\`\`\`\n\ncwd: \`${event.cwd}\`\n`,
+      });
       ops.push({ kind: "touch_thread", updatedAt: ts });
       break;
     }
@@ -176,10 +193,13 @@ export function projectEvent(
           threadId,
           taskId: tId,
           kind: "diff",
-          path: event.path,
+          path: artifactPath(seq, "diff.patch"),
           summary: `${event.kind} ${event.path}`,
           createdAt: ts,
         },
+        content:
+          event.diff ??
+          `# ${event.kind} ${event.path}\n\nNo diff text was provided by the engine.\n`,
       });
       ops.push({ kind: "touch_thread", updatedAt: ts });
       break;
@@ -194,10 +214,11 @@ export function projectEvent(
           threadId,
           taskId: tId,
           kind: "test_report",
-          path: `test-${seq}`,
+          path: artifactPath(seq, "test.md"),
           summary: `${event.passed ? "pass" : "fail"}: ${event.summary}`,
           createdAt: ts,
         },
+        content: `# Test Result\n\nStatus: ${event.passed ? "passed" : "failed"}\n\n${event.summary}\n`,
       });
       ops.push({ kind: "touch_thread", updatedAt: ts });
       break;

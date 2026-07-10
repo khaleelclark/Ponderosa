@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { LogEvent } from "../src/log-event.js";
+import { artifactContentPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -42,14 +43,19 @@ const RUN: LogEvent[] = [
   { type: "text", delta: "I'll handle this." },
   { type: "command", command: "pnpm test", cwd: "/repo" },
   { type: "tool_result", id: "i0", output: "ok", isError: false },
-  { type: "file_change", path: "auth.ts", kind: "edit" },
+  {
+    type: "file_change",
+    path: "auth.ts",
+    kind: "edit",
+    diff: "diff --git a/auth.ts b/auth.ts\n",
+  },
   { type: "text", delta: "Done — auth refactor complete." },
   { type: "turn_done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
 ];
 
 describe("ThreadStore — append + projection", () => {
   it("projects a full run into the four panes", () => {
-    const { threadId } = seedThread();
+    const { projectId, threadId } = seedThread();
     for (const ev of RUN) store.appendEvent(threadId, ev);
 
     const detail = store.getThreadDetail(threadId)!;
@@ -59,10 +65,19 @@ describe("ThreadStore — append + projection", () => {
     expect(detail.tasks).toHaveLength(1);
     expect(detail.tasks[0]!.status).toBe("done");
     expect(detail.tasks[0]!.title).toBe("Refactor authentication");
-    // Artifacts: one diff from the file_change
-    expect(detail.artifacts).toHaveLength(1);
-    expect(detail.artifacts[0]!.kind).toBe("diff");
-    expect(detail.artifacts[0]!.path).toBe("auth.ts");
+    // Artifacts: command log + diff from the file_change
+    expect(detail.artifacts).toHaveLength(2);
+    expect(detail.artifacts.map((a) => a.kind)).toEqual(["log", "diff"]);
+    expect(detail.artifacts[0]!.path).toBe("000004-command.md");
+    expect(detail.artifacts[1]!.path).toBe("000006-diff.patch");
+    const commandFile = artifactContentPath(
+      dir,
+      projectId,
+      threadId,
+      detail.artifacts[0]!.path,
+    );
+    expect(existsSync(commandFile)).toBe(true);
+    expect(readFileSync(commandFile, "utf8")).toContain("pnpm test");
     // session id captured for resume
     expect(store.resumeSessionId(threadId)).toBe("sess-abc");
   });
@@ -93,10 +108,17 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
     store.appendEvent(t1.id, { type: "turn_done" });
 
     const before = snapshot(store);
+    const commandFile = artifactContentPath(dir, p.id, t1.id, "000004-command.md");
+    const staleFile = artifactContentPath(dir, p.id, t1.id, "stale.txt");
+    writeFileSync(commandFile, "stale command content", "utf8");
+    writeFileSync(staleFile, "old derived artifact", "utf8");
+
     store.rebuildProjections();
     const after = snapshot(store);
 
     expect(after).toEqual(before);
+    expect(readFileSync(commandFile, "utf8")).toContain("pnpm test");
+    expect(existsSync(staleFile)).toBe(false);
     // sanity: it actually contained data
     expect((before.messages as unknown[]).length).toBeGreaterThan(0);
     expect((before.tasks as unknown[]).length).toBeGreaterThan(0);
@@ -117,5 +139,21 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
 
     store.rebuildProjections();
     expect(snapshot(store)).toEqual(before);
+  });
+});
+
+describe("artifactContentPath", () => {
+  it("keeps artifact reads and writes inside the thread artifacts directory", () => {
+    const { projectId, threadId } = seedThread();
+
+    expect(artifactContentPath(dir, projectId, threadId, "000001-command.md")).toContain(
+      "artifacts",
+    );
+    expect(() => artifactContentPath(dir, projectId, threadId, "../thread.json")).toThrow(
+      /escapes/,
+    );
+    expect(() => artifactContentPath(dir, projectId, threadId, "/tmp/elsewhere")).toThrow(
+      /escapes/,
+    );
   });
 });

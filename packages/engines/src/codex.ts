@@ -40,10 +40,10 @@ export interface CodexAdapterOptions {
   killGraceMs?: number;
 }
 
-const DEFAULT_MODELS: ModelOption[] = [
-  { id: "gpt-5-codex", label: "GPT-5 Codex" },
-  { id: "gpt-5", label: "GPT-5" },
-];
+// Model availability differs by Codex version, account type, and subscription.
+// An empty id deliberately means "let the authenticated CLI choose"; hardcoded
+// model ids become stale and can be rejected for ChatGPT-backed accounts.
+const DEFAULT_MODELS: ModelOption[] = [{ id: "", label: "Codex default" }];
 
 const DEFAULT_EFFORTS: EffortOption[] = [
   { id: "minimal", label: "Minimal" },

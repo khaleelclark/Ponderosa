@@ -393,7 +393,7 @@ $PONDEROSA_DATA_DIR/
       project.json        # label, host path (cwd root), createdAt
       threads/
         <thread-id>/
-          thread.json     # title, active engine, engine sessionIds, state, timestamps
+          thread.json     # title, active engine, state, timestamps
           events.jsonl     # ⭐ append-only canonical event log (§4)
           artifacts/       # diffs, test reports, PR summaries, logs
           attachments/     # optional uploads
@@ -406,7 +406,7 @@ $PONDEROSA_DATA_DIR/
 ```
 projects(id, label, host_path, created_at, last_used_at)
 threads(id, project_id, title, active_engine,
-        codex_session_id, claude_session_id,
+        active_session_id,
         state_branch, state_commit, created_at, updated_at, archived)
 messages(id, thread_id, seq, role, text, created_at)          -- Chat pane
 tasks(id, thread_id, title, status, engine, created_at, updated_at)  -- Tasks pane

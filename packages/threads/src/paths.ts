@@ -63,6 +63,20 @@ export function artifactsDir(
   return path.join(threadDir(dataDir, projectId, threadId), "artifacts");
 }
 
+export function artifactContentPath(
+  dataDir: string,
+  projectId: string,
+  threadId: string,
+  artifactPath: string,
+): string {
+  const base = artifactsDir(dataDir, projectId, threadId);
+  const target = path.resolve(base, artifactPath);
+  if (target !== base && target.startsWith(base + path.sep)) {
+    return target;
+  }
+  throw new Error("artifact path escapes artifacts directory");
+}
+
 export function attachmentsDir(
   dataDir: string,
   projectId: string,
