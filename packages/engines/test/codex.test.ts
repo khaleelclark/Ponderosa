@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
-import { CodexAdapter, renderSeedPrompt } from "../src/codex.js";
+import { CodexAdapter, readCodexModels, renderSeedPrompt } from "../src/codex.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeCodex = join(here, "fake-codex.mjs");
@@ -182,10 +184,38 @@ describe("CodexAdapter.continue argv", () => {
 
 describe("CodexAdapter surface", () => {
   it("exposes id, displayName, models, and efforts", () => {
-    const a = new CodexAdapter();
+    const a = new CodexAdapter({ modelsCachePath: join(cwd, "missing-models-cache.json") });
     expect(a.id).toBe("codex");
     expect(a.displayName).toBe("Codex");
     expect(a.listModels()).toEqual([{ id: "", label: "Codex default" }]);
     expect(a.listEfforts().map((e) => e.id)).toContain("high");
+  });
+
+  it("lists the models exposed by the authenticated Codex CLI cache", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "ponderosa-codex-models-"));
+    const cachePath = join(tempDir, "models-cache.json");
+    writeFileSync(cachePath, JSON.stringify({
+      models: [
+        { slug: "gpt-new", display_name: "GPT New", visibility: "list" },
+        { slug: "gpt-hidden", display_name: "Internal", visibility: "hide" },
+        { slug: "gpt-new", display_name: "Duplicate", visibility: "list" },
+        { slug: "gpt-fallback-label", visibility: "list" },
+      ],
+    }));
+
+    expect(readCodexModels(cachePath)).toEqual([
+      { id: "", label: "Codex default" },
+      { id: "gpt-new", label: "GPT New" },
+      { id: "gpt-fallback-label", label: "gpt-fallback-label" },
+    ]);
+    rmSync(tempDir, { recursive: true });
+  });
+
+  it("falls back to the Codex default for an invalid model cache", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "ponderosa-codex-models-"));
+    const cachePath = join(tempDir, "models-cache.json");
+    writeFileSync(cachePath, "not json");
+    expect(readCodexModels(cachePath)).toEqual([{ id: "", label: "Codex default" }]);
+    rmSync(tempDir, { recursive: true });
   });
 });
