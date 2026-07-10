@@ -128,7 +128,16 @@ export default function App(): JSX.Element {
   const goHome = (next: Route) => navigate(next);
 
   return (
-    <Box sx={{ minHeight: "100vh", display: "grid", gridTemplateRows: "auto 1fr", bgcolor: "background.default" }}>
+    <Box
+      sx={{
+        height: "100dvh",
+        minHeight: 0,
+        overflow: "hidden",
+        display: "grid",
+        gridTemplateRows: "auto minmax(0, 1fr)",
+        bgcolor: "background.default",
+      }}
+    >
       <AppBar position="static" color="inherit" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: 56 }}>
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1 }}>
