@@ -43,6 +43,9 @@ export async function* streamProcess(
   const child: ChildProcess = spawnFn(bin, args, {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
+    // Give each run its own process group. Agent CLIs can spawn long-running
+    // commands, so cancelling only the CLI would leave its descendants alive.
+    detached: process.platform !== "win32",
   });
 
   let stderrTail = "";
@@ -53,17 +56,9 @@ export async function* streamProcess(
 
   let killTimer: NodeJS.Timeout | undefined;
   const onAbort = (): void => {
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      /* already gone */
-    }
+    signalRun(child, "SIGTERM");
     killTimer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already gone */
-      }
+      signalRun(child, "SIGKILL");
     }, killGraceMs);
     killTimer.unref?.();
   };
@@ -102,6 +97,19 @@ export async function* streamProcess(
   } finally {
     signal.removeEventListener("abort", onAbort);
     if (killTimer) clearTimeout(killTimer);
+  }
+}
+
+/** Signal the entire run, including commands spawned by the agent CLI. */
+function signalRun(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    if (process.platform !== "win32" && child.pid) {
+      process.kill(-child.pid, signal);
+    } else {
+      child.kill(signal);
+    }
+  } catch {
+    /* process already exited */
   }
 }
 
