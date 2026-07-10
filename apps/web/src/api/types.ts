@@ -44,6 +44,7 @@ export interface PonderosaApi {
   createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
   getMasterChat(masterChatId: string): Promise<MasterChatDetailDto>;
   updateMasterChat(masterChatId: string, patch: UpdateMasterChatRequest): Promise<MasterChatDto>;
+  deleteMasterChat(masterChatId: string): Promise<void>;
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   listThreads(projectId: string): Promise<ThreadDto[]>;
   createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;

@@ -151,6 +151,33 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("deletes a master chat and preserves its agents as unassigned", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = (await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: { label: "Delete demo", hostPath: repoDir },
+    })).json<{ id: string }>();
+    const masterChat = (await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/master-chats`,
+      payload: { title: "Temporary room" },
+    })).json<{ id: string }>();
+    const thread = (await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/threads`,
+      payload: { title: "Preserved agent", engine: "codex", masterChatId: masterChat.id },
+    })).json<{ id: string }>();
+
+    const deleteRes = await app.inject({ method: "DELETE", url: `/api/master-chats/${masterChat.id}` });
+    expect(deleteRes.statusCode).toBe(204);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${masterChat.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{ thread: { masterChatId?: string } }>().thread.masterChatId).toBeUndefined();
+    expect((await app.inject({ method: "DELETE", url: `/api/master-chats/${masterChat.id}` })).statusCode).toBe(404);
+
+    await app.close();
+  });
+
   it("rejects linking an agent thread to another project's master chat", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const firstProjectRes = await app.inject({

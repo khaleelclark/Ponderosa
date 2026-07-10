@@ -77,6 +77,9 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(patch satisfies UpdateMasterChatRequest),
     });
   },
+  async deleteMasterChat(masterChatId) {
+    await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId), { method: "DELETE" });
+  },
   async sendMasterChatMessage(masterChatId, request) {
     await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId) + "/messages", {
       method: "POST",
