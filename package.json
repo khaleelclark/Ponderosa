@@ -9,8 +9,8 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
+    "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/threads build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
+    "test": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/threads build && pnpm --filter @ponderosa/engines build && pnpm -r test",
     "clean": "pnpm -r exec rm -rf dist",
     "engines:try": "node packages/engines/dist/harness.js",
     "start:prod": "NODE_ENV=production node apps/server/dist/main.js"

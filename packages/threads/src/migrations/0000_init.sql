@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS threads (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL,
+  master_chat_id    TEXT,
   title             TEXT NOT NULL,
   active_engine     TEXT NOT NULL,
   active_session_id TEXT,

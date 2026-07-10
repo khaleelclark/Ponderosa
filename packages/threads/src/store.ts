@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -17,8 +18,13 @@ import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   ArtifactKind,
+  CreateMasterChatMessageRequest,
+  CreateMasterChatRequest,
   CreateProjectRequest,
   CreateThreadRequest,
+  MasterChatDetailDto,
+  MasterChatDto,
+  MasterChatMessageDto,
   MessageDto,
   ProjectDto,
   TaskDto,
@@ -26,6 +32,7 @@ import type {
   ThreadDetailDto,
   ThreadDto,
   ThreadState,
+  UpdateMasterChatRequest,
   UpdateThreadRequest,
 } from "@ponderosa/core";
 import { openDb, type Db } from "./db.js";
@@ -42,6 +49,8 @@ import {
 import {
   artifacts,
   events,
+  masterChatMessages,
+  masterChats,
   messages,
   projects,
   tasks,
@@ -53,6 +62,10 @@ import {
   attachmentsDir,
   dbPath,
   eventsPath,
+  masterChatDir,
+  masterChatJsonPath,
+  masterChatMessagesPath,
+  masterChatsDir,
   projectJsonPath,
   projectsDir,
   threadDir,
@@ -71,11 +84,32 @@ interface ProjectJson {
 interface ThreadJson {
   id: string;
   projectId: string;
+  masterChatId?: string;
   title: string;
   activeEngine: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+}
+
+interface MasterChatJson {
+  id: string;
+  projectId: string;
+  title: string;
+  defaultEngine?: string;
+  defaultModel?: string;
+  defaultEffort?: string;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+}
+
+interface MasterChatMessageJson {
+  id: string;
+  masterChatId: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  createdAt: string;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -85,6 +119,14 @@ function writeJson(file: string, data: unknown): void {
 
 function readJson<T>(file: string): T {
   return JSON.parse(readFileSync(file, "utf8")) as T;
+}
+
+function readJsonLines<T>(file: string): T[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as T);
 }
 
 export class ThreadStore {
@@ -123,6 +165,7 @@ export class ThreadStore {
       createdAt: now,
     };
     writeJson(projectJsonPath(this.dataDir, id), record);
+    mkdirSync(masterChatsDir(this.dataDir, id), { recursive: true });
     mkdirSync(threadsDir(this.dataDir, id), { recursive: true });
     this.db
       .insert(projects)
@@ -157,6 +200,155 @@ export class ThreadStore {
     };
   }
 
+  // ─── Master chats ─────────────────────────────────────────────────────────
+
+  createMasterChat(projectId: string, input: CreateMasterChatRequest): MasterChatDto {
+    if (!this.getProject(projectId)) throw new Error(`unknown project: ${projectId}`);
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const record: MasterChatJson = {
+      id,
+      projectId,
+      title: input.title,
+      defaultEngine: input.defaultEngine,
+      defaultModel: input.defaultModel,
+      defaultEffort: input.defaultEffort,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+    };
+    mkdirSync(masterChatDir(this.dataDir, projectId, id), { recursive: true });
+    writeJson(masterChatJsonPath(this.dataDir, projectId, id), record);
+    this.db
+      .insert(masterChats)
+      .values({
+        id,
+        projectId,
+        title: input.title,
+        defaultEngine: input.defaultEngine ?? null,
+        defaultModel: input.defaultModel ?? null,
+        defaultEffort: input.defaultEffort ?? null,
+        createdAt: now,
+        updatedAt: now,
+        archived: 0,
+      })
+      .run();
+    return this.masterChatRowToDto(
+      this.db.select().from(masterChats).where(eq(masterChats.id, id)).get()!,
+    );
+  }
+
+  listMasterChats(projectId: string): MasterChatDto[] {
+    return this.db
+      .select()
+      .from(masterChats)
+      .where(eq(masterChats.projectId, projectId))
+      .orderBy(asc(masterChats.createdAt))
+      .all()
+      .map((row) => this.masterChatRowToDto(row));
+  }
+
+  getMasterChat(id: string): MasterChatDto | undefined {
+    const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
+    return row ? this.masterChatRowToDto(row) : undefined;
+  }
+
+  getMasterChatDetail(id: string): MasterChatDetailDto | undefined {
+    const masterChat = this.getMasterChat(id);
+    if (!masterChat) return undefined;
+    return {
+      masterChat,
+      messages: this.getMasterChatMessages(id),
+      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatId === id),
+    };
+  }
+
+  updateMasterChat(id: string, patch: UpdateMasterChatRequest): MasterChatDto | undefined {
+    const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
+    if (!row) return undefined;
+    const now = new Date().toISOString();
+    const next = {
+      title: patch.title ?? row.title,
+      defaultEngine: patch.defaultEngine === undefined ? row.defaultEngine : patch.defaultEngine,
+      defaultModel: patch.defaultModel === undefined ? row.defaultModel : patch.defaultModel,
+      defaultEffort: patch.defaultEffort === undefined ? row.defaultEffort : patch.defaultEffort,
+      archived: patch.archived ?? row.archived === 1,
+    };
+    this.db
+      .update(masterChats)
+      .set({
+        title: next.title,
+        defaultEngine: next.defaultEngine,
+        defaultModel: next.defaultModel,
+        defaultEffort: next.defaultEffort,
+        archived: next.archived ? 1 : 0,
+        updatedAt: now,
+      })
+      .where(eq(masterChats.id, id))
+      .run();
+    const json = readJson<MasterChatJson>(masterChatJsonPath(this.dataDir, row.projectId, id));
+    writeJson(masterChatJsonPath(this.dataDir, row.projectId, id), {
+      ...json,
+      ...next,
+      defaultEngine: next.defaultEngine ?? undefined,
+      defaultModel: next.defaultModel ?? undefined,
+      defaultEffort: next.defaultEffort ?? undefined,
+      updatedAt: now,
+    });
+    return this.getMasterChat(id);
+  }
+
+  appendMasterChatMessage(
+    masterChatId: string,
+    input: CreateMasterChatMessageRequest,
+  ): MasterChatMessageDto | undefined {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return undefined;
+    const now = new Date().toISOString();
+    const message: MasterChatMessageJson = {
+      id: randomUUID(),
+      masterChatId,
+      role: input.role ?? "user",
+      text: input.text,
+      createdAt: now,
+    };
+    mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
+    appendFileSync(
+      masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+      JSON.stringify(message) + "\n",
+      "utf8",
+    );
+    this.db.insert(masterChatMessages).values(message).run();
+    this.db
+      .update(masterChats)
+      .set({ updatedAt: now })
+      .where(eq(masterChats.id, masterChatId))
+      .run();
+    const jsonPath = masterChatJsonPath(this.dataDir, masterChat.projectId, masterChatId);
+    const json = readJson<MasterChatJson>(jsonPath);
+    writeJson(jsonPath, { ...json, updatedAt: now });
+    return message;
+  }
+
+  getMasterChatMessages(masterChatId: string): MasterChatMessageDto[] {
+    return this.db
+      .select()
+      .from(masterChatMessages)
+      .where(eq(masterChatMessages.masterChatId, masterChatId))
+      .orderBy(asc(masterChatMessages.createdAt))
+      .all()
+      .map((row) => ({
+        id: row.id,
+        masterChatId: row.masterChatId,
+        role:
+          row.role === "assistant" || row.role === "system"
+            ? row.role
+            : "user",
+        text: row.text,
+        createdAt: row.createdAt,
+      }));
+  }
+
   // ─── Threads ───────────────────────────────────────────────────────────────
 
   createThread(projectId: string, input: CreateThreadRequest): ThreadDto {
@@ -165,6 +357,7 @@ export class ThreadStore {
     const record: ThreadJson = {
       id,
       projectId,
+      masterChatId: input.masterChatId,
       title: input.title,
       activeEngine: input.engine,
       createdAt: now,
@@ -180,6 +373,7 @@ export class ThreadStore {
       .values({
         id,
         projectId,
+        masterChatId: input.masterChatId ?? null,
         title: input.title,
         activeEngine: input.engine,
         createdAt: now,
@@ -383,6 +577,8 @@ export class ThreadStore {
     this.db.delete(tasks).run();
     this.db.delete(messages).run();
     this.db.delete(threads).run();
+    this.db.delete(masterChatMessages).run();
+    this.db.delete(masterChats).run();
     this.db.delete(projects).run();
     this.logs.clear();
     this.states.clear();
@@ -405,6 +601,34 @@ export class ThreadStore {
         })
         .run();
 
+      const mDir = masterChatsDir(this.dataDir, projectId);
+      if (existsSync(mDir)) {
+        for (const masterChatId of readdirSync(mDir)) {
+          const mj = masterChatJsonPath(this.dataDir, projectId, masterChatId);
+          if (!existsSync(mj)) continue;
+          const m = readJson<MasterChatJson>(mj);
+          this.db
+            .insert(masterChats)
+            .values({
+              id: m.id,
+              projectId: m.projectId,
+              title: m.title,
+              defaultEngine: m.defaultEngine ?? null,
+              defaultModel: m.defaultModel ?? null,
+              defaultEffort: m.defaultEffort ?? null,
+              createdAt: m.createdAt,
+              updatedAt: m.updatedAt,
+              archived: m.archived ? 1 : 0,
+            })
+            .run();
+          for (const message of readJsonLines<MasterChatMessageJson>(
+            masterChatMessagesPath(this.dataDir, projectId, masterChatId),
+          )) {
+            this.db.insert(masterChatMessages).values(message).run();
+          }
+        }
+      }
+
       const tDir = threadsDir(this.dataDir, projectId);
       if (!existsSync(tDir)) continue;
       for (const threadId of readdirSync(tDir)) {
@@ -416,6 +640,7 @@ export class ThreadStore {
           .values({
             id: t.id,
             projectId: t.projectId,
+            masterChatId: t.masterChatId ?? null,
             title: t.title,
             activeEngine: t.activeEngine,
             createdAt: t.createdAt,
@@ -565,9 +790,24 @@ export class ThreadStore {
     return {
       id: row.id,
       projectId: row.projectId,
+      masterChatId: row.masterChatId ?? undefined,
       title: row.title,
       activeEngine: row.activeEngine,
       state,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      archived: row.archived === 1,
+    };
+  }
+
+  private masterChatRowToDto(row: typeof masterChats.$inferSelect): MasterChatDto {
+    return {
+      id: row.id,
+      projectId: row.projectId,
+      title: row.title,
+      defaultEngine: row.defaultEngine ?? undefined,
+      defaultModel: row.defaultModel ?? undefined,
+      defaultEffort: row.defaultEffort ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,

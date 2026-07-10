@@ -23,6 +23,60 @@ export interface CreateProjectRequest {
   hostPath: string;
 }
 
+// ─── Master chats ────────────────────────────────────────────────────────────
+
+/** A model-agnostic project control room that can spawn many agent threads. */
+export interface MasterChatDto {
+  id: string;
+  projectId: string;
+  title: string;
+  defaultEngine?: EngineId;
+  defaultModel?: string;
+  defaultEffort?: string;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+}
+
+/** POST /api/projects/:id/master-chats body. */
+export interface CreateMasterChatRequest {
+  title: string;
+  defaultEngine?: EngineId;
+  defaultModel?: string;
+  defaultEffort?: string;
+}
+
+/** PATCH /api/master-chats/:id body. */
+export interface UpdateMasterChatRequest {
+  title?: string;
+  defaultEngine?: EngineId | null;
+  defaultModel?: string | null;
+  defaultEffort?: string | null;
+  archived?: boolean;
+}
+
+/** A message in the project-level master chat. */
+export interface MasterChatMessageDto {
+  id: string;
+  masterChatId: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  createdAt: string;
+}
+
+/** GET /api/master-chats/:id response. */
+export interface MasterChatDetailDto {
+  masterChat: MasterChatDto;
+  messages: MasterChatMessageDto[];
+  threads: ThreadDto[];
+}
+
+/** POST /api/master-chats/:id/messages body. */
+export interface CreateMasterChatMessageRequest {
+  role?: "user" | "assistant" | "system";
+  text: string;
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────────
 
 /** Derived thread state (current branch/commit), from `state` events (SPEC §2). */
@@ -35,6 +89,8 @@ export interface ThreadState {
 export interface ThreadDto {
   id: string;
   projectId: string;
+  /** Optional control-room/master chat that spawned or groups this agent. */
+  masterChatId?: string;
   title: string;
   /** The engine currently bound to this thread. */
   activeEngine: EngineId;
@@ -48,6 +104,7 @@ export interface ThreadDto {
 export interface CreateThreadRequest {
   title: string;
   engine: EngineId;
+  masterChatId?: string;
   model?: string;
   effort?: string;
 }
