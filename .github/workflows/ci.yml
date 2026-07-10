@@ -56,7 +56,12 @@ jobs:
         run: |
           set -euo pipefail
           git -C "$DEPLOY_DIR" fetch --prune origin master
-          git -C "$DEPLOY_DIR" checkout --detach "$DEPLOY_SHA"
+          if [ -n "$(git -C "$DEPLOY_DIR" status --porcelain)" ]; then
+            git -C "$DEPLOY_DIR" status --short
+            echo "Deploy checkout has local changes; refusing to overwrite them."
+            exit 1
+          fi
+          git -C "$DEPLOY_DIR" checkout -B master "$DEPLOY_SHA"
           cd "$DEPLOY_DIR"
           pnpm install --frozen-lockfile
           pnpm build
