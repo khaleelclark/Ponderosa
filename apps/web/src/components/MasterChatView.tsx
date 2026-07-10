@@ -2,6 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import ArchiveOutlinedIcon from "@mui/icons-material/ArchiveOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
+import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import {
   Alert,
   Box,
@@ -12,7 +13,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
+  Drawer,
   FormControl,
   IconButton,
   InputLabel,
@@ -27,6 +28,8 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
@@ -63,6 +66,7 @@ export function MasterChatView({
   const [renameValue, setRenameValue] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   // Mirror of the composer text so we can show a live @mention target + guard.
   // A message with no @mention spawns a new agent; @Handle routes to that agent.
@@ -77,6 +81,8 @@ export function MasterChatView({
   const [effort, setEffort] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const theme = useTheme();
+  const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
 
   const masterChat = detailQuery.data?.masterChat;
   const messages = detailQuery.data?.messages ?? [];
@@ -330,6 +336,16 @@ export function MasterChatView({
           <Button
             variant="outlined"
             size="small"
+            startIcon={<GroupsOutlinedIcon />}
+            onClick={() => setAgentsOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={agentsOpen}
+          >
+            Agents ({threads.length})
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
             startIcon={<AddIcon />}
             onClick={() => onNewAgent(masterChat)}
           >
@@ -488,18 +504,27 @@ export function MasterChatView({
             ))}
           </Stack>
 
-          <Divider sx={{ my: 1.5 }} />
+        </Box>
+      </Box>
 
-          <Stack direction="row" spacing={1} sx={{ alignItems: "baseline", mb: 1 }}>
-            <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
-              Agents in this master chat
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {threads.length}
-            </Typography>
+      <Drawer
+        anchor={mobileRoster ? "bottom" : "right"}
+        open={agentsOpen}
+        onClose={() => setAgentsOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        PaperProps={{
+          sx: mobileRoster
+            ? { maxHeight: "min(75dvh, 640px)", borderRadius: "16px 16px 0 0" }
+            : { width: "min(420px, 92vw)" },
+        }}
+      >
+        <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this master chat">
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
+            <Typography variant="h6" sx={{ flex: 1 }}>Agents in this master chat</Typography>
+            <Chip size="small" label={threads.length} />
           </Stack>
           {threads.length === 0 ? (
-            <Alert severity="info">No agents yet. Send a message above to spawn one.</Alert>
+            <Alert severity="info">No agents yet. Send a message to spawn one.</Alert>
           ) : (
             <List dense disablePadding>
               {threads.map((agent) => {
@@ -526,7 +551,10 @@ export function MasterChatView({
                     }
                   >
                     <ListItemButton
-                      onClick={() => onOpenAgent(agent.id)}
+                      onClick={() => {
+                        setAgentsOpen(false);
+                        onOpenAgent(agent.id);
+                      }}
                       sx={{ borderRadius: 1, border: 1, borderColor: "divider", pr: 12 }}
                     >
                       <ListItemText
@@ -548,7 +576,7 @@ export function MasterChatView({
             </List>
           )}
         </Box>
-      </Box>
+      </Drawer>
 
       <Box>
         {spawn.isError || reply.isError ? (
