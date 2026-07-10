@@ -40,6 +40,18 @@ function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
   return event.type !== "user_message";
 }
 
+/**
+ * The agent's final human-facing message for a turn, trimmed and length-capped for
+ * the group chat. Keeps the tail (final answer / PR link usually ends the message).
+ * Returns undefined when the turn produced no text (e.g. pure tool work).
+ */
+function summarizeFinalMessage(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  const cap = 4000;
+  return trimmed.length <= cap ? trimmed : `…${trimmed.slice(-cap)}`;
+}
+
 function envelope(threadId: string, stored: StoredLogEvent): SseEventEnvelope | undefined {
   if (!isAgentEvent(stored.event)) return undefined;
   return { threadId, seq: stored.seq, ts: stored.ts, event: stored.event };
@@ -333,10 +345,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       activeRuns.set(thread.id, { runId, controller });
 
       void (async () => {
-        // Track how the turn ends so an agent can report a brief status back into
-        // its master chat (the team group chat). Manager-facing, not the full log.
+        // Accumulate the agent's human-facing message so it can post its actual
+        // answer back into the master chat (the team group chat) when the turn ends
+        // — e.g. "It's 95°F and sunny" or "Done — PR here: <link>".
         let runError: string | undefined;
         let sawWaiting = false;
+        let finalText = "";
         try {
           const stream = resumeSessionId
             ? engine.adapter.continue({
@@ -361,6 +375,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           for await (const event of stream) {
             const stored = store.appendEvent(thread.id, event);
             publish(thread.id, stored);
+            if (event.type === "text") finalText += event.delta;
             if (event.type === "error") runError = event.message;
             if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
           }
@@ -375,10 +390,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           // thread deletion), in which case a report-back would be misleading.
           if (thread.masterChatId && !controller.signal.aborted) {
             const statusText = runError
-              ? `⚠️ Stuck — ${runError.slice(0, 140)}`
-              : sawWaiting
-                ? "⏸️ Waiting for your input"
-                : "✅ Finished";
+              ? `⚠️ Stuck — ${runError.slice(0, 200)}`
+              : summarizeFinalMessage(finalText) ??
+                (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
               // No master-chat SSE; the group-chat view polls, so the post-back
               // surfaces on its next refetch.

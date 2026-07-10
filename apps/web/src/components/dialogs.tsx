@@ -124,6 +124,7 @@ export function CreateAgentDialog({
   defaultEngine,
   defaultModel,
   defaultEffort,
+  defaultName,
   pending,
   error,
   onClose,
@@ -136,6 +137,8 @@ export function CreateAgentDialog({
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
+  /** Suggested single-word (park) name, prefilled and editable. */
+  defaultName?: string;
   pending: boolean;
   error?: string;
   onClose(): void;
@@ -149,13 +152,13 @@ export function CreateAgentDialog({
 
   useEffect(() => {
     if (open) {
-      setTitle("");
+      setTitle(defaultName ?? "");
       setEngine(defaultEngine ?? engines.find((candidate) => candidate.authenticated)?.id ?? engines[0]?.id ?? UNSET);
       setModel(defaultModel ?? UNSET);
       setEffort(defaultEffort ?? UNSET);
       setMasterChatId(fixedMasterChatId ?? UNSET);
     }
-  }, [open, defaultEngine, defaultModel, defaultEffort, fixedMasterChatId, engines]);
+  }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, fixedMasterChatId, engines]);
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
   const models = activeEngine?.models ?? [];
