@@ -25,7 +25,7 @@ import {
 } from "@mui/material";
 import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -470,6 +470,7 @@ export function Composer({
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
+  const mentionListId = useId();
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const canSend = text.trim().length > 0 && !disabled && !running;
@@ -537,6 +538,14 @@ export function Composer({
             inputRef={inputRef}
             disabled={disabled || running}
             placeholder={running ? "Agent is working" : (placeholder ?? "Send a message")}
+            inputProps={{
+              "aria-label": "Message",
+              role: mentionHandles ? "combobox" : undefined,
+              "aria-autocomplete": mentionHandles ? "list" : undefined,
+              "aria-expanded": mentionHandles ? menuOpen : undefined,
+              "aria-controls": menuOpen ? mentionListId : undefined,
+              "aria-activedescendant": menuOpen ? `${mentionListId}-option-${highlighted}` : undefined,
+            }}
             onChange={(event) => {
               update(event.target.value);
               setCaret(event.target.selectionStart ?? event.target.value.length);
@@ -575,10 +584,13 @@ export function Composer({
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
             <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
               <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180 }}>
-                <MenuList dense>
+                <MenuList dense id={mentionListId} role="listbox" aria-label="Agent mentions">
                   {suggestions.map((handle, index) => (
                     <MenuItem
                       key={handle}
+                      id={`${mentionListId}-option-${index}`}
+                      role="option"
+                      aria-selected={index === highlighted}
                       selected={index === highlighted}
                       onMouseDown={(event) => {
                         event.preventDefault();
