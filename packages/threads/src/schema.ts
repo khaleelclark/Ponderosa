@@ -46,6 +46,8 @@ export const masterChatMessages = sqliteTable("master_chat_messages", {
   role: text("role").notNull(), // "user" | "assistant" | "system"
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
+  // Set when an agent (thread) posts back into the group chat; null for the manager.
+  authorThreadId: text("author_thread_id"),
 });
 
 export const messages = sqliteTable("messages", {

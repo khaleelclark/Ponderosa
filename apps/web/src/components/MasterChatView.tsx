@@ -16,6 +16,7 @@ import {
   FormControl,
   IconButton,
   InputLabel,
+  Link,
   List,
   ListItem,
   ListItemButton,
@@ -63,6 +64,9 @@ export function MasterChatView({
   const [renameValue, setRenameValue] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
+  // Where a sent message goes: "new" spawns an agent; otherwise it's routed to an
+  // existing agent (thread id) as a follow-up turn instead of spawning.
+  const [target, setTarget] = useState<string>("new");
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -131,6 +135,21 @@ export function MasterChatView({
     onSuccess: invalidate,
   });
 
+  // Route a message to an existing agent (a follow-up turn) instead of spawning.
+  // Recorded in the shared pool so it stays as context for future agents.
+  const reply = useMutation({
+    mutationFn: async ({ agentId, text }: { agentId: string; text: string }) => {
+      await api.sendMasterChatMessage(masterChatId, { text });
+      await api.sendMessage(agentId, { text });
+    },
+    onSuccess: () => {
+      invalidate();
+      if (target !== "new") {
+        void queryClient.invalidateQueries({ queryKey: ["thread", target] });
+      }
+    },
+  });
+
   const rename = useMutation({
     mutationFn: (title: string) => api.updateMasterChat(masterChatId, { title }),
     onSuccess: () => {
@@ -179,6 +198,26 @@ export function MasterChatView({
   const efforts = activeEngine?.efforts ?? [];
   const engineReady = Boolean(activeEngine?.authenticated);
 
+  const agentTitle = (threadId: string | undefined): string =>
+    threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
+
+  // If the send target vanished (deleted/archived out of this chat), fall back to spawn.
+  const resolvedTarget = target !== "new" && threads.some((t) => t.id === target) ? target : "new";
+  const targetIsAgent = resolvedTarget !== "new";
+  const targetRunning = targetIsAgent && statusByAgentId.get(resolvedTarget) === "running";
+  // Manager can spawn when the engine is signed in; replying to an existing agent
+  // needs it idle (routing a turn to a running agent is the steering case, deferred).
+  const canSend = targetIsAgent ? !targetRunning : engineReady;
+  const busy = spawn.isPending || reply.isPending;
+
+  const submit = (text: string) => {
+    if (targetIsAgent) {
+      reply.mutate({ agentId: resolvedTarget, text });
+    } else {
+      spawn.mutate(text);
+    }
+  };
+
   return (
     <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto 1fr auto" }}>
       <Box sx={{ px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
@@ -188,7 +227,7 @@ export function MasterChatView({
               {masterChat.title}
             </Typography>
             <Typography variant="body2" color="text.secondary" noWrap>
-              Model-agnostic control room · new messages spawn an agent
+              Team group chat · agents report back here when done or stuck
             </Typography>
           </Box>
           <Tooltip title="Rename">
@@ -294,10 +333,10 @@ export function MasterChatView({
       <Box sx={{ minHeight: 0, overflow: "auto" }}>
         <Box sx={{ p: 1.5 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            Each message here spawns a new agent on the selected engine and hands it that message
-            as its first task. Spawning many agents is fine — this room is never locked. Changing the
-            engine only affects agents you spawn afterwards; running agents keep their model. Delete an
-            agent any time to stop and remove it.
+            This is your team's group chat. By default a message spawns a new agent on the selected
+            engine; use “Send to” to reply to an existing agent instead. Agents post a brief status
+            here when they finish or get stuck, and everything stays as shared context for future
+            agents.
           </Alert>
           {!engineReady ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
@@ -309,29 +348,45 @@ export function MasterChatView({
           <Stack spacing={1.25} sx={{ mb: 2 }}>
             {messages.length === 0 ? (
               <Typography variant="body2" color="text.secondary">
-                No messages yet. Send a task to spawn your first agent.
+                No messages yet. Send a task to spawn your first agent — it reports back here when
+                it finishes or gets stuck.
               </Typography>
             ) : null}
-            {messages.map((message) => (
-              <Box
-                key={message.id}
-                sx={{
-                  alignSelf: message.role === "user" ? "flex-end" : "flex-start",
-                  maxWidth: "min(680px, 92%)",
-                  px: 1.5,
-                  py: 1,
-                  borderRadius: 2,
-                  bgcolor: message.role === "user" ? "primary.main" : "background.paper",
-                  color: message.role === "user" ? "primary.contrastText" : "text.primary",
-                  border: message.role === "user" ? 0 : 1,
-                  borderColor: "divider",
-                }}
-              >
-                <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                  {message.text}
-                </Typography>
-              </Box>
-            ))}
+            {messages.map((message) => {
+              const fromManager = !message.authorThreadId;
+              return (
+                <Box
+                  key={message.id}
+                  sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: "min(680px, 92%)" }}
+                >
+                  {message.authorThreadId ? (
+                    <Link
+                      component="button"
+                      variant="caption"
+                      onClick={() => onOpenAgent(message.authorThreadId!)}
+                      sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
+                    >
+                      {agentTitle(message.authorThreadId)}
+                    </Link>
+                  ) : null}
+                  <Box
+                    sx={{
+                      px: 1.5,
+                      py: 1,
+                      borderRadius: 2,
+                      bgcolor: fromManager ? "primary.main" : "background.paper",
+                      color: fromManager ? "primary.contrastText" : "text.primary",
+                      border: fromManager ? 0 : 1,
+                      borderColor: "divider",
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                      {message.text}
+                    </Typography>
+                  </Box>
+                </Box>
+              );
+            })}
           </Stack>
 
           <Divider sx={{ my: 1.5 }} />
@@ -396,16 +451,49 @@ export function MasterChatView({
         </Box>
       </Box>
 
-      <Composer
-        disabled={spawn.isPending || !engineReady}
-        running={false}
-        placeholder={
-          engineReady
-            ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
-            : "Select a signed-in engine to spawn agents"
-        }
-        onSend={(text) => spawn.mutate(text)}
-      />
+      <Box>
+        <Box sx={{ px: 1, pt: 1, borderTop: 1, borderColor: "divider" }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }} useFlexGap>
+            <FormControl size="small" sx={{ minWidth: 220 }}>
+              <InputLabel id="master-target-label">Send to</InputLabel>
+              <Select
+                labelId="master-target-label"
+                label="Send to"
+                value={resolvedTarget}
+                onChange={(event: SelectChangeEvent) => setTarget(event.target.value)}
+              >
+                <MenuItem value="new">✨ New agent (spawn)</MenuItem>
+                {threads.map((agent) => (
+                  <MenuItem key={agent.id} value={agent.id}>
+                    {agent.title}
+                    {statusByAgentId.get(agent.id) === "running" ? " · busy" : ""}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            {targetRunning ? (
+              <Typography variant="caption" color="warning.main">
+                {agentTitle(resolvedTarget)} is busy — replying to a running agent needs steering
+                (coming soon). Wait for it to finish, or spawn a new agent.
+              </Typography>
+            ) : null}
+          </Stack>
+        </Box>
+        <Composer
+          disabled={busy || !canSend}
+          running={false}
+          placeholder={
+            targetIsAgent
+              ? targetRunning
+                ? `${agentTitle(resolvedTarget)} is busy`
+                : `Reply to ${agentTitle(resolvedTarget)}`
+              : engineReady
+                ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
+                : "Select a signed-in engine to spawn agents"
+          }
+          onSend={submit}
+        />
+      </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename master chat</DialogTitle>
