@@ -110,6 +110,7 @@ interface MasterChatMessageJson {
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
+  authorThreadId?: string | null;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -301,6 +302,7 @@ export class ThreadStore {
   appendMasterChatMessage(
     masterChatId: string,
     input: CreateMasterChatMessageRequest,
+    authorThreadId?: string,
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
@@ -311,6 +313,7 @@ export class ThreadStore {
       role: input.role ?? "user",
       text: input.text,
       createdAt: now,
+      authorThreadId: authorThreadId ?? null,
     };
     mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
     appendFileSync(
@@ -327,7 +330,14 @@ export class ThreadStore {
     const jsonPath = masterChatJsonPath(this.dataDir, masterChat.projectId, masterChatId);
     const json = readJson<MasterChatJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
-    return message;
+    return {
+      id: message.id,
+      masterChatId: message.masterChatId,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      authorThreadId: authorThreadId ?? undefined,
+    };
   }
 
   getMasterChatMessages(masterChatId: string): MasterChatMessageDto[] {
@@ -346,6 +356,7 @@ export class ThreadStore {
             : "user",
         text: row.text,
         createdAt: row.createdAt,
+        authorThreadId: row.authorThreadId ?? undefined,
       }));
   }
 

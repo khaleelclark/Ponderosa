@@ -333,6 +333,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       activeRuns.set(thread.id, { runId, controller });
 
       void (async () => {
+        // Track how the turn ends so an agent can report a brief status back into
+        // its master chat (the team group chat). Manager-facing, not the full log.
+        let runError: string | undefined;
+        let sawWaiting = false;
         try {
           const stream = resumeSessionId
             ? engine.adapter.continue({
@@ -357,13 +361,36 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           for await (const event of stream) {
             const stored = store.appendEvent(thread.id, event);
             publish(thread.id, stored);
+            if (event.type === "error") runError = event.message;
+            if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           const stored = store.appendEvent(thread.id, { type: "error", message });
           publish(thread.id, stored);
+          runError = message;
         } finally {
           activeRuns.delete(thread.id);
+          // Post a group-chat status unless the run was cancelled/aborted (cancel or
+          // thread deletion), in which case a report-back would be misleading.
+          if (thread.masterChatId && !controller.signal.aborted) {
+            const statusText = runError
+              ? `⚠️ Stuck — ${runError.slice(0, 140)}`
+              : sawWaiting
+                ? "⏸️ Waiting for your input"
+                : "✅ Finished";
+            try {
+              // No master-chat SSE; the group-chat view polls, so the post-back
+              // surfaces on its next refetch.
+              store.appendMasterChatMessage(
+                thread.masterChatId,
+                { role: "assistant", text: statusText },
+                thread.id,
+              );
+            } catch {
+              // Master chat may have been deleted mid-run; ignore.
+            }
+          }
         }
       })();
 

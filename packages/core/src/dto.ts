@@ -55,13 +55,19 @@ export interface UpdateMasterChatRequest {
   archived?: boolean;
 }
 
-/** A message in the project-level master chat. */
+/** A message in the project-level master chat (a team group chat). */
 export interface MasterChatMessageDto {
   id: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
+  /**
+   * The agent (thread) that authored this message, when it came from an agent
+   * reporting back into the group chat (finished/stuck). Absent for the manager's
+   * own messages.
+   */
+  authorThreadId?: string;
 }
 
 /** GET /api/master-chats/:id response. */

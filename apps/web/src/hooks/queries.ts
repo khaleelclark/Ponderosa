@@ -21,6 +21,9 @@ export function useMasterChat(masterChatId: string | undefined) {
     queryKey: ["master-chat", masterChatId],
     queryFn: () => api.getMasterChat(masterChatId ?? ""),
     enabled: Boolean(masterChatId),
+    // The group chat is the primary surface: poll so agent report-backs and new
+    // agents appear without a manual refresh.
+    refetchInterval: 4000,
   });
 }
 
