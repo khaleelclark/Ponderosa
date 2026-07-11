@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
 import { ClaudeAdapter } from "../src/claude.js";
 
@@ -28,6 +28,32 @@ describe("ClaudeAdapter surface", () => {
     expect(a.displayName).toBe("Claude");
     expect(a.listModels().some((m) => m.id === "opus")).toBe(true);
     expect(a.listEfforts().map((e) => e.id)).toContain("high");
+  });
+});
+
+describe("ClaudeAdapter launch authorization", () => {
+  it("rejects a delegated run before spawning claude", async () => {
+    const spawnFn = vi.fn() as unknown as typeof spawn;
+    const adapter = new ClaudeAdapter({ spawnFn });
+
+    const events = [];
+    for await (const event of adapter.seed({
+      threadId: "delegated",
+      cwd,
+      prompt: "work",
+      history: [],
+      signal: new AbortController().signal,
+      authorizeLaunch: async () => {
+        throw new Error("registration_expired");
+      },
+    })) {
+      events.push(event);
+    }
+
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      { type: "error", message: "launch authorization failed: registration_expired" },
+    ]);
   });
 });
 

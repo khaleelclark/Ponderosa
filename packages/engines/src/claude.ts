@@ -94,7 +94,13 @@ export class ClaudeAdapter implements Adapter {
 
   seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
     const prompt = renderSeedPrompt(opts.history, opts.prompt);
-    return this.run(this.baseArgs(prompt, opts.model, opts.effort), opts.cwd, opts.signal, opts.environment);
+    return this.run(
+      this.baseArgs(prompt, opts.model, opts.effort),
+      opts.cwd,
+      opts.signal,
+      opts.environment,
+      opts.authorizeLaunch,
+    );
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
@@ -103,7 +109,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.authorizeLaunch);
   }
 
   private run(
@@ -111,6 +117,7 @@ export class ClaudeAdapter implements Adapter {
     cwd: string,
     signal: AbortSignal,
     environment?: Record<string, string>,
+    authorizeLaunch?: (signal: AbortSignal) => Promise<void>,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
@@ -122,6 +129,7 @@ export class ClaudeAdapter implements Adapter {
       killGraceMs: this.killGraceMs,
       map: mapClaudeEvent,
       label: "claude",
+      beforeSpawn: authorizeLaunch,
     });
   }
 }

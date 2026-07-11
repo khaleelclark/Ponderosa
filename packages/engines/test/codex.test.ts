@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
 import { CodexAdapter, readCodexModels, renderSeedPrompt } from "../src/codex.js";
 
@@ -219,5 +219,31 @@ describe("CodexAdapter surface", () => {
     writeFileSync(cachePath, "not json");
     expect(readCodexModels(cachePath)).toEqual([{ id: "", label: "Codex default" }]);
     rmSync(tempDir, { recursive: true });
+  });
+});
+
+describe("CodexAdapter launch authorization", () => {
+  it("rejects a delegated run before spawning codex", async () => {
+    const spawnFn = vi.fn() as unknown as typeof spawn;
+    const adapter = new CodexAdapter({ spawnFn });
+
+    const events = [];
+    for await (const event of adapter.seed({
+      threadId: "delegated",
+      cwd,
+      prompt: "work",
+      history: [],
+      signal: new AbortController().signal,
+      authorizeLaunch: async () => {
+        throw new Error("registration_mismatch");
+      },
+    })) {
+      events.push(event);
+    }
+
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      { type: "error", message: "launch authorization failed: registration_mismatch" },
+    ]);
   });
 });
