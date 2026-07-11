@@ -378,6 +378,31 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("dispatches a canonical mention for an agent whose display name contains punctuation", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
+    const wrangell = store.createThread(project.id, {
+      title: "Wrangell-St. Elias",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Wrangell-St-Elias can you review this?" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    await waitForRun(wrangell.id);
+    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(store.getMessages(wrangell.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Wrangell-St-Elias can you review this?" })]),
+    );
+    await app.close();
+  });
+
   it("never sends collaboration context until a valid agent mention is accepted", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

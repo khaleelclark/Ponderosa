@@ -87,7 +87,10 @@ function summarizeFinalMessage(text: string): string | undefined {
 }
 
 function agentMentionHandle(title: string): string {
-  return title.trim().replace(/\s+/g, "-");
+  return title
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
 function mentionRelayFingerprint(authorThreadId: string, targetThreadId: string, text: string): string {
