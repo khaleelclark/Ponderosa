@@ -1109,11 +1109,11 @@ export class ThreadStore {
     reason: "explicit_compaction" | "resume_compaction_failed",
   ): boolean {
     const row = this.db
-      .select({ id: threads.id })
+      .select({ id: threads.id, activeSessionId: threads.activeSessionId })
       .from(threads)
       .where(eq(threads.id, threadId))
       .get();
-    if (!row) return false;
+    if (!row?.activeSessionId) return false;
 
     this.appendEvent(threadId, { type: "session_reset", reason });
     return true;

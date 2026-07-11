@@ -1924,6 +1924,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { cancelled: true };
   });
 
+  app.post<{ Params: { id: string } }>("/api/threads/:id/compact", async (request, reply) => {
+    if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
+    if (activeRuns.has(request.params.id)) {
+      return reply.code(409).send({ error: "cannot compact a thread with an active run", retryable: true });
+    }
+    return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
+  });
+
   app.get<{ Params: { id: string } }>("/api/threads/:id/tasks", async (request, reply) => {
     if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
     return store.getTasks(request.params.id);

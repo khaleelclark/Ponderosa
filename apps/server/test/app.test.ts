@@ -394,6 +394,31 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("explicitly compacts only an idle persisted runtime session", async () => {
+    const { app, thread } = await createProjectAndThread();
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "active" } });
+    await waitForSeedCount(1);
+
+    const active = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    expect(active.statusCode).toBe(409);
+    expect(active.json()).toMatchObject({ retryable: true });
+    await cancelAndWait(app, thread.id);
+
+    const compacted = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    expect(compacted.statusCode).toBe(200);
+    expect(compacted.json()).toEqual({ compacted: true });
+    expect(store.resumeSessionId(thread.id)).toBeUndefined();
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+      .toEqual([expect.objectContaining({ event: expect.objectContaining({ reason: "explicit_compaction" }) })]);
+
+    const replay = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    expect(replay.json()).toEqual({ compacted: false });
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+      .toHaveLength(1);
+    await app.close();
+  });
+
   it("sends current master-chat context and teammate reply guidance on spawn and mention turns", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
