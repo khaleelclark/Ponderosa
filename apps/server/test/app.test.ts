@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
-import { createServer, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, createServer, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 import { DelegationStore } from "../src/delegations.js";
 
@@ -147,6 +147,14 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: str
 }
 
 describe("server chunk F", () => {
+  it("bounds fresh-session history by both characters and message count", () => {
+    const history = Array.from({ length: 80 }, (_, index) => ({ role: "user" as const, text: `${index}:` + "x".repeat(1_000) }));
+    const bounded = boundedSeedHistory(history, 5_000, 4);
+    expect(bounded).toHaveLength(4);
+    expect(bounded.reduce((total, message) => total + message.text.length, 0)).toBeLessThanOrEqual(5_000);
+    expect(bounded.at(-1)?.text.startsWith("79:")).toBe(true);
+  });
+
   it("separates daemon liveness from work readiness", async () => {
     const app = createServer({ dataDir, store, engines, authToken: "operator-secret", logger: false });
 
@@ -463,7 +471,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("sends current master-chat context and teammate reply guidance on spawn and mention turns", async () => {
+  it("seeds bounded room context once and sends only the new message on continuation", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Release room" });
@@ -500,12 +508,10 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id, 2);
 
-    expect(adapter.continues[0]?.prompt).toContain("Aspen: done");
-    expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
-    expect(adapter.continues[0]?.prompt).toContain("The main chat is manager-facing");
-    expect(adapter.continues[0]?.prompt).toContain("do not use @mentions here to coordinate with teammates");
-    expect(adapter.continues[0]?.prompt).toContain("Agent-to-agent discussion belongs in the separate Collaboration chat");
-    expect(adapter.continues[0]?.prompt).toContain("Do not repeat, recap, or answer with the whole conversation");
+    expect(adapter.continues[0]?.prompt).not.toContain("Aspen: done");
+    expect(adapter.continues[0]?.prompt).not.toContain("Current master chat history:");
+    expect(adapter.continues[0]?.prompt).not.toContain("PONDEROSA_DELEGATION_URL");
+    expect(adapter.continues[0]?.prompt).toContain("Reply with only the new manager-facing update or result.");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("- tagged agents: @Aspen");
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
