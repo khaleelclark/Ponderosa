@@ -1,5 +1,6 @@
 import type {
   ArtifactContentDto,
+  AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   CollaborationChatDetailDto,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
@@ -32,6 +33,7 @@ export interface CreateAgentOptions {
   /** Starts the first turn as part of creation, avoiding a stranded idle agent. */
   initialMessage?: string;
   replyToMessageId?: string;
+  presetId?: string;
 }
 
 export interface StreamSubscription {
@@ -71,6 +73,10 @@ export interface PonderosaApi {
   cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;
   subscribeSubagents(masterChatId: string, lastSeenSeq: number | undefined, handlers: SubagentStreamHandlers): StreamSubscription;
   listThreads(projectId: string): Promise<ThreadDto[]>;
+  listAgentPresets(projectId: string): Promise<AgentPresetDto[]>;
+  createAgentPreset(projectId: string, request: CreateAgentPresetRequest): Promise<AgentPresetDto>;
+  updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto>;
+  deleteAgentPreset(id: string): Promise<void>;
   createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;
   /** User-facing wrapper around createThread that spawns an agent, optionally under a master chat. */
   createAgent(projectId: string, masterChatId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;

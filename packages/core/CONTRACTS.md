@@ -24,6 +24,14 @@ subpath exports kept out of the browser bundle.
 | `EngineId` | Stable engine identifier (`"codex"`, `"claude"`). |
 | `ChatMessage` | One human-facing turn (`role`, `text`, optional `createdAt`). Fed to `seed()`. |
 | `ModelOption` / `EffortOption` | Selectable model / reasoning-effort entries. |
+
+## Agent preset contracts
+
+`AgentPresetDto` and its create/update requests define project-scoped reusable
+roles. `CreateThreadRequest.presetId` is resolved by the server and represented on
+`ThreadDto.presetSnapshot`; delegation accepts the same safe identifier without
+accepting ownership fields. Guidance is snapshotted at spawn, not looked up during
+later turns.
 | `RunOptionsBase` / `ContinueOptions` / `SeedOptions` | Method option bags; `signal` wires cancellation to process kill. |
 | `EngineAuthStatus` | Auth status surfaced by `/api/engines`. |
 

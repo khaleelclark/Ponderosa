@@ -17,6 +17,7 @@ import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
+  AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
   CreateMasterChatMessageRequest,
@@ -50,6 +51,7 @@ import {
 } from "./projectors.js";
 import {
   artifacts,
+  agentPresets,
   events,
   masterChatMessages,
   masterChats,
@@ -70,6 +72,7 @@ import {
   masterChatMessagesPath,
   masterChatsDir,
   projectJsonPath,
+  agentPresetsPath,
   projectsDir,
   threadDir,
   threadJsonPath,
@@ -93,7 +96,16 @@ interface ThreadJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  presetSnapshot?: ThreadDto["presetSnapshot"];
 }
+
+type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
+const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine: "codex" }> = [
+  { name: "Frontend", description: "Accessible, polished product UI", guidance: "Act as a product-minded frontend engineer. Prioritize responsive UX, accessibility, and tested user flows.", engine: "codex" },
+  { name: "Security", description: "Threat-model and harden changes", guidance: "Act as a security reviewer. Preserve trust boundaries, minimize authority, and test abuse cases.", engine: "codex" },
+  { name: "QA", description: "Find regressions and verify behavior", guidance: "Act as a QA engineer. Build a risk-based test plan, reproduce failures, and report evidence precisely.", engine: "codex" },
+  { name: "Documentation", description: "Create clear, accurate documentation", guidance: "Act as a technical writer. Verify behavior in the code and write concise task-oriented documentation.", engine: "codex" },
+];
 
 interface MasterChatJson {
   id: string;
@@ -204,7 +216,34 @@ export class ThreadStore {
       .insert(projects)
       .values({ id, label: input.label, hostPath: input.hostPath, createdAt: now })
       .run();
+    for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now };
+  }
+
+  listAgentPresets(projectId: string): AgentPresetDto[] {
+    return this.db.select().from(agentPresets).where(eq(agentPresets.projectId, projectId)).orderBy(asc(agentPresets.name)).all().map((r) => ({ ...r, model: r.model ?? undefined, effort: r.effort ?? undefined, enabled: r.enabled === 1, engine: r.engine as AgentPresetDto["engine"] }));
+  }
+  getAgentPreset(id: string): AgentPresetDto | undefined {
+    const r = this.db.select().from(agentPresets).where(eq(agentPresets.id, id)).get();
+    return r ? { ...r, model: r.model ?? undefined, effort: r.effort ?? undefined, enabled: r.enabled === 1, engine: r.engine as AgentPresetDto["engine"] } : undefined;
+  }
+  createAgentPreset(projectId: string, input: CreateAgentPresetRequest): AgentPresetDto {
+    if (!this.getProject(projectId)) throw new Error("unknown project");
+    const now = new Date().toISOString();
+    const preset: AgentPresetDto = { id: randomUUID(), projectId, ...input, enabled: input.enabled ?? true, createdAt: now, updatedAt: now };
+    appendFileSync(agentPresetsPath(this.dataDir, projectId), JSON.stringify({ type: "upsert", preset } satisfies PresetEvent) + "\n");
+    this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run(); return preset;
+  }
+  updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {
+    const current = this.getAgentPreset(id); if (!current) return undefined;
+    const next = { ...current, ...patch, model: patch.model === null ? undefined : patch.model ?? current.model, effort: patch.effort === null ? undefined : patch.effort ?? current.effort, updatedAt: new Date().toISOString() } as AgentPresetDto;
+    appendFileSync(agentPresetsPath(this.dataDir, current.projectId), JSON.stringify({ type: "upsert", preset: next } satisfies PresetEvent) + "\n");
+    this.db.update(agentPresets).set({ ...next, model: next.model ?? null, effort: next.effort ?? null, enabled: next.enabled ? 1 : 0 }).where(eq(agentPresets.id, id)).run(); return next;
+  }
+  deleteAgentPreset(id: string): boolean {
+    const current = this.getAgentPreset(id); if (!current) return false;
+    appendFileSync(agentPresetsPath(this.dataDir, current.projectId), JSON.stringify({ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent) + "\n");
+    this.db.delete(agentPresets).where(eq(agentPresets.id, id)).run(); return true;
   }
 
   listProjects(): ProjectDto[] {
@@ -500,6 +539,9 @@ export class ThreadStore {
   createThread(projectId: string, input: CreateThreadRequest): ThreadDto {
     const id = randomUUID();
     const now = new Date().toISOString();
+    const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
+    if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
+    const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
     const record: ThreadJson = {
       id,
       projectId,
@@ -509,6 +551,7 @@ export class ThreadStore {
       createdAt: now,
       updatedAt: now,
       archived: false,
+      presetSnapshot,
     };
     mkdirSync(threadDir(this.dataDir, projectId, id), { recursive: true });
     mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
@@ -525,6 +568,7 @@ export class ThreadStore {
         createdAt: now,
         updatedAt: now,
         archived: 0,
+        presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
       })
       .run();
     return this.rowToThreadDto(id)!;
@@ -728,6 +772,7 @@ export class ThreadStore {
     this.db.delete(masterChatMessages).run();
     this.db.delete(masterChats).run();
     this.db.delete(projects).run();
+    this.db.delete(agentPresets).run();
     this.logs.clear();
     this.states.clear();
 
@@ -748,6 +793,9 @@ export class ThreadStore {
           lastUsedAt: p.lastUsedAt ?? null,
         })
         .run();
+      const resolved = new Map<string, AgentPresetDto>();
+      for (const event of readJsonLines<PresetEvent>(agentPresetsPath(this.dataDir, projectId))) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
+      for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
 
       const mDir = masterChatsDir(this.dataDir, projectId);
       if (existsSync(mDir)) {
@@ -807,6 +855,7 @@ export class ThreadStore {
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             archived: t.archived ? 1 : 0,
+            presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
           })
           .run();
 
@@ -958,6 +1007,7 @@ export class ThreadStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
+      presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
   }
 

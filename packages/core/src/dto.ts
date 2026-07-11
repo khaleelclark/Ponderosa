@@ -17,6 +17,24 @@ export interface ProjectDto {
   lastUsedAt?: string;
 }
 
+export interface AgentPresetDto {
+  id: string;
+  projectId: string;
+  name: string;
+  description: string;
+  guidance: string;
+  engine: EngineId;
+  model?: string;
+  effort?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateAgentPresetRequest = Pick<AgentPresetDto, "name" | "description" | "guidance" | "engine"> &
+  Partial<Pick<AgentPresetDto, "model" | "effort" | "enabled">>;
+export type UpdateAgentPresetRequest = Partial<Omit<CreateAgentPresetRequest, "engine">> & { engine?: EngineId };
+
 /** POST /api/projects body. */
 export interface CreateProjectRequest {
   label: string;
@@ -125,6 +143,8 @@ export interface ThreadDto {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Immutable-at-spawn preset provenance and guidance snapshot. */
+  presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
 }
 
 /** POST /api/projects/:id/threads body. */
@@ -138,6 +158,7 @@ export interface CreateThreadRequest {
   initialMessage?: string;
   /** Master-chat message referenced by the optional first turn. */
   replyToMessageId?: string;
+  presetId?: string;
 }
 
 /** PATCH /api/threads/:id body (rename / archive). */
@@ -324,8 +345,11 @@ export interface SubagentRunDto {
 export interface AgentDelegationRequest {
   displayLabel: string;
   delegationPrompt: string;
-  runtime: string;
+  runtime?: string;
   model?: string;
+  effort?: string;
+  /** Safe project-scoped identifier; the server resolves all preset fields. */
+  presetId?: string;
   idempotencyKey: string;
 }
 

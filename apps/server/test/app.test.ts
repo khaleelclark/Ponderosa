@@ -161,6 +161,20 @@ describe("server chunk F", () => {
     await unavailable.close();
   });
 
+  it("validates preset options and snapshots server-resolved guidance into spawned agents", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
+    const invalid = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review", guidance: "Review carefully", engine: "codex", model: "not-real" } });
+    expect(invalid.statusCode).toBe(400);
+    const created = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review trust boundaries", guidance: "Review trust boundaries and capability checks.", engine: "codex", model: "mock-model", effort: "high" } });
+    expect(created.statusCode).toBe(201);
+    const preset = created.json<{ id: string }>();
+    const spawned = await app.inject({ method: "POST", url: `/api/projects/${project.id}/threads`, payload: { title: "Audit", engine: "spoofed", presetId: preset.id } });
+    expect(spawned.statusCode).toBe(200);
+    expect(spawned.json<{ activeEngine: string; presetSnapshot: { guidance: string } }>()).toMatchObject({ activeEngine: "codex", presetSnapshot: { guidance: "Review trust boundaries and capability checks." } });
+    await app.close();
+  });
+
   it("creates master chats, records control messages, and spawns linked agent threads", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const projectRes = await app.inject({

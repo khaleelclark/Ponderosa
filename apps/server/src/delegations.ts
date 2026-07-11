@@ -20,6 +20,7 @@ interface LegacyRegistrationRecord {
 interface RunRecord extends SubagentRunDto {
   delegationPrompt: string;
   model?: string;
+  effort?: string;
   contextSnapshot: {
     id: string;
     masterChatId: string;
@@ -51,7 +52,7 @@ export class DelegationError extends Error {
 }
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
-const publicRun = ({ delegationPrompt: _prompt, model: _model, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
+const publicRun = ({ delegationPrompt: _prompt, model: _model, effort: _effort, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
 
 interface SpawnResult {
   run: SubagentRunDto;
@@ -192,6 +193,7 @@ export class DelegationStore {
     prompt: string;
     runtime: string;
     model?: string;
+    effort?: string;
     history: Array<{ role: "user" | "assistant"; text: string }>;
   } | undefined {
     const run = this.runs.get(runId);
@@ -200,6 +202,7 @@ export class DelegationStore {
       prompt: run.delegationPrompt,
       runtime: run.runtime,
       model: run.model,
+      effort: run.effort,
       history: run.contextSnapshot.messages.flatMap((message) =>
         message.role === "user" || message.role === "assistant"
           ? [{ role: message.role, text: message.text }]
@@ -250,7 +253,7 @@ export class DelegationStore {
 
   spawn(
     masterChatId: string,
-    input: AgentDelegationRequest & { parentRunId: string },
+    input: Omit<AgentDelegationRequest, "runtime"> & { parentRunId: string; runtime: string },
     parentIsRunning: boolean,
     contextMessages: Array<{ id: string; role: string; text: string; authorThreadId?: string }>,
     parentThreadId?: string,
@@ -295,6 +298,7 @@ export class DelegationStore {
       delegationSummary: input.displayLabel.trim().slice(0, 100),
       delegationPrompt: input.delegationPrompt,
       model: input.model,
+      effort: input.effort,
       runtime: input.runtime,
       status: "queued",
       canCancel: true,

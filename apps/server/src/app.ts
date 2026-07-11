@@ -957,6 +957,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ].join("\n"),
           history: context.history,
           model: context.model,
+          effort: context.effort,
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
@@ -1005,10 +1006,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(403).send({ error: { code: "unauthorized_parent", message: `ownership field ${forbiddenOwnership} is server-controlled`, retryable: false } });
       }
       const input = request.body;
-      if (!input?.displayLabel?.trim() || !input.delegationPrompt?.trim() || !input.runtime?.trim() || !input.idempotencyKey?.trim()) {
-        return reply.code(400).send({ error: { code: "forbidden", message: "displayLabel, delegationPrompt, runtime, and idempotencyKey are required", retryable: false } });
+      if (!input?.displayLabel?.trim() || !input.delegationPrompt?.trim() || (!input.runtime?.trim() && !input.presetId) || !input.idempotencyKey?.trim()) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "displayLabel, delegationPrompt, runtime or presetId, and idempotencyKey are required", retryable: false } });
       }
-      if (!engines.has(input.runtime)) {
+      const parent = store.getThread(capability.threadId);
+      const preset = input.presetId ? store.getAgentPreset(input.presetId) : undefined;
+      if (input.presetId && (!parent || !preset || preset.projectId !== parent.projectId || !preset.enabled)) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "preset is unavailable for this project", retryable: false } });
+      }
+      const runtime = preset?.engine ?? input.runtime!;
+      const model = preset?.model ?? input.model;
+      const effort = preset?.effort ?? input.effort;
+      const delegationPrompt = preset ? `Agent preset snapshot (${preset.name}):\n${preset.guidance}\n\n${input.delegationPrompt}` : input.delegationPrompt;
+      if (!engines.has(runtime)) {
         return reply.code(400).send({ error: { code: "forbidden", message: "runtime is not configured", retryable: false } });
       }
       if (input.displayLabel.length > 100 || input.delegationPrompt.length > MAX_TEXT_LENGTH || input.idempotencyKey.length > 200 || (input.model?.length ?? 0) > 200) {
@@ -1021,9 +1031,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let spawned = delegations.spawn(capability.masterChatId, {
           parentRunId: capability.parentRunId,
           displayLabel: input.displayLabel,
-          delegationPrompt: input.delegationPrompt,
-          runtime: input.runtime,
-          model: input.model,
+          delegationPrompt,
+          runtime,
+          model,
+          effort,
           idempotencyKey: input.idempotencyKey,
         }, true, contextMessages, capability.threadId);
         if (!spawned.run.childThreadId) {
@@ -1031,9 +1042,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (!masterChat) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
           const child = store.createThread(masterChat.projectId, {
             title: spawned.run.displayLabel,
-            engine: input.runtime,
+            engine: runtime,
             masterChatId: capability.masterChatId,
-            model: input.model,
+            model,
+            effort,
+            presetId: preset?.id,
           });
           const initial = store.appendEvent(child.id, {
             type: "user_message",
@@ -1301,15 +1314,46 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return store.listThreads(request.params.id);
   });
 
+  const validatePreset = (input: { name?: string; description?: string; guidance?: string; engine?: string; model?: string | null; effort?: string | null }, partial = false): string | undefined => {
+    if (!partial && (!input.name?.trim() || !input.description?.trim() || !input.guidance?.trim() || !input.engine)) return "name, description, guidance, and engine are required";
+    if (input.name !== undefined && (input.name.trim().length < 2 || input.name.trim().length > 60)) return "name must be 2-60 characters";
+    if (input.description !== undefined && input.description.trim().length > 240) return "description must be at most 240 characters";
+    if (input.guidance !== undefined && (input.guidance.trim().length < 10 || input.guidance.trim().length > 8000)) return "guidance must be 10-8000 characters";
+    if (input.engine) {
+      const configured = engines.get(input.engine); if (!configured) return "unknown engine";
+      if (input.model && !configured.adapter.listModels().some((x) => x.id === input.model)) return "model is not available for engine";
+      if (input.effort && !configured.adapter.listEfforts().some((x) => x.id === input.effort)) return "effort is not available for engine";
+    }
+  };
+  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-presets", async (request, reply) => store.getProject(request.params.id) ? store.listAgentPresets(request.params.id) : reply.code(404).send({ error: "project not found" }));
+  app.post<{ Params: { id: string }; Body: import("@ponderosa/core").CreateAgentPresetRequest }>("/api/projects/:id/agent-presets", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const error = validatePreset(request.body ?? {}); if (error) return reply.code(400).send({ error });
+    return reply.code(201).send(store.createAgentPreset(request.params.id, request.body));
+  });
+  app.patch<{ Params: { id: string }; Body: import("@ponderosa/core").UpdateAgentPresetRequest }>("/api/agent-presets/:id", async (request, reply) => {
+    const current = store.getAgentPreset(request.params.id); if (!current) return reply.code(404).send({ error: "preset not found" });
+    const body = request.body ?? {};
+    if (Object.keys(body).some((key) => !["name", "description", "guidance", "engine", "model", "effort", "enabled"].includes(key))) return reply.code(400).send({ error: "unknown preset field" });
+    const error = validatePreset({ ...current, ...body }, true); if (error) return reply.code(400).send({ error });
+    return store.updateAgentPreset(request.params.id, body)!;
+  });
+  app.delete<{ Params: { id: string } }>("/api/agent-presets/:id", async (request, reply) => store.deleteAgentPreset(request.params.id) ? { deleted: true } : reply.code(404).send({ error: "preset not found" }));
+
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string; initialMessage?: string; replyToMessageId?: string };
+    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string; initialMessage?: string; replyToMessageId?: string; presetId?: string };
   }>(
     "/api/projects/:id/threads",
     async (request, reply) => {
       if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
       if (!request.body?.title || !request.body?.engine) {
         return reply.code(400).send({ error: "title and engine are required" });
+      }
+      if (request.body.presetId) {
+        const preset = store.getAgentPreset(request.body.presetId);
+        if (!preset || preset.projectId !== request.params.id || !preset.enabled) return reply.code(400).send({ error: "preset is unavailable for this project" });
+        request.body.engine = preset.engine; request.body.model = preset.model; request.body.effort = preset.effort;
       }
       if (!engines.has(request.body.engine)) return reply.code(400).send({ error: "unknown engine" });
       if (request.body.masterChatId) {
@@ -1322,7 +1366,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       const initialMessage = request.body.initialMessage?.trim();
-      const thread = store.createThread(request.params.id, request.body);
+      let thread; try { thread = store.createThread(request.params.id, request.body); } catch { return reply.code(400).send({ error: "preset is unavailable for this project" }); }
       if (initialMessage) {
         if (thread.masterChatId) {
           store.appendMasterChatMessage(thread.masterChatId, { text: initialMessage, replyToMessageId: request.body.replyToMessageId });
@@ -1620,8 +1664,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : masterChat && sourceChannel === "main"
           ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
           : individualChatPrompt(text, context);
+      const guidedPrompt = thread.presetSnapshot?.guidance
+        ? `Agent preset snapshot (${thread.presetSnapshot.name}):\n${thread.presetSnapshot.guidance}\n\n${basePrompt}`
+        : basePrompt;
       const attachmentContext = messageAttachments.length ? `\n\nAttached images (validated local files scoped to this thread):\n${messageAttachments.map((item) => `- ${item.name} (${item.mediaType}, ${item.width}x${item.height}, ${item.size} bytes): ${attachmentPath(opts.dataDir, thread.projectId, thread.id, `${item.id}.${item.mediaType === "image/jpeg" ? "jpg" : item.mediaType.slice(6)}`)}`).join("\n")}` : "";
-      const prompt = `${basePrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${guidedPrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo, attachments: messageAttachments });

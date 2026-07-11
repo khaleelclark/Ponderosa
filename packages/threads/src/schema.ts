@@ -12,6 +12,12 @@ export const projects = sqliteTable("projects", {
   createdAt: text("created_at").notNull(),
   lastUsedAt: text("last_used_at"),
 });
+export const agentPresets = sqliteTable("agent_presets", {
+  id: text("id").primaryKey(), projectId: text("project_id").notNull(), name: text("name").notNull(),
+  description: text("description").notNull(), guidance: text("guidance").notNull(), engine: text("engine").notNull(),
+  model: text("model"), effort: text("effort"), enabled: integer("enabled").notNull().default(1),
+  createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
+});
 
 export const threads = sqliteTable("threads", {
   id: text("id").primaryKey(),
@@ -26,6 +32,7 @@ export const threads = sqliteTable("threads", {
   updatedAt: text("updated_at").notNull(),
   // SQLite has no boolean: 0/1.
   archived: integer("archived").notNull().default(0),
+  presetSnapshotJson: text("preset_snapshot_json"),
 });
 
 export const masterChats = sqliteTable("master_chats", {
@@ -96,6 +103,7 @@ export const events = sqliteTable("events", {
 });
 
 export type ProjectRow = typeof projects.$inferSelect;
+export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type ThreadRow = typeof threads.$inferSelect;
 export type MasterChatRow = typeof masterChats.$inferSelect;
 export type MasterChatMessageRow = typeof masterChatMessages.$inferSelect;

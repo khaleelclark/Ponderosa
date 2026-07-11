@@ -141,8 +141,13 @@ export const realApi: PonderosaApi = {
       effort: options.effort,
       initialMessage: options.initialMessage,
       replyToMessageId: options.replyToMessageId,
+      presetId: options.presetId,
     });
   },
+  listAgentPresets(projectId) { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
+  createAgentPreset(projectId, request) { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", body: JSON.stringify(request) }); },
+  updateAgentPreset(id, patch) { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
+  async deleteAgentPreset(id) { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
   updateThread(threadId, patch) {
     return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}`, {
       method: "PATCH",
