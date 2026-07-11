@@ -48,6 +48,18 @@ export interface SubagentTreeNode extends SubagentRunView {
   children: SubagentTreeNode[];
 }
 
+export interface SubagentUiBinding {
+  store: SubagentStore;
+  cancelling?: ReadonlySet<string>;
+  cancel(run: SubagentRunView): void;
+  loadTranscript?(run: SubagentRunView): void;
+}
+
+export function isSubagentUiEnabled(env: Record<string, string | undefined>): boolean {
+  const value = env.PUBLIC_PONDEROSA_SUBAGENTS ?? env.VITE_PONDEROSA_SUBAGENTS;
+  return value === "1" || value === "true";
+}
+
 export const emptySubagentStore = (): SubagentStore => ({
   lastSeq: 0,
   runs: new Map(),

@@ -4,6 +4,7 @@ import {
   applyCancellationResult,
   buildSubagentTree,
   emptySubagentStore,
+  isSubagentUiEnabled,
   subagentTranscript,
   type SubagentRunView,
 } from "../src/subagents";
@@ -23,6 +24,13 @@ const run = (id: string, overrides: Partial<SubagentRunView> = {}): SubagentRunV
 });
 
 describe("subagent UI adapter", () => {
+  it("keeps the Collaboration mount behind an explicit feature flag", () => {
+    expect(isSubagentUiEnabled({})).toBe(false);
+    expect(isSubagentUiEnabled({ PUBLIC_PONDEROSA_SUBAGENTS: "true" })).toBe(true);
+    expect(isSubagentUiEnabled({ VITE_PONDEROSA_SUBAGENTS: "1" })).toBe(true);
+    expect(isSubagentUiEnabled({ PUBLIC_PONDEROSA_SUBAGENTS: "false" })).toBe(false);
+  });
+
   it("upserts lifecycle events and ignores replayed or stale changes", () => {
     let store = emptySubagentStore();
     store = applySubagentEvent(store, { seq: 1, type: "upsert", run: run("parent") });
