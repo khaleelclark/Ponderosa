@@ -122,6 +122,13 @@ export function replyFallbackText(text: string): string {
   return text.trim() || "Original message unavailable";
 }
 
+export function individualChatSenderLabel(
+  role: MessageDto["role"],
+  agentName: string,
+): string {
+  return role === "user" ? "You" : agentName.trim() || "Agent";
+}
+
 export function codeBlockText(children: ReactNode): string {
   if (typeof children === "string" || typeof children === "number") {
     return String(children);
@@ -216,7 +223,15 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
-export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onReply?(message: MessageDto): void }): JSX.Element {
+export function ChatPane({
+  messages,
+  agentName,
+  onReply,
+}: {
+  messages: MessageDto[];
+  agentName: string;
+  onReply?(message: MessageDto): void;
+}): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
@@ -245,10 +260,14 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
-      {chatMessages.map((message) => (
+      {chatMessages.map((message) => {
+        const senderLabel = individualChatSenderLabel(message.role, agentName);
+        return (
         <Box
           key={message.id}
           id={`message-${message.id}`}
+          component="article"
+          aria-label={`${senderLabel} message`}
           tabIndex={-1}
           sx={{
             alignSelf: message.role === "user" ? "flex-end" : "flex-start",
@@ -263,6 +282,22 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
             boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
           }}
         >
+          <Typography
+            component="div"
+            variant="caption"
+            sx={{
+              mb: 0.5,
+              maxWidth: "100%",
+              overflowWrap: "anywhere",
+              unicodeBidi: "plaintext",
+              userSelect: "text",
+              fontWeight: 700,
+              lineHeight: 1.35,
+              opacity: message.role === "user" ? 0.9 : 0.72,
+            }}
+          >
+            {senderLabel}
+          </Typography>
           {message.replyTo ? (
             <Box
               component="button"
@@ -286,7 +321,8 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
           </Stack> : null}
           {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
         </Box>
-      ))}
+        );
+      })}
     </Stack>
   );
 }
