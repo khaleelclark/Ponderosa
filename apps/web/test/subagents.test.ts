@@ -36,11 +36,12 @@ const envelope = (
 ): SubagentEventEnvelope => ({ masterChatId: "master", seq, ts: "2026-01-01T00:00:00.000Z", event });
 
 describe("subagent UI adapter", () => {
-  it("keeps the Collaboration mount behind an explicit feature flag", () => {
-    expect(isSubagentUiEnabled({})).toBe(false);
+  it("shows delegated agents by default with an explicit kill switch", () => {
+    expect(isSubagentUiEnabled({})).toBe(true);
     expect(isSubagentUiEnabled({ PUBLIC_PONDEROSA_SUBAGENTS: "true" })).toBe(true);
     expect(isSubagentUiEnabled({ VITE_PONDEROSA_SUBAGENTS: "1" })).toBe(true);
     expect(isSubagentUiEnabled({ PUBLIC_PONDEROSA_SUBAGENTS: "false" })).toBe(false);
+    expect(isSubagentUiEnabled({ PUBLIC_PONDEROSA_SUBAGENTS: "0" })).toBe(false);
   });
 
   it("resumes from the reconnect cursor and ignores replayed or stale changes", () => {
