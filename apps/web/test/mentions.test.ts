@@ -20,6 +20,12 @@ describe("agent mentions", () => {
     expect(findMentionedAgent("@Bryce-Agent take a look", [thread("Bryce Agent")])?.title).toBe("Bryce Agent");
   });
 
+  it("uses a typeable canonical handle when a display name contains punctuation", () => {
+    expect(agentMentionHandle("Wrangell-St. Elias")).toBe("Wrangell-St-Elias");
+    expect(findMentionedAgent("@Wrangell-St-Elias please review", [thread("Wrangell-St. Elias")])?.title)
+      .toBe("Wrangell-St. Elias");
+  });
+
   it("recognizes hyphenated and Unicode names case-insensitively", () => {
     expect(findMentionedAgent("please ask @rivière-nord", [thread("Rivière-Nord")])?.title).toBe("Rivière-Nord");
   });
