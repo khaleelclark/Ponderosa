@@ -78,6 +78,7 @@ export function MasterChatView({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [dispatchedAgentIds, setDispatchedAgentIds] = useState<Set<string>>(new Set());
+  const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -198,10 +199,18 @@ export function MasterChatView({
     mutationFn: async ({ agentIds, text }: { agentIds: string[]; text: string }) => {
       setDispatchedAgentIds((current) => new Set([...current, ...agentIds]));
       await api.sendMasterChatMessage(masterChatId, { text });
-      await Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text, sourceChannel: "main" })));
+      return Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text, sourceChannel: "main" })));
     },
-    onSuccess: (_data, variables) => {
+    onSuccess: (responses, variables) => {
       invalidate();
+      const queuedTitles = variables.agentIds
+        .filter((_, index) => responses[index]?.queued)
+        .map((agentId) => detailQuery.data?.threads.find((thread) => thread.id === agentId)?.title ?? "Agent");
+      setQueuedReplyNotice(
+        queuedTitles.length > 0
+          ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
+          : undefined,
+      );
       for (const agentId of variables.agentIds) {
         void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
       }
@@ -315,7 +324,6 @@ export function MasterChatView({
     }
     const targets = findMentioned(text);
     if (targets.length > 0) {
-      if (targets.some((target) => statusByAgentId.get(target.id) === "running")) return;
       reply.mutate({ agentIds: targets.map((target) => target.id), text });
     } else {
       spawn.mutate(text);
@@ -477,7 +485,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Only agents with a valid <Box component="strong">@mention</Box> receive this chat's context; untagged messages stay here.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Agents post back here when they finish or get stuck.</>
+              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies to busy agents queue automatically.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (
@@ -634,6 +642,7 @@ export function MasterChatView({
       </Drawer>
 
       <Box>
+        {queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {spawn.isError || reply.isError || collaborate.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Message not sent. {String((spawn.error ?? reply.error ?? collaborate.error) as Error)}

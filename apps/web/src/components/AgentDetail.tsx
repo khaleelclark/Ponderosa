@@ -67,6 +67,7 @@ export function AgentDetail({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
 
   const detail = threadQuery.data;
   const engine =
@@ -289,6 +290,12 @@ export function AgentDetail({
       <Box sx={{ minHeight: 0, overflow: tab === "chat" ? "hidden" : "auto" }}>{panes[tab]}</Box>
 
       <Box>
+        {queuedMessageNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
+        {stream.running ? (
+          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
+            This agent is working. New messages will be queued and start automatically.
+          </Alert>
+        ) : null}
         {sendMessage.isError || cancelRun.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             {sendMessage.isError ? "Message not sent." : "The agent could not be stopped."}{" "}
@@ -296,11 +303,22 @@ export function AgentDetail({
           </Alert>
         ) : null}
         <Composer
-          disabled={running}
-          running={running}
-          placeholder="Message this agent directly"
+          disabled={sendMessage.isPending}
+          running={false}
+          placeholder={stream.running ? "Queue a follow-up for this agent" : "Message this agent directly"}
           onSend={(text) => {
-            sendMessage.mutate({ text, model: model || undefined, effort: effort || undefined });
+            sendMessage.mutate(
+              { text, model: model || undefined, effort: effort || undefined },
+              {
+                onSuccess: (response) => {
+                  setQueuedMessageNotice(
+                    response.queued
+                      ? `Queued in position ${response.position}; it will start when the current response finishes.`
+                      : undefined,
+                  );
+                },
+              },
+            );
             setTab("chat");
           }}
           onCancel={() => cancelRun.mutate()}

@@ -201,12 +201,23 @@ export interface SendMessageRequest {
   sourceChannel?: "main";
 }
 
-/** POST /api/threads/:id/messages response — the run id for the started turn. */
-export interface SendMessageResponse {
+/** POST /api/threads/:id/messages response when a turn starts immediately. */
+export interface StartedMessageResponse {
+  queued: false;
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
   mode: "seed" | "continue";
 }
+
+/** POST /api/threads/:id/messages response when another turn is still active. */
+export interface QueuedMessageResponse {
+  queued: true;
+  /** One-based position among follow-ups waiting for this agent. */
+  position: number;
+}
+
+/** A message either starts now or is accepted into the per-agent FIFO queue. */
+export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
 
 /** Destinations available to an agent through its short-lived run capability. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
