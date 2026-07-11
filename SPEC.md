@@ -144,6 +144,30 @@ build a separate "memory store" (see §4); the agents already do this natively.
 
 ## 3. Core Architecture
 
+### Delegation trust boundary and audit guarantee
+
+Delegation is a Ponderosa server operation, not an engine feature. Each active
+runtime receives an opaque, short-lived delegation capability. The agent-facing
+bridge accepts only task data (safe display label, private prompt, runtime/model,
+and idempotency key); the server derives the parent run, thread, master chat, and
+root lineage from the capability. Model-supplied ownership or registration fields
+are rejected.
+
+The bridge routes creation through the canonical delegation store, then consumes
+the existing one-time registration proof internally before launching the selected
+adapter. The proof and raw prompt never appear in public DTOs, logs, or UI
+responses. Public records contain lineage, runtime, safe summary, lifecycle
+status, and timestamps. Queued, running, output, terminal failure/completion, and
+cancellation events are appended to the delegation audit log and streamed to the
+lineage UI. Limits for depth, descendants, concurrency, authorization,
+idempotency, cancellation, and replay remain enforced by that store.
+
+Delegated children receive a newly bound capability so recursive work follows the
+same path. Capabilities are revoked when their owning run ends or is cancelled.
+Runtimes are explicitly instructed that built-in `spawn_agent`, `Task`, or similar
+subagent mechanisms are forbidden under Ponderosa; they must report bridge
+failures and must never silently fall back to an untracked child.
+
 The central engineering decision: **the app is an orchestrator over
 subscription-backed agent runtimes, not a chat client over provider API keys.**
 

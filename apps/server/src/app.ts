@@ -4,6 +4,7 @@ import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type {
   Adapter,
+  AgentDelegationRequest,
   AgentMessageChannel,
   AgentEvent,
   ArtifactContentDto,
@@ -60,6 +61,13 @@ interface AgentMessageCapability {
   runId: string;
   mentionDepth: number;
   mentionTrail: string[];
+}
+
+interface DelegationCapability {
+  parentRunId: string;
+  threadId: string;
+  masterChatId: string;
+  controller: AbortController;
 }
 
 interface InboundMessageContext {
@@ -156,6 +164,16 @@ function agentMessagingPrompt(): string[] {
   ];
 }
 
+function agentDelegationPrompt(): string[] {
+  return [
+    "When delegating work under Ponderosa, never use an engine's internal spawn_agent, Task, or subagent mechanism; those children are untracked and forbidden.",
+    "Use only Ponderosa's delegation bridge:",
+    'curl -sS -X POST "$PONDEROSA_DELEGATION_URL" -H "Authorization: Bearer $PONDEROSA_DELEGATION_TOKEN" -H "Content-Type: application/json" --data \'{"displayLabel":"Safe short summary","delegationPrompt":"Full private task","runtime":"codex","idempotencyKey":"stable-key"}\'',
+    "Do not send parentRunId, threadId, masterChatId, rootRunId, or registration credentials. Ponderosa binds ownership and launches the child server-side.",
+    "If delegation fails, report the error; never fall back to an internal spawning tool.",
+  ];
+}
+
 function agentMessageEndpoint(request: { protocol: string; headers: Record<string, unknown> }): string {
   const forwarded = request.headers["x-forwarded-proto"];
   const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
@@ -203,6 +221,7 @@ function masterChatPrompt(
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
     ...messageContextPrompt(context),
     ...agentMessagingPrompt(),
+    ...agentDelegationPrompt(),
     "",
     "Current master chat history:",
     transcript || "(No earlier messages.)",
@@ -239,6 +258,7 @@ function collaborationChatPrompt(
     "Do not claim to have seen the main chat.",
     ...messageContextPrompt(context),
     ...agentMessagingPrompt(),
+    ...agentDelegationPrompt(),
     "",
     "Collaboration chat history:",
     transcript || "(No earlier collaboration messages.)",
@@ -253,6 +273,7 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
     "You are replying in your individual Ponderosa agent chat.",
     ...messageContextPrompt(context),
     ...agentMessagingPrompt(),
+    ...agentDelegationPrompt(),
     "",
     "Latest message for you:",
     currentRequest,
@@ -357,6 +378,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const delegations = new DelegationStore(opts.dataDir);
   const subagentControllers = new Map<string, AbortController>();
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
+  const delegationCapabilities = new Map<string, DelegationCapability>();
   const pendingTurns = new Map<string, PendingTurn[]>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct thread request.
@@ -424,7 +446,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if (request.url === "/api/agent-messages" && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health") return;
     if (provided !== opts.authToken) {
@@ -549,6 +571,62 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     return { channel, messageId: message.id };
   });
+
+  app.post<{ Body: AgentDelegationRequest & Record<string, unknown> }>(
+    "/api/agent-delegations",
+    async (request, reply) => {
+      const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+      const capability = token ? delegationCapabilities.get(token) : undefined;
+      if (!capability || capability.controller.signal.aborted) {
+        return reply.code(401).send({ error: { code: "forbidden", message: "invalid or expired delegation capability", retryable: false } });
+      }
+      const forbiddenOwnership = ["parentRunId", "threadId", "masterChatId", "rootRunId", "registrationId", "credential"]
+        .find((field) => request.body && field in request.body);
+      if (forbiddenOwnership) {
+        return reply.code(403).send({ error: { code: "unauthorized_parent", message: `ownership field ${forbiddenOwnership} is server-controlled`, retryable: false } });
+      }
+      const input = request.body;
+      if (!input?.displayLabel?.trim() || !input.delegationPrompt?.trim() || !input.runtime?.trim() || !input.idempotencyKey?.trim()) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "displayLabel, delegationPrompt, runtime, and idempotencyKey are required", retryable: false } });
+      }
+      if (!engines.has(input.runtime)) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "runtime is not configured", retryable: false } });
+      }
+      try {
+        const context = store.getCollaborationChatDetail(capability.masterChatId);
+        if (!context) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
+        const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({ id, role, text, ...(authorThreadId ? { authorThreadId } : {}) }));
+        const spawned = delegations.spawn(capability.masterChatId, {
+          parentRunId: capability.parentRunId,
+          displayLabel: input.displayLabel,
+          delegationPrompt: input.delegationPrompt,
+          runtime: input.runtime,
+          model: input.model,
+          idempotencyKey: input.idempotencyKey,
+        }, true, contextMessages);
+        const launch = await app.inject({
+          method: "POST",
+          url: `/api/internal/subagents/${spawned.run.id}/launch`,
+          headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {},
+          payload: {
+            registrationId: spawned.registration.id,
+            credential: spawned.registration.credential,
+            parentRunId: capability.parentRunId,
+            masterChatId: capability.masterChatId,
+            runtime: input.runtime,
+          },
+        });
+        if (launch.statusCode !== 202) {
+          const failure = launch.json<{ error?: { message?: string } }>();
+          delegations.settle(spawned.run.id, "failed", failure.error?.message ?? "delegated launch was rejected");
+          return reply.code(launch.statusCode).send(failure);
+        }
+        return reply.code(202).send({ run: delegations.get(spawned.run.id), accepted: true, replayed: spawned.replayed });
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+    },
+  );
 
   app.get("/api/health", async (): Promise<HealthDto> => ({
     status: "ok",
@@ -750,12 +828,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
 
       const controller = new AbortController();
+      const delegationCapability = randomUUID();
       try {
         // Proof consumption, the running transition, and controller publication
         // complete synchronously before success is returned. Invalid/replayed
         // requests never enter the asynchronous launch or settlement path.
         const run = delegations.claim(request.params.runId, input);
         subagentControllers.set(run.id, controller);
+        delegationCapabilities.set(delegationCapability, {
+          parentRunId: run.id,
+          threadId: run.id,
+          masterChatId: run.masterChatId,
+          controller,
+        });
       } catch (error) {
         return delegationFailure(error, reply);
       }
@@ -765,9 +850,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const stream = engine.adapter.seed({
             threadId: request.params.runId,
             cwd: project.hostPath,
-            prompt: context.prompt,
+            prompt: `${context.prompt}\n\n${agentDelegationPrompt().join("\n")}`,
             history: context.history,
             model: context.model,
+            environment: {
+              PONDEROSA_DELEGATION_URL: `${agentMessageEndpoint(request).replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+              PONDEROSA_DELEGATION_TOKEN: delegationCapability,
+              PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
+            },
             signal: controller.signal,
             authorizeLaunch: async (signal) => {
               if (signal.aborted) throw new Error("delegated launch cancelled");
@@ -788,6 +878,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (subagentControllers.get(request.params.runId) === controller) {
             subagentControllers.delete(request.params.runId);
           }
+          delegationCapabilities.delete(delegationCapability);
         }
       })();
       return reply.code(202).send({ runId: request.params.runId, accepted: true });
@@ -1051,6 +1142,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
       });
+      if (thread.masterChatId) {
+        delegationCapabilities.set(messageCapability, {
+          parentRunId: runId,
+          threadId: thread.id,
+          masterChatId: thread.masterChatId,
+          controller,
+        });
+      }
 
       void (async () => {
         // Accumulate the agent's human-facing message so it can post its actual
@@ -1071,6 +1170,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   environment: {
                     PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
                     PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+                    PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+                    PONDEROSA_DELEGATION_TOKEN: messageCapability,
+                    PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
                   },
                   signal: controller.signal,
                 })
@@ -1084,6 +1186,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   environment: {
                     PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
                     PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+                    PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+                    PONDEROSA_DELEGATION_TOKEN: messageCapability,
+                    PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
                   },
                   signal: controller.signal,
                 });
@@ -1103,6 +1208,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         } finally {
           activeRuns.delete(thread.id);
           agentMessageCapabilities.delete(messageCapability);
+          delegationCapabilities.delete(messageCapability);
           // Post a group-chat status unless the run was cancelled/aborted (cancel or
           // thread deletion), in which case a report-back would be misleading.
           if (thread.masterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
