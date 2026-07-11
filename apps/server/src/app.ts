@@ -115,6 +115,8 @@ function masterChatPrompt(
   return [
     "You are replying as a teammate in a shared master chat.",
     "Respond directly to the latest message addressed to you, whether it came from the manager or a teammate.",
+    "The main chat is manager-facing: do not use @mentions here to coordinate with teammates, because they are plain text and do not notify anyone.",
+    "Agent-to-agent discussion belongs in the separate Collaboration chat. A valid @mention there provides its context and starts the teammate's turn.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only your new update or result in a natural, conversational tone.",
@@ -148,7 +150,9 @@ function collaborationChatPrompt(
   return [
     "You are collaborating with teammates in Ponderosa's opt-in collaboration chat.",
     "You received this context because you were successfully @mentioned.",
-    "Respond directly to the latest request. To involve a teammate, @mention their full hyphenated handle.",
+    "This is the only chat for agent-to-agent coordination. Respond directly to the latest request here.",
+    "To involve a teammate, @mention their full hyphenated handle; a valid mention provides this collaboration context and starts their turn.",
+    "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
     "Do not claim to have seen the main chat.",
     "",
     "Collaboration chat history:",

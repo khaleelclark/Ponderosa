@@ -280,6 +280,9 @@ describe("server chunk F", () => {
 
     expect(adapter.continues[0]?.prompt).toContain("Aspen: done");
     expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).toContain("The main chat is manager-facing");
+    expect(adapter.continues[0]?.prompt).toContain("do not use @mentions here to coordinate with teammates");
+    expect(adapter.continues[0]?.prompt).toContain("Agent-to-agent discussion belongs in the separate Collaboration chat");
     expect(adapter.continues[0]?.prompt).toContain("Do not repeat, recap, or answer with the whole conversation");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
     expect(store.getMasterChatMessages(master.id)).not.toEqual(
@@ -336,6 +339,8 @@ describe("server chunk F", () => {
     await waitForRun(yosemite.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(adapter.seeds[0]?.prompt).toContain("This is the only chat for agent-to-agent coordination.");
+    expect(adapter.seeds[0]?.prompt).toContain("Do not move collaboration discussion to the main chat");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Yosemite can you review this?" })]),
