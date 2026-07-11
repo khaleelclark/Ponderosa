@@ -249,28 +249,28 @@ export function ProjectShell({
   if (isMobile) {
     const showList = route.kind === "project";
     return (
-      <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto 1fr" }}>
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
         {showList ? (
           <Box sx={{ minHeight: 0, overflow: "auto", bgcolor: "background.paper" }}>{sidebar}</Box>
         ) : (
-          <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto 1fr" }}>
+          <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
             <Stack
               direction="row"
               spacing={1}
               sx={{ alignItems: "center", px: 1, py: 0.5, borderBottom: 1, borderColor: "divider" }}
             >
               <IconButton
-                aria-label="Back to navigation"
+                aria-label="Open project navigation"
                 onClick={() => navigate({ kind: "project", projectId })}
               >
                 <ArrowBackIcon />
               </IconButton>
               <Typography variant="subtitle2" color="text.secondary">
-                Navigation
+                Project navigation
               </Typography>
             </Stack>
-            <Box sx={{ minHeight: 0, display: "grid" }}>{main}</Box>
+            <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>{main}</Box>
           </Box>
         )}
         {dialogs}
@@ -279,7 +279,7 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ minHeight: 0, display: "grid", gridTemplateColumns: "300px 1fr" }}>
+    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)" }}>
       <Box
         sx={{
           borderRight: 1,
@@ -291,7 +291,7 @@ export function ProjectShell({
         {loading ? <LinearProgress /> : null}
         {sidebar}
       </Box>
-      <Box sx={{ minHeight: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
+      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
       {dialogs}
     </Box>
   );

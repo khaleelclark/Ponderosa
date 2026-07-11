@@ -140,7 +140,9 @@ export default function App({
     <Box
       sx={{
         height: "100dvh",
+        width: "100%",
         minHeight: 0,
+        minWidth: 0,
         overflow: "hidden",
         display: "grid",
         gridTemplateRows: "auto minmax(0, 1fr)",
@@ -148,7 +150,7 @@ export default function App({
       }}
     >
       <AppBar position="static" color="inherit" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Toolbar sx={{ minHeight: 56 }}>
+        <Toolbar sx={{ minHeight: 56, pt: "env(safe-area-inset-top)" }}>
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1 }}>
             Ponderosa
           </Typography>
@@ -176,7 +178,7 @@ export default function App({
         />
       </AppBar>
 
-      <Box sx={{ minHeight: 0, display: "grid" }}>
+      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
             <Alert
