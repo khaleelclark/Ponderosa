@@ -781,14 +781,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           signal: controller.signal,
         });
         for await (const event of stream) {
+          if (closed) break;
           const stored = store.appendEvent(childThread.id, event);
           publish(childThread.id, stored);
           if (event.type === "error") runtimeError = event.message;
         }
+        if (closed) return;
         if (controller.signal.aborted) notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", "delegated runtime aborted"));
         else if (runtimeError) notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", runtimeError));
         else notifyParentOfDelegatedCompletion(delegations.settle(runId, "completed"));
       } catch (error) {
+        if (closed) return;
         runtimeError = error instanceof Error ? error.message : String(error);
         notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", runtimeError));
       } finally {
@@ -1333,6 +1336,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 });
 
           for await (const event of stream) {
+            if (closed) break;
             const stored = store.appendEvent(thread.id, event);
             publish(thread.id, stored);
             if (event.type === "text") finalText += event.delta;
@@ -1340,6 +1344,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
           }
         } catch (err) {
+          if (closed) return;
           const message = err instanceof Error ? err.message : String(err);
           const stored = store.appendEvent(thread.id, { type: "error", message });
           publish(thread.id, stored);
@@ -1381,7 +1386,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // Master chat may have been deleted mid-run; ignore.
             }
           }
-          if (collaborationDeliveryId) {
+          if (!closed && collaborationDeliveryId) {
             // A cancelled delivery turn is not an acknowledgement. Put it back
             // into the durable queue; ordinary pending deliveries remain queued.
             if (controller.signal.aborted) collaborationDeliveries.requeue(collaborationDeliveryId);

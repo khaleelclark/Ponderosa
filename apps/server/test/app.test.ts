@@ -865,6 +865,28 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("does not mutate a delivery ledger after shutdown begins", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Worker", engine: "codex" });
+    new CollaborationDeliveryStore(dataDir).queue({
+      messageId: "active-during-close",
+      targetThreadId: thread.id,
+      text: "Handle this after restart",
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "direct",
+    });
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForSeedCount(1);
+
+    await app.close();
+    rmSync(dataDir, { recursive: true, force: true });
+    await sleep(20);
+    expect(() => statSync(dataDir)).toThrow();
+  });
+
   it("reconciles interrupted delegations and relaunches authorized queued work", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Delegation recovery" });
