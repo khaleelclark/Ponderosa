@@ -48,6 +48,8 @@ export const masterChatMessages = sqliteTable("master_chat_messages", {
   createdAt: text("created_at").notNull(),
   // Set when an agent (thread) posts back into the group chat; null for the manager.
   authorThreadId: text("author_thread_id"),
+  // Main chat is manager-facing. Collaboration is opt-in and only sent to tagged agents.
+  channel: text("channel").notNull().default("main"),
 });
 
 export const messages = sqliteTable("messages", {

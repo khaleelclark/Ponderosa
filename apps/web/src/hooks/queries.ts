@@ -27,6 +27,15 @@ export function useMasterChat(masterChatId: string | undefined) {
   });
 }
 
+export function useCollaborationChat(masterChatId: string | undefined) {
+  return useQuery({
+    queryKey: ["collaboration-chat", masterChatId],
+    queryFn: () => api.getCollaborationChat(masterChatId ?? ""),
+    enabled: Boolean(masterChatId),
+    refetchInterval: 4000,
+  });
+}
+
 export function useThreads(projectId: string | undefined) {
   return useQuery({
     queryKey: ["threads", projectId],

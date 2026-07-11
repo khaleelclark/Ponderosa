@@ -1,5 +1,6 @@
 import type {
   ArtifactContentDto,
+  CollaborationChatDetailDto,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
   CreateProjectRequest,
@@ -43,9 +44,11 @@ export interface PonderosaApi {
   listMasterChats(projectId: string): Promise<MasterChatDto[]>;
   createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
   getMasterChat(masterChatId: string): Promise<MasterChatDetailDto>;
+  getCollaborationChat(masterChatId: string): Promise<CollaborationChatDetailDto>;
   updateMasterChat(masterChatId: string, patch: UpdateMasterChatRequest): Promise<MasterChatDto>;
   deleteMasterChat(masterChatId: string): Promise<void>;
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
+  sendCollaborationMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   listThreads(projectId: string): Promise<ThreadDto[]>;
   createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;
   /** User-facing wrapper around createThread that spawns an agent, optionally under a master chat. */

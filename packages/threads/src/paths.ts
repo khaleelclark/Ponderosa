@@ -10,6 +10,7 @@
 //           <master-chat-id>/
 //             master-chat.json         ← title, defaults, timestamps
 //             messages.jsonl           ← model-agnostic control chat
+//             collaboration.jsonl      ← opt-in agent collaboration chat
 //         threads/
 //           <thread-id>/
 //             thread.json              ← title, active engine, sessionIds, state, ts
@@ -57,6 +58,14 @@ export function masterChatMessagesPath(
   masterChatId: string,
 ): string {
   return path.join(masterChatDir(dataDir, projectId, masterChatId), "messages.jsonl");
+}
+
+export function collaborationChatMessagesPath(
+  dataDir: string,
+  projectId: string,
+  masterChatId: string,
+): string {
+  return path.join(masterChatDir(dataDir, projectId, masterChatId), "collaboration.jsonl");
 }
 
 export function threadsDir(dataDir: string, projectId: string): string {
