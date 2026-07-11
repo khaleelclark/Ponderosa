@@ -4,6 +4,7 @@ import {
   Alert,
   Box,
   Button,
+  ButtonBase,
   Chip,
   Dialog,
   DialogActions,
@@ -109,19 +110,22 @@ export function AgentsTab({
         spacing={1}
         sx={{ alignItems: { sm: "center" }, px: { xs: 1.5, md: 2 }, py: 1 }}
       >
-        <ToggleButtonGroup
-          size="small"
-          exclusive
-          value={statusFilter}
-          onChange={(_event, value: StatusFilter | null) => value && setStatusFilter(value)}
-        >
-          <ToggleButton value="all">All</ToggleButton>
-          <ToggleButton value="running">Running</ToggleButton>
-          <ToggleButton value="waiting">Waiting</ToggleButton>
-          <ToggleButton value="completed">Completed</ToggleButton>
-          <ToggleButton value="unassigned">Unassigned</ToggleButton>
-        </ToggleButtonGroup>
-        <FormControl size="small" sx={{ minWidth: 200 }}>
+        <Box sx={{ maxWidth: "100%", overflowX: "auto", pb: 0.25 }}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={statusFilter}
+            onChange={(_event, value: StatusFilter | null) => value && setStatusFilter(value)}
+            aria-label="Filter agents by status"
+          >
+            <ToggleButton value="all">All</ToggleButton>
+            <ToggleButton value="running">Running</ToggleButton>
+            <ToggleButton value="waiting">Waiting</ToggleButton>
+            <ToggleButton value="completed">Completed</ToggleButton>
+            <ToggleButton value="unassigned">Unassigned</ToggleButton>
+          </ToggleButtonGroup>
+        </Box>
+        <FormControl size="small" sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel id="agents-master-filter-label">Master chat</InputLabel>
           <Select
             labelId="agents-master-filter-label"
@@ -141,7 +145,25 @@ export function AgentsTab({
 
       <Box sx={{ minHeight: 0, overflow: "auto", p: { xs: 1.5, md: 2 }, pt: 0 }}>
         {filtered.length === 0 ? (
-          <Alert severity="info">No agents match this filter.</Alert>
+          <Alert
+            severity="info"
+            action={
+              statusFilter !== "all" || masterFilter !== "all" ? (
+                <Button
+                  color="inherit"
+                  size="small"
+                  onClick={() => {
+                    setStatusFilter("all");
+                    setMasterFilter("all");
+                  }}
+                >
+                  Clear filters
+                </Button>
+              ) : undefined
+            }
+          >
+            {agents.length === 0 ? "No agents yet. Create one to get started." : "No agents match these filters."}
+          </Alert>
         ) : (
           <Stack spacing={1.25}>
             {filtered.map((agent) => {
@@ -151,55 +173,58 @@ export function AgentsTab({
                 <Paper
                   key={agent.id}
                   variant="outlined"
-                  sx={{ p: 1.5, cursor: "pointer", "&:hover": { borderColor: "primary.main" } }}
-                  onClick={() => onOpenAgent(agent.id)}
+                  sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
                 >
-                  <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-                    <Typography variant="subtitle1" sx={{ flex: 1, minWidth: 0, fontWeight: 700 }} noWrap>
-                      {agent.title}
-                    </Typography>
-                    <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
-                    <Tooltip title="Delete agent">
-                      <IconButton
-                        size="small"
-                        aria-label={`Delete agent ${agent.title}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setPendingDelete(agent);
-                        }}
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  </Stack>
-                  <Stack
-                    direction="row"
-                    spacing={1}
-                    useFlexGap
-                    flexWrap="wrap"
-                    sx={{ mt: 0.75, alignItems: "center" }}
+                  <ButtonBase
+                    onClick={() => onOpenAgent(agent.id)}
+                    aria-label={`Open agent ${agent.title}`}
+                    sx={{ flex: 1, minWidth: 0, p: 1.5, display: "block", textAlign: "left" }}
                   >
-                    <Chip size="small" variant="outlined" label={agent.activeEngine} />
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      color={agent.masterChatId ? "default" : "warning"}
-                      label={masterName(agent.masterChatId)}
-                    />
-                    <Typography variant="caption" color="text.secondary">
-                      updated {relativeTime(agent.updatedAt)}
-                    </Typography>
-                  </Stack>
-                  {activity ? (
-                    <Typography
-                      variant="body2"
-                      color="text.secondary"
-                      sx={{ mt: 0.5, overflowWrap: "anywhere" }}
-                      noWrap
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+                      <Typography variant="subtitle1" sx={{ flex: 1, minWidth: 0, fontWeight: 700 }} noWrap>
+                        {agent.title}
+                      </Typography>
+                      <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
+                    </Stack>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      useFlexGap
+                      flexWrap="wrap"
+                      sx={{ mt: 0.75, alignItems: "center" }}
                     >
-                      {activity}
-                    </Typography>
-                  ) : null}
+                      <Chip size="small" variant="outlined" label={agent.activeEngine} />
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={agent.masterChatId ? "default" : "warning"}
+                        label={masterName(agent.masterChatId)}
+                      />
+                      <Typography variant="caption" color="text.secondary">
+                        updated {relativeTime(agent.updatedAt)}
+                      </Typography>
+                    </Stack>
+                    {activity ? (
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{ mt: 0.5, overflowWrap: "anywhere" }}
+                        noWrap
+                      >
+                        {activity}
+                      </Typography>
+                    ) : null}
+                  </ButtonBase>
+                  <Tooltip title="Delete agent">
+                    <IconButton
+                      size="small"
+                      aria-label={`Delete agent ${agent.title}`}
+                      onClick={() => setPendingDelete(agent)}
+                      sx={{ m: 1 }}
+                    >
+                      <DeleteOutlineIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                 </Paper>
               );
             })}
