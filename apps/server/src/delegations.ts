@@ -145,6 +145,46 @@ export class DelegationStore {
     return this.runs.get(runId)?.delegationPrompt;
   }
 
+  launchContext(runId: string): {
+    prompt: string;
+    runtime: string;
+    model?: string;
+    history: Array<{ role: "user" | "assistant"; text: string }>;
+  } | undefined {
+    const run = this.runs.get(runId);
+    if (!run) return undefined;
+    return {
+      prompt: run.delegationPrompt,
+      runtime: run.runtime,
+      history: run.contextSnapshot.messages.flatMap((message) =>
+        message.role === "user" || message.role === "assistant"
+          ? [{ role: message.role, text: message.text }]
+          : [],
+      ),
+    };
+  }
+
+  settle(runId: string, status: "completed" | "failed", message?: string): SubagentRunDto {
+    const run = this.runs.get(runId);
+    if (!run) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    if (run.status === "cancelled" || run.status === "completed" || run.status === "failed") return publicRun(run);
+    const now = new Date().toISOString();
+    const updated: RunRecord = {
+      ...run,
+      status,
+      canCancel: false,
+      finishedAt: now,
+      updatedAt: now,
+      version: run.version + 1,
+      ...(status === "failed"
+        ? { failure: { code: "runtime_error", message: message ?? "delegated runtime failed", retryable: false, occurredAt: now } }
+        : {}),
+    };
+    this.persist(updated, "replace");
+    this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
+    return publicRun(updated);
+  }
+
   spawn(
     masterChatId: string,
     input: SpawnSubagentRequest,

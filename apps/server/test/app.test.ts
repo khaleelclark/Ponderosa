@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -25,6 +25,7 @@ class MockAdapter implements Adapter {
   }
 
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
+    await opts.authorizeLaunch?.(opts.signal);
     this.seeds.push(opts);
     yield { type: "session", sessionId: "sess-1" };
     if (this.mode === "hang") {
@@ -986,6 +987,50 @@ describe("server chunk F", () => {
       payload: { scope: "branch", idempotencyKey: "cancel-1" },
     });
     expect(cancelReplay.json()).toEqual(cancellation);
+    await cancelAndWait(app, thread.id);
+    await app.close();
+  });
+
+  it("launches a claimed adapter and cancellation produces a terminal lifecycle event", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Delegation room" });
+    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    const parentRunId = parentTurn.json<{ runId: string }>().runId;
+    const spawned = (await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: { parentRunId, displayLabel: "Worker", delegationPrompt: "Do the work", runtime: "codex", idempotencyKey: "launch-1" },
+    })).json<{ run: { id: string }; registration: { id: string; credential: string } }>();
+    const claim = {
+      registrationId: spawned.registration.id,
+      credential: spawned.registration.credential,
+      parentRunId,
+      masterChatId: master.id,
+      runtime: "codex",
+    };
+
+    const launch = await app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim });
+    expect(launch.statusCode).toBe(202);
+    await waitForSeedCount(2);
+    expect(adapter.seeds[1]?.authorizeLaunch).toBeTypeOf("function");
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${spawned.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "launch-cancel-1" },
+    });
+    expect(cancel.json()).toMatchObject({ affected: [{ runId: spawned.run.id, status: "cancelled" }] });
+    for (let i = 0; i < 80; i += 1) {
+      const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
+      if (list.json<Array<{ status: string }>>()[0]?.status === "cancelled") break;
+      await sleep(10);
+    }
+    const lifecycle = readFileSync(path.join(dataDir, "delegations.jsonl"), "utf8");
+    expect(lifecycle).toContain('"status":"running"');
+    expect(lifecycle).toContain('"status":"cancelled"');
     await cancelAndWait(app, thread.id);
     await app.close();
   });

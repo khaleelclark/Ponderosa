@@ -731,6 +731,60 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  app.post<{ Params: { runId: string }; Body: ClaimSubagentRegistrationRequest }>(
+    "/api/internal/subagents/:runId/launch",
+    async (request, reply) => {
+      const input = request.body;
+      if (!input?.registrationId || !input.credential) {
+        return reply.code(401).send({ error: { code: "registration_required", message: "registration proof is required", retryable: false } });
+      }
+      const context = delegations.launchContext(request.params.runId);
+      if (!context) return reply.code(404).send({ error: { code: "subagent_not_found", message: "subagent was not found", retryable: false } });
+      const engine = engines.get(context.runtime);
+      const masterChat = store.getMasterChat(input.masterChatId);
+      const project = masterChat ? store.getProject(masterChat.projectId) : undefined;
+      if (!engine || !project) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "delegated runtime context is unavailable", retryable: false } });
+      }
+
+      const controller = new AbortController();
+      void (async () => {
+        let runtimeError: string | undefined;
+        try {
+          const stream = engine.adapter.seed({
+            threadId: request.params.runId,
+            cwd: project.hostPath,
+            prompt: context.prompt,
+            history: context.history,
+            signal: controller.signal,
+            authorizeLaunch: async (signal) => {
+              if (signal.aborted) throw new Error("delegated launch cancelled");
+              const run = delegations.claim(request.params.runId, input);
+              subagentControllers.set(run.id, controller);
+              if (signal.aborted) {
+                subagentControllers.delete(run.id);
+                throw new Error("delegated launch cancelled");
+              }
+            },
+          });
+          for await (const event of stream) {
+            if (event.type === "text" && event.delta) delegations.appendOutput(request.params.runId, event.delta);
+            if (event.type === "error") runtimeError = event.message;
+          }
+          if (controller.signal.aborted) delegations.settle(request.params.runId, "failed", "delegated runtime aborted");
+          else if (runtimeError) delegations.settle(request.params.runId, "failed", runtimeError);
+          else delegations.settle(request.params.runId, "completed");
+        } catch (error) {
+          runtimeError = error instanceof Error ? error.message : String(error);
+          delegations.settle(request.params.runId, "failed", runtimeError);
+        } finally {
+          subagentControllers.delete(request.params.runId);
+        }
+      })();
+      return reply.code(202).send({ runId: request.params.runId, accepted: true });
+    },
+  );
+
   app.post<{ Params: { runId: string }; Body: { scope: "branch"; idempotencyKey: string } }>(
     "/api/subagents/:runId/cancel",
     async (request, reply) => {
