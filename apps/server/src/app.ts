@@ -24,6 +24,7 @@ import type {
   MessageReferenceDto,
 } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { DelegationError, DelegationStore } from "./delegations.js";
 import { CollaborationDeliveryStore, type CollaborationDelivery } from "./handoffs.js";
 
@@ -1726,21 +1727,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let sawWaiting = false;
         let finalText = "";
         try {
-          const stream = resumeSessionId
+          const environment = {
+            PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+            PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+            PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+            PONDEROSA_DELEGATION_TOKEN: delegationCapability,
+            PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
+          };
+          const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
             ? engine.adapter.continue({
                   threadId: thread.id,
                   cwd: project.hostPath,
                   prompt,
-                  resumeSessionId,
+                  resumeSessionId: sessionId,
                   model: request.body.model,
                   effort: request.body.effort,
-                  environment: {
-                    PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
-                    PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
-                    PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
-                    PONDEROSA_DELEGATION_TOKEN: delegationCapability,
-                    PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
-                  },
+                  environment,
                   signal: controller.signal,
                 })
             : engine.adapter.seed({
@@ -1750,23 +1752,48 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   history,
                   model: request.body.model,
                   effort: request.body.effort,
-                  environment: {
-                    PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
-                    PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
-                    PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
-                    PONDEROSA_DELEGATION_TOKEN: delegationCapability,
-                    PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
-                  },
+                  environment,
                   signal: controller.signal,
                 });
 
-          for await (const event of stream) {
-            if (closed) break;
-            const stored = store.appendEvent(thread.id, event);
-            publish(thread.id, stored);
-            if (event.type === "text") finalText += event.delta;
-            if (event.type === "error") runError = event.message;
-            if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
+          let sessionId = resumeSessionId;
+          let rolloverAttempted = false;
+          while (true) {
+            const bufferedSessionEvents: AgentEvent[] = [];
+            let retryFresh = false;
+            for await (const event of startStream(sessionId)) {
+              if (closed) break;
+              // Codex can emit its session id immediately before a resume-time
+              // compaction failure. Hold only those initial session events so a
+              // failed resume does not restore the stale id after we clear it.
+              if (sessionId && event.type === "session") {
+                bufferedSessionEvents.push(event);
+                continue;
+              }
+              if (
+                sessionId &&
+                !rolloverAttempted &&
+                event.type === "error" &&
+                shouldRolloverEngineSession(engine.adapter.id, event.message)
+              ) {
+                store.clearResumeSession(thread.id, "resume_compaction_failed");
+                sessionId = undefined;
+                rolloverAttempted = true;
+                retryFresh = true;
+                break;
+              }
+
+              for (const buffered of bufferedSessionEvents.splice(0)) {
+                const stored = store.appendEvent(thread.id, buffered);
+                publish(thread.id, stored);
+              }
+              const stored = store.appendEvent(thread.id, event);
+              publish(thread.id, stored);
+              if (event.type === "text") finalText += event.delta;
+              if (event.type === "error") runError = event.message;
+              if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
+            }
+            if (!retryFresh) break;
           }
         } catch (err) {
           if (closed) return;

@@ -16,7 +16,7 @@ class MockAdapter implements Adapter {
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
   abortedSeeds = 0;
-  mode: "normal" | "hang" | "boundary" = "normal";
+  mode: "normal" | "hang" | "boundary" | "resume_compaction_fail" = "normal";
   responseText = "done";
   failuresRemaining = 0;
 
@@ -60,6 +60,14 @@ class MockAdapter implements Adapter {
     if (this.failuresRemaining > 0) {
       this.failuresRemaining -= 1;
       yield { type: "error", message: "simulated runtime failure" };
+      return;
+    }
+    if (this.mode === "resume_compaction_fail") {
+      yield { type: "session", sessionId: opts.resumeSessionId };
+      yield {
+        type: "error",
+        message: "codex exited with code 1: Failed to run pre-sampling compact",
+      };
       return;
     }
     yield { type: "text", delta: `continued ${opts.resumeSessionId}` };
@@ -353,6 +361,36 @@ describe("server chunk F", () => {
       content: "diff --git a/a.ts b/a.ts\n",
       contentType: "diff",
     });
+    await app.close();
+  });
+
+  it("rolls a failed Codex compaction resume into one fresh seeded session", async () => {
+    const { app, thread } = await createProjectAndThread();
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "first" },
+    });
+    await waitForRun(thread.id);
+
+    adapter.mode = "resume_compaction_fail";
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "second" },
+    });
+    expect(second.json()).toMatchObject({ mode: "continue" });
+    await waitForRun(thread.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.seeds[1]?.history.map((message) => message.text)).toContain("first");
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+      .toHaveLength(1);
+    expect(store.readEvents(thread.id).some((item) =>
+      item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
+    )).toBe(false);
+    expect(store.resumeSessionId(thread.id)).toBe("sess-1");
     await app.close();
   });
 

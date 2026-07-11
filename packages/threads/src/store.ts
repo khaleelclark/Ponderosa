@@ -1098,4 +1098,24 @@ export class ThreadStore {
     if (!row) return undefined;
     return row.sessionId ?? undefined;
   }
+
+  /**
+   * Forget only the provider runtime session so the next turn seeds a fresh
+   * session from canonical history. Thread identity, memberships, event logs,
+   * and queued collaboration deliveries are intentionally untouched.
+   */
+  clearResumeSession(
+    threadId: string,
+    reason: "explicit_compaction" | "resume_compaction_failed",
+  ): boolean {
+    const row = this.db
+      .select({ id: threads.id })
+      .from(threads)
+      .where(eq(threads.id, threadId))
+      .get();
+    if (!row) return false;
+
+    this.appendEvent(threadId, { type: "session_reset", reason });
+    return true;
+  }
 }
