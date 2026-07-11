@@ -7,11 +7,11 @@ import { useState } from "react";
 import {
   buildSubagentTree,
   subagentTranscript,
-  type SubagentRunView,
   type SubagentStatus,
   type SubagentStore,
   type SubagentTreeNode,
 } from "../subagents";
+import type { SubagentRunDto } from "@ponderosa/core";
 
 const statusColor = (status: SubagentStatus): "default" | "info" | "success" | "error" => {
   if (status === "running") return "info";
@@ -30,8 +30,8 @@ function RunNode({
   node: SubagentTreeNode;
   store: SubagentStore;
   cancelling: ReadonlySet<string>;
-  onCancel(run: SubagentRunView): void;
-  onExpand?(run: SubagentRunView): void;
+  onCancel(run: SubagentRunDto): void;
+  onExpand?(run: SubagentRunDto): void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(node.status === "running");
   const transcript = subagentTranscript(store, node.id);
@@ -64,7 +64,7 @@ function RunNode({
           <Typography variant="caption" color="text.secondary">Depth {node.depth}</Typography>
         </Box>
         <Chip size="small" label={node.status} color={statusColor(node.status)} />
-        {node.cancellable && (node.status === "queued" || node.status === "running") ? (
+        {node.canCancel && (node.status === "queued" || node.status === "running") ? (
           <IconButton
             size="small"
             color="warning"
@@ -106,9 +106,9 @@ export function SubagentTreePanel({
 }: {
   store: SubagentStore;
   cancelling?: ReadonlySet<string>;
-  onCancel(run: SubagentRunView): void;
+  onCancel(run: SubagentRunDto): void;
   /** Called on first/user expansion so the parent can fetch durable transcript pages. */
-  onExpand?(run: SubagentRunView): void;
+  onExpand?(run: SubagentRunDto): void;
 }): JSX.Element | null {
   const tree = buildSubagentTree(store.runs.values());
   const [open, setOpen] = useState(true);

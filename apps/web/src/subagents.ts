@@ -1,22 +1,10 @@
-export type SubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+import type {
+  CancelSubagentResponse,
+  SubagentEventEnvelope,
+  SubagentRunDto,
+} from "@ponderosa/core";
 
-export interface SubagentRunView {
-  id: string;
-  parentRunId?: string;
-  rootRunId: string;
-  depth: number;
-  displayLabel: string;
-  /** Redacted, UI-safe delegation context. Full prompts require separate access. */
-  delegationSummary?: string;
-  status: SubagentStatus;
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string;
-  finishedAt?: string;
-  failure?: { code: string; message: string; retryable: boolean; occurredAt: string };
-  version: number;
-  cancellable: boolean;
-}
+export type { SubagentStatus } from "@ponderosa/core";
 
 export interface SubagentOutputChunk {
   runId: string;
@@ -25,34 +13,21 @@ export interface SubagentOutputChunk {
   text: string;
 }
 
-export type SubagentLifecycleEvent =
-  | { seq: number; type: "upsert"; run: SubagentRunView }
-  | { seq: number; type: "output"; chunk: SubagentOutputChunk };
-
-export interface SubagentCancellationResult {
-  affected: Array<{
-    runId: string;
-    status: SubagentStatus;
-    version: number;
-    updatedAt: string;
-  }>;
-}
-
 export interface SubagentStore {
   lastSeq: number;
-  runs: ReadonlyMap<string, SubagentRunView>;
+  runs: ReadonlyMap<string, SubagentRunDto>;
   output: ReadonlyMap<string, readonly SubagentOutputChunk[]>;
 }
 
-export interface SubagentTreeNode extends SubagentRunView {
+export interface SubagentTreeNode extends SubagentRunDto {
   children: SubagentTreeNode[];
 }
 
 export interface SubagentUiBinding {
   store: SubagentStore;
   cancelling?: ReadonlySet<string>;
-  cancel(run: SubagentRunView): void;
-  loadTranscript?(run: SubagentRunView): void;
+  cancel(run: SubagentRunDto): void;
+  loadTranscript?(run: SubagentRunDto): void;
 }
 
 export function isSubagentUiEnabled(env: Record<string, string | undefined>): boolean {
@@ -66,37 +41,47 @@ export const emptySubagentStore = (): SubagentStore => ({
   output: new Map(),
 });
 
-/**
- * Normalizes replayable lifecycle events into UI state. The transport adapter is
- * responsible only for converting its wire payload into this small event union.
- */
-export function applySubagentEvent(store: SubagentStore, event: SubagentLifecycleEvent): SubagentStore {
-  if (event.seq <= store.lastSeq) return store;
+export function hydrateSubagentStore(runs: readonly SubagentRunDto[]): SubagentStore {
+  return { ...emptySubagentStore(), runs: new Map(runs.map((run) => [run.id, run])) };
+}
 
-  if (event.type === "output") {
-    const existing = store.output.get(event.chunk.runId) ?? [];
-    if (existing.some((chunk) => chunk.chunkSeq === event.chunk.chunkSeq)) {
-      return { ...store, lastSeq: event.seq };
+/**
+ * Normalizes the authoritative replayable lifecycle envelope into UI state.
+ */
+export function applySubagentEnvelope(store: SubagentStore, envelope: SubagentEventEnvelope): SubagentStore {
+  if (envelope.seq <= store.lastSeq) return store;
+
+  if (envelope.event.type === "subagent_output") {
+    const chunk: SubagentOutputChunk = {
+      runId: envelope.event.runId,
+      chunkSeq: envelope.event.chunkSeq,
+      cursor: envelope.event.cursor,
+      text: envelope.event.delta,
+    };
+    const existing = store.output.get(chunk.runId) ?? [];
+    if (existing.some((candidate) => candidate.chunkSeq === chunk.chunkSeq)) {
+      return { ...store, lastSeq: envelope.seq };
     }
     const output = new Map(store.output);
-    output.set(event.chunk.runId, [...existing, event.chunk].sort((a, b) => a.chunkSeq - b.chunkSeq));
-    return { ...store, lastSeq: event.seq, output };
+    output.set(chunk.runId, [...existing, chunk].sort((a, b) => a.chunkSeq - b.chunkSeq));
+    return { ...store, lastSeq: envelope.seq, output };
   }
 
-  const current = store.runs.get(event.run.id);
-  if (current && event.run.version <= current.version) {
-    return { ...store, lastSeq: event.seq };
+  const run = envelope.event.run;
+  const current = store.runs.get(run.id);
+  if (current && run.version <= current.version) {
+    return { ...store, lastSeq: envelope.seq };
   }
 
   const runs = new Map(store.runs);
-  runs.set(event.run.id, event.run);
-  return { ...store, lastSeq: event.seq, runs };
+  runs.set(run.id, run);
+  return { ...store, lastSeq: envelope.seq, runs };
 }
 
 /** Applies only server-confirmed cancellation states; requests remain local UI state. */
 export function applyCancellationResult(
   store: SubagentStore,
-  result: SubagentCancellationResult,
+  result: CancelSubagentResponse,
 ): SubagentStore {
   const runs = new Map(store.runs);
   for (const affected of result.affected) {
@@ -107,13 +92,13 @@ export function applyCancellationResult(
       status: affected.status,
       version: affected.version,
       updatedAt: affected.updatedAt,
-      cancellable: affected.status === "queued" || affected.status === "running",
+      canCancel: affected.status === "queued" || affected.status === "running",
     });
   }
   return { ...store, runs };
 }
 
-export function buildSubagentTree(runs: Iterable<SubagentRunView>): SubagentTreeNode[] {
+export function buildSubagentTree(runs: Iterable<SubagentRunDto>): SubagentTreeNode[] {
   const nodes = new Map<string, SubagentTreeNode>();
   for (const run of runs) nodes.set(run.id, { ...run, children: [] });
 
