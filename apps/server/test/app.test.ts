@@ -979,7 +979,7 @@ describe("server chunk F", () => {
     });
     expect(spawn.statusCode).toBe(201);
     const created = spawn.json<{ run: { id: string; version: number; delegationSummary: string }; registration: { id: string; credential: string } }>();
-    expect(created.run.version).toBe(1);
+    expect(created.run.version).toBe(2);
     expect(JSON.stringify(created.run)).not.toContain("delegationPrompt");
     expect(created.run.delegationSummary).toBe("API review");
 
@@ -1039,7 +1039,7 @@ describe("server chunk F", () => {
       payload: { scope: "branch", idempotencyKey: "cancel-1" },
     });
     const cancellation = cancel.json();
-    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 2 }] });
+    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 3 }] });
     const cancelReplay = await app.inject({
       method: "POST",
       url: `/api/subagents/${created.run.id}/cancel`,
@@ -1078,21 +1078,51 @@ describe("server chunk F", () => {
       payload: { displayLabel: "Safe review", delegationPrompt: "private secret task", runtime: "codex", idempotencyKey: "bridge-1" },
     });
     expect(response.statusCode).toBe(202);
-    const created = response.json<{ run: { id: string; parentThreadId?: string; parentRunId: string; rootRunId: string; runtime: string; status: string }; accepted: boolean }>();
+    const created = response.json<{ run: { id: string; parentThreadId?: string; childThreadId?: string; parentRunId: string; rootRunId: string; runtime: string; status: string }; accepted: boolean }>();
     expect(created).toMatchObject({ accepted: true, run: { runtime: "codex", status: "running" } });
     expect(created.run.parentThreadId).toBe(thread.id);
+    expect(created.run.childThreadId).toBeTruthy();
     expect(created.run.parentRunId).toBe(created.run.rootRunId);
     expect(JSON.stringify(response.json())).not.toContain("private secret task");
     expect(JSON.stringify(response.json())).not.toContain("credential");
     await waitForSeedCount(2);
+    const childId = created.run.childThreadId!;
+    const childDetail = (await app.inject({ method: "GET", url: `/api/threads/${childId}` })).json();
+    expect(childDetail).toMatchObject({
+      thread: { id: childId, title: "Safe review", masterChatId: master.id },
+      messages: [{ role: "user", text: "Delegated task: Safe review" }],
+    });
+    expect(JSON.stringify(childDetail)).not.toContain("private secret task");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
+
+    const childCollaboration = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${adapter.seeds[1]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+      payload: { channel: "collaboration", text: "@Parent progress from child" },
+    });
+    expect(childCollaboration.statusCode).toBe(200);
+    expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual([
+      expect.objectContaining({ authorThreadId: childId, text: "@Parent progress from child" }),
+    ]);
+
+    const followUp = await app.inject({
+      method: "POST",
+      url: `/api/threads/${childId}/messages`,
+      payload: { text: "Explain the result directly" },
+    });
+    expect(followUp.json()).toMatchObject({ queued: true, position: 1 });
 
     const cancel = await app.inject({
       method: "POST",
-      url: `/api/subagents/${created.run.id}/cancel`,
-      payload: { scope: "branch", idempotencyKey: "bridge-cancel-1" },
+      url: `/api/threads/${childId}/cancel`,
     });
-    expect(cancel.json()).toMatchObject({ affected: [{ runId: created.run.id, status: "cancelled" }] });
+    expect(cancel.json()).toEqual({ cancelled: true });
+    for (let i = 0; i < 80 && adapter.continues.length === 0; i += 1) await sleep(10);
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.continues[0]?.threadId).toBe(childId);
+    await waitForRun(childId);
     expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
       expect.objectContaining({ id: created.run.id, status: "cancelled", delegationSummary: "Safe review" }),
     ]);

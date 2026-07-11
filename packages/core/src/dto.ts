@@ -250,6 +250,8 @@ export interface SubagentRunDto {
   masterChatId: string;
   /** Server-derived owning agent thread. Never accepted from an agent delegation request. */
   parentThreadId?: string;
+  /** First-class Ponderosa agent/thread created for this delegated child. */
+  childThreadId?: string;
   parentRunId: string;
   rootRunId: string;
   contextSnapshotId: string;

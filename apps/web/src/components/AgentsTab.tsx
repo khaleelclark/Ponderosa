@@ -60,6 +60,7 @@ export function AgentsTab({
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const subagentsByParent = subagentRootsByParentThread(subagents);
+  const childThreadIds = new Set(subagents.flatMap((run) => run.childThreadId ? [run.childThreadId] : []));
 
   const subagentColor = (status: SubagentRunDto["status"]): "default" | "info" | "success" | "error" => {
     if (status === "running") return "info";
@@ -70,7 +71,14 @@ export function AgentsTab({
 
   const renderSubagent = (run: SubagentTreeNode): JSX.Element => (
     <Box key={run.id} sx={{ ml: { xs: 2, sm: 4 }, borderLeft: 2, borderColor: "divider", pl: 1 }}>
-      <Paper variant="outlined" sx={{ p: 1.25, bgcolor: "action.hover" }}>
+      <Paper
+        component={ButtonBase}
+        disabled={!run.childThreadId}
+        onClick={() => run.childThreadId && onOpenAgent(run.childThreadId)}
+        aria-label={`Open subagent ${run.displayLabel}`}
+        variant="outlined"
+        sx={{ p: 1.25, bgcolor: "action.hover", display: "block", width: "100%", textAlign: "left" }}
+      >
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
           <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 140 }}>{run.displayLabel}</Typography>
           <Chip size="small" variant="outlined" color="secondary" label="Subagent" />
@@ -102,6 +110,7 @@ export function AgentsTab({
     id ? (masterChats.find((master) => master.id === id)?.title ?? "Unknown master chat") : "Unassigned";
 
   const filtered = agents.filter((agent) => {
+    if (childThreadIds.has(agent.id)) return false;
     const status = statusByAgentId.get(agent.id) ?? "idle";
     if (statusFilter === "unassigned" && agent.masterChatId) {
       return false;

@@ -30,7 +30,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDetailDto, MasterChatDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { EngineDto, MasterChatDetailDto, MasterChatDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -46,14 +46,18 @@ export function AgentDetail({
   agentId,
   engines,
   masterChats,
+  subagent,
   onBack,
+  onOpenAgent,
   onOpenMaster,
   onDeleted,
 }: {
   agentId: string;
   engines: EngineDto[];
   masterChats: MasterChatDto[];
+  subagent?: SubagentRunDto;
   onBack(): void;
+  onOpenAgent(agentId: string): void;
   onOpenMaster(masterChatId: string): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -210,6 +214,15 @@ export function AgentDetail({
             </Typography>
           </Box>
           <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
+          {subagent ? (
+            <Chip
+              size="small"
+              color="secondary"
+              label="Subagent"
+              onClick={subagent.parentThreadId ? () => onOpenAgent(subagent.parentThreadId!) : undefined}
+              clickable={Boolean(subagent.parentThreadId)}
+            />
+          ) : null}
           <Chip
             size="small"
             label={stream.connected ? "Live" : "Reconnecting"}

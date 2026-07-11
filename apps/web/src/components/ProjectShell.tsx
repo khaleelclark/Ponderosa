@@ -188,7 +188,9 @@ export function ProjectShell({
         agentId={route.agentId}
         engines={engines}
         masterChats={masterChats}
+        subagent={subagents.find((run) => run.childThreadId === route.agentId)}
         onBack={() => navigate({ kind: "agents", projectId })}
+        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenMaster={(masterChatId) => navigate({ kind: "master-chat", projectId, masterChatId })}
         onDeleted={() => navigate({ kind: "agents", projectId })}
       />

@@ -144,6 +144,19 @@ export class DelegationStore {
     return run ? publicRun(run) : undefined;
   }
 
+  bindChildThread(runId: string, childThreadId: string): SubagentRunDto {
+    const run = this.runs.get(runId);
+    if (!run) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    if (run.childThreadId && run.childThreadId !== childThreadId) {
+      throw new DelegationError("registration_mismatch", "delegated child is already bound to another thread", 409);
+    }
+    if (run.childThreadId === childThreadId) return publicRun(run);
+    const updated = { ...run, childThreadId, version: run.version + 1, updatedAt: new Date().toISOString() };
+    this.persist(updated, "replace");
+    this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
+    return publicRun(updated);
+  }
+
   rawPrompt(runId: string): string | undefined {
     return this.runs.get(runId)?.delegationPrompt;
   }
