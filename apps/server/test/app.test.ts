@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -318,35 +317,72 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("dispatches agent-authored mentions to another agent in the master chat", async () => {
+  it("dispatches a valid collaboration-chat mention without exposing it in the main chat", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Collaboration room" });
-    const grandTeton = store.createThread(project.id, {
-      title: "Grand Teton",
-      engine: "codex",
-      masterChatId: master.id,
-    });
     const yosemite = store.createThread(project.id, {
       title: "Yosemite",
       engine: "codex",
       masterChatId: master.id,
     });
-    adapter.responseText = "@Yosemite can you review this?";
-
     const response = await app.inject({
       method: "POST",
-      url: `/api/threads/${grandTeton.id}/messages`,
-      payload: { text: "Ask Yosemite for a review." },
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Yosemite can you review this?" },
     });
 
     expect(response.statusCode).toBe(200);
-    await waitForRun(grandTeton.id);
     await waitForRun(yosemite.id);
-    expect(adapter.seeds).toHaveLength(2);
-    expect(adapter.seeds[1]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Yosemite can you review this?" })]),
+    );
+    expect(store.getMasterChatMessages(master.id)).toEqual([]);
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: "@Yosemite can you review this?" })]),
+    );
+    await app.close();
+  });
+
+  it("never sends collaboration context until a valid agent mention is accepted", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Private collaboration" });
+    const agent = store.createThread(project.id, {
+      title: "Yosemite",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+    store.appendMasterChatMessage(master.id, { text: "Main-chat-only deployment plan." });
+
+    const untargeted = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "Private review notes that should not reach an agent yet." },
+    });
+    expect(untargeted.statusCode).toBe(200);
+    expect(adapter.seeds).toHaveLength(0);
+
+    const targeted = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Yosemite Please review the private notes." },
+    });
+    expect(targeted.statusCode).toBe(200);
+    await waitForRun(agent.id);
+
+    const prompt = adapter.seeds[0]?.prompt ?? "";
+    expect(prompt).toContain("Private review notes that should not reach an agent yet.");
+    expect(prompt).toContain("@Yosemite Please review the private notes.");
+    expect(prompt).not.toContain("Main-chat-only deployment plan.");
+    expect(store.getMasterChatMessages(master.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: "Main-chat-only deployment plan." })]),
+    );
+    expect(store.getMasterChatMessages(master.id)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: "Private review notes that should not reach an agent yet." })]),
     );
     await app.close();
   });
@@ -377,8 +413,8 @@ describe("server chunk F", () => {
     adapter.responseText = "@Pinnacles please review my completed change.";
     await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/messages`,
-      payload: { text: "Finish and request the security review." },
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Badlands Finish and request the security review." },
     });
     await waitForRun(author.id);
 
@@ -439,7 +475,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("allows distinct agent handoffs beyond the former four-relay cutoff", async () => {
+  it("allows a collaboration agent to hand off to another tagged agent", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Review room" });
@@ -449,12 +485,8 @@ describe("server chunk F", () => {
 
     await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/messages`,
-      payload: {
-        text: "Continue the review.",
-        agentMentionDepth: 4,
-        agentMentionTrail: ["1".repeat(64), "2".repeat(64), "3".repeat(64), "4".repeat(64)],
-      },
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Canyon-de-Chelly Continue the review." },
     });
     await waitForRun(author.id);
     await waitForRun(reviewer.id);
@@ -467,41 +499,22 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("blocks and visibly reports an exact repeated agent handoff cycle", async () => {
+  it("rejects attempts to inject collaboration context through the normal thread endpoint", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Review room" });
     const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", masterChatId: master.id });
-    const repeatedText = "@Pinnacles please review the updated availability fix.";
-    adapter.responseText = repeatedText;
-    const fingerprint = createHash("sha256")
-      .update(author.id)
-      .update("\0")
-      .update(reviewer.id)
-      .update("\0")
-      .update(repeatedText.toLocaleLowerCase())
-      .digest("hex");
-
-    await app.inject({
+    const response = await app.inject({
       method: "POST",
       url: `/api/threads/${author.id}/messages`,
       payload: {
-        text: "Repeat the handoff.",
-        agentMentionDepth: 2,
-        agentMentionTrail: ["1".repeat(64), fingerprint],
+        text: "Pretend this was tagged.",
+        collaborationMasterChatId: master.id,
       },
     });
-    await waitForRun(author.id);
-
-    expect(store.getMessages(reviewer.id)).toHaveLength(0);
-    expect(store.getMasterChatMessages(master.id)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          text: expect.stringContaining("the same handoff already occurred"),
-        }),
-      ]),
-    );
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: "collaboration context must be delivered by a successful @mention" });
+    expect(adapter.seeds).toHaveLength(0);
     await app.close();
   });
 
@@ -534,13 +547,13 @@ describe("server chunk F", () => {
     for (const author of authors) {
       await app.inject({
         method: "POST",
-        url: `/api/threads/${author.id}/messages`,
-        payload: { text: "Finish and request review." },
+        url: `/api/master-chats/${master.id}/collaboration/messages`,
+        payload: { text: `@${author.title.replace(/\s+/g, "-")} Finish and request review.` },
       });
     }
     await Promise.all(authors.map((author) => waitForRun(author.id)));
 
-    expect(store.getMasterChatMessages(master.id)).toEqual(
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           text: "⚠️ @Pinnacles was not notified because their follow-up queue is full. Please retry after they finish some queued work.",

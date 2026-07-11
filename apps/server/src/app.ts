@@ -36,6 +36,13 @@ interface ActiveRun {
   controller: AbortController;
 }
 
+interface PendingMentionTurn {
+  text: string;
+  agentMentionDepth: number;
+  agentMentionTrail: string[];
+  collaborationMasterChatId: string;
+}
+
 type Subscriber = (stored: StoredLogEvent) => void;
 
 const MAX_PENDING_MENTION_TURNS = 50;
@@ -115,6 +122,37 @@ function masterChatPrompt(
     "",
     "Current master chat history:",
     transcript || "(No earlier messages.)",
+    "",
+    "Latest message for you:",
+    currentRequest,
+  ].join("\n");
+}
+
+/** Collaboration context is opt-in: it is only assembled after a valid @mention. */
+function collaborationChatPrompt(
+  messages: MasterChatMessageDto[],
+  threads: ThreadDto[],
+  currentRequest: string,
+): string {
+  const names = new Map(threads.map((thread) => [thread.id, thread.title]));
+  const transcript = messages
+    .map((message) => {
+      const speaker = message.authorThreadId
+        ? names.get(message.authorThreadId) ?? "Agent"
+        : message.role === "user"
+          ? "Manager"
+          : "Team";
+      return `${speaker}: ${message.text}`;
+    })
+    .join("\n");
+  return [
+    "You are collaborating with teammates in Ponderosa's opt-in collaboration chat.",
+    "You received this context because you were successfully @mentioned.",
+    "Respond directly to the latest request. To involve a teammate, @mention their full hyphenated handle.",
+    "Do not claim to have seen the main chat.",
+    "",
+    "Collaboration chat history:",
+    transcript || "(No earlier collaboration messages.)",
     "",
     "Latest message for you:",
     currentRequest,
@@ -216,10 +254,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
-  const pendingMentionTurns = new Map<
-    string,
-    Array<{ text: string; agentMentionDepth: number; agentMentionTrail: string[] }>
-  >();
+  const pendingMentionTurns = new Map<string, PendingMentionTurn[]>();
+  // Capability used only by this server's queue dispatcher. It prevents a client
+  // from attaching arbitrary collaboration history to a direct thread request.
+  const collaborationDispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
 
   const app = Fastify({ logger: opts.logger ?? true });
@@ -229,10 +267,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     text: string,
     agentMentionDepth: number,
     agentMentionTrail: string[],
+    collaborationMasterChatId: string,
   ): boolean {
     const pending = pendingMentionTurns.get(threadId) ?? [];
     if (pending.length >= MAX_PENDING_MENTION_TURNS) return false;
-    pending.push({ text, agentMentionDepth, agentMentionTrail });
+    pending.push({ text, agentMentionDepth, agentMentionTrail, collaborationMasterChatId });
     pendingMentionTurns.set(threadId, pending);
     return true;
   }
@@ -248,7 +287,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const response = await app.inject({
       method: "POST",
       url: `/api/threads/${threadId}/messages`,
-      headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
+      headers: {
+        ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
+        "x-ponderosa-collaboration-dispatch": collaborationDispatchKey,
+      },
       payload: next,
     });
     if (response.statusCode === 409) {
@@ -368,6 +410,46 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return message ?? reply.code(404).send({ error: "master chat not found" });
   });
 
+  app.get<{ Params: { id: string } }>("/api/master-chats/:id/collaboration", async (request, reply) => {
+    const detail = store.getCollaborationChatDetail(request.params.id);
+    return detail ?? reply.code(404).send({ error: "master chat not found" });
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { text: string };
+  }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
+    const text = request.body?.text?.trim();
+    if (!text) return reply.code(400).send({ error: "text is required" });
+    const detail = store.getCollaborationChatDetail(request.params.id);
+    if (!detail) return reply.code(404).send({ error: "master chat not found" });
+
+    const message = store.appendMasterChatMessage(
+      request.params.id,
+      { role: "user", text },
+      undefined,
+      "collaboration",
+    );
+    const notifiedAgentIds: string[] = [];
+    for (const target of mentionedAgentThreads(text, detail.threads, "")) {
+      if (queueMentionTurn(target.id, text, 0, [], request.params.id)) {
+        notifiedAgentIds.push(target.id);
+        void dispatchNextMentionTurn(target.id);
+      } else {
+        store.appendMasterChatMessage(
+          request.params.id,
+          {
+            role: "system",
+            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up queue is full. Please retry after they finish some queued work.`,
+          },
+          undefined,
+          "collaboration",
+        );
+      }
+    }
+    return { message, notifiedAgentIds };
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/threads", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.listThreads(request.params.id);
@@ -453,6 +535,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort?: string;
       agentMentionDepth?: number;
       agentMentionTrail?: string[];
+      collaborationMasterChatId?: string;
     };
   }>(
     "/api/threads/:id/messages",
@@ -466,6 +549,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim();
       if (!text) return reply.code(400).send({ error: "text is required" });
+      const collaborationMasterChatId = request.body.collaborationMasterChatId;
+      if (collaborationMasterChatId !== undefined && collaborationMasterChatId !== thread.masterChatId) {
+        return reply.code(400).send({ error: "collaboration chat does not belong to thread" });
+      }
+      if (
+        collaborationMasterChatId !== undefined &&
+        request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey
+      ) {
+        return reply.code(403).send({ error: "collaboration context must be delivered by a successful @mention" });
+      }
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&
@@ -495,15 +588,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const resumeSessionId = store.resumeSessionId(thread.id);
       const mode = resumeSessionId ? "continue" : "seed";
 
-      // Master-chat turns always receive the room as it exists now. The web UI
-      // records the manager's message before calling this endpoint, so this covers
-      // both a newly spawned agent and an existing agent addressed with @mention.
+      // Main-chat turns receive the manager-facing room. Collaboration context is
+      // assembled only after the collaboration endpoint successfully tagged this
+      // particular linked agent.
       const masterChat = thread.masterChatId
         ? store.getMasterChatDetail(thread.masterChatId)
         : undefined;
-      const prompt = masterChat
-        ? masterChatPrompt(masterChat.messages, masterChat.threads, text)
-        : text;
+      const collaboration = collaborationMasterChatId
+        ? store.getCollaborationChatDetail(collaborationMasterChatId)
+        : undefined;
+      const prompt = collaboration
+        ? collaborationChatPrompt(collaboration.messages, collaboration.threads, text)
+        : masterChat
+          ? masterChatPrompt(masterChat.messages, masterChat.threads, text)
+          : text;
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text });
       publish(thread.id, userStored);
@@ -560,22 +658,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
-              // No master-chat SSE; the group-chat view polls, so the post-back
-              // surfaces on its next refetch.
+              // The main chat is manager-facing. Agent-to-agent handoffs are
+              // emitted only from the separate collaboration chat.
               store.appendMasterChatMessage(
                 thread.masterChatId,
                 { role: "assistant", text: statusText },
                 thread.id,
+                collaborationMasterChatId ? "collaboration" : "main",
               );
 
-              // Agent-authored mentions are real collaboration requests, not just
-              // display text. Relay them server-side because no browser submit
-              // handler runs when an agent posts its final report-back. Bound the
-              // a bounded fingerprint trail so exact repeated handoffs stop as
-              // cycles, while legitimate multi-step reviews can exceed four turns.
+              // A tag in a main-chat report is ordinary text. A tag in the
+              // collaboration chat is an opt-in handoff and can start a turn.
               const relayDepth = request.body.agentMentionDepth ?? 0;
-              if (!runError) {
-                const detail = store.getMasterChatDetail(thread.masterChatId);
+              if (!runError && collaborationMasterChatId) {
+                const detail = store.getCollaborationChatDetail(collaborationMasterChatId);
                 const targets = detail
                   ? mentionedAgentThreads(statusText, detail.threads, thread.id)
                   : [];
@@ -587,21 +683,37 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                       ? "the collaboration reached its 12-handoff safety limit"
                       : undefined;
                   if (blockedReason) {
-                    store.appendMasterChatMessage(thread.masterChatId, {
-                      role: "assistant",
-                      text: `⚠️ @${agentMentionHandle(target.title)} was not notified because ${blockedReason}. Please ask the manager to continue the conversation.`,
-                    });
+                    store.appendMasterChatMessage(
+                      thread.masterChatId,
+                      {
+                        role: "assistant",
+                        text: `⚠️ @${agentMentionHandle(target.title)} was not notified because ${blockedReason}. Please ask the manager to continue the conversation.`,
+                      },
+                      undefined,
+                      "collaboration",
+                    );
                   } else if (
-                    queueMentionTurn(target.id, statusText, relayDepth + 1, [...mentionTrail, fingerprint])
+                    queueMentionTurn(
+                      target.id,
+                      statusText,
+                      relayDepth + 1,
+                      [...mentionTrail, fingerprint],
+                      collaborationMasterChatId,
+                    )
                   ) {
                     void dispatchNextMentionTurn(target.id);
                   } else {
                     // Never fail silently: the bounded queue protects server
                     // availability while telling the room which handoff needs a retry.
-                    store.appendMasterChatMessage(thread.masterChatId, {
-                      role: "assistant",
-                      text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up queue is full. Please retry after they finish some queued work.`,
-                    });
+                    store.appendMasterChatMessage(
+                      thread.masterChatId,
+                      {
+                        role: "assistant",
+                        text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up queue is full. Please retry after they finish some queued work.`,
+                      },
+                      undefined,
+                      "collaboration",
+                    );
                   }
                 }
               }

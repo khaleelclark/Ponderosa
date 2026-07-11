@@ -2,6 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import ArchiveOutlinedIcon from "@mui/icons-material/ArchiveOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
+import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import {
   Alert,
@@ -38,7 +39,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useMasterChat } from "../hooks/queries";
+import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { ChatMarkdown, Composer, scrollChatToBottom } from "./panes";
 import { useMasterChatStreams } from "../hooks/useMasterChatStreams";
@@ -62,6 +63,8 @@ export function MasterChatView({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const detailQuery = useMasterChat(masterChatId);
+  const collaborationQuery = useCollaborationChat(masterChatId);
+  const [conversation, setConversation] = useState<"main" | "collaboration">("main");
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -87,6 +90,7 @@ export function MasterChatView({
   const masterChat = detailQuery.data?.masterChat;
   const messages = detailQuery.data?.messages ?? [];
   const threads = detailQuery.data?.threads ?? [];
+  const collaborationMessages = collaborationQuery.data?.messages ?? [];
   const runningIds = new Set([
     ...dispatchedAgentIds,
     ...threads.filter((thread) => statusByAgentId.get(thread.id) === "running").map((thread) => thread.id),
@@ -108,7 +112,7 @@ export function MasterChatView({
     if (chatScrollRef.current) {
       scrollChatToBottom(chatScrollRef.current);
     }
-  }, [messages, liveReplies]);
+  }, [conversation, messages, collaborationMessages, liveReplies]);
 
   useEffect(() => {
     if (!masterChat || initializedFor.current === masterChat.id) {
@@ -128,6 +132,7 @@ export function MasterChatView({
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["master-chat", masterChatId] });
     void queryClient.invalidateQueries({ queryKey: ["master-chats"] });
+    void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
     if (masterChat) {
       void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
     }
@@ -189,6 +194,14 @@ export function MasterChatView({
         variables.agentIds.forEach((agentId) => next.delete(agentId));
         return next;
       });
+    },
+  });
+
+  const collaborate = useMutation({
+    mutationFn: (text: string) => api.sendCollaborationMessage(masterChatId, { text }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
+      if (masterChat) void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
     },
   });
 
@@ -282,10 +295,14 @@ export function MasterChatView({
     .join(", ");
   // Replying to an existing agent needs it idle (routing a turn to a running agent
   // is the steering case, deferred). Spawning a new agent needs a signed-in engine.
-  const canSend = mentioned.length > 0 ? !mentionedRunning : engineReady;
-  const busy = spawn.isPending || reply.isPending;
+  const canSend = conversation === "collaboration" ? true : mentioned.length > 0 ? !mentionedRunning : engineReady;
+  const busy = spawn.isPending || reply.isPending || collaborate.isPending;
 
   const submit = (text: string) => {
+    if (conversation === "collaboration") {
+      collaborate.mutate(text);
+      return;
+    }
     const targets = findMentioned(text);
     if (targets.length > 0) {
       if (targets.some((target) => statusByAgentId.get(target.id) === "running")) return;
@@ -342,6 +359,15 @@ export function MasterChatView({
             aria-expanded={agentsOpen}
           >
             Agents ({threads.length})
+          </Button>
+          <Button
+            variant={conversation === "collaboration" ? "contained" : "outlined"}
+            size="small"
+            startIcon={<ForumOutlinedIcon />}
+            onClick={() => setConversation((current) => current === "main" ? "collaboration" : "main")}
+            aria-pressed={conversation === "collaboration"}
+          >
+            {conversation === "collaboration" ? "Main Chat" : "Collaboration"}
           </Button>
           <Button
             variant="outlined"
@@ -430,11 +456,13 @@ export function MasterChatView({
       <Box ref={chatScrollRef} sx={{ minHeight: 0, overflow: "auto" }}>
         <Box sx={{ p: 1.5 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            This is your team's group chat. A plain message spawns a new agent on the selected engine;
-            <Box component="strong"> @mention</Box> an agent to reply to it instead. Agents post back
-            here when they finish or get stuck, and everything stays as shared context for future agents.
+            {conversation === "collaboration" ? (
+              <>This is a separate, opt-in agent collaboration chat. Only agents with a valid <Box component="strong">@mention</Box> receive this chat's context; untagged messages stay here.</>
+            ) : (
+              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Agents post back here when they finish or get stuck.</>
+            )}
           </Alert>
-          {!engineReady ? (
+          {conversation === "main" && !engineReady ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
               {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
               host, or pick a signed-in engine, before spawning agents.
@@ -442,19 +470,20 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
-            {pollingFallbackCount > 0 ? (
+            {conversation === "main" && pollingFallbackCount > 0 ? (
               <Alert severity="info">
                 {pollingFallbackCount} additional active {pollingFallbackCount === 1 ? "agent is" : "agents are"}
                 {" "}updating through polling to keep this chat responsive.
               </Alert>
             ) : null}
-            {messages.length === 0 ? (
+            {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
-                No messages yet. Send a task to spawn your first agent — it reports back here when
-                it finishes or gets stuck.
+                {conversation === "collaboration"
+                  ? "No collaboration messages yet. @mention an agent to give it this chat's context."
+                  : "No messages yet. Send a task to spawn your first agent — it reports back here when it finishes or gets stuck."}
               </Typography>
             ) : null}
-            {messages.map((message) => {
+            {(conversation === "collaboration" ? collaborationMessages : messages).map((message) => {
               const fromManager = !message.authorThreadId;
               return (
                 <Box
@@ -487,7 +516,7 @@ export function MasterChatView({
                 </Box>
               );
             })}
-            {liveReplies.map((reply) => (
+            {conversation === "main" && liveReplies.map((reply) => (
               <Box key={`live-${reply.threadId}`} sx={{ alignSelf: "flex-start", maxWidth: "min(680px, 92%)" }}>
                 <Link
                   component="button"
@@ -579,14 +608,18 @@ export function MasterChatView({
       </Drawer>
 
       <Box>
-        {spawn.isError || reply.isError ? (
+        {spawn.isError || reply.isError || collaborate.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String((spawn.error ?? reply.error) as Error)}
+            Message not sent. {String((spawn.error ?? reply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
         {(mentioned.length > 0 || threads.length > 0) ? (
           <Box sx={{ px: 1.5, pt: 1, borderTop: 1, borderColor: "divider" }}>
-            {mentioned.length > 0 ? (
+            {conversation === "collaboration" ? (
+              <Typography variant="caption" color="text.secondary">
+                Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context.
+              </Typography>
+            ) : mentioned.length > 0 ? (
               mentionedRunning ? (
                 <Typography variant="caption" color="warning.main">
                   {busyHandles} {busyHandles.includes(",") ? "are" : "is"} busy — replying to a running agent needs steering
@@ -610,7 +643,9 @@ export function MasterChatView({
           mentionHandles={mentionHandles}
           onChangeText={setComposerText}
           placeholder={
-            mentioned.length > 0
+            conversation === "collaboration"
+              ? "@mention agents to collaborate — untagged messages stay private to this chat"
+              : mentioned.length > 0
               ? mentionedRunning
                 ? `${busyHandles} ${busyHandles.includes(",") ? "are" : "is"} busy`
                 : `Reply to ${mentionedHandles}`

@@ -18,11 +18,13 @@ import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   ArtifactKind,
+  CollaborationChatDetailDto,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
   CreateProjectRequest,
   CreateThreadRequest,
   MasterChatDetailDto,
+  MasterChatChannel,
   MasterChatDto,
   MasterChatMessageDto,
   MessageDto,
@@ -63,6 +65,7 @@ import {
   dbPath,
   eventsPath,
   masterChatDir,
+  collaborationChatMessagesPath,
   masterChatJsonPath,
   masterChatMessagesPath,
   masterChatsDir,
@@ -111,6 +114,7 @@ interface MasterChatMessageJson {
   text: string;
   createdAt: string;
   authorThreadId?: string | null;
+  channel?: MasterChatChannel;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -259,7 +263,16 @@ export class ThreadStore {
     if (!masterChat) return undefined;
     return {
       masterChat,
-      messages: this.getMasterChatMessages(id),
+      messages: this.getMasterChatMessages(id, "main"),
+      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatId === id),
+    };
+  }
+
+  getCollaborationChatDetail(id: string): CollaborationChatDetailDto | undefined {
+    const masterChat = this.getMasterChat(id);
+    if (!masterChat) return undefined;
+    return {
+      messages: this.getMasterChatMessages(id, "collaboration"),
       threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatId === id),
     };
   }
@@ -322,6 +335,7 @@ export class ThreadStore {
     masterChatId: string,
     input: CreateMasterChatMessageRequest,
     authorThreadId?: string,
+    channel: MasterChatChannel = "main",
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
@@ -333,10 +347,13 @@ export class ThreadStore {
       text: input.text,
       createdAt: now,
       authorThreadId: authorThreadId ?? null,
+      channel,
     };
     mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
     appendFileSync(
-      masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+      channel === "collaboration"
+        ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
+        : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
       JSON.stringify(message) + "\n",
       "utf8",
     );
@@ -359,13 +376,14 @@ export class ThreadStore {
     };
   }
 
-  getMasterChatMessages(masterChatId: string): MasterChatMessageDto[] {
+  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
     return this.db
       .select()
       .from(masterChatMessages)
       .where(eq(masterChatMessages.masterChatId, masterChatId))
       .orderBy(asc(masterChatMessages.createdAt))
       .all()
+      .filter((row) => row.channel === channel)
       .map((row) => ({
         id: row.id,
         masterChatId: row.masterChatId,
@@ -651,10 +669,13 @@ export class ThreadStore {
               archived: m.archived ? 1 : 0,
             })
             .run();
-          for (const message of readJsonLines<MasterChatMessageJson>(
-            masterChatMessagesPath(this.dataDir, projectId, masterChatId),
-          )) {
-            this.db.insert(masterChatMessages).values(message).run();
+          for (const [channel, messagePath] of [
+            ["main", masterChatMessagesPath(this.dataDir, projectId, masterChatId)],
+            ["collaboration", collaborationChatMessagesPath(this.dataDir, projectId, masterChatId)],
+          ] as const) {
+            for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
+              this.db.insert(masterChatMessages).values({ ...message, channel: message.channel ?? channel }).run();
+            }
           }
         }
       }

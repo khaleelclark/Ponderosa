@@ -1,5 +1,6 @@
 import type {
   ArtifactContentDto,
+  CollaborationChatDetailDto,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
   CreateProjectRequest,
@@ -71,6 +72,11 @@ export const realApi: PonderosaApi = {
   getMasterChat(masterChatId) {
     return requestJson<MasterChatDetailDto>("/api/master-chats/" + encodeURIComponent(masterChatId));
   },
+  getCollaborationChat(masterChatId) {
+    return requestJson<CollaborationChatDetailDto>(
+      "/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration",
+    );
+  },
   updateMasterChat(masterChatId, patch) {
     return requestJson<MasterChatDto>("/api/master-chats/" + encodeURIComponent(masterChatId), {
       method: "PATCH",
@@ -82,6 +88,12 @@ export const realApi: PonderosaApi = {
   },
   async sendMasterChatMessage(masterChatId, request) {
     await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId) + "/messages", {
+      method: "POST",
+      body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
+    });
+  },
+  async sendCollaborationMessage(masterChatId, request) {
+    await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
     });

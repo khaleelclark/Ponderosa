@@ -5,6 +5,7 @@ import type {
   EngineDto,
   MasterChatDto,
   MasterChatMessageDto,
+  CollaborationChatDetailDto,
   MessageDto,
   ProjectDto,
   SendMessageRequest,
@@ -43,6 +44,7 @@ const masterMessages: Record<string, MasterChatMessageDto[]> = {
   "master-release": [{ id: "master-note-1", masterChatId: "master-release", role: "user", text: "Keep this release stable and split work into focused agents.", createdAt: now }],
   "master-mobile": [],
 };
+const collaborationMessages: Record<string, MasterChatMessageDto[]> = {};
 
 const threads: ThreadDto[] = [
   {
@@ -310,6 +312,15 @@ export const mockApi: PonderosaApi = {
     if (!masterChat) return Promise.reject(new Error("Master chat not found"));
     return delay({ masterChat, messages: masterMessages[masterChatId] ?? [], threads: threads.filter((thread) => thread.masterChatId === masterChatId) });
   },
+  getCollaborationChat(masterChatId) {
+    const masterChat = masterChats.find((master) => master.id === masterChatId);
+    if (!masterChat) return Promise.reject(new Error("Master chat not found"));
+    const detail: CollaborationChatDetailDto = {
+      messages: collaborationMessages[masterChatId] ?? [],
+      threads: threads.filter((thread) => thread.masterChatId === masterChatId),
+    };
+    return delay(detail);
+  },
   updateMasterChat(masterChatId, patch) {
     const master = masterChats.find((candidate) => candidate.id === masterChatId);
     if (!master) return Promise.reject(new Error("Master chat not found"));
@@ -330,6 +341,19 @@ export const mockApi: PonderosaApi = {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
     masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: request.text, createdAt: new Date().toISOString() }];
     await delay(undefined, 80);
+  },
+  async sendCollaborationMessage(masterChatId, request) {
+    if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    collaborationMessages[masterChatId] = [
+      ...(collaborationMessages[masterChatId] ?? []),
+      {
+        id: "collaboration-message-" + Date.now(),
+        masterChatId,
+        role: request.role ?? "user",
+        text: request.text,
+        createdAt: new Date().toISOString(),
+      },
+    ];
   },
   listThreads(projectId) {
     return delay(threads.filter((thread) => thread.projectId === projectId && !thread.archived));

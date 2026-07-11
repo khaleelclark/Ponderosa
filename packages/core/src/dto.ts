@@ -70,6 +70,15 @@ export interface MasterChatMessageDto {
   authorThreadId?: string;
 }
 
+/** The two deliberately separate conversations owned by a master chat. */
+export type MasterChatChannel = "main" | "collaboration";
+
+/** A message in the private, opt-in agent collaboration chat. */
+export interface CollaborationChatDetailDto {
+  messages: MasterChatMessageDto[];
+  threads: ThreadDto[];
+}
+
 /** GET /api/master-chats/:id response. */
 export interface MasterChatDetailDto {
   masterChat: MasterChatDto;
