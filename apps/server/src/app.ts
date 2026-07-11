@@ -580,7 +580,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!capability || capability.controller.signal.aborted) {
         return reply.code(401).send({ error: { code: "forbidden", message: "invalid or expired delegation capability", retryable: false } });
       }
-      const forbiddenOwnership = ["parentRunId", "threadId", "masterChatId", "rootRunId", "registrationId", "credential"]
+      const forbiddenOwnership = ["parentRunId", "parentThreadId", "threadId", "masterChatId", "rootRunId", "registrationId", "credential"]
         .find((field) => request.body && field in request.body);
       if (forbiddenOwnership) {
         return reply.code(403).send({ error: { code: "unauthorized_parent", message: `ownership field ${forbiddenOwnership} is server-controlled`, retryable: false } });
@@ -603,7 +603,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runtime: input.runtime,
           model: input.model,
           idempotencyKey: input.idempotencyKey,
-        }, true, contextMessages);
+        }, true, contextMessages, capability.threadId);
         const launch = await app.inject({
           method: "POST",
           url: `/api/internal/subagents/${spawned.run.id}/launch`,
@@ -795,7 +795,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           error: { code: "forbidden", message: "runtime is not configured", retryable: false },
         });
       }
-      const parentIsRunning = [...activeRuns.values()].some((run) => run.runId === input.parentRunId);
+      const parentEntry = [...activeRuns.entries()].find(([, run]) => run.runId === input.parentRunId);
+      const parentIsRunning = Boolean(parentEntry);
       try {
         const context = store.getCollaborationChatDetail(request.params.id)!;
         const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({
@@ -804,7 +805,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           text,
           ...(authorThreadId ? { authorThreadId } : {}),
         }));
-        return reply.code(201).send(delegations.spawn(request.params.id, input, parentIsRunning, contextMessages));
+        return reply.code(201).send(
+          delegations.spawn(request.params.id, input, parentIsRunning, contextMessages, parentEntry?.[0]),
+        );
       } catch (error) {
         return delegationFailure(error, reply);
       }

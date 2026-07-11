@@ -8,6 +8,7 @@ import {
   isSubagentUiEnabled,
   loadTranscriptPages,
   mergeTranscriptPage,
+  subagentRootsByParentThread,
   subagentTranscript,
 } from "../src/subagents";
 
@@ -61,6 +62,18 @@ describe("subagent UI adapter", () => {
     }));
     expect(store.runs.get("parent")?.status).toBe("running");
     expect(store.lastSeq).toBe(3);
+  });
+
+  it("groups delegated lineage beneath its server-derived parent agent", () => {
+    const parent = run("child", { parentThreadId: "agent-1", depth: 1 });
+    const nested = run("nested", {
+      parentThreadId: "agent-1",
+      parentRunId: "child",
+      depth: 2,
+    });
+    const grouped = subagentRootsByParentThread([parent, nested]);
+    expect(grouped.get("agent-1")?.map((item) => item.id)).toEqual(["child"]);
+    expect(grouped.get("agent-1")?.[0]?.children.map((item) => item.id)).toEqual(["nested"]);
   });
 
   it("deduplicates and orders transcript chunks by the per-run cursor", () => {
