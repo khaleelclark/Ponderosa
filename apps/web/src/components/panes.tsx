@@ -717,7 +717,8 @@ export function Composer({
         zIndex: 3,
         borderTop: 1,
         borderColor: "divider",
-        p: 1,
+        px: { xs: 0.75, sm: 1 },
+        pt: { xs: 0.75, sm: 1 },
         pb: "max(8px, env(safe-area-inset-bottom))",
       }}
     >
@@ -739,20 +740,21 @@ export function Composer({
         </Box>)}
       </Stack> : null}
       {sendError ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {sendError}</Alert> : null}
-      <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>
+      <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} sx={{ alignItems: "flex-end" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => {
           const selected = Array.from(event.target.files ?? []).slice(0, 4 - files.length);
           const valid = selected.filter((file) => file.size <= 8 * 1024 * 1024);
           setFiles((current) => [...current, ...valid.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
           event.target.value = "";
         }} />
-        <Tooltip title="Attach images (PNG, JPEG, GIF, or WebP; 8 MiB each)"><span><IconButton aria-label="Attach images" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()}><AttachFileIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Attach images (PNG, JPEG, GIF, or WebP; 8 MiB each)"><span><IconButton aria-label="Attach images" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
         <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
           <TextField
             fullWidth
             multiline
             minRows={1}
             maxRows={5}
+            sx={{ "& .MuiInputBase-root": { alignItems: "flex-end" } }}
             value={text}
             inputRef={inputRef}
             disabled={disabled || running}
@@ -842,14 +844,14 @@ export function Composer({
         </Box>
         {canCancel ? (
           <Tooltip title="Cancel run">
-            <IconButton color="error" onClick={onCancel} aria-label="Cancel run">
+            <IconButton color="error" onClick={onCancel} aria-label="Cancel run" sx={{ minWidth: 44, minHeight: 44 }}>
               <StopCircleIcon />
             </IconButton>
           </Tooltip>
         ) : (
           <Tooltip title="Send">
             <span>
-              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"}>
+              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"} sx={{ minWidth: 44, minHeight: 44 }}>
                 <SendIcon />
               </IconButton>
             </span>

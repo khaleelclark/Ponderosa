@@ -1,4 +1,5 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import type { EngineDto, MasterChatDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
@@ -246,7 +247,6 @@ export function ProjectShell({
         onClose={() => setAgentDialog({ open: false })}
         onCreate={(input) => createAgent.mutate(input)}
       />
-      <Button onClick={() => setPresetsOpen(true)} sx={{ position: "fixed", right: 16, bottom: 16, zIndex: 10 }} variant="outlined">Manage presets</Button>
       <PresetManagerDialog open={presetsOpen} engines={engines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={(id, input) => {
         const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input as never);
         void action.then(() => queryClient.invalidateQueries({ queryKey: ["agent-presets", projectId] }));
@@ -279,6 +279,13 @@ export function ProjectShell({
               <Typography variant="subtitle2" color="text.secondary">
                 Project navigation
               </Typography>
+              <IconButton
+                aria-label="Manage agent presets"
+                onClick={() => setPresetsOpen(true)}
+                sx={{ ml: "auto" }}
+              >
+                <TuneIcon />
+              </IconButton>
             </Stack>
             <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>{main}</Box>
           </Box>
@@ -294,12 +301,24 @@ export function ProjectShell({
         sx={{
           borderRight: 1,
           borderColor: "divider",
-          overflow: "auto",
+          overflow: "hidden",
           bgcolor: "background.paper",
+          display: "grid",
+          gridTemplateRows: "minmax(0, 1fr) auto",
         }}
       >
-        {loading ? <LinearProgress /> : null}
-        {sidebar}
+        <Box sx={{ minHeight: 0, overflow: "auto" }}>
+          {loading ? <LinearProgress /> : null}
+          {sidebar}
+        </Box>
+        <Button
+          onClick={() => setPresetsOpen(true)}
+          startIcon={<TuneIcon />}
+          sx={{ m: 1, minHeight: 44 }}
+          variant="outlined"
+        >
+          Manage presets
+        </Button>
       </Box>
       <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
       {dialogs}
