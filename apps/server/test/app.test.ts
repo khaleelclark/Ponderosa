@@ -876,8 +876,9 @@ describe("server chunk F", () => {
     const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const intent = { targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
+    const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-11T12:00:00.000Z"));
+    vi.setSystemTime(afterReconciliationBoundary);
     const older = store.appendMasterChatMessage(
       master.id,
       { role: "user", text: "@Parent older message missing its inbox write" },
@@ -923,8 +924,9 @@ describe("server chunk F", () => {
     const master = store.createMasterChat(project.id, { title: "Mixed FIFO crash window" });
     const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
+    const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-11T12:00:00.000Z"));
+    vi.setSystemTime(afterReconciliationBoundary);
     const older = store.appendMasterChatMessage(
       master.id,
       { role: "user", text: "@Parent older collaboration message missing its inbox write" },
