@@ -68,6 +68,13 @@ Ponderosa stores everything (event logs + SQLite projections) under
 mkdir -p /home/khaleel/.ponderosa
 ```
 
+Set ownership and permissions so only the service user can read canonical history:
+
+```bash
+sudo chown -R khaleel:khaleel /home/khaleel/.ponderosa
+chmod 700 /home/khaleel/.ponderosa
+```
+
 ## 4. Install the systemd service
 
 ```bash
@@ -79,6 +86,22 @@ sudo systemctl enable --now ponderosa
 systemctl status ponderosa                        # active (running)?
 curl -s http://127.0.0.1:8787/api/health          # {"status":"ok",...}
 ```
+
+`/api/health` is currently a **liveness** check only. It does not prove the data
+directory is writable or an engine is authenticated. Until a distinct readiness
+endpoint ships, use this operator readiness check:
+
+```bash
+test -w /home/khaleel/.ponderosa
+curl -fsS http://127.0.0.1:8787/api/engines
+sudo -u khaleel codex login status
+```
+
+If `PONDEROSA_AUTH_TOKEN` is configured, all API calls except `/api/health` need
+`Authorization: Bearer $PONDEROSA_AUTH_TOKEN`. V1 otherwise assumes a single
+operator behind a private network gate. Do not expose an unauthenticated install
+to the public internet. Engine authentication is separate and must be performed
+as the systemd `User=`; never set provider API keys.
 
 Logs: `journalctl -u ponderosa -f`. The unit runs as your login user (not root) so
 spawned engines inherit your access and subscription tokens (SPEC §11). It restarts
@@ -121,15 +144,100 @@ this with the v2 OAuth auth (SPEC §9) before exposing publicly.
 > **Do not** build anything that only works over Tailscale. If you later move to a
 > public domain, only this step changes — the app is unchanged.
 
+For any public HTTPS front end, require `PONDEROSA_AUTH_TOKEN`, restrict origin
+access at the proxy/tunnel, and apply its access-control product. This bearer token
+is still single-operator protection, not the deferred multi-user OAuth design.
+
 ## 6. Updating
 
 ```bash
 cd /home/khaleel/ponderosa
-git pull
-pnpm install
+git fetch origin master
+git checkout master
+git pull --ff-only origin master
+pnpm install --frozen-lockfile
 pnpm build
 sudo systemctl restart ponderosa
+curl -fsS http://127.0.0.1:8787/api/health
 ```
+
+Record the pre-update revision first: `git rev-parse HEAD`. Back up the data
+directory before any release that changes persistence.
+
+## 7. Backup and restore
+
+The canonical backup unit is the entire `PONDEROSA_DATA_DIR`, not SQLite alone.
+Engine login directories are credentials and are deliberately separate; normally
+re-authenticate them instead of placing them in the application backup.
+
+For a consistent snapshot, briefly stop writes:
+
+```bash
+sudo systemctl stop ponderosa
+sudo tar --xattrs --acls -C /home/khaleel -czf /secure/off-host/ponderosa-$(date -u +%Y%m%dT%H%M%SZ).tar.gz .ponderosa
+sudo systemctl start ponderosa
+curl -fsS http://127.0.0.1:8787/api/health
+```
+
+Encrypt backups, copy them off-host, define retention, and test restores. Restore
+to a new directory first so the existing data remains recoverable:
+
+```bash
+sudo systemctl stop ponderosa
+sudo mkdir -p /home/khaleel/.ponderosa-restore
+sudo tar -xzf /secure/off-host/ponderosa-YYYYMMDDTHHMMSSZ.tar.gz -C /home/khaleel/.ponderosa-restore --strip-components=1
+sudo chown -R khaleel:khaleel /home/khaleel/.ponderosa-restore
+```
+
+Point a temporary service/process at `.ponderosa-restore`, start it on a different
+port, and verify projects, threads, messages, artifacts, delegation lineage, and a
+projection rebuild. Only then replace the active directory while the service is
+stopped. Never restore only `ponderosa.sqlite` or delete canonical JSONL to repair
+a projection.
+
+## 8. Logs and troubleshooting
+
+```bash
+journalctl -u ponderosa --since '30 minutes ago' --no-pager
+journalctl -u ponderosa -f
+systemctl status ponderosa --no-pager
+ss -ltnp | grep ':8787'
+curl -v http://127.0.0.1:8787/api/health
+```
+
+- **401 from API:** provide the configured bearer token; health intentionally
+  remains unauthenticated.
+- **Engine unavailable:** check `/api/engines`, CLI location on systemd `PATH`,
+  login as the service user, and ensure provider API-key variables are absent.
+- **Service restart loop:** inspect the journal, verify Node 22, rebuild, and check
+  data-directory ownership/free space.
+- **Phone cannot connect:** prove loopback health first, then inspect Tailscale
+  Serve or the HTTPS proxy. A PWA requires a secure HTTPS context.
+- **Missing/stale views:** preserve the data directory and investigate projection
+  rebuild; the event logs are authoritative.
+- **Run stuck:** use the UI/API cancel action, inspect correlated service logs,
+  and restart only after preserving evidence if cancellation fails.
+
+## 9. Rollback
+
+Keep the previous application SHA and a compatible pre-update data snapshot.
+
+```bash
+sudo systemctl stop ponderosa
+cd /home/khaleel/ponderosa
+git fetch origin
+git checkout --detach PREVIOUS_GOOD_SHA
+pnpm install --frozen-lockfile
+pnpm build
+sudo systemctl start ponderosa
+curl -fsS http://127.0.0.1:8787/api/health
+```
+
+If the release changed persisted formats incompatibly, preserve the failed data
+directory and restore the matching snapshot before starting the old binary. After
+the smoke check, validate `/api/engines`, open an existing Agent, run a safe short
+turn, and confirm SSE reconnect. Return the production checkout to `master` only
+after the regression is fixed and reviewed.
 
 ---
 
@@ -137,6 +245,5 @@ sudo systemctl restart ponderosa
 
 - **Docker is deferred** (SPEC §10). The systemd-on-host path needs no container and
   keeps engine host-access simple. Not ruled out for the future product story.
-- **Auth (v1):** with Tailscale as the gate, app-level auth is minimal and nothing
-  sensitive is stored (SPEC §9). Public exposure (Option B) is a v2 concern gated by
-  real OAuth — don't expose the box publicly without it.
+- **Auth (v1):** use a private network gate and configure the optional bearer token.
+  Public multi-user exposure remains deferred to real OAuth (SPEC §9).
