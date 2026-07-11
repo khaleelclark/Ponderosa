@@ -660,6 +660,37 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("delivers @everyone once to every non-archived collaboration member", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Broadcast room" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
+    const second = store.createThread(project.id, { title: "Second", engine: "codex", masterChatId: master.id });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", masterChatId: master.id });
+    store.updateThread(archived.id, { archived: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@everyone @First please report status." },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ notifiedAgentIds: string[] }>().notifiedAgentIds).toEqual([first.id, second.id]);
+    await waitForSeedCount(2);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(store.getMessages(first.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(1);
+    expect(store.getMessages(second.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(1);
+    expect(store.getMessages(archived.id)).toHaveLength(0);
+    const intents = store.getMasterChatDeliveryIntents(master.id);
+    expect(intents.map(({ intent }) => ({ id: intent.targetThreadId, audience: intent.audience }))).toEqual([
+      { id: first.id, audience: "everyone" },
+      { id: second.id, audience: "everyone" },
+    ]);
+    await Promise.all([cancelAndWait(app, first.id), cancelAndWait(app, second.id)]);
+    await app.close();
+  });
+
   it("never sends collaboration context until a valid agent mention is accepted", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -761,6 +792,32 @@ describe("server chunk F", () => {
     expect(reviewerPrompt).toContain("- author: Author Agent");
     expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
+    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
+    await app.close();
+  });
+
+  it("lets a room member broadcast idempotently without delivering to itself", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Agent broadcast" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const payload = { channel: "collaboration", text: "@everyone review this.", idempotencyKey: "broadcast-review" };
+    const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
+    const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
+
+    expect(first.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
+    await waitForSeedCount(2);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(store.getMessages(author.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(0);
+    expect(store.getMessages(reviewer.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(1);
+    expect(store.getMasterChatDeliveryIntents(master.id).filter(({ message }) => message.id === first.json<{ messageId: string }>().messageId))
+      .toHaveLength(1);
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });
@@ -1113,6 +1170,56 @@ describe("server chunk F", () => {
       "Latest message for you:\n@Parent result persisted before the inbox write",
     );
     await app.close();
+  });
+
+  it("reconciles an @everyone crash window once per still-eligible recipient with audit provenance", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Broadcast crash window" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
+    const second = store.createThread(project.id, { title: "Second", engine: "codex", masterChatId: master.id });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", masterChatId: master.id });
+    const deleted = store.createThread(project.id, { title: "Deleted", engine: "codex", masterChatId: master.id });
+    new CollaborationDeliveryStore(dataDir);
+    const intent = (targetThreadId: string) => ({
+      targetThreadId,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "tag" as const,
+      audience: "everyone" as const,
+    });
+    const message = store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@everyone recover this broadcast" },
+      undefined,
+      "collaboration",
+      [intent(first.id), intent(second.id), intent(archived.id), intent(deleted.id)],
+    )!;
+    store.updateThread(archived.id, { archived: true });
+    store.deleteThread(deleted.id);
+
+    adapter.mode = "hang";
+    const firstStart = createServer({ dataDir, store, engines, logger: false });
+    await firstStart.ready();
+    await waitForSeedCount(2);
+    await firstStart.close();
+
+    const restartedStore = new ThreadStore(dataDir);
+    const secondStart = createServer({ dataDir, store: restartedStore, engines, logger: false });
+    await secondStart.ready();
+    await secondStart.close();
+
+    const records = readFileSync(path.join(dataDir, "collaboration-deliveries.jsonl"), "utf8")
+      .trim().split("\n").map((line) => JSON.parse(line) as {
+        type: string;
+        delivery?: { id: string; messageId: string; targetThreadId: string; audience?: string };
+      });
+    const deliveries = records
+      .flatMap((record) => record.delivery ? [record.delivery] : [])
+      .filter((delivery) => delivery.messageId === message.id);
+    const uniqueByTarget = new Map(deliveries.map((delivery) => [delivery.targetThreadId, delivery]));
+    expect([...uniqueByTarget.keys()].sort()).toEqual([first.id, second.id].sort());
+    expect(new Set(deliveries.map((delivery) => delivery.id)).size).toBe(2);
+    expect(deliveries.every((delivery) => delivery.audience === "everyone")).toBe(true);
   });
 
   it("preserves canonical FIFO when an older message is reconstructed", async () => {

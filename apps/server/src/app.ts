@@ -185,6 +185,10 @@ function mentionedAgentThreads(text: string, threads: ThreadDto[], authorThreadI
   return [...mentioned.values()];
 }
 
+function hasEveryoneMention(text: string): boolean {
+  return /(?:^|\s)@everyone(?=$|\s|[.,!?;:])/iu.test(text);
+}
+
 function inboundContext(
   channel: AgentMessageChannel,
   author: string,
@@ -249,6 +253,7 @@ function agentMessagingPrompt(): string[] {
     "You can send an additional message to any Ponderosa channel with your shell tool:",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message","idempotencyKey":"stable-retry-key"}\'',
     "For a collaboration tag, write @Full-Agent-Handle at the start of the message or separate it from preceding text with whitespace.",
+    "In collaboration only, @everyone notifies every non-archived member of your current room except you. It is resolved and deduplicated when the message is recorded.",
     'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
     "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
     "A valid collaboration @mention is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
@@ -633,6 +638,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       for (const master of store.listMasterChats(project.id)) {
         for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getMasterChatDeliveryIntents(master.id)) {
           if (message.createdAt < boundary) continue;
+          const target = store.getThread(intent.targetThreadId);
+          if (!target || target.archived || !target.masterChatIds.includes(master.id)) continue;
           if (messageReceiptKey) collaborationDeliveries.rememberMessageReceipt(messageReceiptKey, message.id);
           const queued = collaborationDeliveries.queue({
             masterChatId: master.id,
@@ -643,6 +650,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             relayDepth: intent.relayDepth,
             mentionTrail: intent.mentionTrail,
             kind: intent.kind,
+            audience: intent.audience,
             delegatedRunId: intent.delegatedRunId,
             createdAt: message.createdAt,
             orderKey: deliveryOrderKey,
@@ -757,7 +765,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     mentionTrail: string[],
   ): { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
     const detail = store.getCollaborationChatDetail(masterChatId);
-    const targets = detail ? mentionedAgentThreads(text, detail.threads, authorThreadId) : [];
+    const eligible = detail?.threads.filter((thread) => !thread.archived && thread.id !== authorThreadId) ?? [];
+    const targetsById = new Map(
+      mentionedAgentThreads(text, eligible, authorThreadId).map((thread) => [thread.id, thread]),
+    );
+    if (hasEveryoneMention(text)) {
+      for (const thread of eligible) targetsById.set(thread.id, thread);
+    }
+    const targets = [...targetsById.values()];
     const intents: MasterChatDeliveryIntent[] = [];
     const blocked: Array<{ title: string; reason: string }> = [];
     for (const target of targets) {
@@ -775,6 +790,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           relayDepth: authorThreadId ? relayDepth + 1 : 0,
           mentionTrail: authorThreadId ? [...mentionTrail, fingerprint] : [],
           kind: "tag",
+          audience: hasEveryoneMention(text) ? "everyone" : "mention",
         });
       }
     }
@@ -798,6 +814,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         relayDepth: intent.relayDepth,
         mentionTrail: intent.mentionTrail,
         kind: intent.kind,
+        audience: intent.audience,
         delegatedRunId: intent.delegatedRunId,
         createdAt: message.createdAt,
         orderKey,
@@ -1305,7 +1322,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const notifiedAgentIds: string[] = [];
     queueRecordedCollaborationMessage(request.params.id, message!, undefined, routing.intents);
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetThreadId));
-    return { message, notifiedAgentIds };
+    return {
+      message,
+      audience: hasEveryoneMention(text) ? "everyone" : routing.intents.length ? "mention" : "none",
+      notifiedAgentIds,
+    };
   });
 
   app.get<{ Params: { id: string } }>("/api/master-chats/:id/subagents", async (request, reply) => {

@@ -122,6 +122,13 @@ export interface CreateMasterChatMessageRequest {
   attachments?: ImageAttachmentDto[];
 }
 
+/** POST collaboration message response; recipients are the immutable resolved audience. */
+export interface CreateCollaborationMessageResponse {
+  message: MasterChatMessageDto;
+  audience: "mention" | "everyone" | "none";
+  notifiedAgentIds: string[];
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────────
 
 /** Derived thread state (current branch/commit), from `state` events (SPEC §2). */

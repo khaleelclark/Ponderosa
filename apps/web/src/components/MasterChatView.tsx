@@ -308,7 +308,9 @@ export function MasterChatView({
 
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
-  const mentionHandles = threads.map((thread) => agentMentionHandle(thread.title));
+  const mentionHandles = conversation === "collaboration"
+    ? ["everyone", ...threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title))]
+    : threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title));
   const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
   const busyMentionHandles = threads
@@ -508,7 +510,7 @@ export function MasterChatView({
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {conversation === "collaboration" ? (
-              <>This is a separate, opt-in agent collaboration chat. Only agents with a valid <Box component="strong">@mention</Box> receive this chat's context; untagged messages stay here.</>
+              <>This is a separate, opt-in agent collaboration chat. A valid <Box component="strong">@mention</Box> notifies one agent; <Box component="strong">@everyone</Box> queues one notification for every active room member. Interrupted delivery turns may retry. Untagged messages stay here.</>
             ) : (
               <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies to busy agents queue automatically.</>
             )}
@@ -673,7 +675,7 @@ export function MasterChatView({
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
-                Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context.
+                Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context. Use <Box component="strong">@everyone</Box> to notify every active room member.
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
