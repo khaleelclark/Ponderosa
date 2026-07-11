@@ -32,6 +32,8 @@ Environment=PONDEROSA_DATA_DIR=/home/khaleel/.ponderosa
 Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 # Optional: bind host/port (defaults 0.0.0.0:8787).
 # Environment=PONDEROSA_PORT=8787
+# Optional runtime callback origin (defaults to http://127.0.0.1:PONDEROSA_PORT).
+# Environment=PONDEROSA_AGENT_BASE_URL=http://127.0.0.1:8787
 #
 # IMPORTANT — engine binaries on PATH. Ponderosa spawns `codex` and `claude` by
 # name. systemd's default PATH is minimal and usually does NOT include npm-global

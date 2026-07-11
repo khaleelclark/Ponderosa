@@ -1052,14 +1052,21 @@ describe("server chunk F", () => {
 
   it("delegates through a run-bound bridge without exposing ownership or registration proof", async () => {
     adapter.mode = "hang";
-    const app = createServer({ dataDir, store, engines, logger: false });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      agentBaseUrl: "http://127.0.0.1:8787/",
+      logger: false,
+    });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Delegation room" });
     const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
     await waitForSeedCount(1);
     const environment = adapter.seeds[0]!.environment!;
-    expect(environment.PONDEROSA_DELEGATION_URL).toContain("/api/agent-delegations");
+    expect(environment.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
+    expect(environment.PONDEROSA_DELEGATION_URL).toBe("http://127.0.0.1:8787/api/agent-delegations");
     expect(environment.PONDEROSA_INTERNAL_SUBAGENTS_DISABLED).toBe("1");
 
     const spoof = await app.inject({
@@ -1095,6 +1102,8 @@ describe("server chunk F", () => {
     expect(JSON.stringify(childDetail)).not.toContain("private secret task");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_URL).toBe("http://127.0.0.1:8787/api/agent-delegations");
 
     const childCollaboration = await app.inject({
       method: "POST",
