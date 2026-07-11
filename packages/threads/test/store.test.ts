@@ -27,6 +27,7 @@ function snapshot(s: ThreadStore): Record<string, unknown[]> {
     "agent_presets",
     "master_chats",
     "master_chat_messages",
+    "thread_master_chat_memberships",
     "threads",
     "messages",
     "tasks",
@@ -35,7 +36,8 @@ function snapshot(s: ThreadStore): Record<string, unknown[]> {
   ];
   const out: Record<string, unknown[]> = {};
   for (const t of tables) {
-    const rows = db.prepare(`SELECT * FROM ${t} ORDER BY id`).all() as unknown[];
+    const order = t === "thread_master_chat_memberships" ? "thread_id, position" : "id";
+    const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
   }
   return out;
@@ -46,6 +48,31 @@ function seedThread(): { projectId: string; threadId: string } {
   const thread = store.createThread(project.id, { title: "Auth", engine: "codex" });
   return { projectId: project.id, threadId: thread.id };
 }
+
+describe("ThreadStore — multi-master-chat membership", () => {
+  it("rebuilds membership and removes only a deleted room", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const first = store.createMasterChat(project.id, { title: "First" });
+    const second = store.createMasterChat(project.id, { title: "Second" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: first.id });
+    expect(store.updateThreadMasterChatMemberships(thread.id, { masterChatIds: [first.id, second.id], primaryMasterChatId: second.id }))
+      .toMatchObject({ masterChatId: second.id, masterChatIds: [first.id, second.id] });
+    expect(store.getMasterChatDetail(first.id)?.threads.map((item) => item.id)).toEqual([thread.id]);
+    expect(store.getMasterChatDetail(second.id)?.threads.map((item) => item.id)).toEqual([thread.id]);
+    store.rebuildProjections();
+    expect(store.getThread(thread.id)?.masterChatIds).toEqual([first.id, second.id]);
+    store.deleteMasterChat(second.id);
+    expect(store.getThread(thread.id)).toMatchObject({ masterChatId: first.id, masterChatIds: [first.id] });
+  });
+
+  it("rejects cross-project membership", () => {
+    const one = store.createProject({ label: "One", hostPath: "/one" });
+    const two = store.createProject({ label: "Two", hostPath: "/two" });
+    const thread = store.createThread(one.id, { title: "Agent", engine: "codex" });
+    const foreign = store.createMasterChat(two.id, { title: "Foreign" });
+    expect(() => store.updateThreadMasterChatMemberships(thread.id, { masterChatIds: [foreign.id], primaryMasterChatId: foreign.id })).toThrow("does not belong");
+  });
+});
 
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },

@@ -2,7 +2,11 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains ThreadDto/ThreadDetailDto.
 
-import type { TaskDto, ThreadDetailDto } from "@ponderosa/core";
+import type { TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+
+export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {
+  return agent.masterChatIds.includes(masterChatId);
+}
 
 export type AgentStatus = "running" | "waiting" | "completed" | "error" | "idle";
 

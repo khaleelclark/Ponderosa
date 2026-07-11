@@ -47,6 +47,13 @@ export const masterChats = sqliteTable("master_chats", {
   archived: integer("archived").notNull().default(0),
 });
 
+/** Rebuildable projection of the canonical membership list in thread.json. */
+export const threadMasterChatMemberships = sqliteTable("thread_master_chat_memberships", {
+  threadId: text("thread_id").notNull(),
+  masterChatId: text("master_chat_id").notNull(),
+  position: integer("position").notNull(),
+});
+
 export const masterChatMessages = sqliteTable("master_chat_messages", {
   id: text("id").primaryKey(),
   masterChatId: text("master_chat_id").notNull(),
@@ -106,6 +113,7 @@ export type ProjectRow = typeof projects.$inferSelect;
 export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type ThreadRow = typeof threads.$inferSelect;
 export type MasterChatRow = typeof masterChats.$inferSelect;
+export type ThreadMasterChatMembershipRow = typeof threadMasterChatMemberships.$inferSelect;
 export type MasterChatMessageRow = typeof masterChatMessages.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;

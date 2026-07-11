@@ -291,6 +291,23 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("authorizes membership changes and routes a secondary-chat turn", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
+    const first = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/master-chats`, payload: { title: "Home" } })).json<{ id: string }>();
+    const second = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/master-chats`, payload: { title: "Review" } })).json<{ id: string }>();
+    const thread = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/threads`, payload: { title: "Agent", engine: "codex", masterChatId: first.id } })).json<{ id: string }>();
+    const membership = await app.inject({ method: "PUT", url: `/api/threads/${thread.id}/master-chat-memberships`, payload: { masterChatIds: [first.id, second.id], primaryMasterChatId: first.id } });
+    expect(membership.statusCode).toBe(200);
+    expect(membership.json()).toMatchObject({ masterChatIds: [first.id, second.id] });
+    const turn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceMasterChatId: second.id } });
+    expect(turn.statusCode).toBe(200);
+    await waitForRun(thread.id);
+    expect(store.getMasterChatMessages(second.id).some((message) => message.authorThreadId === thread.id)).toBe(true);
+    expect(store.getMasterChatMessages(first.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
+    await app.close();
+  });
+
   it("seeds first message, then continues with the captured session id", async () => {
     const { app, thread } = await createProjectAndThread();
     const first = await app.inject({

@@ -136,6 +136,8 @@ export interface ThreadDto {
   projectId: string;
   /** Optional control-room/master chat that spawned or groups this agent. */
   masterChatId?: string;
+  /** All control rooms this agent belongs to. `masterChatId` is the primary/home member. */
+  masterChatIds: string[];
   title: string;
   /** The engine currently bound to this thread. */
   activeEngine: EngineId;
@@ -165,6 +167,13 @@ export interface CreateThreadRequest {
 export interface UpdateThreadRequest {
   title?: string;
   archived?: boolean;
+}
+
+/** PUT /api/threads/:id/master-chat-memberships body. Replaces membership atomically. */
+export interface UpdateThreadMasterChatMembershipsRequest {
+  masterChatIds: string[];
+  /** Must be one of `masterChatIds`; omit only when the resulting set is empty. */
+  primaryMasterChatId?: string;
 }
 
 // ─── Messages / Tasks / Artifacts ────────────────────────────────────────────
@@ -258,6 +267,8 @@ export interface SendMessageRequest {
   /** Set by a master-chat client when this turn originated in that room. */
   sourceChannel?: "main";
   replyToMessageId?: string;
+  /** Membership used for this main-chat turn; omitted by direct/legacy callers. */
+  sourceMasterChatId?: string;
 }
 
 /** POST /api/threads/:id/messages response when a turn starts immediately. */

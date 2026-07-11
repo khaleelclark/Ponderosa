@@ -53,6 +53,7 @@ const threads: ThreadDto[] = [
     id: "thread-auth",
     projectId: "ponderosa",
     masterChatId: "master-release",
+    masterChatIds: ["master-release"],
     title: "Chunk G web PWA",
     activeEngine: "codex",
     state: { branch: "feature/web-pwa", commit: "local" },
@@ -63,6 +64,7 @@ const threads: ThreadDto[] = [
   {
     id: "thread-sse",
     projectId: "ponderosa",
+    masterChatIds: [],
     title: "SSE reconnect audit",
     activeEngine: "codex",
     state: { branch: "main", commit: "b7f4c2a" },
@@ -73,6 +75,7 @@ const threads: ThreadDto[] = [
   {
     id: "thread-login",
     projectId: "mobile",
+    masterChatIds: [],
     title: "Phone login regression",
     activeEngine: "codex",
     state: { branch: "fix/login" },
@@ -379,6 +382,7 @@ export const mockApi: PonderosaApi = {
       id: `thread-${Date.now()}`,
       projectId,
       masterChatId: request.masterChatId,
+      masterChatIds: request.masterChatId ? [request.masterChatId] : [],
       title: request.title,
       activeEngine: request.engine,
       state: {},
@@ -416,6 +420,14 @@ export const mockApi: PonderosaApi = {
     if (!thread) return Promise.reject(new Error("Thread not found"));
     if (patch.title !== undefined) thread.title = patch.title;
     if (patch.archived !== undefined) thread.archived = patch.archived;
+    thread.updatedAt = new Date().toISOString();
+    return delay(thread);
+  },
+  updateThreadMasterChatMemberships(threadId, membership) {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (!thread) return Promise.reject(new Error("Thread not found"));
+    thread.masterChatIds = [...membership.masterChatIds];
+    thread.masterChatId = membership.primaryMasterChatId;
     thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
