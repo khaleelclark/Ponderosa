@@ -34,6 +34,7 @@ import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { ExecutionItem } from "../hooks/useThreadStream";
+import { findMentionedHandles } from "../mentions";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -53,6 +54,23 @@ export function shouldSendComposerKey(event: {
 
 export function shouldIgnoreComposerKey(event: { key: string; isComposing: boolean }): boolean {
   return event.key === "Enter" && event.isComposing;
+}
+
+export function canSubmitComposerText(input: {
+  text: string;
+  disabled: boolean;
+  running: boolean;
+  allowUnmentionedSend: boolean;
+  mentionedHandles: string[];
+  mentionedBusyHandles: string[];
+}): boolean {
+  return (
+    input.text.trim().length > 0 &&
+    !input.disabled &&
+    !input.running &&
+    input.mentionedBusyHandles.length === 0 &&
+    (input.allowUnmentionedSend || input.mentionedHandles.length > 0)
+  );
 }
 
 export function taskStatusColor(status: TaskDto["status"]): "success" | "warning" | "info" {
@@ -560,18 +578,22 @@ export function Composer({
   running,
   placeholder,
   mentionHandles,
+  busyMentionHandles,
+  allowUnmentionedSend = true,
   onSend,
   onCancel,
-  onChangeText,
 }: {
   disabled: boolean;
   running: boolean;
   placeholder?: string;
   /** When provided, typing `@` autocompletes these agent handles (group chat). */
   mentionHandles?: string[];
+  /** Mentioned agents that cannot accept a new turn yet. */
+  busyMentionHandles?: string[];
+  /** Whether text without a valid mention may be submitted. */
+  allowUnmentionedSend?: boolean;
   onSend(text: string): void;
   onCancel?(): void;
-  onChangeText?(text: string): void;
 }): JSX.Element {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -580,12 +602,21 @@ export function Composer({
   const mentionListId = useId();
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const canSend = text.trim().length > 0 && !disabled && !running;
+  const mentionedHandles = findMentionedHandles(text, mentionHandles ?? []);
+  const busyHandles = new Set((busyMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
+  const mentionedBusyHandles = mentionedHandles.filter((handle) => busyHandles.has(handle.toLocaleLowerCase()));
+  const canSend = canSubmitComposerText({
+    text,
+    disabled,
+    running,
+    allowUnmentionedSend,
+    mentionedHandles,
+    mentionedBusyHandles,
+  });
   const canCancel = running && Boolean(onCancel);
 
   const update = (next: string) => {
     setText(next);
-    onChangeText?.(next);
   };
 
   // The `@partial` token immediately left of the caret, if any.
@@ -696,6 +727,13 @@ export function Composer({
               }
             }}
           />
+          {mentionedHandles.length > 0 ? (
+            <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
+              {mentionedBusyHandles.length > 0
+                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — wait for ${mentionedBusyHandles.length > 1 ? "them" : "it"} to finish.`
+                : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
+            </Typography>
+          ) : null}
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
             <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
               <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180 }}>

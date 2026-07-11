@@ -8,19 +8,33 @@ export function agentMentionHandle(title: string): string {
     .replace(/[^\p{L}\p{N}_-]/gu, "");
 }
 
+/**
+ * Return the distinct, canonical handles mentioned in text. Keeping this
+ * independent of thread data lets the composer update its local UI without
+ * causing the whole master-chat transcript to re-render on every keystroke.
+ */
+export function findMentionedHandles(text: string, handles: Iterable<string>): string[] {
+  const byHandle = new Map(
+    [...handles].map((handle) => [handle.toLocaleLowerCase(), handle]),
+  );
+  const mentioned = new Map<string, string>();
+
+  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu)) {
+    const handle = byHandle.get(match[1]!.toLocaleLowerCase());
+    if (handle) mentioned.set(handle.toLocaleLowerCase(), handle);
+  }
+
+  return [...mentioned.values()];
+}
+
 /** Resolve every distinct @mention against the agents currently in a master chat. */
 export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
   const byHandle = new Map(
     threads.map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread]),
   );
-  const mentioned = new Map<string, ThreadDto>();
-
-  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu)) {
-    const thread = byHandle.get(match[1]!.toLocaleLowerCase());
-    if (thread) mentioned.set(thread.id, thread);
-  }
-
-  return [...mentioned.values()];
+  return findMentionedHandles(text, byHandle.keys())
+    .map((handle) => byHandle.get(handle.toLocaleLowerCase()))
+    .filter((thread): thread is ThreadDto => Boolean(thread));
 }
 
 export function findMentionedAgent(text: string, threads: ThreadDto[]): ThreadDto | undefined {

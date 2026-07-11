@@ -71,9 +71,6 @@ export function MasterChatView({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
-  // Mirror of the composer text so we can show a live @mention target + guard.
-  // A message with no @mention spawns a new agent; @Handle routes to that agent.
-  const [composerText, setComposerText] = useState("");
   const [dispatchedAgentIds, setDispatchedAgentIds] = useState<Set<string>>(new Set());
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
@@ -285,17 +282,9 @@ export function MasterChatView({
   const mentionHandles = threads.map((thread) => agentMentionHandle(thread.title));
   const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
-  // Live target derived from what's currently typed (for the hint + guard).
-  const mentioned = findMentioned(composerText);
-  const mentionedRunning = mentioned.some((agent) => statusByAgentId.get(agent.id) === "running");
-  const mentionedHandles = mentioned.map((agent) => `@${agentMentionHandle(agent.title)}`).join(", ");
-  const busyHandles = mentioned
+  const busyMentionHandles = threads
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
-    .map((agent) => `@${agentMentionHandle(agent.title)}`)
-    .join(", ");
-  // Replying to an existing agent needs it idle (routing a turn to a running agent
-  // is the steering case, deferred). Spawning a new agent needs a signed-in engine.
-  const canSend = conversation === "collaboration" ? true : mentioned.length > 0 ? !mentionedRunning : engineReady;
+    .map((agent) => agentMentionHandle(agent.title));
   const busy = spawn.isPending || reply.isPending || collaborate.isPending;
 
   const submit = (text: string) => {
@@ -613,23 +602,12 @@ export function MasterChatView({
             Message not sent. {String((spawn.error ?? reply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
-        {(mentioned.length > 0 || threads.length > 0) ? (
+        {threads.length > 0 ? (
           <Box sx={{ px: 1.5, pt: 1, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
                 Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context.
               </Typography>
-            ) : mentioned.length > 0 ? (
-              mentionedRunning ? (
-                <Typography variant="caption" color="warning.main">
-                  {busyHandles} {busyHandles.includes(",") ? "are" : "is"} busy — replying to a running agent needs steering
-                  (coming soon). Wait for it to finish, or send without a mention to spawn a new agent.
-                </Typography>
-              ) : (
-                <Typography variant="caption" color="text.secondary">
-                  Replying to <Box component="strong">{mentionedHandles}</Box>
-                </Typography>
-              )
             ) : (
               <Typography variant="caption" color="text.secondary">
                 Type <Box component="strong">@</Box> to reply to an agent, or just send to spawn a new one.
@@ -638,20 +616,17 @@ export function MasterChatView({
           </Box>
         ) : null}
         <Composer
-          disabled={busy || !canSend}
+          disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
-          onChangeText={setComposerText}
+          busyMentionHandles={busyMentionHandles}
+          allowUnmentionedSend={conversation === "collaboration" || engineReady}
           placeholder={
             conversation === "collaboration"
               ? "@mention agents to collaborate — untagged messages stay private to this chat"
-              : mentioned.length > 0
-              ? mentionedRunning
-                ? `${busyHandles} ${busyHandles.includes(",") ? "are" : "is"} busy`
-                : `Reply to ${mentionedHandles}`
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
-                : "Select a signed-in engine to spawn agents"
+                : "@mention an agent, or select a signed-in engine to spawn one"
           }
           onSend={submit}
         />

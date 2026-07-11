@@ -1,6 +1,6 @@
 import type { ThreadDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentMentionHandle, findMentionedAgent, findMentionedAgents } from "../src/mentions";
+import { agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedHandles } from "../src/mentions";
 
 const thread = (title: string): ThreadDto => ({
   id: title,
@@ -36,5 +36,10 @@ describe("agent mentions", () => {
 
     expect(findMentionedAgents("@Bryce-Canyon and @Acadia compare notes @Acadia", [bryce, acadia]))
       .toEqual([bryce, acadia]);
+  });
+
+  it("finds canonical handles without requiring a parent-chat update for every keystroke", () => {
+    expect(findMentionedHandles("@bryce-canyon and @ACADIA @acadia", ["Bryce-Canyon", "Acadia"]))
+      .toEqual(["Bryce-Canyon", "Acadia"]);
   });
 });
