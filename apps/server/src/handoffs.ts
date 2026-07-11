@@ -31,6 +31,11 @@ export interface CollaborationDelivery {
   failure?: string;
 }
 
+/** A fixed, canonical-order snapshot dispatched in one recipient agent turn. */
+export interface CollaborationDeliveryBatch {
+  deliveries: CollaborationDelivery[];
+}
+
 type Record =
   | { type: "delivery" | "replace"; delivery: CollaborationDelivery }
   | { type: "message_receipt"; key: string; messageId: string }
@@ -145,6 +150,34 @@ export class CollaborationDeliveryStore {
       deliveredAt: new Date().toISOString(),
       attempts: (delivery.attempts ?? 0) + 1,
     }, "replace");
+  }
+
+  markBatchDelivered(ids: readonly string[]): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.markDelivered(id);
+      return delivery ? [delivery] : [];
+    });
+  }
+
+  requeueBatch(ids: readonly string[]): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.requeue(id);
+      return delivery ? [delivery] : [];
+    });
+  }
+
+  acknowledgeBatch(ids: readonly string[]): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.acknowledge(id);
+      return delivery ? [delivery] : [];
+    });
+  }
+
+  failBatch(ids: readonly string[], failure: string): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.fail(id, failure);
+      return delivery ? [delivery] : [];
+    });
   }
 
   requeue(id: string): CollaborationDelivery | undefined {

@@ -307,7 +307,7 @@ export interface CancelResponse {
 
 // ─── Subagent delegation ────────────────────────────────────────────────
 
-export type SubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type SubagentStatus = "queued" | "running" | "awaiting_disposition" | "completed" | "blocked" | "failed" | "cancelled";
 
 export interface SubagentFailureDto {
   code: string;
@@ -348,6 +348,12 @@ export interface SubagentRunDto {
   finishedAt?: string;
   updatedAt: string;
   failure?: SubagentFailureDto;
+  /** Authenticated child declaration of the delegated objective's outcome. */
+  disposition?: {
+    outcome: "completed" | "blocked";
+    message?: string;
+    declaredAt: string;
+  };
   /** Present after a terminal child run when its parent can receive a notice. */
   completionDelivery?: SubagentCompletionDeliveryDto;
 }
@@ -368,6 +374,13 @@ export interface AgentDelegationResponse {
   run: SubagentRunDto;
   accepted: boolean;
   replayed: boolean;
+}
+
+/** Authenticated, run-bound child declaration; engine turn completion is not an objective outcome. */
+export interface AgentDelegationDispositionRequest {
+  outcome: "completed" | "blocked";
+  message?: string;
+  idempotencyKey: string;
 }
 
 export interface CancelSubagentRequest {
