@@ -882,6 +882,20 @@ describe("server chunk F", () => {
     const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
     const parentRunId = parentTurn.json<{ runId: string }>().runId;
 
+    const unsupported = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "Unsupported",
+        delegationPrompt: "Do not launch",
+        runtime: "not-configured",
+        idempotencyKey: "unsupported-1",
+      },
+    });
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json()).toMatchObject({ error: { code: "forbidden" } });
+
     const spawn = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/subagents`,
@@ -941,6 +955,13 @@ describe("server chunk F", () => {
     };
     const claim = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
     expect(claim.json<{ run: { status: string; version: number } }>().run).toMatchObject({ status: "running", version: 2 });
+    const probe = await app.inject({
+      method: "POST",
+      url: `/api/internal/subagents/${created.run.id}/registration/claim`,
+      payload: { ...claimPayload, credential: "invalid-probe" },
+    });
+    expect(probe.statusCode).toBe(403);
+    expect(probe.json()).toMatchObject({ error: { code: "registration_mismatch" } });
     const replay = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
     expect(replay.statusCode).toBe(409);
     expect(replay.json()).toMatchObject({ error: { code: "registration_consumed" } });

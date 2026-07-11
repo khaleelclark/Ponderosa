@@ -193,13 +193,13 @@ export class DelegationStore {
     if (run.contextSnapshot.id !== run.contextSnapshotId || run.contextSnapshot.masterChatId !== run.masterChatId || run.contextSnapshot.parentRunId !== run.parentRunId) {
       throw new DelegationError("registration_mismatch", "server context snapshot ownership is invalid", 403);
     }
-    if (reg.consumedAt) throw new DelegationError("registration_consumed", "registration was already consumed", 409);
-    if (reg.invalidatedAt) throw new DelegationError("registration_mismatch", "registration was invalidated", 403);
-    if (Date.parse(reg.expiresAt) <= Date.now()) throw new DelegationError("registration_expired", "registration expired", 401);
     const actual = Buffer.from(digest(input.credential));
     const expected = Buffer.from(reg.credentialHash);
     const mismatch = input.registrationId !== reg.id || input.parentRunId !== run.parentRunId || input.masterChatId !== run.masterChatId || input.runtime !== run.runtime || actual.length !== expected.length || !timingSafeEqual(actual, expected);
     if (mismatch) throw new DelegationError("registration_mismatch", "registration proof does not match the registered child", 403);
+    if (reg.consumedAt) throw new DelegationError("registration_consumed", "registration was already consumed", 409);
+    if (reg.invalidatedAt) throw new DelegationError("registration_mismatch", "registration was invalidated", 403);
+    if (Date.parse(reg.expiresAt) <= Date.now()) throw new DelegationError("registration_expired", "registration expired", 401);
     const now = new Date().toISOString();
     const updated: RunRecord = { ...run, status: "running", startedAt: now, updatedAt: now, version: run.version + 1, registration: { ...reg, consumedAt: now } };
     this.persist(updated, "replace");

@@ -666,6 +666,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           error: { code: "forbidden", message: "parentRunId, displayLabel, delegationPrompt, runtime, and idempotencyKey are required", retryable: false },
         });
       }
+      if (!engines.has(input.runtime)) {
+        return reply.code(400).send({
+          error: { code: "forbidden", message: "runtime is not configured", retryable: false },
+        });
+      }
       const parentIsRunning = [...activeRuns.values()].some((run) => run.runId === input.parentRunId);
       try {
         const context = store.getCollaborationChatDetail(request.params.id)!;
