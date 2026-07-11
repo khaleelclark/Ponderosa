@@ -541,7 +541,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("uses the forwarded HTTPS protocol for an agent messaging endpoint behind a proxy", async () => {
+  it("does not let forwarded or Host headers redirect capability callbacks", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
@@ -553,9 +553,7 @@ describe("server chunk F", () => {
       payload: { text: "Use the routed endpoint." },
     });
     await waitForSeedCount(1);
-    expect(adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe(
-      "https://pine.example.test/api/agent-messages",
-    );
+    expect(adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
     await cancelAndWait(app, thread.id);
     await app.close();
   });
@@ -1279,6 +1277,37 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("rejects cross-origin browser mutations while allowing same-origin requests", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { host: "ponderosa.test", origin: "https://evil.test" },
+      payload: { label: "Demo", hostPath: repoDir },
+    });
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      headers: { host: "ponderosa.test", origin: "https://ponderosa.test" },
+      payload: { label: "Demo", hostPath: repoDir },
+    });
+    expect(rejected.statusCode).toBe(403);
+    expect(accepted.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("caps file-browser reads and preserves binary data as base64", async () => {
+    writeFileSync(path.join(repoDir, "large.bin"), Buffer.alloc(2 * 1024 * 1024 + 1));
+    writeFileSync(path.join(repoDir, "binary.bin"), Buffer.from([0xff, 0xfe, 0xfd]));
+    const { app, project } = await createProjectAndThread();
+    const large = await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}&path=large.bin` });
+    const binary = await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}&path=binary.bin` });
+    expect(large.statusCode).toBe(400);
+    expect(large.json()).toEqual({ error: "file exceeds 2 MiB browser limit" });
+    expect(binary.json()).toEqual(expect.objectContaining({ encoding: "base64", content: "//79" }));
+    await app.close();
+  });
+
   it("reports engine auth status without requiring real CLI auth", async () => {
     const failing = new MockAdapter();
     failing.id = "broken";
@@ -1382,6 +1411,9 @@ describe("server chunk F", () => {
     expect(index.headers["content-type"]).toContain("text/html");
     expect(index.body).toContain("<main>app</main>");
     expect(asset.headers["content-type"]).toContain("text/javascript");
+    expect(index.headers["x-content-type-options"]).toBe("nosniff");
+    expect(index.headers["x-frame-options"]).toBe("DENY");
+    expect(index.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(asset.body).toContain("console.log");
     expect(index.headers["cache-control"]).toBe("no-cache");
     expect(fallback.headers["cache-control"]).toBe("no-cache");
