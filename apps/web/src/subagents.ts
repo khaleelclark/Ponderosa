@@ -33,7 +33,7 @@ export interface SubagentUiBinding {
 
 export function isSubagentUiEnabled(env: Record<string, string | undefined>): boolean {
   const value = env.PUBLIC_PONDEROSA_SUBAGENTS ?? env.VITE_PONDEROSA_SUBAGENTS;
-  return value === "1" || value === "true";
+  return value !== "0" && value !== "false";
 }
 
 export const emptySubagentStore = (): SubagentStore => ({
