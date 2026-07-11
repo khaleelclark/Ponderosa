@@ -24,6 +24,7 @@ function snapshot(s: ThreadStore): Record<string, unknown[]> {
   const db = s.sqlite;
   const tables = [
     "projects",
+    "agent_presets",
     "master_chats",
     "master_chat_messages",
     "threads",
@@ -239,5 +240,20 @@ describe("artifactContentPath", () => {
     expect(() => artifactContentPath(dir, projectId, threadId, "/tmp/elsewhere")).toThrow(
       /escapes/,
     );
+  });
+});
+
+describe("agent presets", () => {
+  it("seeds editable suggestions, persists CRUD canonically, and snapshots guidance at spawn", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    expect(store.listAgentPresets(project.id).map((preset) => preset.name)).toEqual(["Documentation", "Frontend", "QA", "Security"]);
+    const preset = store.createAgentPreset(project.id, { name: "Release", description: "Ship safely", guidance: "Verify every release gate before shipping.", engine: "codex", enabled: true });
+    const thread = store.createThread(project.id, { title: "Ship", engine: "codex", presetId: preset.id });
+    store.updateAgentPreset(preset.id, { guidance: "Changed later and must not affect active agents." });
+    expect(store.getThread(thread.id)?.presetSnapshot?.guidance).toBe("Verify every release gate before shipping.");
+    expect(store.deleteAgentPreset(preset.id)).toBe(true);
+    store.rebuildProjections();
+    expect(store.getAgentPreset(preset.id)).toBeUndefined();
+    expect(store.getThread(thread.id)?.presetSnapshot?.name).toBe("Release");
   });
 });

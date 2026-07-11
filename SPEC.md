@@ -143,6 +143,21 @@ build a separate "memory store" (see §4); the agents already do this natively.
 > (b) *A managed project's own* `AGENTS.md` = context an agent reads when working
 >     **inside that project** via its cwd. They have nothing to do with each other.
 
+### Project-scoped agent presets
+Projects own reusable, editable agent presets for common roles (frontend, security,
+QA, documentation, and operator-defined roles). A preset contains a name,
+description, role/system guidance, preferred engine, optional model/effort, and an
+enabled state. Built-in suggestions are seeded for new projects but are ordinary
+records: they may be changed, disabled, or deleted.
+
+Preset changes are appended to the project's canonical `agent-presets.jsonl`; the
+SQLite table is a rebuildable projection. At agent creation, the server resolves
+the project-scoped preset identifier and snapshots its guidance and runtime
+choices into `thread.json`. Active agents therefore never change behavior when a
+preset is edited later. Delegated agents may provide only a preset identifier;
+the capability-bound server resolves it in the parent's project and continues to
+derive all ownership and lineage fields itself.
+
 ---
 
 ## 3. Core Architecture
@@ -533,6 +548,8 @@ $PONDEROSA_DATA_DIR/
 ### SQLite (projections — rebuildable from the log)
 ```
 projects(id, label, host_path, created_at, last_used_at)
+agent_presets(id, project_id, name, description, guidance, engine,
+              model, effort, enabled, created_at, updated_at)
 threads(id, project_id, title, active_engine,
         active_session_id,
         state_branch, state_commit, created_at, updated_at, archived)
@@ -555,6 +572,10 @@ Projects → Threads → (Messages · Tasks · Artifacts).
 GET    /api/projects
 POST   /api/projects                       # { label, hostPath }
 GET    /api/projects/:id
+GET    /api/projects/:id/agent-presets
+POST   /api/projects/:id/agent-presets
+PATCH  /api/agent-presets/:id
+DELETE /api/agent-presets/:id
 GET    /api/projects/:id/threads
 POST   /api/projects/:id/threads           # { title, engine, model, effort }
 

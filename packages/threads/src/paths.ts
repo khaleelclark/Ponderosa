@@ -35,6 +35,9 @@ export function projectDir(dataDir: string, projectId: string): string {
 export function projectJsonPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "project.json");
 }
+export function agentPresetsPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "agent-presets.jsonl");
+}
 
 export function masterChatsDir(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "master-chats");

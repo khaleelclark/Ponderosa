@@ -43,6 +43,9 @@ export function useThreads(projectId: string | undefined) {
     enabled: Boolean(projectId),
   });
 }
+export function useAgentPresets(projectId: string | undefined) {
+  return useQuery({ queryKey: ["agent-presets", projectId], queryFn: () => api.listAgentPresets(projectId ?? ""), enabled: Boolean(projectId) });
+}
 
 export function useThread(threadId: string | undefined) {
   return useQuery({

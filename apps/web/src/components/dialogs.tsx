@@ -5,6 +5,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Checkbox, FormControlLabel, List, ListItem, ListItemText,
   FormControl,
   InputLabel,
   MenuItem,
@@ -13,7 +14,7 @@ import {
   TextField,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDto } from "@ponderosa/core";
+import type { AgentPresetDto, EngineDto, MasterChatDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 
 const UNSET = "";
@@ -23,6 +24,32 @@ export interface CreateMasterChatInput {
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
+}
+
+export function PresetManagerDialog({ open, engines, presets, onClose, onSave, onDelete }: {
+  open: boolean; engines: EngineDto[]; presets: AgentPresetDto[]; onClose(): void;
+  onSave(id: string | undefined, input: { name: string; description: string; guidance: string; engine: string; model?: string; effort?: string; enabled: boolean }): void;
+  onDelete(id: string): void;
+}): JSX.Element {
+  const [editing, setEditing] = useState<AgentPresetDto | undefined>();
+  const [name, setName] = useState(""); const [description, setDescription] = useState(""); const [guidance, setGuidance] = useState("");
+  const [engine, setEngine] = useState(""); const [model, setModel] = useState(""); const [effort, setEffort] = useState(""); const [enabled, setEnabled] = useState(true);
+  const edit = (preset?: AgentPresetDto) => { setEditing(preset); setName(preset?.name ?? ""); setDescription(preset?.description ?? ""); setGuidance(preset?.guidance ?? ""); setEngine(preset?.engine ?? engines[0]?.id ?? ""); setModel(preset?.model ?? ""); setEffort(preset?.effort ?? ""); setEnabled(preset?.enabled ?? true); };
+  const selected = engines.find((item) => item.id === engine);
+  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md"><DialogTitle>Agent presets</DialogTitle><DialogContent>
+    <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ pt: 1 }}>
+      <Stack sx={{ minWidth: 260 }}><Button onClick={() => edit()}>New preset</Button><List>{presets.map((preset) => <ListItem key={preset.id} secondaryAction={<Button color="error" onClick={() => onDelete(preset.id)}>Delete</Button>}><ListItemText primary={preset.name} secondary={`${preset.enabled ? "Enabled" : "Disabled"} · ${preset.engine}`} onClick={() => edit(preset)} sx={{ cursor: "pointer" }} /></ListItem>)}</List></Stack>
+      <Stack spacing={1.5} sx={{ flex: 1 }}>
+        <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} inputProps={{ maxLength: 60 }} />
+        <TextField label="Description" value={description} onChange={(e) => setDescription(e.target.value)} inputProps={{ maxLength: 240 }} />
+        <TextField label="Role / system guidance" multiline minRows={5} value={guidance} onChange={(e) => setGuidance(e.target.value)} inputProps={{ maxLength: 8000 }} />
+        <FormControl><InputLabel>Engine</InputLabel><Select label="Engine" value={engine} onChange={(e) => { setEngine(e.target.value); setModel(""); setEffort(""); }}>{engines.map((item) => <MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}</Select></FormControl>
+        <Stack direction="row" spacing={1}><FormControl fullWidth><InputLabel>Model</InputLabel><Select label="Model" value={model} onChange={(e) => setModel(e.target.value)}><MenuItem value="">Default</MenuItem>{selected?.models.map((x) => <MenuItem key={x.id} value={x.id}>{x.label}</MenuItem>)}</Select></FormControl><FormControl fullWidth><InputLabel>Effort</InputLabel><Select label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)}><MenuItem value="">Default</MenuItem>{selected?.efforts.map((x) => <MenuItem key={x.id} value={x.id}>{x.label}</MenuItem>)}</Select></FormControl></Stack>
+        <FormControlLabel control={<Checkbox checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />} label="Enabled" />
+        <Button variant="contained" disabled={!name.trim() || !description.trim() || guidance.trim().length < 10 || !engine} onClick={() => onSave(editing?.id, { name: name.trim(), description: description.trim(), guidance: guidance.trim(), engine, model: model || undefined, effort: effort || undefined, enabled })}>{editing ? "Save changes" : "Create preset"}</Button>
+      </Stack>
+    </Stack>
+  </DialogContent><DialogActions><Button onClick={onClose}>Done</Button></DialogActions></Dialog>;
 }
 
 /**
@@ -109,6 +136,7 @@ export interface CreateAgentInput {
   model?: string;
   effort?: string;
   masterChatId?: string;
+  presetId?: string;
 }
 
 /**
@@ -120,6 +148,7 @@ export function CreateAgentDialog({
   open,
   engines,
   masterChats,
+  presets,
   fixedMasterChatId,
   defaultEngine,
   defaultModel,
@@ -133,6 +162,7 @@ export function CreateAgentDialog({
   open: boolean;
   engines: EngineDto[];
   masterChats: MasterChatDto[];
+  presets: AgentPresetDto[];
   fixedMasterChatId?: string;
   defaultEngine?: string;
   defaultModel?: string;
@@ -149,6 +179,7 @@ export function CreateAgentDialog({
   const [model, setModel] = useState(UNSET);
   const [effort, setEffort] = useState(UNSET);
   const [masterChatId, setMasterChatId] = useState(UNSET);
+  const [presetId, setPresetId] = useState(UNSET);
 
   useEffect(() => {
     if (open) {
@@ -157,6 +188,7 @@ export function CreateAgentDialog({
       setModel(defaultModel ?? UNSET);
       setEffort(defaultEffort ?? UNSET);
       setMasterChatId(fixedMasterChatId ?? UNSET);
+      setPresetId(UNSET);
     }
   }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, fixedMasterChatId, engines]);
 
@@ -169,6 +201,16 @@ export function CreateAgentDialog({
       <DialogTitle>New Agent</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
+          <FormControl fullWidth size="small">
+            <InputLabel id="agent-preset-label">Preset (optional)</InputLabel>
+            <Select labelId="agent-preset-label" label="Preset (optional)" value={presetId} onChange={(event: SelectChangeEvent) => {
+              const id = event.target.value; setPresetId(id); const preset = presets.find((p) => p.id === id);
+              if (preset) { setEngine(preset.engine); setModel(preset.model ?? UNSET); setEffort(preset.effort ?? UNSET); }
+            }}>
+              <MenuItem value={UNSET}>Custom</MenuItem>
+              {presets.filter((preset) => preset.enabled).map((preset) => <MenuItem key={preset.id} value={preset.id}>{preset.name} — {preset.description}</MenuItem>)}
+            </Select>
+          </FormControl>
           <TextField
             label="Name"
             value={title}
@@ -265,6 +307,7 @@ export function CreateAgentDialog({
               model: model || undefined,
               effort: effort || undefined,
               masterChatId: (fixedMasterChatId ?? masterChatId) || undefined,
+              presetId: presetId || undefined,
             })
           }
         >

@@ -1,4 +1,5 @@
 import type {
+  AgentPresetDto,
   AgentEvent,
   ArtifactContentDto,
   ArtifactDto,
@@ -45,6 +46,7 @@ const masterMessages: Record<string, MasterChatMessageDto[]> = {
   "master-mobile": [],
 };
 const collaborationMessages: Record<string, MasterChatMessageDto[]> = {};
+const agentPresets: AgentPresetDto[] = [];
 
 const threads: ThreadDto[] = [
   {
@@ -298,6 +300,10 @@ export const mockApi: PonderosaApi = {
     projects.push(project);
     return delay(project);
   },
+  listAgentPresets(projectId) { return delay(agentPresets.filter((preset) => preset.projectId === projectId)); },
+  createAgentPreset(projectId, request) { const now = new Date().toISOString(); const preset: AgentPresetDto = { id: `preset-${Date.now()}`, projectId, ...request, enabled: request.enabled ?? true, createdAt: now, updatedAt: now }; agentPresets.push(preset); return delay(preset); },
+  updateAgentPreset(id, patch) { const preset = agentPresets.find((item) => item.id === id); if (!preset) return Promise.reject(new Error("Preset not found")); Object.assign(preset, patch, { updatedAt: new Date().toISOString() }); return delay(preset); },
+  deleteAgentPreset(id) { const index = agentPresets.findIndex((item) => item.id === id); if (index >= 0) agentPresets.splice(index, 1); return delay(undefined); },
   listMasterChats(projectId) {
     return delay(masterChats.filter((master) => master.projectId === projectId && !master.archived));
   },

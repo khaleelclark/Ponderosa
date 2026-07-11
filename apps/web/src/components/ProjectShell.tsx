@@ -8,11 +8,11 @@ import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { isSubagentUiEnabled } from "../subagents";
-import { useMasterChats, useThreads } from "../hooks/queries";
+import { useAgentPresets, useMasterChats, useThreads } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
-import { CreateAgentDialog, type CreateAgentInput, CreateMasterChatDialog, type CreateMasterChatInput } from "./dialogs";
+import { CreateAgentDialog, type CreateAgentInput, CreateMasterChatDialog, type CreateMasterChatInput, PresetManagerDialog } from "./dialogs";
 import { MasterChatView } from "./MasterChatView";
 import { Sidebar } from "./Sidebar";
 
@@ -44,6 +44,8 @@ export function ProjectShell({
   const threadsQuery = useThreads(projectId);
   const masterChats = masterChatsQuery.data ?? [];
   const agents = threadsQuery.data ?? [];
+  const presetsQuery = useAgentPresets(projectId);
+  const presets = presetsQuery.data ?? [];
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const showSubagents = isSubagentUiEnabled(env);
 
@@ -62,6 +64,7 @@ export function ProjectShell({
 
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
+  const [presetsOpen, setPresetsOpen] = useState(false);
 
   // Per-agent detail powers live status + activity in the sidebar and Agents tab.
   const agentDetailQueries = useQueries({
@@ -101,6 +104,7 @@ export function ProjectShell({
         engine: input.engine,
         model: input.model,
         effort: input.effort,
+        presetId: input.presetId,
       }),
     onSuccess: (agent) => {
       void queryClient.invalidateQueries({ queryKey: ["threads", projectId] });
@@ -231,6 +235,7 @@ export function ProjectShell({
         open={agentDialog.open}
         engines={engines}
         masterChats={masterChats}
+        presets={presets}
         fixedMasterChatId={agentDialog.fixedMasterChatId}
         defaultEngine={agentDialog.defaultEngine}
         defaultModel={agentDialog.defaultModel}
@@ -241,6 +246,11 @@ export function ProjectShell({
         onClose={() => setAgentDialog({ open: false })}
         onCreate={(input) => createAgent.mutate(input)}
       />
+      <Button onClick={() => setPresetsOpen(true)} sx={{ position: "fixed", right: 16, bottom: 16, zIndex: 10 }} variant="outlined">Manage presets</Button>
+      <PresetManagerDialog open={presetsOpen} engines={engines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={(id, input) => {
+        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input as never);
+        void action.then(() => queryClient.invalidateQueries({ queryKey: ["agent-presets", projectId] }));
+      }} onDelete={(id) => { void api.deleteAgentPreset(id).then(() => queryClient.invalidateQueries({ queryKey: ["agent-presets", projectId] })); }} />
     </>
   );
 
