@@ -5,6 +5,7 @@ import DifferenceIcon from "@mui/icons-material/Difference";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import TimelineIcon from "@mui/icons-material/Timeline";
+import TuneIcon from "@mui/icons-material/Tune";
 import {
   Alert,
   Box,
@@ -30,6 +31,8 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
@@ -40,6 +43,7 @@ import { agentStatusColor, agentStatusLabel, deriveAgentStatus } from "../agents
 import { useThread } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
+import { compactViewportQuery } from "../responsive";
 import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane } from "./panes";
 
 type AgentTab = "chat" | "log" | "tasks" | "artifacts";
@@ -78,6 +82,9 @@ export function AgentDetail({
   const [primaryMasterChatId, setPrimaryMasterChatId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
+  const [runSetupOpen, setRunSetupOpen] = useState(false);
+  const theme = useTheme();
+  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   const detail = threadQuery.data;
   const engine =
@@ -203,7 +210,7 @@ export function AgentDetail({
 
   return (
     <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
+      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={1}
@@ -212,7 +219,7 @@ export function AgentDetail({
           sx={{ alignItems: "center", minWidth: 0 }}
         >
           <Tooltip title="Back to agents">
-            <IconButton aria-label="Back to agents" onClick={onBack} edge="start">
+            <IconButton aria-label="Back to agents" onClick={onBack} edge="start" sx={{ minWidth: 44, minHeight: 44 }}>
               <ArrowBackIcon />
             </IconButton>
           </Tooltip>
@@ -242,6 +249,7 @@ export function AgentDetail({
               label="Subagent"
               onClick={subagent.parentThreadId ? () => onOpenAgent(subagent.parentThreadId!) : undefined}
               clickable={Boolean(subagent.parentThreadId)}
+              sx={{ minHeight: compactViewport ? 44 : undefined }}
             />
           ) : null}
           <Chip
@@ -257,6 +265,7 @@ export function AgentDetail({
               variant="outlined"
               disabled={cancelRun.isPending}
               onClick={() => cancelRun.mutate()}
+              sx={{ minHeight: compactViewport ? 44 : undefined }}
             >
               {cancelRun.isPending ? "Stopping…" : "Cancel"}
             </Button>
@@ -264,6 +273,7 @@ export function AgentDetail({
           <Tooltip title="Rename agent">
             <IconButton
               aria-label="Rename agent"
+              sx={{ minWidth: 44, minHeight: 44 }}
               onClick={() => {
                 setRenameValue(detail.thread.title);
                 setRenameOpen(true);
@@ -273,19 +283,37 @@ export function AgentDetail({
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete agent">
-            <IconButton aria-label="Delete agent" onClick={() => setDeleteOpen(true)}>
+            <IconButton aria-label="Delete agent" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
               <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
-          <Button size="small" variant="outlined" onClick={() => {
+          <Button size="small" variant="outlined" sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
             setMembershipIds(detail.thread.masterChatIds);
             setPrimaryMasterChatId(detail.thread.masterChatId ?? "");
             setMembershipOpen(true);
           }}>
             Assign chats
           </Button>
+          {compactViewport ? (
+            <Button
+              size="small"
+              variant={runSetupOpen ? "contained" : "outlined"}
+              startIcon={<TuneIcon />}
+              onClick={() => setRunSetupOpen((open) => !open)}
+              aria-expanded={runSetupOpen}
+              aria-controls="agent-run-setup"
+              sx={{ minHeight: 44 }}
+            >
+              Setup
+            </Button>
+          ) : null}
         </Stack>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
+        <Stack
+          id="agent-run-setup"
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          sx={{ mt: 1, display: compactViewport && !runSetupOpen ? "none" : "flex" }}
+        >
           <Chip
             label={`${engine?.displayName ?? detail.thread.activeEngine}${engine?.authenticated ? "" : " · not signed in"}`}
             color={engine?.authenticated ? "default" : "warning"}
@@ -333,7 +361,7 @@ export function AgentDetail({
         onChange={(_event, value: AgentTab) => setTab(value)}
         variant="scrollable"
         scrollButtons="auto"
-        sx={{ borderBottom: 1, borderColor: "divider", minHeight: 48 }}
+        sx={{ borderBottom: 1, borderColor: "divider", minHeight: 48, maxWidth: "100%" }}
       >
         <Tab value="chat" icon={<ChatBubbleOutlineIcon />} iconPosition="start" label="Chat" sx={{ minHeight: 48 }} />
         <Tab value="log" icon={<TimelineIcon />} iconPosition="start" label="Live Log" sx={{ minHeight: 48 }} />

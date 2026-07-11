@@ -4,6 +4,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import TuneIcon from "@mui/icons-material/Tune";
 import {
   Alert,
   Box,
@@ -42,6 +43,7 @@ import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } fr
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
+import { compactViewportQuery } from "../responsive";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
@@ -79,6 +81,7 @@ export function MasterChatView({
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
+  const [runSetupOpen, setRunSetupOpen] = useState(false);
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -93,6 +96,7 @@ export function MasterChatView({
   const displayedConversation = useRef(conversation);
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
+  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const showSubagents = isSubagentUiEnabled(env);
   const liveSubagents = useSubagents(masterChatId, showSubagents);
@@ -327,11 +331,11 @@ export function MasterChatView({
   };
 
   return (
-    <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto 1fr auto" }}>
-      <Box sx={{ px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
+    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
-          spacing={1}
+          spacing={0.5}
           useFlexGap
           sx={{ alignItems: "center", minWidth: 0, flexWrap: { xs: "wrap", sm: "nowrap" } }}
         >
@@ -339,13 +343,14 @@ export function MasterChatView({
             <Typography variant="h6" noWrap>
               {masterChat.title}
             </Typography>
-            <Typography variant="body2" color="text.secondary" noWrap>
+            <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" } }}>
               Team group chat · agents report back here when done or stuck
             </Typography>
           </Box>
           <Tooltip title="Rename">
             <IconButton
               aria-label="Rename master chat"
+              sx={{ minWidth: 44, minHeight: 44 }}
               onClick={() => {
                 setRenameValue(masterChat.title);
                 setRenameOpen(true);
@@ -355,12 +360,12 @@ export function MasterChatView({
             </IconButton>
           </Tooltip>
           <Tooltip title="Archive">
-            <IconButton aria-label="Archive master chat" onClick={() => setArchiveOpen(true)}>
+            <IconButton aria-label="Archive master chat" onClick={() => setArchiveOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
               <ArchiveOutlinedIcon />
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete">
-            <IconButton aria-label="Delete master chat" color="error" onClick={() => setDeleteOpen(true)}>
+            <IconButton aria-label="Delete master chat" color="error" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
               <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
@@ -371,8 +376,10 @@ export function MasterChatView({
             onClick={() => setAgentsOpen(true)}
             aria-haspopup="dialog"
             aria-expanded={agentsOpen}
+            aria-label={`View ${threads.length} agents`}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
-            Agents ({threads.length})
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({threads.length})
           </Button>
           <Button
             variant={conversation === "collaboration" ? "contained" : "outlined"}
@@ -383,20 +390,39 @@ export function MasterChatView({
               setConversation((current) => current === "main" ? "collaboration" : "main");
             }}
             aria-pressed={conversation === "collaboration"}
+            aria-label={conversation === "collaboration" ? "Switch to main chat" : "Switch to collaboration chat"}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
-            {conversation === "collaboration" ? "Main Chat" : "Collaboration"}
+            {conversation === "collaboration" ? "Main" : "Collab"}
           </Button>
           <Button
             variant="outlined"
             size="small"
             startIcon={<AddIcon />}
             onClick={() => onNewAgent(masterChat)}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
-            New Agent
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New </Box>Agent
+          </Button>
+          <Button
+            variant={runSetupOpen ? "contained" : "outlined"}
+            size="small"
+            startIcon={<TuneIcon />}
+            onClick={() => setRunSetupOpen((open) => !open)}
+            aria-expanded={runSetupOpen}
+            aria-controls="master-run-setup"
+            sx={{ display: compactViewport ? "inline-flex" : "none", minHeight: 44 }}
+          >
+            Setup
           </Button>
         </Stack>
 
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
+        <Stack
+          id="master-run-setup"
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          sx={{ mt: 1, display: compactViewport && !runSetupOpen ? "none" : "flex" }}
+        >
           <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 190 } }}>
             <InputLabel id="master-engine-label">Engine</InputLabel>
             <Select
@@ -477,9 +503,9 @@ export function MasterChatView({
             shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
           }
         }}
-        sx={{ minHeight: 0, overflow: "auto" }}
+        sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
       >
-        <Box sx={{ p: 1.5 }}>
+        <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Only agents with a valid <Box component="strong">@mention</Box> receive this chat's context; untagged messages stay here.</>
@@ -517,7 +543,7 @@ export function MasterChatView({
                   key={message.id}
                   id={`master-message-${message.id}`}
                   tabIndex={-1}
-                  sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: "min(680px, 92%)" }}
+                  sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
                 >
                   {message.authorThreadId ? (
                     <Link
@@ -644,7 +670,7 @@ export function MasterChatView({
           </Alert>
         ) : null}
         {threads.length > 0 ? (
-          <Box sx={{ px: 1.5, pt: 1, borderTop: 1, borderColor: "divider" }}>
+          <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
                 Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context.

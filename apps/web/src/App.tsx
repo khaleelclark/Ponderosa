@@ -150,8 +150,8 @@ export default function App({
       }}
     >
       <AppBar position="static" color="inherit" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Toolbar sx={{ minHeight: 56, pt: "env(safe-area-inset-top)" }}>
-          <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1 }}>
+        <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
+          <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
             Ponderosa
           </Typography>
           <Chip
@@ -159,12 +159,13 @@ export default function App({
             label={engines.some((engine) => engine.authenticated) ? "Engine ready" : "Engine auth needed"}
             color={engines.some((engine) => engine.authenticated) ? "success" : "warning"}
             variant="outlined"
+            sx={{ maxWidth: { xs: 132, sm: "none" } }}
           />
           <Tooltip title={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
             <IconButton
               aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               onClick={onToggleColorMode}
-              sx={{ ml: 0.5 }}
+              sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}
             >
               {colorMode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
             </IconButton>
