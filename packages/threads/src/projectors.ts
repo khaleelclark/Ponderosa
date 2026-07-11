@@ -127,6 +127,7 @@ export function projectEvent(
           text: event.text,
           createdAt: ts,
           replyToJson: event.replyTo ? JSON.stringify(event.replyTo) : null,
+          attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
       // A user message opens a new run.
@@ -152,6 +153,7 @@ export function projectEvent(
             text: event.delta,
             createdAt: ts,
             replyToJson: null,
+            attachmentsJson: null,
           },
         });
         ops.push({ kind: "touch_thread", updatedAt: ts });

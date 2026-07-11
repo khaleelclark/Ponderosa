@@ -5,6 +5,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import SendIcon from "@mui/icons-material/Send";
 import ReplyIcon from "@mui/icons-material/Reply";
+import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import TerminalIcon from "@mui/icons-material/Terminal";
@@ -277,6 +278,12 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
             </Box>
           ) : null}
           <ChatMarkdown>{message.text}</ChatMarkdown>
+          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+          {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+            {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
+              <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+            </Box>)}
+          </Stack> : null}
           {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
         </Box>
       ))}
@@ -630,12 +637,15 @@ export function Composer({
   busyMentionHandles?: string[];
   /** Whether text without a valid mention may be submitted. */
   allowUnmentionedSend?: boolean;
-  onSend(text: string): void;
+  onSend(text: string, files: File[]): Promise<unknown> | unknown;
   onCancel?(): void;
   replyTo?: { text: string };
   onCancelReply?(): void;
 }): JSX.Element {
   const [text, setText] = useState("");
+  const [files, setFiles] = useState<Array<{ file: File; preview: string }>>([]);
+  const [sendError, setSendError] = useState<string>();
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -645,7 +655,7 @@ export function Composer({
   const mentionedHandles = findMentionedHandles(text, mentionHandles ?? []);
   const busyHandles = new Set((busyMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedBusyHandles = mentionedHandles.filter((handle) => busyHandles.has(handle.toLocaleLowerCase()));
-  const canSend = canSubmitComposerText({
+  const textCanSend = canSubmitComposerText({
     text,
     disabled,
     running,
@@ -653,6 +663,7 @@ export function Composer({
     mentionedHandles,
     mentionedBusyHandles,
   });
+  const canSend = textCanSend || (!disabled && !running && allowUnmentionedSend && files.length > 0);
   const canCancel = running && Boolean(onCancel);
 
   const update = (next: string) => {
@@ -687,9 +698,13 @@ export function Composer({
   };
 
   const send = () => {
-    onSend(text.trim());
-    update("");
-    setCaret(0);
+    setSendError(undefined);
+    void Promise.resolve(onSend(text.trim(), files.map((item) => item.file))).then(() => {
+      update("");
+      files.forEach((item) => URL.revokeObjectURL(item.preview));
+      setFiles([]);
+      setCaret(0);
+    }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."));
   };
 
   return (
@@ -715,7 +730,23 @@ export function Composer({
           <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
         </Stack>
       ) : null}
+      {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
+        {files.map((item, index) => <Box key={`${item.file.name}-${index}`} sx={{ position: "relative" }}>
+          <Box component="a" href={item.preview} target="_blank" rel="noreferrer" aria-label={`Open ${item.file.name}`}>
+            <Box component="img" src={item.preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
+          </Box>
+          <IconButton size="small" aria-label={`Remove ${item.file.name}`} onClick={() => { URL.revokeObjectURL(item.preview); setFiles((current) => current.filter((_, i) => i !== index)); }} sx={{ position: "absolute", right: -8, top: -8, bgcolor: "background.paper" }}><CloseIcon fontSize="small" /></IconButton>
+        </Box>)}
+      </Stack> : null}
+      {sendError ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {sendError}</Alert> : null}
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>
+        <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => {
+          const selected = Array.from(event.target.files ?? []).slice(0, 4 - files.length);
+          const valid = selected.filter((file) => file.size <= 8 * 1024 * 1024);
+          setFiles((current) => [...current, ...valid.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
+          event.target.value = "";
+        }} />
+        <Tooltip title="Attach images (PNG, JPEG, GIF, or WebP; 8 MiB each)"><span><IconButton aria-label="Attach images" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()}><AttachFileIcon /></IconButton></span></Tooltip>
         <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
           <TextField
             fullWidth

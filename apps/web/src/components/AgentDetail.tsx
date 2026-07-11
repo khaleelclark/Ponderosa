@@ -333,21 +333,29 @@ export function AgentDetail({
           disabled={sendMessage.isPending}
           running={false}
           placeholder={stream.running ? "Queue a follow-up for this agent" : "Message this agent directly"}
-          onSend={(text) => {
-            sendMessage.mutate(
-              { text, model: model || undefined, effort: effort || undefined, replyToMessageId: replyTo?.id },
-              {
-                onSuccess: (response) => {
-                  setReplyTo(undefined);
-                  setQueuedMessageNotice(
-                    response.queued
-                      ? `Queued in position ${response.position}; it will start when the current response finishes.`
-                      : undefined,
-                  );
-                },
-              },
-            );
+          onSend={(text, files) => {
+            const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
+              try {
+                return await sendMessage.mutateAsync(
+                  { text, attachmentIds: attachments.map((item) => item.id), model: model || undefined, effort: effort || undefined, replyToMessageId: replyTo?.id },
+                  {
+                    onSuccess: (response) => {
+                      setReplyTo(undefined);
+                      setQueuedMessageNotice(
+                        response.queued
+                          ? `Queued in position ${response.position}; it will start when the current response finishes.`
+                          : undefined,
+                      );
+                    },
+                  },
+                );
+              } catch (error) {
+                await Promise.allSettled(attachments.map((item) => api.deleteAttachment(agentId, item.id)));
+                throw error;
+              }
+            });
             setTab("chat");
+            return sent;
           }}
           onCancel={() => cancelRun.mutate()}
           replyTo={replyTo}

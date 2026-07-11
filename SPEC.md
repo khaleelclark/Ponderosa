@@ -518,6 +518,14 @@ $PONDEROSA_DATA_DIR/
           artifacts/       # diffs, test reports, PR summaries, logs
           attachments/     # optional uploads
 ```
+- **V1 image attachments:** manager messages may reference validated PNG, JPEG,
+  GIF, or WebP files stored here under collision-safe server-generated names.
+  Each file is limited to 8 MiB, an upload request to 8 MiB + 16 KiB overhead,
+  and a message to 4 images. The server identifies formats from file structure
+  and magic bytes, rejects SVG/scriptable or malformed content, and never exposes
+  a host path through the API. Draft uploads may be deleted before send; sent
+  attachments remain immutable with their canonical message event. Missing files
+  remain visible as unavailable metadata after reload/rebuild.
 - No `memory.*` file — project knowledge is the managed repo's own md files (§4).
 - `PONDEROSA_DATA_DIR` env with an auto-detected default. The whole dir is your
   backup unit; it's greppable and portable without the app.
@@ -555,6 +563,10 @@ PATCH  /api/threads/:id                    # rename / archive
 POST   /api/threads/:id/switch-engine      # (v2) { engine } -> explicit event; new seeded session
 
 POST   /api/threads/:id/messages           # send a user turn -> continue() or seed()
+POST   /api/threads/:id/attachments        # raw validated raster image upload
+GET    /api/threads/:id/attachments/:aid   # scoped inline image (nosniff)
+DELETE /api/threads/:id/attachments/:aid   # cancel an unsent upload only
+GET    /api/attachment-limits              # client-visible V1 format/size/count limits
 GET    /api/threads/:id/stream             # SSE: normalized AgentEvent stream
 POST   /api/threads/:id/cancel             # abort active run (AbortSignal -> kill)
 
@@ -714,6 +726,9 @@ loads everything from the server (§2). PWA now; native mobile a possible future
 ### Mobile-first specifics
 - Panes as tabs/segments on phone, side-by-side on wider screens.
 - Bottom-anchored composer; sticky engine/model/effort controls; big touch targets.
+- Image previews before send, with keyboard/screen-reader accessible open and
+  remove controls. A failed upload leaves the message unsent and can be retried;
+  removing a preview cancels it locally, while uploaded drafts can be deleted.
 - Live "agent is working" state; SSE reconnect tuned for lock/unlock/backgrounding.
 - Installable PWA (manifest, icons, theme color, Workbox service worker for shell
   caching + reconnect resilience — not offline agent runs).

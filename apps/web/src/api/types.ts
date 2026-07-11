@@ -10,6 +10,7 @@ import type {
   UpdateMasterChatRequest,
   UpdateThreadRequest,
   EngineDto,
+  ImageAttachmentDto,
   ProjectDto,
   SendMessageRequest,
   SendMessageResponse,
@@ -79,6 +80,8 @@ export interface PonderosaApi {
   listEngines(): Promise<EngineDto[]>;
   getArtifact(threadId: string, artifactId: string): Promise<ArtifactContentDto>;
   sendMessage(threadId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
+  uploadAttachment(threadId: string, file: File): Promise<ImageAttachmentDto>;
+  deleteAttachment(threadId: string, attachmentId: string): Promise<void>;
   cancelRun(threadId: string): Promise<void>;
   subscribeThread(threadId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
 }

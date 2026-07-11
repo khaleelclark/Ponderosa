@@ -460,6 +460,10 @@ export const mockApi: PonderosaApi = {
     replayRun(threadId, request.text);
     return delay({ queued: false, runId: `mock-run-${Date.now()}`, mode: "continue" });
   },
+  uploadAttachment(threadId, file) {
+    return Promise.resolve({ id: `mock-${Date.now()}`, threadId, name: file.name, mediaType: (file.type || "image/png") as "image/png", size: file.size, width: 1, height: 1, url: URL.createObjectURL(file) });
+  },
+  deleteAttachment() { return Promise.resolve(); },
   async cancelRun(threadId) {
     emit(threadId, { type: "error", message: "Mock run cancelled." });
     emit(threadId, { type: "turn_done" });

@@ -7,13 +7,14 @@
 // core stays untouched (no SPEC edit needed — this is an additive superset, not a
 // redefinition of a core type).
 
-import type { AgentEvent } from "@ponderosa/core";
+import type { AgentEvent, ImageAttachmentDto } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
 export interface UserMessageEvent {
   type: "user_message";
   text: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
+  attachments?: ImageAttachmentDto[];
 }
 
 /** Anything that can be appended to a thread's `events.jsonl`. */

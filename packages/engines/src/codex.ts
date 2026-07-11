@@ -107,7 +107,10 @@ export function renderSeedPrompt(history: ChatMessage[], prompt: string): string
   const prior = history.filter((m) => m.text.trim() !== "");
   if (prior.length === 0) return prompt;
   const transcript = prior
-    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`)
+    .map((m) => {
+      const attachments = m.attachments?.map((item) => `\n  [image: ${item.name}, ${item.mediaType}, ${item.size} bytes, ${item.available ? item.localPath : "unavailable"}]`).join("") ?? "";
+      return `${m.role === "user" ? "User" : "Assistant"}: ${m.text}${attachments}`;
+    })
     .join("\n");
   return `Conversation so far:\n${transcript}\n\nCurrent request:\n${prompt}`;
 }

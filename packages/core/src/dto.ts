@@ -70,6 +70,7 @@ export interface MasterChatMessageDto {
   authorThreadId?: string;
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
+  attachments?: ImageAttachmentDto[];
 }
 
 export interface MessageReferenceDto {
@@ -100,6 +101,7 @@ export interface CreateMasterChatMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
   replyToMessageId?: string;
+  attachments?: ImageAttachmentDto[];
 }
 
 // ─── Threads ─────────────────────────────────────────────────────────────────
@@ -155,6 +157,27 @@ export interface MessageDto {
   text: string;
   createdAt: string;
   replyTo?: MessageReferenceDto;
+  attachments?: ImageAttachmentDto[];
+}
+
+/** A validated raster image stored beneath one thread's attachments directory. */
+export interface ImageAttachmentDto {
+  id: string;
+  threadId: string;
+  name: string;
+  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  size: number;
+  width: number;
+  height: number;
+  /** Opaque API URL; never a host filesystem path. */
+  url: string;
+}
+
+export interface ImageAttachmentLimitsDto {
+  maxFileBytes: number;
+  maxRequestBytes: number;
+  maxAttachmentsPerMessage: number;
+  acceptedMediaTypes: ImageAttachmentDto["mediaType"][];
 }
 
 /** A Tasks-pane execution unit (SPEC §7 `tasks`). */
@@ -208,6 +231,7 @@ export interface ThreadDetailDto {
 /** POST /api/threads/:id/messages body — send a user turn. */
 export interface SendMessageRequest {
   text: string;
+  attachmentIds?: string[];
   model?: string;
   effort?: string;
   /** Set by a master-chat client when this turn originated in that room. */

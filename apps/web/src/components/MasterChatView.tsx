@@ -157,7 +157,7 @@ export function MasterChatView({
   });
 
   const spawn = useMutation({
-    mutationFn: async (text: string) => {
+    mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
       if (!masterChat) {
         throw new Error("Master chat not loaded");
       }
@@ -168,9 +168,15 @@ export function MasterChatView({
         engine,
         model: model || undefined,
         effort: effort || undefined,
-        initialMessage: text,
-        replyToMessageId: replyTo?.id,
       });
+      try {
+        const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agent.id, file)));
+        await api.sendMasterChatMessage(masterChatId, { text, attachments, replyToMessageId: replyTo?.id });
+        await api.sendMessage(agent.id, { text, attachmentIds: attachments.map((item) => item.id), sourceChannel: "main" });
+      } catch (error) {
+        await api.deleteThread(agent.id).catch(() => undefined);
+        throw error;
+      }
       return agent;
     },
     onSuccess: () => {
@@ -182,9 +188,13 @@ export function MasterChatView({
   // Route a message to an existing agent (a follow-up turn) instead of spawning.
   // Recorded in the shared pool so it stays as context for future agents.
   const reply = useMutation({
-    mutationFn: async ({ agentIds, text, replyToMessageId }: { agentIds: string[]; text: string; replyToMessageId?: string }) => {
-      await api.sendMasterChatMessage(masterChatId, { text, replyToMessageId });
-      return Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text, sourceChannel: "main" })));
+    mutationFn: async ({ agentIds, text, files, replyToMessageId }: { agentIds: string[]; text: string; files: File[]; replyToMessageId?: string }) => {
+      const perAgent = await Promise.all(agentIds.map(async (agentId) => {
+        const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agentId, file)));
+        return { agentId, attachments };
+      }));
+      await api.sendMasterChatMessage(masterChatId, { text, attachments: perAgent[0]?.attachments, replyToMessageId });
+      return Promise.all(perAgent.map(({ agentId, attachments }) => api.sendMessage(agentId, { text, attachmentIds: attachments.map((item) => item.id), sourceChannel: "main" })));
     },
     onSuccess: (responses, variables) => {
       setReplyTo(undefined);
@@ -297,16 +307,17 @@ export function MasterChatView({
     .map((agent) => agentMentionHandle(agent.title));
   const busy = spawn.isPending || reply.isPending || collaborate.isPending;
 
-  const submit = (text: string) => {
+  const submit = async (text: string, files: File[]) => {
     if (conversation === "collaboration") {
-      collaborate.mutate({ text, replyToMessageId: replyTo?.id });
+      if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
+      await collaborate.mutateAsync({ text, replyToMessageId: replyTo?.id });
       return;
     }
     const targets = findMentioned(text);
     if (targets.length > 0) {
-      reply.mutate({ agentIds: targets.map((target) => target.id), text, replyToMessageId: replyTo?.id });
+      await reply.mutateAsync({ agentIds: targets.map((target) => target.id), text, files, replyToMessageId: replyTo?.id });
     } else {
-      spawn.mutate(text);
+      await spawn.mutateAsync({ text, files });
     }
   };
 
@@ -534,6 +545,11 @@ export function MasterChatView({
                       </Box>
                     ) : null}
                     <ChatMarkdown>{message.text}</ChatMarkdown>
+                    {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+                      {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
+                        <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+                      </Box>)}
+                    </Stack> : null}
                     <Button size="small" color="inherit" onClick={() => setReplyTo(message)} sx={{ mt: .5 }}>Reply</Button>
                   </Box>
                 </Box>
