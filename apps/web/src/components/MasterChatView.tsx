@@ -35,7 +35,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
@@ -44,7 +44,6 @@ import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
-import { useMasterChatStreams } from "../hooks/useMasterChatStreams";
 import { useSubagents } from "../hooks/useSubagents";
 
 export function MasterChatView({
@@ -77,7 +76,6 @@ export function MasterChatView({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
-  const [dispatchedAgentIds, setDispatchedAgentIds] = useState<Set<string>>(new Set());
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
@@ -102,23 +100,6 @@ export function MasterChatView({
   const messages = detailQuery.data?.messages ?? [];
   const threads = detailQuery.data?.threads ?? [];
   const collaborationMessages = collaborationQuery.data?.messages ?? [];
-  const runningIds = new Set([
-    ...dispatchedAgentIds,
-    ...threads.filter((thread) => statusByAgentId.get(thread.id) === "running").map((thread) => thread.id),
-  ]);
-  const handleStreamComplete = useCallback((threadId: string) => {
-    setDispatchedAgentIds((current) => {
-      const next = new Set(current);
-      next.delete(threadId);
-      return next;
-    });
-  }, []);
-  const { replies: liveReplies, pollingFallbackCount } = useMasterChatStreams(
-    threads,
-    runningIds,
-    handleStreamComplete,
-  );
-
   useLayoutEffect(() => {
     if (
       displayedMasterChatId.current !== masterChatId ||
@@ -131,7 +112,7 @@ export function MasterChatView({
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
     }
-  }, [masterChatId, conversation, messages, collaborationMessages, liveReplies]);
+  }, [masterChatId, conversation, messages, collaborationMessages]);
 
   useEffect(() => {
     if (!masterChat || initializedFor.current === masterChat.id) {
@@ -187,8 +168,7 @@ export function MasterChatView({
       });
       return agent;
     },
-    onSuccess: (agent) => {
-      setDispatchedAgentIds((current) => new Set(current).add(agent.id));
+    onSuccess: () => {
       invalidate();
     },
   });
@@ -197,7 +177,6 @@ export function MasterChatView({
   // Recorded in the shared pool so it stays as context for future agents.
   const reply = useMutation({
     mutationFn: async ({ agentIds, text }: { agentIds: string[]; text: string }) => {
-      setDispatchedAgentIds((current) => new Set([...current, ...agentIds]));
       await api.sendMasterChatMessage(masterChatId, { text });
       return Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text, sourceChannel: "main" })));
     },
@@ -214,13 +193,6 @@ export function MasterChatView({
       for (const agentId of variables.agentIds) {
         void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
       }
-    },
-    onError: (_error, variables) => {
-      setDispatchedAgentIds((current) => {
-        const next = new Set(current);
-        variables.agentIds.forEach((agentId) => next.delete(agentId));
-        return next;
-      });
     },
   });
 
@@ -504,12 +476,6 @@ export function MasterChatView({
                 onExpand={subagentBinding.loadTranscript}
               />
             ) : null}
-            {conversation === "main" && pollingFallbackCount > 0 ? (
-              <Alert severity="info">
-                {pollingFallbackCount} additional active {pollingFallbackCount === 1 ? "agent is" : "agents are"}
-                {" "}updating through polling to keep this chat responsive.
-              </Alert>
-            ) : null}
             {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {conversation === "collaboration"
@@ -550,21 +516,6 @@ export function MasterChatView({
                 </Box>
               );
             })}
-            {conversation === "main" && liveReplies.map((reply) => (
-              <Box key={`live-${reply.threadId}`} sx={{ alignSelf: "flex-start", maxWidth: "min(680px, 92%)" }}>
-                <Link
-                  component="button"
-                  variant="caption"
-                  onClick={() => onOpenAgent(reply.threadId)}
-                  sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
-                >
-                  {agentTitle(reply.threadId)} · responding
-                </Link>
-                <Box sx={{ px: 1.5, py: 1, borderRadius: 2, bgcolor: "background.paper", border: 1, borderColor: "divider" }}>
-                  <ChatMarkdown>{reply.text}</ChatMarkdown>
-                </Box>
-              </Box>
-            ))}
           </Stack>
 
         </Box>
