@@ -473,7 +473,7 @@ export function MasterChatView({
                 store={subagentBinding.store}
                 cancelling={subagentBinding.cancelling}
                 onCancel={subagentBinding.cancel}
-                onExpand={subagentBinding.loadTranscript}
+                onOpenAgent={onOpenAgent}
               />
             ) : null}
             {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (

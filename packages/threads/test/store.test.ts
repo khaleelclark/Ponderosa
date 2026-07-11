@@ -159,6 +159,17 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
     expect(snapshot(store)).toEqual(before);
   });
 
+  it("catches a stale SQLite projection up automatically on restart", () => {
+    const { threadId } = seedThread();
+    for (const ev of RUN) store.appendEvent(threadId, ev);
+    const before = snapshot(store);
+    store.sqlite.exec("DELETE FROM events; DELETE FROM messages; DELETE FROM tasks; DELETE FROM artifacts;");
+    store.close();
+
+    store = new ThreadStore(dir);
+    expect(snapshot(store)).toEqual(before);
+  });
+
   it("persists model-agnostic master chats and linked agent threads across rebuilds", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const masterChat = store.createMasterChat(project.id, {

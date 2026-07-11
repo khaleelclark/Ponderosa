@@ -6,6 +6,7 @@ import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, S
 import { ThreadStore } from "@ponderosa/threads";
 import { createServer, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
+import { DelegationStore } from "../src/delegations.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,7 +28,6 @@ class MockAdapter implements Adapter {
   }
 
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
-    await opts.authorizeLaunch?.(opts.signal);
     this.seeds.push(opts);
     yield { type: "session", sessionId: "sess-1" };
     if (this.mode === "hang") {
@@ -844,6 +844,59 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("recovers a durable direct manager follow-up after restart", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Worker", engine: "codex" });
+    new CollaborationDeliveryStore(dataDir).queue({
+      messageId: "direct-restart",
+      targetThreadId: thread.id,
+      text: "Continue after restart",
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "direct",
+    });
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(thread.id);
+    expect(adapter.seeds.find((turn) => turn.threadId === thread.id)?.prompt).toContain(
+      "Latest message for you:\nContinue after restart",
+    );
+    await app.close();
+  });
+
+  it("reconciles interrupted delegations and relaunches authorized queued work", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Delegation recovery" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const delegations = new DelegationStore(dataDir);
+    const make = (parentRunId: string, label: string) => delegations.spawn(master.id, {
+      parentRunId,
+      displayLabel: label,
+      delegationPrompt: `Do ${label}`,
+      runtime: "codex",
+      idempotencyKey: label,
+    }, true, [], parent.id);
+
+    const queued = make("parent-queued", "Queued child");
+    const queuedThread = store.createThread(project.id, { title: "Queued child", engine: "codex", masterChatId: master.id });
+    delegations.bindChildThread(queued.run.id, queuedThread.id);
+    const interrupted = make("parent-running", "Interrupted child");
+    const interruptedThread = store.createThread(project.id, { title: "Interrupted child", engine: "codex", masterChatId: master.id });
+    delegations.bindChildThread(interrupted.run.id, interruptedThread.id);
+    delegations.claim(interrupted.run.id);
+
+    const app = createServer({ dataDir, store, engines, agentBaseUrl: "http://127.0.0.1:8787", logger: false });
+    await app.ready();
+    await waitForRun(queuedThread.id);
+    const runs = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ id: string; status: string; failure?: { retryable: boolean } }>>();
+    expect(runs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: queued.run.id, status: "completed" }),
+      expect.objectContaining({ id: interrupted.run.id, status: "failed", failure: expect.objectContaining({ retryable: true }) }),
+    ]));
+    await app.close();
+  });
+
   it("rejects invalid agent mention relay depths", async () => {
     const { app, thread } = await createProjectAndThread();
 
@@ -927,7 +980,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("caps queued mention follow-ups and reports overflow to the master chat", async () => {
+  it("persists more than fifty mention follow-ups without terminal overflow", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Busy review room" });
@@ -962,17 +1015,13 @@ describe("server chunk F", () => {
     }
     await Promise.all(authors.map((author) => waitForRun(author.id)));
 
-    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          text: "⚠️ @Pinnacles was not notified because their follow-up queue is full. Please retry after they finish some queued work.",
-        }),
-      ]),
+    expect(store.getMasterChatMessages(master.id, "collaboration")).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("follow-up queue is full") })]),
     );
 
     await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id, 50);
-    expect(adapter.continues).toHaveLength(50);
+    await waitForRun(reviewer.id, 51);
+    expect(adapter.continues).toHaveLength(51);
     await app.close();
   });
 
@@ -1149,109 +1198,23 @@ describe("server chunk F", () => {
     rmSync(webDist, { recursive: true, force: true });
   });
 
-  it("registers, persists, and cancels a delegated branch with single-use proof", async () => {
+  it("does not expose legacy delegation registration or output routes", async () => {
     adapter.mode = "hang";
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Delegation room" });
     const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
-    const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
-    const parentRunId = parentTurn.json<{ runId: string }>().runId;
+    const parent = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    const parentRunId = parent.json<{ runId: string }>().runId;
 
-    const unsupported = await app.inject({
+    expect((await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/subagents`,
-      payload: {
-        parentRunId,
-        displayLabel: "Unsupported",
-        delegationPrompt: "Do not launch",
-        runtime: "not-configured",
-        idempotencyKey: "unsupported-1",
-      },
-    });
-    expect(unsupported.statusCode).toBe(400);
-    expect(unsupported.json()).toMatchObject({ error: { code: "forbidden" } });
+      payload: { parentRunId, displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "legacy" },
+    })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/api/internal/subagents/missing/launch", payload: {} })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/api/internal/subagents/missing/output", payload: { text: "forged" } })).statusCode).toBe(404);
 
-    const spawn = await app.inject({
-      method: "POST",
-      url: `/api/master-chats/${master.id}/subagents`,
-      payload: {
-        parentRunId,
-        displayLabel: "API review",
-        delegationPrompt: "Review secret=redacted API behavior",
-        runtime: "codex",
-        idempotencyKey: "spawn-1",
-      },
-    });
-    expect(spawn.statusCode).toBe(201);
-    const created = spawn.json<{ run: { id: string; version: number; delegationSummary: string }; registration: { id: string; credential: string } }>();
-    expect(created.run.version).toBe(2);
-    expect(JSON.stringify(created.run)).not.toContain("delegationPrompt");
-    expect(created.run.delegationSummary).toBe("API review");
-
-    const spawnReplay = await app.inject({
-      method: "POST",
-      url: `/api/master-chats/${master.id}/subagents`,
-      payload: {
-        parentRunId,
-        displayLabel: "API review",
-        delegationPrompt: "Review secret=redacted API behavior",
-        runtime: "codex",
-        idempotencyKey: "spawn-1",
-      },
-    });
-    expect(spawnReplay.statusCode).toBe(201);
-    const replayedSpawn = spawnReplay.json<typeof created & { replayed: boolean }>();
-    expect(replayedSpawn.replayed).toBe(true);
-    expect(replayedSpawn.run.id).toBe(created.run.id);
-    expect(replayedSpawn.registration.credential).not.toBe(created.registration.credential);
-
-    const conflictingSpawn = await app.inject({
-      method: "POST",
-      url: `/api/master-chats/${master.id}/subagents`,
-      payload: {
-        parentRunId,
-        displayLabel: "Different task",
-        delegationPrompt: "Different prompt",
-        runtime: "codex",
-        idempotencyKey: "spawn-1",
-      },
-    });
-    expect(conflictingSpawn.json()).toMatchObject({ error: { code: "idempotency_conflict" } });
-
-    const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
-    expect(list.json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: created.run.id })]);
-
-    const claimPayload = {
-      registrationId: replayedSpawn.registration.id,
-      credential: replayedSpawn.registration.credential,
-      parentRunId,
-      masterChatId: master.id,
-      runtime: "codex",
-    };
-    const orphanClaim = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
-    expect(orphanClaim.statusCode).toBe(404);
-
-    await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "first chunk" } });
-    await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "second chunk" } });
-    const firstPage = await app.inject({ method: "GET", url: `/api/subagents/${created.run.id}/transcript?limit=1` });
-    expect(firstPage.json()).toMatchObject({ runId: created.run.id, items: [{ chunkSeq: 1, text: "first chunk" }], nextCursor: "1", hasMore: true });
-    const secondPage = await app.inject({ method: "GET", url: `/api/subagents/${created.run.id}/transcript?after=1&limit=1` });
-    expect(secondPage.json()).toMatchObject({ items: [{ chunkSeq: 2, text: "second chunk" }], hasMore: false });
-
-    const cancel = await app.inject({
-      method: "POST",
-      url: `/api/subagents/${created.run.id}/cancel`,
-      payload: { scope: "branch", idempotencyKey: "cancel-1" },
-    });
-    const cancellation = cancel.json();
-    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 3 }] });
-    const cancelReplay = await app.inject({
-      method: "POST",
-      url: `/api/subagents/${created.run.id}/cancel`,
-      payload: { scope: "branch", idempotencyKey: "cancel-1" },
-    });
-    expect(cancelReplay.json()).toEqual(cancellation);
     await cancelAndWait(app, thread.id);
     await app.close();
   });
@@ -1274,6 +1237,7 @@ describe("server chunk F", () => {
     expect(environment.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
     expect(environment.PONDEROSA_DELEGATION_URL).toBe("http://127.0.0.1:8787/api/agent-delegations");
     expect(environment.PONDEROSA_INTERNAL_SUBAGENTS_DISABLED).toBe("1");
+    expect(environment.PONDEROSA_AGENT_MESSAGE_TOKEN).not.toBe(environment.PONDEROSA_DELEGATION_TOKEN);
 
     const spoof = await app.inject({
       method: "POST",
@@ -1308,6 +1272,7 @@ describe("server chunk F", () => {
     expect(JSON.stringify(childDetail)).not.toContain("private secret task");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).not.toBe(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN);
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_URL).toBe("http://127.0.0.1:8787/api/agent-delegations");
 
@@ -1341,6 +1306,8 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
       expect.objectContaining({ id: created.run.id, status: "cancelled", delegationSummary: "Safe review" }),
     ]);
+    const audit = readFileSync(path.join(dataDir, "delegations.jsonl"), "utf8");
+    expect(audit.split("private secret task")).toHaveLength(2);
     await cancelAndWait(app, thread.id);
     await app.close();
   });
@@ -1350,74 +1317,6 @@ describe("server chunk F", () => {
     writeFileSync(file, "", { mode: 0o644 });
     const app = createServer({ dataDir, store, engines, logger: false });
     expect(statSync(file).mode & 0o777).toBe(0o600);
-    await app.close();
-  });
-
-  it("launches a claimed adapter and cancellation produces a terminal lifecycle event", async () => {
-    adapter.mode = "hang";
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Delegation room" });
-    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
-    const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
-    const parentRunId = parentTurn.json<{ runId: string }>().runId;
-    const spawned = (await app.inject({
-      method: "POST",
-      url: `/api/master-chats/${master.id}/subagents`,
-      payload: { parentRunId, displayLabel: "Worker", delegationPrompt: "Do the work", runtime: "codex", model: "mock-model", idempotencyKey: "launch-1" },
-    })).json<{ run: { id: string }; registration: { id: string; credential: string } }>();
-    const claim = {
-      registrationId: spawned.registration.id,
-      credential: spawned.registration.credential,
-      parentRunId,
-      masterChatId: master.id,
-      runtime: "codex",
-    };
-
-    const invalidQueued = await app.inject({
-      method: "POST",
-      url: `/api/internal/subagents/${spawned.run.id}/launch`,
-      payload: { ...claim, credential: "invalid" },
-    });
-    expect(invalidQueued.statusCode).toBe(403);
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ status: string }>>()[0]?.status).toBe("queued");
-
-    const [firstLaunch, duplicateLaunch] = await Promise.all([
-      app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim }),
-      app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim }),
-    ]);
-    expect([firstLaunch.statusCode, duplicateLaunch.statusCode].sort()).toEqual([202, 409]);
-    await waitForSeedCount(2);
-    expect(adapter.seeds[1]?.authorizeLaunch).toBeTypeOf("function");
-    expect(adapter.seeds[1]?.model).toBe("mock-model");
-
-    const invalidRunning = await app.inject({
-      method: "POST",
-      url: `/api/internal/subagents/${spawned.run.id}/launch`,
-      payload: { ...claim, credential: "invalid" },
-    });
-    expect(invalidRunning.statusCode).toBe(403);
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ status: string }>>()[0]?.status).toBe("running");
-
-    const cancel = await app.inject({
-      method: "POST",
-      url: `/api/subagents/${spawned.run.id}/cancel`,
-      payload: { scope: "branch", idempotencyKey: "launch-cancel-1" },
-    });
-    expect(cancel.json()).toMatchObject({ affected: [{ runId: spawned.run.id, status: "cancelled" }] });
-    for (let i = 0; i < 80 && adapter.abortedSeeds === 0; i += 1) {
-      await sleep(10);
-    }
-    expect(adapter.abortedSeeds).toBe(1);
-    const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
-    expect(list.json<Array<{ status: string }>>()[0]?.status).toBe("cancelled");
-    const lifecycle = readFileSync(path.join(dataDir, "delegations.jsonl"), "utf8");
-    expect(lifecycle).toContain('"status":"running"');
-    expect(lifecycle).toContain('"status":"cancelled"');
-    expect(lifecycle).not.toContain('"status":"failed"');
-    expect(lifecycle).not.toContain('"status":"completed"');
-    expect(statSync(path.join(dataDir, "delegations.jsonl")).mode & 0o777).toBe(0o600);
-    await cancelAndWait(app, thread.id);
     await app.close();
   });
 

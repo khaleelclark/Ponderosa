@@ -16,7 +16,6 @@ import type {
   SseEventEnvelope,
   SubagentEventEnvelope,
   SubagentRunDto,
-  SubagentTranscriptPageDto,
   CancelSubagentRequest,
   CancelSubagentResponse,
   ThreadDetailDto,
@@ -67,7 +66,6 @@ export interface PonderosaApi {
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   sendCollaborationMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;
-  getSubagentTranscript(runId: string, after?: string): Promise<SubagentTranscriptPageDto>;
   cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;
   subscribeSubagents(masterChatId: string, lastSeenSeq: number | undefined, handlers: SubagentStreamHandlers): StreamSubscription;
   listThreads(projectId: string): Promise<ThreadDto[]>;

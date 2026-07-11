@@ -99,7 +99,6 @@ export class ClaudeAdapter implements Adapter {
       opts.cwd,
       opts.signal,
       opts.environment,
-      opts.authorizeLaunch,
     );
   }
 
@@ -109,7 +108,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.authorizeLaunch);
+    return this.run(args, opts.cwd, opts.signal, opts.environment);
   }
 
   private run(
@@ -117,7 +116,6 @@ export class ClaudeAdapter implements Adapter {
     cwd: string,
     signal: AbortSignal,
     environment?: Record<string, string>,
-    authorizeLaunch?: (signal: AbortSignal) => Promise<void>,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
@@ -129,7 +127,6 @@ export class ClaudeAdapter implements Adapter {
       killGraceMs: this.killGraceMs,
       map: mapClaudeEvent,
       label: "claude",
-      beforeSpawn: authorizeLaunch,
     });
   }
 }

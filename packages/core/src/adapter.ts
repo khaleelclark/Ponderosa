@@ -45,13 +45,6 @@ export interface RunOptionsBase {
   environment?: Record<string, string>;
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
   signal: AbortSignal;
-  /**
-   * Optional server-owned authorization boundary invoked immediately before the
-   * runtime process is created. Delegated runs use it to atomically consume their
-   * single-use registration proof. Keeping this as a callback avoids exposing
-   * credentials or server transport details to an engine adapter.
-   */
-  authorizeLaunch?: (signal: AbortSignal) => Promise<void>;
 }
 
 /** Options for continuing a thread's already-active runtime session. */

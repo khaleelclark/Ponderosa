@@ -146,6 +146,10 @@ export class ThreadStore {
     const opened = openDb(dbPath(dataDir));
     this.db = opened.db;
     this.client = opened.client;
+    // Canonical files are written before their SQLite projections. Rebuilding
+    // on startup closes the crash window where a durable append succeeded but
+    // the projection write did not, and keeps every read path deterministic.
+    this.rebuildProjections();
   }
 
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */

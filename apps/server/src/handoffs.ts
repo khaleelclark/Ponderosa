@@ -6,7 +6,7 @@ export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged
 
 export interface CollaborationDelivery {
   id: string;
-  masterChatId: string;
+  masterChatId?: string;
   messageId: string;
   targetThreadId: string;
   authorThreadId?: string;
@@ -14,8 +14,11 @@ export interface CollaborationDelivery {
   relayDepth: number;
   mentionTrail: string[];
   /** A delegated result is delivered by the server; ordinary messages are tags. */
-  kind: "tag" | "delegation_completion";
+  kind: "direct" | "tag" | "delegation_completion";
   delegatedRunId?: string;
+  model?: string;
+  effort?: string;
+  sourceChannel?: "main";
   status: CollaborationDeliveryStatus;
   createdAt: string;
   deliveredAt?: string;
@@ -79,6 +82,10 @@ export class CollaborationDeliveryStore {
     return [...this.deliveries.values()]
       .filter((delivery) => delivery.targetThreadId === threadId && delivery.status === "queued")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  pendingCount(threadId: string): number {
+    return this.pending(threadId).length;
   }
 
   /**

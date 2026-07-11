@@ -4,11 +4,8 @@ import { api } from "../api";
 import {
   applyCancellationResult,
   applySubagentEnvelope,
-  clearSubagentTranscript,
   emptySubagentStore,
   hydrateSubagentStore,
-  loadTranscriptPages,
-  mergeTranscriptPage,
   type SubagentStore,
   type SubagentUiBinding,
 } from "../subagents";
@@ -19,7 +16,6 @@ export function useSubagents(masterChatId: string, enabled: boolean): SubagentUi
   const [store, setStore] = useState<SubagentStore>(emptySubagentStore);
   const storeRef = useRef(store);
   const [cancelling, setCancelling] = useState<Set<string>>(new Set());
-  const hydratedTranscripts = useRef(new Set<string>());
 
   const update = useCallback((next: SubagentStore | ((current: SubagentStore) => SubagentStore)) => {
     setStore((current) => {
@@ -63,18 +59,5 @@ export function useSubagents(masterChatId: string, enabled: boolean): SubagentUi
     }
   }, [update]);
 
-  const loadTranscript = useCallback(async (run: SubagentRunDto) => {
-    if (hydratedTranscripts.current.has(run.id)) return;
-    await loadTranscriptPages(
-      run.id,
-      (after) => api.getSubagentTranscript(run.id, after),
-      (page) => {
-        update((current) => mergeTranscriptPage(current, page));
-      },
-      () => update((current) => clearSubagentTranscript(current, run.id)),
-    );
-    hydratedTranscripts.current.add(run.id);
-  }, [update]);
-
-  return enabled ? { store, cancelling, cancel, loadTranscript } : undefined;
+  return enabled ? { store, cancelling, cancel } : undefined;
 }

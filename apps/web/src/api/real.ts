@@ -16,7 +16,6 @@ import type {
   SseEventEnvelope,
   SubagentEventEnvelope,
   SubagentRunDto,
-  SubagentTranscriptPageDto,
   CancelSubagentRequest,
   CancelSubagentResponse,
   ThreadDetailDto,
@@ -105,11 +104,6 @@ export const realApi: PonderosaApi = {
   },
   listSubagents(masterChatId) {
     return requestJson<SubagentRunDto[]>(`/api/master-chats/${encodeURIComponent(masterChatId)}/subagents`);
-  },
-  getSubagentTranscript(runId, after) {
-    return requestJson<SubagentTranscriptPageDto>(
-      `/api/subagents/${encodeURIComponent(runId)}/transcript${toQuery({ after, limit: 100 })}`,
-    );
   },
   cancelSubagent(runId, request) {
     return requestJson<CancelSubagentResponse>(`/api/subagents/${encodeURIComponent(runId)}/cancel`, {
