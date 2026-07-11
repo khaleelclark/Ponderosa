@@ -197,6 +197,15 @@ collaboration system record. Agent-originated message retries use an idempotency
 key, so a repeated request returns the original message and does not enqueue a
 second handoff.
 
+On server startup, persisted `queued` deliveries resume automatically. A
+`delivered` record without an acknowledgement is treated as an interrupted turn,
+returned to `queued`, and retried in the recipient's original FIFO order. This is
+an at-least-once recovery boundary: runtime prompts must tolerate a replay after a
+process failure, while transport retries remain idempotent by message receipt.
+Delegation depth is lineage metadata only; collaboration relay depth and its
+loop-detection fingerprints start fresh for each delegated runtime and advance
+only when that runtime emits an actual `@mention` handoff.
+
 Terminal delegated runs also produce a first-class completion delivery to their
 server-derived parent—children need not rely on free-form tags just to report a
 final result. The public delegated-run record exposes its terminal status and
