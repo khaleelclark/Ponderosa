@@ -668,7 +668,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const parentIsRunning = [...activeRuns.values()].some((run) => run.runId === input.parentRunId);
       try {
-        return reply.code(201).send(delegations.spawn(request.params.id, input, parentIsRunning));
+        const context = store.getCollaborationChatDetail(request.params.id)!;
+        const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({
+          id,
+          role,
+          text,
+          ...(authorThreadId ? { authorThreadId } : {}),
+        }));
+        return reply.code(201).send(delegations.spawn(request.params.id, input, parentIsRunning, contextMessages));
       } catch (error) {
         return delegationFailure(error, reply);
       }
@@ -698,7 +705,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: { code: "forbidden", message: "branch scope and idempotencyKey are required", retryable: false } });
       }
       try {
-        return delegations.cancel(request.params.runId);
+        return delegations.cancel(request.params.runId, request.body.idempotencyKey);
       } catch (error) {
         return delegationFailure(error, reply);
       }

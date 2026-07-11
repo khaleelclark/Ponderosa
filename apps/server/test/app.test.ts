@@ -897,13 +897,44 @@ describe("server chunk F", () => {
     const created = spawn.json<{ run: { id: string; version: number; delegationSummary: string }; registration: { id: string; credential: string } }>();
     expect(created.run.version).toBe(1);
     expect(JSON.stringify(created.run)).not.toContain("delegationPrompt");
+    expect(created.run.delegationSummary).toBe("API review");
+
+    const spawnReplay = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "API review",
+        delegationPrompt: "Review secret=redacted API behavior",
+        runtime: "codex",
+        idempotencyKey: "spawn-1",
+      },
+    });
+    expect(spawnReplay.statusCode).toBe(201);
+    const replayedSpawn = spawnReplay.json<typeof created & { replayed: boolean }>();
+    expect(replayedSpawn.replayed).toBe(true);
+    expect(replayedSpawn.run.id).toBe(created.run.id);
+    expect(replayedSpawn.registration.credential).not.toBe(created.registration.credential);
+
+    const conflictingSpawn = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "Different task",
+        delegationPrompt: "Different prompt",
+        runtime: "codex",
+        idempotencyKey: "spawn-1",
+      },
+    });
+    expect(conflictingSpawn.json()).toMatchObject({ error: { code: "idempotency_conflict" } });
 
     const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
     expect(list.json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: created.run.id })]);
 
     const claimPayload = {
-      registrationId: created.registration.id,
-      credential: created.registration.credential,
+      registrationId: replayedSpawn.registration.id,
+      credential: replayedSpawn.registration.credential,
       parentRunId,
       masterChatId: master.id,
       runtime: "codex",
@@ -919,7 +950,14 @@ describe("server chunk F", () => {
       url: `/api/subagents/${created.run.id}/cancel`,
       payload: { scope: "branch", idempotencyKey: "cancel-1" },
     });
-    expect(cancel.json()).toMatchObject({ completed: true, affected: [{ id: created.run.id, status: "cancelled", version: 3 }] });
+    const cancellation = cancel.json();
+    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 3 }] });
+    const cancelReplay = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${created.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "cancel-1" },
+    });
+    expect(cancelReplay.json()).toEqual(cancellation);
     await cancelAndWait(app, thread.id);
     await app.close();
   });

@@ -20,12 +20,22 @@ interface RegistrationRecord {
 
 interface RunRecord extends SubagentRunDto {
   delegationPrompt: string;
+  contextSnapshot: {
+    id: string;
+    masterChatId: string;
+    parentRunId: string;
+    createdAt: string;
+    messages: Array<{ id: string; role: string; text: string; authorThreadId?: string }>;
+  };
   requestHash: string;
   idempotencyKey: string;
   registration: RegistrationRecord;
 }
 
-type PersistedRecord = { type: "run"; run: RunRecord } | { type: "replace"; run: RunRecord };
+type PersistedRecord =
+  | { type: "run"; run: RunRecord }
+  | { type: "replace"; run: RunRecord }
+  | { type: "cancel"; key: string; response: CancelSubagentResponse };
 
 export class DelegationError extends Error {
   constructor(
@@ -39,11 +49,12 @@ export class DelegationError extends Error {
 }
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
-const publicRun = ({ delegationPrompt: _prompt, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
+const publicRun = ({ delegationPrompt: _prompt, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
 
 export class DelegationStore {
   private readonly runs = new Map<string, RunRecord>();
   private readonly idempotency = new Map<string, string>();
+  private readonly cancellations = new Map<string, CancelSubagentResponse>();
   private readonly file: string;
 
   constructor(dataDir: string) {
@@ -51,7 +62,12 @@ export class DelegationStore {
     if (!existsSync(this.file)) return;
     for (const line of readFileSync(this.file, "utf8").split("\n")) {
       if (!line) continue;
-      const { run } = JSON.parse(line) as PersistedRecord;
+      const record = JSON.parse(line) as PersistedRecord;
+      if (record.type === "cancel") {
+        this.cancellations.set(record.key, record.response);
+        continue;
+      }
+      const { run } = record;
       this.runs.set(run.id, run);
       this.idempotency.set(`${run.masterChatId}:${run.parentRunId}:${run.idempotencyKey}`, run.id);
     }
@@ -61,6 +77,11 @@ export class DelegationStore {
     mkdirSync(path.dirname(this.file), { recursive: true });
     appendFileSync(this.file, `${JSON.stringify({ type, run })}\n`, "utf8");
     this.runs.set(run.id, run);
+  }
+
+  private persistCancellation(key: string, response: CancelSubagentResponse): void {
+    appendFileSync(this.file, `${JSON.stringify({ type: "cancel", key, response })}\n`, "utf8");
+    this.cancellations.set(key, response);
   }
 
   list(masterChatId: string): SubagentRunDto[] {
@@ -76,7 +97,12 @@ export class DelegationStore {
     return this.runs.get(runId)?.delegationPrompt;
   }
 
-  spawn(masterChatId: string, input: SpawnSubagentRequest, parentIsRunning: boolean): SpawnSubagentResponse {
+  spawn(
+    masterChatId: string,
+    input: SpawnSubagentRequest,
+    parentIsRunning: boolean,
+    contextMessages: Array<{ id: string; role: string; text: string; authorThreadId?: string }>,
+  ): SpawnSubagentResponse {
     const parent = this.runs.get(input.parentRunId);
     if (parent && parent.masterChatId !== masterChatId) throw new DelegationError("unauthorized_parent", "parent run belongs to another master chat", 403);
     if (!parent && !parentIsRunning) throw new DelegationError("parent_not_running", "parent run is not active", 409, true);
@@ -99,7 +125,20 @@ export class DelegationStore {
       if (run.registration.consumedAt || run.registration.invalidatedAt || Date.parse(run.registration.expiresAt) <= Date.now()) {
         throw new DelegationError("idempotency_conflict", "the original registration can no longer be replayed", 409);
       }
-      throw new DelegationError("registration_required", "idempotent replay cannot disclose the credential again", 409);
+      const credential = randomBytes(32).toString("base64url");
+      const registration = {
+        id: randomUUID(),
+        credentialHash: digest(credential),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        runtime: run.runtime,
+      };
+      const rotated = { ...run, registration };
+      this.persist(rotated, "replace");
+      return {
+        run: publicRun(rotated),
+        registration: { id: registration.id, credential, expiresAt: registration.expiresAt, runtime: run.runtime },
+        replayed: true,
+      };
     }
 
     const now = new Date().toISOString();
@@ -114,7 +153,7 @@ export class DelegationStore {
       depth,
       version: 1,
       displayLabel: input.displayLabel.trim().slice(0, 100),
-      delegationSummary: input.delegationPrompt.trim().replace(/\s+/g, " ").slice(0, 240),
+      delegationSummary: input.displayLabel.trim().slice(0, 100),
       delegationPrompt: input.delegationPrompt,
       runtime: input.runtime,
       status: "queued",
@@ -123,6 +162,13 @@ export class DelegationStore {
       updatedAt: now,
       requestHash,
       idempotencyKey: input.idempotencyKey,
+      contextSnapshot: {
+        id: "",
+        masterChatId,
+        parentRunId: input.parentRunId,
+        createdAt: now,
+        messages: contextMessages,
+      },
       registration: {
         id: randomUUID(),
         credentialHash: digest(credential),
@@ -130,6 +176,7 @@ export class DelegationStore {
         runtime: input.runtime,
       },
     };
+    run.contextSnapshot.id = run.contextSnapshotId;
     this.idempotency.set(key, runId);
     this.persist(run, "run");
     return {
@@ -143,6 +190,9 @@ export class DelegationStore {
     const run = this.runs.get(runId);
     if (!run) throw new DelegationError("registration_not_found", "registration was not found", 404);
     const reg = run.registration;
+    if (run.contextSnapshot.id !== run.contextSnapshotId || run.contextSnapshot.masterChatId !== run.masterChatId || run.contextSnapshot.parentRunId !== run.parentRunId) {
+      throw new DelegationError("registration_mismatch", "server context snapshot ownership is invalid", 403);
+    }
     if (reg.consumedAt) throw new DelegationError("registration_consumed", "registration was already consumed", 409);
     if (reg.invalidatedAt) throw new DelegationError("registration_mismatch", "registration was invalidated", 403);
     if (Date.parse(reg.expiresAt) <= Date.now()) throw new DelegationError("registration_expired", "registration expired", 401);
@@ -156,17 +206,22 @@ export class DelegationStore {
     return publicRun(updated);
   }
 
-  cancel(runId: string): CancelSubagentResponse {
+  cancel(runId: string, idempotencyKey: string): CancelSubagentResponse {
     if (!this.runs.has(runId)) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    const cancellationKey = `${runId}:${idempotencyKey}`;
+    const replay = this.cancellations.get(cancellationKey);
+    if (replay) return replay;
     const affected = [...this.runs.values()].filter((run) => run.id === runId || this.isDescendant(run, runId));
     const now = new Date().toISOString();
     const results = affected.map((run) => {
       const terminal = run.status === "completed" || run.status === "failed" || run.status === "cancelled";
       const updated: RunRecord = terminal ? run : { ...run, status: "cancelled", canCancel: false, finishedAt: now, updatedAt: now, version: run.version + 1, registration: { ...run.registration, invalidatedAt: now } };
       if (!terminal) this.persist(updated, "replace");
-      return { id: updated.id, status: updated.status, version: updated.version, updatedAt: updated.updatedAt };
+      return { runId: updated.id, status: updated.status, version: updated.version, updatedAt: updated.updatedAt };
     });
-    return { requestedRunId: runId, scope: "branch", affected: results, completed: true };
+    const response: CancelSubagentResponse = { requestedRunId: runId, scope: "branch", affected: results, completed: true };
+    this.persistCancellation(cancellationKey, response);
+    return response;
   }
 
   private isDescendant(run: RunRecord, ancestorId: string): boolean {

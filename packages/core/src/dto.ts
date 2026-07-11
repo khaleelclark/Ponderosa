@@ -297,7 +297,12 @@ export interface CancelSubagentRequest {
 export interface CancelSubagentResponse {
   requestedRunId: string;
   scope: "branch";
-  affected: Array<Pick<SubagentRunDto, "id" | "status" | "version" | "updatedAt">>;
+  affected: Array<{
+    runId: string;
+    status: SubagentStatus;
+    version: number;
+    updatedAt: string;
+  }>;
   completed: boolean;
 }
 
