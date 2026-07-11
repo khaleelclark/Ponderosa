@@ -37,7 +37,7 @@ export type ProjectionOp =
   | { kind: "update_task"; id: string; status: TaskStatus; updatedAt: string }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
-  | { kind: "set_session"; sessionId: string }
+  | { kind: "set_session"; sessionId: string | null }
   | { kind: "set_state"; branch?: string; commit?: string }
   | { kind: "touch_thread"; updatedAt: string };
 
@@ -167,6 +167,10 @@ export function projectEvent(
 
     case "session":
       ops.push({ kind: "set_session", sessionId: event.sessionId });
+      break;
+
+    case "session_reset":
+      ops.push({ kind: "set_session", sessionId: null });
       break;
 
     case "command": {

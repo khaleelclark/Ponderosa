@@ -16,8 +16,9 @@ class MockAdapter implements Adapter {
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
   abortedSeeds = 0;
-  mode: "normal" | "hang" | "boundary" = "normal";
+  mode: "normal" | "hang" | "boundary" | "resume_compaction_fail" | "material_compaction_fail" = "normal";
   responseText = "done";
+  failuresRemaining = 0;
 
   listModels(): ModelOption[] {
     return [{ id: "mock-model", label: "Mock Model" }];
@@ -30,6 +31,11 @@ class MockAdapter implements Adapter {
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
     this.seeds.push(opts);
     yield { type: "session", sessionId: "sess-1" };
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      yield { type: "error", message: "simulated runtime failure" };
+      return;
+    }
     if (this.mode === "hang") {
       await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
       this.abortedSeeds += 1;
@@ -51,6 +57,25 @@ class MockAdapter implements Adapter {
 
   async *continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
     this.continues.push(opts);
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      yield { type: "error", message: "simulated runtime failure" };
+      return;
+    }
+    if (this.mode === "resume_compaction_fail") {
+      yield { type: "session", sessionId: opts.resumeSessionId };
+      yield {
+        type: "error",
+        message: "codex exited with code 1: Failed to run pre-sampling compact",
+      };
+      return;
+    }
+    if (this.mode === "material_compaction_fail") {
+      yield { type: "session", sessionId: opts.resumeSessionId };
+      yield { type: "command", command: "touch already-ran", cwd: opts.cwd };
+      yield { type: "error", message: "codex exited with code 1: Failed to run pre-sampling compact" };
+      return;
+    }
     yield { type: "text", delta: `continued ${opts.resumeSessionId}` };
     yield { type: "turn_done" };
   }
@@ -345,6 +370,99 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("rolls a failed Codex compaction resume into one fresh seeded session", async () => {
+    const { app, thread } = await createProjectAndThread();
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "first" },
+    });
+    await waitForRun(thread.id);
+
+    adapter.mode = "resume_compaction_fail";
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "second" },
+    });
+    expect(second.json()).toMatchObject({ mode: "continue" });
+    await waitForRun(thread.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.seeds[1]?.history.map((message) => message.text)).toContain("first");
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+      .toHaveLength(1);
+    expect(store.readEvents(thread.id).some((item) =>
+      item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
+    )).toBe(false);
+    expect(store.resumeSessionId(thread.id)).toBe("sess-1");
+    await app.close();
+  });
+
+  it("does not replay a failed resume after material side effects", async () => {
+    const { app, thread } = await createProjectAndThread();
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first" } });
+    await waitForRun(thread.id);
+
+    adapter.mode = "material_compaction_fail";
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second" } });
+    await vi.waitFor(() => {
+      expect(store.readEvents(thread.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
+    });
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "command" && item.event.command === "touch already-ran")).toBe(true);
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
+    await app.close();
+  });
+
+  it("lets an active agent schedule a safe session rollover at turn completion", async () => {
+    const { app, thread } = await createProjectAndThread();
+    adapter.mode = "boundary";
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "work then refresh" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const url = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_ROLLOVER_URL;
+    expect(token).toBeTruthy();
+    expect(url).toBe("http://127.0.0.1:8787/api/agent-session/rollover");
+
+    const scheduled = await app.inject({ method: "POST", url: "/api/agent-session/rollover", headers: { authorization: `Bearer ${token}` } });
+    expect(scheduled.statusCode).toBe(200);
+    expect(scheduled.json()).toMatchObject({ scheduled: true });
+    await waitForRun(thread.id);
+
+    expect(store.resumeSessionId(thread.id)).toBeUndefined();
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "session_reset" && item.event.reason === "explicit_compaction")).toBe(true);
+    await app.close();
+  });
+
+  it("explicitly compacts only an idle persisted runtime session", async () => {
+    const { app, thread } = await createProjectAndThread();
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "active" } });
+    await waitForSeedCount(1);
+
+    const active = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    expect(active.statusCode).toBe(409);
+    expect(active.json()).toMatchObject({ retryable: true });
+    await cancelAndWait(app, thread.id);
+
+    const compacted = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    expect(compacted.statusCode).toBe(200);
+    expect(compacted.json()).toEqual({ compacted: true });
+    expect(store.resumeSessionId(thread.id)).toBeUndefined();
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+      .toEqual([expect.objectContaining({ event: expect.objectContaining({ reason: "explicit_compaction" }) })]);
+
+    const replay = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    expect(replay.json()).toEqual({ compacted: false });
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+      .toHaveLength(1);
+    await app.close();
+  });
+
   it("sends current master-chat context and teammate reply guidance on spawn and mention turns", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -455,6 +573,59 @@ describe("server chunk F", () => {
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "@Yosemite can you review this?" })]),
     );
+    await app.close();
+  });
+
+  it("acknowledges a collaboration delivery only after a successful recipient turn", async () => {
+    adapter.failuresRemaining = 1;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Retry recipient failure" });
+    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", masterChatId: master.id });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Yosemite retry this failed turn" },
+    });
+    const messageId = response.json<{ message: { id: string } }>().message.id;
+    await waitForRun(recipient.id);
+
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.continues).toHaveLength(1);
+    expect(delivery).toMatchObject({ status: "acknowledged", attempts: 2 });
+    await app.close();
+  });
+
+  it("fails a collaboration delivery after its bounded recipient-turn retry", async () => {
+    adapter.failuresRemaining = 2;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Bounded recipient failure" });
+    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", masterChatId: master.id });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Yosemite fail this turn twice" },
+    });
+    const messageId = response.json<{ message: { id: string } }>().message.id;
+    for (let i = 0; i < 80 && adapter.continues.length < 1; i += 1) await sleep(10);
+    for (let i = 0; i < 80; i += 1) {
+      const state = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
+      if (state?.status === "failed") break;
+      await sleep(10);
+    }
+
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
+    expect(delivery).toMatchObject({
+      status: "failed",
+      attempts: 2,
+      failure: "simulated runtime failure",
+    });
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.continues).toHaveLength(1);
     await app.close();
   });
 
