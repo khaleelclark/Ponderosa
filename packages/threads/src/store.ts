@@ -107,6 +107,14 @@ interface MasterChatJson {
   archived: boolean;
 }
 
+export interface MasterChatDeliveryIntent {
+  targetThreadId: string;
+  relayDepth: number;
+  mentionTrail: string[];
+  kind: "tag" | "delegation_completion";
+  delegatedRunId?: string;
+}
+
 interface MasterChatMessageJson {
   id: string;
   masterChatId: string;
@@ -115,6 +123,8 @@ interface MasterChatMessageJson {
   createdAt: string;
   authorThreadId?: string | null;
   channel?: MasterChatChannel;
+  deliveryIntents?: MasterChatDeliveryIntent[];
+  messageReceiptKey?: string;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -340,6 +350,8 @@ export class ThreadStore {
     input: CreateMasterChatMessageRequest,
     authorThreadId?: string,
     channel: MasterChatChannel = "main",
+    deliveryIntents?: MasterChatDeliveryIntent[],
+    messageReceiptKey?: string,
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
@@ -352,6 +364,8 @@ export class ThreadStore {
       createdAt: now,
       authorThreadId: authorThreadId ?? null,
       channel,
+      ...(deliveryIntents?.length ? { deliveryIntents } : {}),
+      ...(messageReceiptKey ? { messageReceiptKey } : {}),
     };
     mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
     appendFileSync(
@@ -361,7 +375,15 @@ export class ThreadStore {
       JSON.stringify(message) + "\n",
       "utf8",
     );
-    this.db.insert(masterChatMessages).values(message).run();
+    this.db.insert(masterChatMessages).values({
+      id: message.id,
+      masterChatId: message.masterChatId,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      authorThreadId: message.authorThreadId,
+      channel: message.channel,
+    }).run();
     this.db
       .update(masterChats)
       .set({ updatedAt: now })
@@ -378,6 +400,29 @@ export class ThreadStore {
       createdAt: message.createdAt,
       authorThreadId: authorThreadId ?? undefined,
     };
+  }
+
+  getMasterChatDeliveryIntents(masterChatId: string): Array<{
+    message: MasterChatMessageDto;
+    intent: MasterChatDeliveryIntent;
+    messageReceiptKey?: string;
+  }> {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return [];
+    return readJsonLines<MasterChatMessageJson>(
+      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+    ).flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
+      message: {
+        id: message.id,
+        masterChatId: message.masterChatId,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        authorThreadId: message.authorThreadId ?? undefined,
+      },
+      intent,
+      messageReceiptKey: message.messageReceiptKey,
+    })));
   }
 
   getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
@@ -678,7 +723,15 @@ export class ThreadStore {
             ["collaboration", collaborationChatMessagesPath(this.dataDir, projectId, masterChatId)],
           ] as const) {
             for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
-              this.db.insert(masterChatMessages).values({ ...message, channel: message.channel ?? channel }).run();
+              this.db.insert(masterChatMessages).values({
+                id: message.id,
+                masterChatId: message.masterChatId,
+                role: message.role,
+                text: message.text,
+                createdAt: message.createdAt,
+                authorThreadId: message.authorThreadId,
+                channel: message.channel ?? channel,
+              }).run();
             }
           }
         }

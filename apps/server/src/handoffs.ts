@@ -28,7 +28,8 @@ export interface CollaborationDelivery {
 
 type Record =
   | { type: "delivery" | "replace"; delivery: CollaborationDelivery }
-  | { type: "message_receipt"; key: string; messageId: string };
+  | { type: "message_receipt"; key: string; messageId: string }
+  | { type: "reconciliation_boundary"; createdAt: string };
 
 /**
  * Durable delivery ledger for collaboration handoffs. Collaboration text remains
@@ -41,6 +42,7 @@ export class CollaborationDeliveryStore {
   private readonly byMessageTarget = new Map<string, string>();
   private readonly messageReceipts = new Map<string, string>();
   private readonly file: string;
+  private boundary: string | undefined;
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, "collaboration-deliveries.jsonl");
@@ -54,9 +56,23 @@ export class CollaborationDeliveryStore {
         this.messageReceipts.set(record.key, record.messageId);
         continue;
       }
+      if (record.type === "reconciliation_boundary") {
+        this.boundary = record.createdAt;
+        continue;
+      }
       this.deliveries.set(record.delivery.id, record.delivery);
       this.byMessageTarget.set(`${record.delivery.messageId}:${record.delivery.targetThreadId}`, record.delivery.id);
     }
+    if (!this.boundary) {
+      this.boundary = [...this.deliveries.values()]
+        .map((delivery) => delivery.createdAt)
+        .sort()[0] ?? new Date().toISOString();
+      appendFileSync(this.file, `${JSON.stringify({ type: "reconciliation_boundary", createdAt: this.boundary } satisfies Record)}\n`, "utf8");
+    }
+  }
+
+  reconciliationBoundary(): string {
+    return this.boundary!;
   }
 
   private persist(delivery: CollaborationDelivery, type: "delivery" | "replace"): CollaborationDelivery {

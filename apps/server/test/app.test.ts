@@ -803,6 +803,7 @@ describe("server chunk F", () => {
       { role: "user", text: "@Parent interrupted first result" },
       undefined,
       "collaboration",
+      [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
     const secondMessage = store.appendMasterChatMessage(
       master.id,
@@ -841,6 +842,90 @@ describe("server chunk F", () => {
     expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
       "Latest message for you:\n@Parent queued second result",
     );
+    await app.close();
+  });
+
+  it("rebuilds a missing inbox record from a canonical tagged message", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    new CollaborationDeliveryStore(dataDir);
+    store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@Parent result persisted before the inbox write" },
+      undefined,
+      "collaboration",
+      [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
+    );
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(parent.id);
+    expect(adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
+      "Latest message for you:\n@Parent result persisted before the inbox write",
+    );
+    await app.close();
+  });
+
+  it("does not infer delivery for canonical messages without an authorized intent", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Blocked recovery" });
+    store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    new CollaborationDeliveryStore(dataDir);
+    store.appendMasterChatMessage(
+      master.id,
+      { role: "assistant", text: "@Parent blocked or historical mention" },
+      undefined,
+      "collaboration",
+    );
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await sleep(20);
+    expect(adapter.seeds).toHaveLength(0);
+    await app.close();
+  });
+
+  it("rebuilds a delegated completion delivery missing after message append", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Completion crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex", masterChatId: master.id });
+    new CollaborationDeliveryStore(dataDir);
+    const delegations = new DelegationStore(dataDir);
+    const spawned = delegations.spawn(master.id, {
+      parentRunId: "parent-run",
+      displayLabel: "Crash completion",
+      delegationPrompt: "finish",
+      runtime: "codex",
+      idempotencyKey: "completion-gap",
+    }, true, [], parent.id);
+    delegations.bindChildThread(spawned.run.id, child.id);
+    delegations.claim(spawned.run.id);
+    delegations.settle(spawned.run.id, "completed");
+    store.appendMasterChatMessage(
+      master.id,
+      { role: "system", text: "✅ Delegated task “Crash completion” completed. @Parent, the result is ready." },
+      child.id,
+      "collaboration",
+      [{
+        targetThreadId: parent.id,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "delegation_completion",
+        delegatedRunId: spawned.run.id,
+      }],
+    );
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(parent.id);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
+      expect.objectContaining({
+        id: spawned.run.id,
+        completionDelivery: expect.objectContaining({ status: "acknowledged" }),
+      }),
+    ]);
     await app.close();
   });
 

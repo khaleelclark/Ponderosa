@@ -127,6 +127,10 @@ export class DelegationStore {
     return [...this.runs.values()].filter((run) => run.masterChatId === masterChatId).map(publicRun);
   }
 
+  all(): SubagentRunDto[] {
+    return [...this.runs.values()].map(publicRun);
+  }
+
   get(runId: string): SubagentRunDto | undefined {
     const run = this.runs.get(runId);
     return run ? publicRun(run) : undefined;

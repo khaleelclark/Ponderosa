@@ -19,7 +19,7 @@ import type {
   SubagentRunDto,
   ThreadDto,
 } from "@ponderosa/core";
-import { artifactContentPath, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { artifactContentPath, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { DelegationError, DelegationStore } from "./delegations.js";
 import { CollaborationDeliveryStore, type CollaborationDelivery } from "./handoffs.js";
 
@@ -500,6 +500,52 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   }
 
+  /**
+   * Repair the crash window between appending a canonical collaboration message
+   * and appending its recipient inbox record. The persisted boundary prevents an
+   * upgrade from replaying messages created before durable delivery existed.
+   */
+  function reconcileCanonicalInbox(): string[] {
+    const boundary = collaborationDeliveries.reconciliationBoundary();
+    const recipients = new Set<string>();
+    const completionMessages = new Set<string>();
+    for (const project of store.listProjects()) {
+      for (const master of store.listMasterChats(project.id)) {
+        for (const { message, intent, messageReceiptKey } of store.getMasterChatDeliveryIntents(master.id)) {
+          if (message.createdAt < boundary) continue;
+          if (messageReceiptKey) collaborationDeliveries.rememberMessageReceipt(messageReceiptKey, message.id);
+          const queued = collaborationDeliveries.queue({
+            masterChatId: master.id,
+            messageId: message.id,
+            targetThreadId: intent.targetThreadId,
+            authorThreadId: message.authorThreadId,
+            text: message.text,
+            relayDepth: intent.relayDepth,
+            mentionTrail: intent.mentionTrail,
+            kind: intent.kind,
+            delegatedRunId: intent.delegatedRunId,
+          });
+          recipients.add(intent.targetThreadId);
+          if (intent.delegatedRunId) {
+            completionMessages.add(intent.delegatedRunId);
+            syncDelegatedCompletion(queued.delivery.id);
+          }
+        }
+      }
+    }
+    for (const run of delegations.all()) {
+      if (
+        (run.status === "completed" || run.status === "failed") &&
+        !run.completionDelivery &&
+        !completionMessages.has(run.id) &&
+        run.finishedAt && run.finishedAt >= boundary
+      ) {
+        notifyParentOfDelegatedCompletion(run);
+      }
+    }
+    return [...recipients];
+  }
+
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
@@ -513,7 +559,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.addHook("onReady", async () => {
     // Resume handoffs left queued or unacknowledged by a previous process after
     // Fastify has finished registering the internal dispatch route.
-    const recipients = collaborationDeliveries.recoverUnacknowledged();
+    const recipients = new Set(collaborationDeliveries.recoverUnacknowledged());
+    for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
     for (const threadId of recipients) {
       setImmediate(() => void dispatchNextTurn(threadId));
     }
@@ -556,45 +603,73 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
-  function dispatchCollaborationMentions(
+  function resolveCollaborationIntents(
     masterChatId: string,
-    messageId: string,
     authorThreadId: string,
     text: string,
     relayDepth: number,
     mentionTrail: string[],
-  ): void {
+  ): { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
     const detail = store.getCollaborationChatDetail(masterChatId);
     const targets = detail ? mentionedAgentThreads(text, detail.threads, authorThreadId) : [];
+    const intents: MasterChatDeliveryIntent[] = [];
+    const blocked: Array<{ title: string; reason: string }> = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorThreadId, target.id, text);
-      const blockedReason = mentionTrail.includes(fingerprint)
+      const blockedReason = authorThreadId && mentionTrail.includes(fingerprint)
         ? "the same handoff already occurred in this collaboration chain"
-        : relayDepth >= MAX_AGENT_MENTION_RELAYS
+        : authorThreadId && relayDepth >= MAX_AGENT_MENTION_RELAYS
           ? "the collaboration reached its 12-handoff safety limit"
           : undefined;
       if (blockedReason) {
-        store.appendMasterChatMessage(
-          masterChatId,
-          {
-            role: "system",
-            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because ${blockedReason}. Please ask the manager to continue the conversation.`,
-          },
-          undefined,
-          "collaboration",
-        );
+        blocked.push({ title: target.title, reason: blockedReason });
       } else {
-        queueCollaborationDelivery({
-          masterChatId,
-          messageId,
+        intents.push({
           targetThreadId: target.id,
-          authorThreadId,
-          text,
-          relayDepth: relayDepth + 1,
-          mentionTrail: [...mentionTrail, fingerprint],
+          relayDepth: authorThreadId ? relayDepth + 1 : 0,
+          mentionTrail: authorThreadId ? [...mentionTrail, fingerprint] : [],
           kind: "tag",
         });
       }
+    }
+    return { intents, blocked };
+  }
+
+  function queueRecordedCollaborationMessage(
+    masterChatId: string,
+    message: MasterChatMessageDto,
+    authorThreadId: string | undefined,
+    intents: MasterChatDeliveryIntent[],
+  ): void {
+    for (const intent of intents) {
+      queueCollaborationDelivery({
+        masterChatId,
+        messageId: message.id,
+        targetThreadId: intent.targetThreadId,
+        authorThreadId,
+        text: message.text,
+        relayDepth: intent.relayDepth,
+        mentionTrail: intent.mentionTrail,
+        kind: intent.kind,
+        delegatedRunId: intent.delegatedRunId,
+      });
+    }
+  }
+
+  function appendBlockedMentionWarnings(
+    masterChatId: string,
+    blocked: Array<{ title: string; reason: string }>,
+  ): void {
+    for (const item of blocked) {
+      store.appendMasterChatMessage(
+        masterChatId,
+        {
+          role: "system",
+          text: `⚠️ @${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
+        },
+        undefined,
+        "collaboration",
+      );
     }
   }
 
@@ -638,6 +713,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       },
       run.childThreadId,
       "collaboration",
+      [{
+        targetThreadId: parent.id,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "delegation_completion",
+        delegatedRunId: run.id,
+      }],
     );
     if (!message) return;
     const delivery = queueCollaborationDelivery({
@@ -690,23 +772,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability.masterChatId) {
       return reply.code(409).send({ error: "agent is not linked to a master chat" });
     }
+    const routing = channel === "collaboration"
+      ? resolveCollaborationIntents(
+          capability.masterChatId,
+          capability.threadId,
+          text,
+          capability.mentionDepth,
+          capability.mentionTrail,
+        )
+      : { intents: [], blocked: [] };
     const message = store.appendMasterChatMessage(
       capability.masterChatId,
       { role: "assistant", text },
       capability.threadId,
       channel,
+      routing.intents,
+      receiptKey,
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (channel === "collaboration") {
-      dispatchCollaborationMentions(
-        capability.masterChatId,
-        message.id,
-        capability.threadId,
-        text,
-        capability.mentionDepth,
-        capability.mentionTrail,
-      );
+      queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
+      appendBlockedMentionWarnings(capability.masterChatId, routing.blocked);
     }
     return { channel, messageId: message.id, replayed: false };
   });
@@ -963,25 +1050,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const detail = store.getCollaborationChatDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
+    const routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
     const message = store.appendMasterChatMessage(
       request.params.id,
       { role: "user", text },
       undefined,
       "collaboration",
+      routing.intents,
     );
     const notifiedAgentIds: string[] = [];
-    for (const target of mentionedAgentThreads(text, detail.threads, "")) {
-      const delivery = queueCollaborationDelivery({
-        masterChatId: request.params.id,
-        messageId: message!.id,
-        targetThreadId: target.id,
-        text,
-        relayDepth: 0,
-        mentionTrail: [],
-        kind: "tag",
-      });
-      if (delivery) notifiedAgentIds.push(target.id);
-    }
+    queueRecordedCollaborationMessage(request.params.id, message!, undefined, routing.intents);
+    notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetThreadId));
     return { message, notifiedAgentIds };
   });
 
@@ -1361,6 +1440,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
+              const routing = !runError && collaborationMasterChatId
+                ? resolveCollaborationIntents(
+                    collaborationMasterChatId,
+                    thread.id,
+                    statusText,
+                    mentionDepth ?? 0,
+                    mentionTrail,
+                  )
+                : { intents: [], blocked: [] };
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
               const report = store.appendMasterChatMessage(
@@ -1368,19 +1456,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 { role: "assistant", text: statusText },
                 thread.id,
                 sourceChannel,
+                routing.intents,
               );
 
               // A tag in a main-chat report is ordinary text. A tag in the
               // collaboration chat is an opt-in handoff and can start a turn.
               if (!runError && collaborationMasterChatId && report) {
-                dispatchCollaborationMentions(
-                  collaborationMasterChatId,
-                  report.id,
-                  thread.id,
-                  statusText,
-                  mentionDepth ?? 0,
-                  mentionTrail,
-                );
+                queueRecordedCollaborationMessage(collaborationMasterChatId, report, thread.id, routing.intents);
+                appendBlockedMentionWarnings(collaborationMasterChatId, routing.blocked);
               }
             } catch {
               // Master chat may have been deleted mid-run; ignore.

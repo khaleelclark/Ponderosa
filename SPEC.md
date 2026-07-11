@@ -204,6 +204,10 @@ On server startup, persisted `queued` deliveries resume automatically. A
 returned to `queued`, and retried in the recipient's original FIFO order. This is
 an at-least-once recovery boundary: runtime prompts must tolerate a replay after a
 process failure, while transport retries remain idempotent by message receipt.
+Canonical collaboration messages store their resolved recipient intents in the
+same append. Startup recreates any missing inbox record from those intents,
+closing the crash window between message persistence and inbox persistence
+without replaying blocked mentions or pre-inbox chat history.
 Delegation depth is lineage metadata only; collaboration relay depth and its
 loop-detection fingerprints start fresh for each delegated runtime and advance
 only when that runtime emits an actual `@mention` handoff.
