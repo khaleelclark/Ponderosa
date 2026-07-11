@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1822,6 +1823,34 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: attachment.url })).headers["x-content-type-options"]).toBe("nosniff");
     expect((await app.inject({ method: "DELETE", url: attachment.url })).statusCode).toBe(409);
     expect((await app.inject({ method: "POST", url: `/api/threads/not-${thread.id}/messages`, payload: { text: "x", attachmentIds: [attachment.id] } })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("serves general assets only as bounded private downloads with non-enumerating ownership failures", async () => {
+    const { app, project, thread } = await createProjectAndThread();
+    const second = store.createThread(project.id, { title: "Other", engine: "codex" });
+    const uploaded = await app.inject({
+      method: "POST", url: `/api/threads/${thread.id}/attachments`,
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "application/pdf", "x-ponderosa-filename": "résumé.pdf" },
+      payload: Buffer.from("%PDF-1.7\n<script>download only</script>"),
+    });
+    expect(uploaded.statusCode).toBe(201);
+    const asset = uploaded.json<{ id: string; url: string; previewUrl?: string; downloadUrl: string }>();
+    expect(asset.previewUrl).toBeUndefined();
+    expect(asset.url).toBe(asset.downloadUrl);
+    const download = await app.inject({ method: "GET", url: asset.downloadUrl });
+    expect(download.statusCode).toBe(200);
+    expect(download.headers).toMatchObject({
+      "content-type": "application/octet-stream",
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+      "accept-ranges": "none",
+    });
+    expect(download.headers["content-disposition"]).toContain("attachment;");
+    expect((await app.inject({ method: "GET", url: asset.downloadUrl, headers: { range: "bytes=0-2" } })).statusCode).toBe(416);
+    const foreignUrl = `/api/threads/${second.id}/assets/${asset.id}/download`;
+    expect((await app.inject({ method: "GET", url: foreignUrl })).json()).toEqual({ error: "asset not found" });
+    expect((await app.inject({ method: "GET", url: `/api/threads/${second.id}/assets/${randomUUID()}/download` })).json()).toEqual({ error: "asset not found" });
     await app.close();
   });
 
