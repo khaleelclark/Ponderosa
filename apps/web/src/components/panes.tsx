@@ -68,7 +68,6 @@ export function canSubmitComposerText(input: {
     input.text.trim().length > 0 &&
     !input.disabled &&
     !input.running &&
-    input.mentionedBusyHandles.length === 0 &&
     (input.allowUnmentionedSend || input.mentionedHandles.length > 0)
   );
 }
@@ -744,7 +743,7 @@ export function Composer({
           {mentionedHandles.length > 0 ? (
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
               {mentionedBusyHandles.length > 0
-                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — wait for ${mentionedBusyHandles.length > 1 ? "them" : "it"} to finish.`
+                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — your message will be queued.`
                 : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
             </Typography>
           ) : null}

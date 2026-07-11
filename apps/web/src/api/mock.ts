@@ -461,7 +461,7 @@ export const mockApi: PonderosaApi = {
     };
     messages[threadId] = [...(messages[threadId] ?? []), nextMessage];
     replayRun(threadId, request.text);
-    return delay({ runId: `mock-run-${Date.now()}`, mode: "continue" });
+    return delay({ queued: false, runId: `mock-run-${Date.now()}`, mode: "continue" });
   },
   async cancelRun(threadId) {
     emit(threadId, { type: "error", message: "Mock run cancelled." });

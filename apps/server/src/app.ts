@@ -42,11 +42,15 @@ interface ActiveRun {
   messageCapability: string;
 }
 
-interface PendingMentionTurn {
+/** A deferred user or agent turn.  Queues are per-thread and FIFO. */
+interface PendingTurn {
   text: string;
+  model?: string;
+  effort?: string;
   agentMentionDepth: number;
   agentMentionTrail: string[];
-  collaborationMasterChatId: string;
+  collaborationMasterChatId?: string;
+  sourceChannel?: "main";
   sourceAuthorThreadId?: string;
 }
 
@@ -67,7 +71,7 @@ interface InboundMessageContext {
 
 type Subscriber = (stored: StoredLogEvent) => void;
 
-const MAX_PENDING_MENTION_TURNS = 50;
+const MAX_PENDING_TURNS = 50;
 const MAX_AGENT_MENTION_RELAYS = 12;
 
 function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
@@ -145,6 +149,7 @@ function agentMessagingPrompt(): string[] {
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message"}\'',
     'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
     "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
+    "A valid collaboration @mention to a busy teammate is queued automatically and starts as soon as their current turn finishes.",
   ];
 }
 
@@ -349,10 +354,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const delegations = new DelegationStore(opts.dataDir);
   const subagentControllers = new Map<string, AbortController>();
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
-  const pendingMentionTurns = new Map<string, PendingMentionTurn[]>();
+  const pendingTurns = new Map<string, PendingTurn[]>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct thread request.
   const collaborationDispatchKey = randomUUID();
+  // Prevent an internal dequeue from being appended to the tail if another
+  // request claims the thread in the tiny dispatch race window.
+  const turnDispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
 
   const app = Fastify({ logger: opts.logger ?? true });
@@ -366,42 +374,48 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     throw error;
   }
 
-  function queueMentionTurn(
+  /**
+   * Queue a turn behind any active turn on the same agent.  This is deliberately
+   * shared by manager replies and collaboration handoffs, so agents and people
+   * get identical FIFO semantics.
+   */
+  function queueTurn(
     threadId: string,
-    text: string,
-    agentMentionDepth: number,
-    agentMentionTrail: string[],
-    collaborationMasterChatId: string,
-    sourceAuthorThreadId?: string,
-  ): boolean {
-    const pending = pendingMentionTurns.get(threadId) ?? [];
-    if (pending.length >= MAX_PENDING_MENTION_TURNS) return false;
-    pending.push({ text, agentMentionDepth, agentMentionTrail, collaborationMasterChatId, sourceAuthorThreadId });
-    pendingMentionTurns.set(threadId, pending);
-    return true;
+    turn: PendingTurn,
+  ): number | undefined {
+    const pending = pendingTurns.get(threadId) ?? [];
+    if (pending.length >= MAX_PENDING_TURNS) return undefined;
+    pending.push(turn);
+    pendingTurns.set(threadId, pending);
+    return pending.length;
   }
 
-  async function dispatchNextMentionTurn(threadId: string): Promise<void> {
+  async function dispatchNextTurn(threadId: string): Promise<void> {
     if (activeRuns.has(threadId)) return;
-    const pending = pendingMentionTurns.get(threadId);
+    const pending = pendingTurns.get(threadId);
     const next = pending?.[0];
     if (!pending || !next) return;
     pending.shift();
-    if (pending.length === 0) pendingMentionTurns.delete(threadId);
+    if (pending.length === 0) pendingTurns.delete(threadId);
 
     const response = await app.inject({
       method: "POST",
       url: `/api/threads/${threadId}/messages`,
       headers: {
         ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
-        "x-ponderosa-collaboration-dispatch": collaborationDispatchKey,
+        ...(next.collaborationMasterChatId
+          ? { "x-ponderosa-collaboration-dispatch": collaborationDispatchKey }
+          : {}),
+        "x-ponderosa-turn-dispatch": turnDispatchKey,
       },
       payload: next,
     });
+    // Another request may have claimed the agent between our check and the
+    // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
-      const remaining = pendingMentionTurns.get(threadId) ?? [];
+      const remaining = pendingTurns.get(threadId) ?? [];
       remaining.unshift(next);
-      pendingMentionTurns.set(threadId, remaining);
+      pendingTurns.set(threadId, remaining);
     }
   }
 
@@ -465,16 +479,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           "collaboration",
         );
       } else if (
-        queueMentionTurn(
-          target.id,
+        queueTurn(target.id, {
           text,
-          relayDepth + 1,
-          [...mentionTrail, fingerprint],
-          masterChatId,
-          authorThreadId,
-        )
+          agentMentionDepth: relayDepth + 1,
+          agentMentionTrail: [...mentionTrail, fingerprint],
+          collaborationMasterChatId: masterChatId,
+          sourceAuthorThreadId: authorThreadId,
+        })
       ) {
-        void dispatchNextMentionTurn(target.id);
+        void dispatchNextTurn(target.id);
       } else {
         store.appendMasterChatMessage(
           masterChatId,
@@ -635,9 +648,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     const notifiedAgentIds: string[] = [];
     for (const target of mentionedAgentThreads(text, detail.threads, "")) {
-      if (queueMentionTurn(target.id, text, 0, [], request.params.id)) {
+      if (queueTurn(target.id, {
+        text,
+        agentMentionDepth: 0,
+        agentMentionTrail: [],
+        collaborationMasterChatId: request.params.id,
+      }) !== undefined) {
         notifiedAgentIds.push(target.id);
-        void dispatchNextMentionTurn(target.id);
+        void dispatchNextTurn(target.id);
       } else {
         store.appendMasterChatMessage(
           request.params.id,
@@ -924,7 +942,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     async (request, reply) => {
       const thread = store.getThread(request.params.id);
       if (!thread) return reply.code(404).send({ error: "thread not found" });
-      if (activeRuns.has(thread.id)) return reply.code(409).send({ error: "thread already has an active run" });
       const project = store.getProject(thread.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       const engine = engines.get(thread.activeEngine);
@@ -958,6 +975,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({
           error: "agentMentionTrail must contain one relay fingerprint for each agentMentionDepth step",
         });
+      }
+      const pendingTurn: PendingTurn = {
+        text,
+        model: request.body.model,
+        effort: request.body.effort,
+        agentMentionDepth: mentionDepth ?? 0,
+        agentMentionTrail: mentionTrail,
+        collaborationMasterChatId,
+        sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
+        sourceAuthorThreadId: request.body.sourceAuthorThreadId,
+      };
+      if (activeRuns.has(thread.id)) {
+        // A dispatcher that lost the claim race needs to restore the dequeued
+        // item at the head itself; ordinary manager and agent messages join the
+        // FIFO queue and receive an explicit acknowledgement.
+        if (request.headers["x-ponderosa-turn-dispatch"] === turnDispatchKey) {
+          return reply.code(409).send({ error: "thread already has an active run" });
+        }
+        const position = queueTurn(thread.id, pendingTurn);
+        if (position === undefined) {
+          return reply.code(429).send({ error: "thread follow-up queue is full; retry after it advances" });
+        }
+        return reply.code(202).send({ queued: true, position });
       }
 
       const history: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
@@ -1094,11 +1134,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           // Mentions received while this agent was working are never dropped.
           // Start the oldest queued follow-up as soon as its current turn closes.
-          void dispatchNextMentionTurn(thread.id);
+          void dispatchNextTurn(thread.id);
         }
       })();
 
-      return { runId, mode };
+      return { queued: false, runId, mode };
     },
   );
 

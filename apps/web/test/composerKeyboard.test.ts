@@ -33,6 +33,17 @@ describe("composer submission availability", () => {
     expect(canSubmitComposerText({ ...base, text: "@Acadia hello", mentionedHandles: ["Acadia"] })).toBe(true);
   });
 
+  it("allows a reply to a busy agent so the server can queue it", () => {
+    expect(
+      canSubmitComposerText({
+        ...base,
+        text: "@Acadia follow up",
+        mentionedHandles: ["Acadia"],
+        mentionedBusyHandles: ["Acadia"],
+      }),
+    ).toBe(true);
+  });
+
   it("blocks an unmentioned spawn when the selected engine is unavailable", () => {
     expect(canSubmitComposerText({ ...base, mentionedHandles: [] })).toBe(false);
   });

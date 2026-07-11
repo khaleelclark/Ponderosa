@@ -573,6 +573,46 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("queues a handoff sent through an active agent's messaging capability", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
+    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", masterChatId: master.id });
+    const author = store.createThread(project.id, { title: "Badlands", engine: "codex", masterChatId: master.id });
+
+    adapter.mode = "hang";
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${reviewer.id}/messages`,
+      payload: { text: "Review the current change." },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/messages`,
+      payload: { text: "Prepare the handoff." },
+    });
+    await waitForSeedCount(2);
+    const token = adapter.seeds.find((seed) => seed.threadId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(token).toBeTruthy();
+
+    const handoff = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { channel: "collaboration", text: "@Pinnacles Please review this once you finish." },
+    });
+    expect(handoff.statusCode).toBe(200);
+
+    await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
+    await waitForRun(reviewer.id);
+    expect(adapter.continues.at(-1)?.prompt).toContain(
+      "Latest message for you:\n@Pinnacles Please review this once you finish.",
+    );
+
+    await cancelAndWait(app, author.id);
+    await app.close();
+  });
+
   it("rejects invalid agent mention relay depths", async () => {
     const { app, thread } = await createProjectAndThread();
 
@@ -705,7 +745,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rejects concurrent runs and cancel aborts the active run", async () => {
+  it("queues a manager follow-up behind an active run and starts it when the run closes", async () => {
     adapter.mode = "hang";
     const { app, thread } = await createProjectAndThread();
     const first = await app.inject({
@@ -720,14 +760,16 @@ describe("server chunk F", () => {
       url: `/api/threads/${thread.id}/messages`,
       payload: { text: "again" },
     });
-    expect(concurrent.statusCode).toBe(409);
+    expect(concurrent.statusCode).toBe(202);
+    expect(concurrent.json()).toEqual({ queued: true, position: 1 });
 
     const cancel = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` });
     expect(cancel.json()).toEqual({ cancelled: true });
-    for (let i = 0; i < 80 && store.readEvents(thread.id).at(-1)?.event.type !== "error"; i += 1) {
-      await sleep(10);
-    }
-    expect(store.readEvents(thread.id).at(-1)?.event).toEqual({ type: "error", message: "run cancelled" });
+    await waitForRun(thread.id);
+    expect(adapter.continues).toHaveLength(1);
+    expect(store.getMessages(thread.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "user", text: "again" })]),
+    );
     await app.close();
   });
 
