@@ -212,6 +212,38 @@ function messageContextPrompt(context: InboundMessageContext): string[] {
   ];
 }
 
+const MAX_SEED_HISTORY_CHARS = 24_000;
+const MAX_SEED_HISTORY_MESSAGES = 40;
+
+/**
+ * Runtime sessions retain their own context. This budget applies only when a
+ * session boundary forces Ponderosa to seed again; canonical history remains on
+ * disk and can still be queried explicitly.
+ */
+export function boundedSeedHistory<T extends { text: string }>(
+  messages: T[],
+  maxChars = MAX_SEED_HISTORY_CHARS,
+  maxMessages = MAX_SEED_HISTORY_MESSAGES,
+): T[] {
+  const selected: T[] = [];
+  let remaining = maxChars;
+  for (let index = messages.length - 1; index >= 0 && selected.length < maxMessages && remaining > 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.text.length <= remaining) {
+      selected.push(message);
+      remaining -= message.text.length;
+      continue;
+    }
+    const marker = "[Earlier content omitted at session boundary]\n";
+    const clipped = remaining > marker.length
+      ? `${marker}${message.text.slice(-(remaining - marker.length))}`
+      : message.text.slice(-remaining);
+    selected.push({ ...message, text: clipped });
+    remaining = 0;
+  }
+  return selected.reverse();
+}
+
 function agentMessagingPrompt(): string[] {
   return [
     "You can send an additional message to any Ponderosa channel with your shell tool:",
@@ -338,6 +370,21 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
     ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
     "",
+    "Latest message for you:",
+    currentRequest,
+  ].join("\n");
+}
+
+/** Minimal turn prompt for a session that already received the full protocol. */
+function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
+  const channelRule = context.channel === "collaboration"
+    ? "Reply in Collaboration; use a full @handle only when another agent must act."
+    : context.channel === "main"
+      ? "Reply with only the new manager-facing update or result."
+      : "Reply in your individual agent chat.";
+  return [
+    ...messageContextPrompt(context),
+    channelRule,
     "Latest message for you:",
     currentRequest,
   ].join("\n");
@@ -1668,7 +1715,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(202).send({ queued: true, position });
       }
 
-      const history: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
+      const fullHistory: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
@@ -1686,6 +1733,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const delegationCapability = randomUUID();
       const resumeSessionId = store.resumeSessionId(thread.id);
       const mode = resumeSessionId ? "continue" : "seed";
+      const history = boundedSeedHistory(fullHistory);
 
       // Main-chat turns receive the manager-facing room. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
@@ -1707,11 +1755,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? contextThreads.find((candidate) => candidate.id === request.body.sourceAuthorThreadId)?.title ?? "Agent"
         : "Manager";
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextThreads, thread.id);
-      const basePrompt = collaboration
-        ? collaborationChatPrompt(collaboration.messages, collaboration.threads, text, context)
-        : masterChat && sourceChannel === "main"
-          ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
-          : individualChatPrompt(text, context);
+      const basePrompt = resumeSessionId
+        ? continuationPrompt(text, context)
+        : collaboration
+          ? collaborationChatPrompt(boundedSeedHistory(collaboration.messages), collaboration.threads, text, context)
+          : masterChat && sourceChannel === "main"
+            ? masterChatPrompt(boundedSeedHistory(masterChat.messages), masterChat.threads, text, context)
+            : individualChatPrompt(text, context);
       const guidedPrompt = thread.presetSnapshot?.guidance
         ? `Agent preset snapshot (${thread.presetSnapshot.name}):\n${thread.presetSnapshot.guidance}\n\n${basePrompt}`
         : basePrompt;
