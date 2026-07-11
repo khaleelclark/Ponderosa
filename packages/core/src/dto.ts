@@ -342,6 +342,20 @@ export interface SubagentEventEnvelope {
       };
 }
 
+export interface SubagentTranscriptItemDto {
+  chunkSeq: number;
+  cursor: string;
+  ts: string;
+  text: string;
+}
+
+export interface SubagentTranscriptPageDto {
+  runId: string;
+  items: SubagentTranscriptItemDto[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
 // ─── Engines ─────────────────────────────────────────────────────────────────
 
 /** GET /api/engines entry — an engine, its options, and live auth status. */

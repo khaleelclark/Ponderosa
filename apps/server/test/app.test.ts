@@ -966,6 +966,13 @@ describe("server chunk F", () => {
     expect(replay.statusCode).toBe(409);
     expect(replay.json()).toMatchObject({ error: { code: "registration_consumed" } });
 
+    await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "first chunk" } });
+    await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "second chunk" } });
+    const firstPage = await app.inject({ method: "GET", url: `/api/subagents/${created.run.id}/transcript?limit=1` });
+    expect(firstPage.json()).toMatchObject({ runId: created.run.id, items: [{ chunkSeq: 1, text: "first chunk" }], nextCursor: "1", hasMore: true });
+    const secondPage = await app.inject({ method: "GET", url: `/api/subagents/${created.run.id}/transcript?after=1&limit=1` });
+    expect(secondPage.json()).toMatchObject({ items: [{ chunkSeq: 2, text: "second chunk" }], hasMore: false });
+
     const cancel = await app.inject({
       method: "POST",
       url: `/api/subagents/${created.run.id}/cancel`,

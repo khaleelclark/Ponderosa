@@ -347,6 +347,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
   const delegations = new DelegationStore(opts.dataDir);
+  const subagentControllers = new Map<string, AbortController>();
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   const pendingMentionTurns = new Map<string, PendingMentionTurn[]>();
   // Capability used only by this server's queue dispatcher. It prevents a client
@@ -416,6 +417,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     for (const run of activeRuns.values()) run.controller.abort();
+    for (const controller of subagentControllers.values()) controller.abort();
     store.close();
   });
 
@@ -656,6 +658,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return delegations.list(request.params.id);
   });
 
+  app.get<{ Params: { id: string }; Querystring: { lastEventId?: string } }>(
+    "/api/master-chats/:id/subagents/stream",
+    async (request, reply) => {
+      if (!store.getMasterChat(request.params.id)) return reply.code(404).send({ error: "master chat not found" });
+      const raw = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
+      let lastSeq = Number(Array.isArray(raw) ? raw[0] : raw) || 0;
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive" });
+      for (const envelope of delegations.eventsSince(request.params.id, lastSeq)) {
+        writeSse(reply.raw, "message", envelope.seq, envelope);
+        lastSeq = envelope.seq;
+      }
+      const unsubscribe = delegations.subscribe((envelope) => {
+        if (envelope.masterChatId === request.params.id && envelope.seq > lastSeq) {
+          writeSse(reply.raw, "message", envelope.seq, envelope);
+          lastSeq = envelope.seq;
+        }
+      });
+      const heartbeat = setInterval(() => writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }), 15_000);
+      request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: SpawnSubagentRequest }>(
     "/api/master-chats/:id/subagents",
     async (request, reply) => {
@@ -696,6 +721,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       try {
         const run = delegations.claim(request.params.runId, input);
+        // Claim and controller publication are synchronous in the single-daemon
+        // launch transition, so cancellation cannot observe running without a target.
+        subagentControllers.set(run.id, new AbortController());
         return { run, claimedAt: run.startedAt! };
       } catch (error) {
         return delegationFailure(error, reply);
@@ -710,7 +738,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: { code: "forbidden", message: "branch scope and idempotencyKey are required", retryable: false } });
       }
       try {
-        return delegations.cancel(request.params.runId, request.body.idempotencyKey);
+        const result = delegations.cancel(request.params.runId, request.body.idempotencyKey);
+        for (const affected of result.affected) {
+          subagentControllers.get(affected.runId)?.abort();
+          subagentControllers.delete(affected.runId);
+        }
+        return result;
       } catch (error) {
         return delegationFailure(error, reply);
       }
@@ -728,6 +761,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? reply.code(404).send({ error: { code: "subagent_not_found", message: "subagent was not found", retryable: false } })
       : { prompt };
   });
+
+  app.get<{ Params: { runId: string }; Querystring: { after?: string; limit?: string } }>(
+    "/api/subagents/:runId/transcript",
+    async (request, reply) => {
+      try {
+        const limit = Math.min(200, Math.max(1, Number(request.query.limit) || 100));
+        return delegations.transcript(request.params.runId, request.query.after, limit);
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+    },
+  );
+
+  app.post<{ Params: { runId: string }; Body: { text: string } }>(
+    "/api/internal/subagents/:runId/output",
+    async (request, reply) => {
+      if (!request.body?.text) return reply.code(400).send({ error: { code: "forbidden", message: "text is required", retryable: false } });
+      try { return delegations.appendOutput(request.params.runId, request.body.text); }
+      catch (error) { return delegationFailure(error, reply); }
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/threads", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });

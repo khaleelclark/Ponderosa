@@ -6,7 +6,9 @@ import type {
   ClaimSubagentRegistrationRequest,
   SpawnSubagentRequest,
   SpawnSubagentResponse,
+  SubagentEventEnvelope,
   SubagentRunDto,
+  SubagentTranscriptPageDto,
 } from "@ponderosa/core";
 
 interface RegistrationRecord {
@@ -35,7 +37,8 @@ interface RunRecord extends SubagentRunDto {
 type PersistedRecord =
   | { type: "run"; run: RunRecord }
   | { type: "replace"; run: RunRecord }
-  | { type: "cancel"; key: string; response: CancelSubagentResponse };
+  | { type: "cancel"; key: string; response: CancelSubagentResponse }
+  | { type: "event"; envelope: SubagentEventEnvelope };
 
 export class DelegationError extends Error {
   constructor(
@@ -55,6 +58,8 @@ export class DelegationStore {
   private readonly runs = new Map<string, RunRecord>();
   private readonly idempotency = new Map<string, string>();
   private readonly cancellations = new Map<string, CancelSubagentResponse>();
+  private readonly events: SubagentEventEnvelope[] = [];
+  private readonly listeners = new Set<(event: SubagentEventEnvelope) => void>();
   private readonly file: string;
 
   constructor(dataDir: string) {
@@ -65,6 +70,10 @@ export class DelegationStore {
       const record = JSON.parse(line) as PersistedRecord;
       if (record.type === "cancel") {
         this.cancellations.set(record.key, record.response);
+        continue;
+      }
+      if (record.type === "event") {
+        this.events.push(record.envelope);
         continue;
       }
       const { run } = record;
@@ -82,6 +91,45 @@ export class DelegationStore {
   private persistCancellation(key: string, response: CancelSubagentResponse): void {
     appendFileSync(this.file, `${JSON.stringify({ type: "cancel", key, response })}\n`, "utf8");
     this.cancellations.set(key, response);
+  }
+
+  private emit(masterChatId: string, event: SubagentEventEnvelope["event"]): void {
+    const envelope: SubagentEventEnvelope = {
+      masterChatId,
+      seq: (this.events.at(-1)?.seq ?? 0) + 1,
+      ts: new Date().toISOString(),
+      event,
+    };
+    appendFileSync(this.file, `${JSON.stringify({ type: "event", envelope })}\n`, "utf8");
+    this.events.push(envelope);
+    for (const listener of this.listeners) listener(envelope);
+  }
+
+  eventsSince(masterChatId: string, seq: number): SubagentEventEnvelope[] {
+    return this.events.filter((event) => event.masterChatId === masterChatId && event.seq > seq);
+  }
+
+  subscribe(listener: (event: SubagentEventEnvelope) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  appendOutput(runId: string, text: string): SubagentEventEnvelope {
+    const run = this.runs.get(runId);
+    if (!run) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    const chunkSeq = this.events.filter((item) => item.event.type === "subagent_output" && item.event.runId === runId).length + 1;
+    this.emit(run.masterChatId, { type: "subagent_output", runId, runVersion: run.version, chunkSeq, cursor: String(chunkSeq), delta: text });
+    return this.events.at(-1)!;
+  }
+
+  transcript(runId: string, after: string | undefined, limit: number): SubagentTranscriptPageDto {
+    if (!this.runs.has(runId)) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    const start = after ? Number(after) : 0;
+    const all = this.events.flatMap((item) => item.event.type === "subagent_output" && item.event.runId === runId
+      ? [{ chunkSeq: item.event.chunkSeq, cursor: item.event.cursor, ts: item.ts, text: item.event.delta }]
+      : []).filter((item) => item.chunkSeq > start);
+    const items = all.slice(0, limit);
+    return { runId, items, nextCursor: items.at(-1)?.cursor, hasMore: all.length > items.length };
   }
 
   list(masterChatId: string): SubagentRunDto[] {
@@ -179,6 +227,7 @@ export class DelegationStore {
     run.contextSnapshot.id = run.contextSnapshotId;
     this.idempotency.set(key, runId);
     this.persist(run, "run");
+    this.emit(masterChatId, { type: "subagent_spawned", run: publicRun(run) });
     return {
       run: publicRun(run),
       registration: { id: run.registration.id, credential, expiresAt: run.registration.expiresAt, runtime: run.runtime },
@@ -203,6 +252,7 @@ export class DelegationStore {
     const now = new Date().toISOString();
     const updated: RunRecord = { ...run, status: "running", startedAt: now, updatedAt: now, version: run.version + 1, registration: { ...reg, consumedAt: now } };
     this.persist(updated, "replace");
+    this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
     return publicRun(updated);
   }
 
@@ -217,6 +267,7 @@ export class DelegationStore {
       const terminal = run.status === "completed" || run.status === "failed" || run.status === "cancelled";
       const updated: RunRecord = terminal ? run : { ...run, status: "cancelled", canCancel: false, finishedAt: now, updatedAt: now, version: run.version + 1, registration: { ...run.registration, invalidatedAt: now } };
       if (!terminal) this.persist(updated, "replace");
+      if (!terminal) this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
       return { runId: updated.id, status: updated.status, version: updated.version, updatedAt: updated.updatedAt };
     });
     const response: CancelSubagentResponse = { requestedRunId: runId, scope: "branch", affected: results, completed: true };
