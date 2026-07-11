@@ -93,8 +93,10 @@ describe("ClaudeAdapter.seed (fake claude)", () => {
 describe("ClaudeAdapter.continue", () => {
   it("passes --resume with the session id", () => {
     let captured: readonly string[] = [];
-    const spawnFn = ((_bin: string, args: readonly string[], opts: object) => {
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
+    const spawnFn = ((_bin: string, args: readonly string[], opts: { env?: NodeJS.ProcessEnv }) => {
       captured = args;
+      capturedEnv = opts.env;
       return spawn(process.execPath, [fakeClaude, "seed"], opts);
     }) as unknown as typeof spawn;
     const adapter = new ClaudeAdapter({ spawnFn, killGraceMs: 50 });
@@ -105,11 +107,13 @@ describe("ClaudeAdapter.continue", () => {
       cwd,
       prompt: "next",
       resumeSessionId: "sess-xyz",
+      environment: { PONDEROSA_AGENT_MESSAGE_TOKEN: "scoped-token" },
       signal: controller.signal,
     })[Symbol.asyncIterator]().next();
     expect(captured).toContain("--resume");
     expect(captured).toContain("sess-xyz");
     expect(captured).toContain("stream-json");
+    expect(capturedEnv?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBe("scoped-token");
     controller.abort();
   });
 });

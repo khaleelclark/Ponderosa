@@ -93,6 +93,24 @@ async function waitForRun(threadId: string, expectedTurnDoneCount = 1): Promise<
   throw new Error("run did not finish");
 }
 
+async function waitForSeedCount(expected: number): Promise<void> {
+  for (let i = 0; i < 80; i += 1) {
+    if (adapter.seeds.length >= expected) return;
+    await sleep(10);
+  }
+  throw new Error(`timed out waiting for ${expected} seeded runs`);
+}
+
+async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: string): Promise<void> {
+  await app.inject({ method: "POST", url: `/api/threads/${threadId}/cancel` });
+  for (let i = 0; i < 80; i += 1) {
+    const response = await app.inject({ method: "POST", url: `/api/threads/${threadId}/cancel` });
+    if (!response.json<{ cancelled: boolean }>().cancelled) return;
+    await sleep(10);
+  }
+  throw new Error("run did not cancel");
+}
+
 describe("server chunk F", () => {
   it("creates master chats, records control messages, and spawns linked agent threads", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
@@ -261,7 +279,7 @@ describe("server chunk F", () => {
     await app.inject({
       method: "POST",
       url: `/api/threads/${thread.id}/messages`,
-      payload: { text: "Ship the API change." },
+      payload: { text: "Ship the API change.", sourceChannel: "main" },
     });
     await waitForRun(thread.id);
 
@@ -269,12 +287,15 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("never use a canned acknowledgment");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
+    expect(adapter.seeds[0]?.prompt).toContain("- channel: main");
+    expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
+    expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
 
     store.appendMasterChatMessage(master.id, { text: "@Aspen Is it tested?" });
     await app.inject({
       method: "POST",
       url: `/api/threads/${thread.id}/messages`,
-      payload: { text: "@Aspen Is it tested?" },
+      payload: { text: "@Aspen Is it tested?", sourceChannel: "main" },
     });
     await waitForRun(thread.id, 2);
 
@@ -285,6 +306,8 @@ describe("server chunk F", () => {
     expect(adapter.continues[0]?.prompt).toContain("Agent-to-agent discussion belongs in the separate Collaboration chat");
     expect(adapter.continues[0]?.prompt).toContain("Do not repeat, recap, or answer with the whole conversation");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).toContain("- tagged agents: @Aspen");
+    expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
     expect(store.getMasterChatMessages(master.id)).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ authorThreadId: thread.id, text: "Got it — I’m on it." }),
@@ -389,6 +412,94 @@ describe("server chunk F", () => {
     expect(store.getMasterChatMessages(master.id)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Private review notes that should not reach an agent yet." })]),
     );
+    await app.close();
+  });
+
+  it("lets an active agent send authenticated messages to all three channels", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Routing room" });
+    const author = store.createThread(project.id, {
+      title: "Author Agent",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+    const reviewer = store.createThread(project.id, {
+      title: "Review Agent",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+
+    adapter.mode = "hang";
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/messages`,
+      payload: { text: "@Review-Agent is tagged, but this is in my individual chat." },
+    });
+    await waitForSeedCount(1);
+    expect(adapter.seeds[0]?.prompt).toContain("- channel: individual");
+    expect(adapter.seeds[0]?.prompt).toContain("- tagged agents: @Review-Agent");
+    expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(token).toBeTruthy();
+    const send = (channel: "individual" | "main" | "collaboration", text: string) =>
+      app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${token}` },
+        payload: { channel, text },
+      });
+
+    expect((await send("individual", "Private implementation note.")).statusCode).toBe(200);
+    expect((await send("main", "Manager-facing checkpoint.")).statusCode).toBe(200);
+    expect((await send("collaboration", "@Review-Agent Please review the API contract.")).statusCode).toBe(200);
+    await waitForSeedCount(2);
+
+    expect(store.getMessages(author.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "assistant", text: "Private implementation note." })]),
+    );
+    expect(store.getMasterChatMessages(master.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ authorThreadId: author.id, text: "Manager-facing checkpoint." }),
+      ]),
+    );
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          authorThreadId: author.id,
+          text: "@Review-Agent Please review the API contract.",
+        }),
+      ]),
+    );
+    const reviewerPrompt = adapter.seeds[1]?.prompt ?? "";
+    expect(reviewerPrompt).toContain("- channel: collaboration");
+    expect(reviewerPrompt).toContain("- author: Author Agent");
+    expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
+    expect(reviewerPrompt).toContain("- you were tagged: yes");
+    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
+    await app.close();
+  });
+
+  it("expires an agent messaging capability when its run ends", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, {
+      title: "Agent",
+      engine: "codex",
+      masterChatId: master.id,
+    });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Finish." } });
+    await waitForRun(thread.id);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { channel: "individual", text: "Too late." },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(store.getMasterChatMessages(master.id)).toEqual([]);
     await app.close();
   });
 

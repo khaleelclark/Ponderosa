@@ -41,6 +41,8 @@ export interface RunOptionsBase {
   prompt: string;
   model?: string;
   effort?: string;
+  /** Per-run capability variables supplied by the orchestrator. */
+  environment?: Record<string, string>;
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
   signal: AbortSignal;
 }
