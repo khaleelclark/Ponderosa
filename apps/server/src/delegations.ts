@@ -202,6 +202,25 @@ export class DelegationStore {
     return publicRun(updated);
   }
 
+  setCompletionDelivery(
+    runId: string,
+    delivery: NonNullable<SubagentRunDto["completionDelivery"]>,
+  ): SubagentRunDto {
+    const run = this.runs.get(runId);
+    if (!run) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    const unchanged = JSON.stringify(run.completionDelivery) === JSON.stringify(delivery);
+    if (unchanged) return publicRun(run);
+    const updated: RunRecord = {
+      ...run,
+      completionDelivery: delivery,
+      updatedAt: new Date().toISOString(),
+      version: run.version + 1,
+    };
+    this.persist(updated, "replace");
+    this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
+    return publicRun(updated);
+  }
+
   spawn(
     masterChatId: string,
     input: SpawnSubagentRequest,
@@ -253,8 +272,8 @@ export class DelegationStore {
     const run: RunRecord = {
       id: runId,
       masterChatId,
-      ...(parent?.parentThreadId || parentThreadId
-        ? { parentThreadId: parent?.parentThreadId ?? parentThreadId }
+      ...(parentThreadId || parent?.childThreadId
+        ? { parentThreadId: parentThreadId ?? parent?.childThreadId }
         : {}),
       parentRunId: input.parentRunId,
       rootRunId,

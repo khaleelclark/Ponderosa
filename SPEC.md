@@ -179,6 +179,34 @@ the authority for parent/child/root lineage and the initial delegated lifecycle;
 the thread event log remains canonical for the child agent's work and subsequent
 turns. The raw delegation prompt is not copied into the public thread history.
 
+### Asynchronous delegated results and collaboration delivery
+
+Delegation is asynchronous. A parent that creates delegated work **ends its turn**
+after recording the expected tasks; it must not poll, sleep, or keep a tool wait
+open for children. Ponderosa records each collaboration `@mention` as a durable,
+recipient-specific FIFO delivery. If the recipient is active, the tag is not
+injected into its in-flight runtime: it starts one follow-up turn at the next safe
+turn boundary. Several tags are separate deliveries in arrival order, not a
+coalesced prompt.
+
+Cancellation does not consume deliveries. Tags still waiting behind an active run
+remain queued, and a collaboration-delivery turn that is itself cancelled returns
+to the queue instead of being silently acknowledged. Delivery state is persisted
+as `queued`, `delivered`, `acknowledged`, or `failed`; a failure creates a visible
+collaboration system record. Agent-originated message retries use an idempotency
+key, so a repeated request returns the original message and does not enqueue a
+second handoff.
+
+Terminal delegated runs also produce a first-class completion delivery to their
+server-derived parent—children need not rely on free-form tags just to report a
+final result. The public delegated-run record exposes its terminal status and
+completion-delivery state, allowing a parent (and the lineage UI) to see which
+expected tasks are queued, running, completed, failed, or still awaiting parent
+acknowledgement. Children should still use collaboration tags for interim findings
+and questions. This delivery ledger is an audit projection over immutable
+collaboration messages; it contains routing metadata only and never exposes raw
+delegation prompts or runtime credentials.
+
 The central engineering decision: **the app is an orchestrator over
 subscription-backed agent runtimes, not a chat client over provider API keys.**
 

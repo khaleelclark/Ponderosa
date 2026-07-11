@@ -14,7 +14,7 @@ class MockAdapter implements Adapter {
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
   abortedSeeds = 0;
-  mode: "normal" | "hang" = "normal";
+  mode: "normal" | "hang" | "boundary" = "normal";
   responseText = "done";
 
   listModels(): ModelOption[] {
@@ -34,6 +34,12 @@ class MockAdapter implements Adapter {
       this.abortedSeeds += 1;
       yield { type: "error", message: "run cancelled" };
       return;
+    }
+    if (this.mode === "boundary") {
+      // Leave a real safe-boundary window after a tool event. Collaboration
+      // notifications must queue here rather than alter the in-flight turn.
+      yield { type: "command", command: "long-running-tool", cwd: opts.cwd };
+      await sleep(40);
     }
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
@@ -635,6 +641,110 @@ describe("server chunk F", () => {
     );
 
     await cancelAndWait(app, author.id);
+    await app.close();
+  });
+
+  it("persists several active-turn tags, retries a cancelled delivery, and de-duplicates an agent retry", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Async handoffs" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex", masterChatId: master.id });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Stay busy." } });
+    await app.inject({ method: "POST", url: `/api/threads/${child.id}/messages`, payload: { text: "Wait for a retry." } });
+    await waitForSeedCount(2);
+    const childToken = adapter.seeds.find((seed) => seed.threadId === child.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(childToken).toBeTruthy();
+
+    const tag = { channel: "collaboration" as const, text: "@Parent first completed result", idempotencyKey: "result-1" };
+    const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
+    const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
+    expect(first.json()).toMatchObject({ replayed: false });
+    expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
+    await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Parent second completed result" },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Parent third completed result" },
+    });
+
+    // The recipient is still in a tool-like wait. Cancellation must not consume
+    // its queued tags; all three start as separate FIFO continuation turns.
+    adapter.mode = "normal";
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
+    await waitForRun(parent.id, 3);
+    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(3);
+    expect(store.getMessages(parent.id).filter((message) => message.role === "user").map((message) => message.text)).toEqual(
+      expect.arrayContaining(["@Parent first completed result", "@Parent second completed result", "@Parent third completed result"]),
+    );
+    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text === "@Parent first completed result")).toHaveLength(1);
+    await cancelAndWait(app, child.id);
+    await app.close();
+  });
+
+  it("starts queued tags after a normal tool-boundary turn completes", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Safe boundary" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    adapter.mode = "boundary";
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Work through a tool call." } });
+    await waitForSeedCount(1);
+
+    await Promise.all([
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Parent result one" } }),
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Parent result two" } }),
+    ]);
+    await waitForRun(parent.id, 3);
+    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(2);
+    expect(adapter.continues.map((turn) => turn.prompt)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Latest message for you:\n@Parent result one"),
+        expect.stringContaining("Latest message for you:\n@Parent result two"),
+      ]),
+    );
+    await app.close();
+  });
+
+  it("automatically records and delivers a delegated completion to its active parent", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Completion delivery" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Delegate and stop waiting." } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]!.environment!.PONDEROSA_DELEGATION_TOKEN;
+    adapter.mode = "normal";
+    const delegated = await app.inject({
+      method: "POST",
+      url: "/api/agent-delegations",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { displayLabel: "Research", delegationPrompt: "Return the result.", runtime: "codex", idempotencyKey: "completion-1" },
+    });
+    expect(delegated.statusCode).toBe(202);
+    const run = delegated.json<{ run: { id: string; childThreadId: string } }>().run;
+    await waitForRun(run.childThreadId);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
+      expect.objectContaining({ id: run.id, status: "completed", completionDelivery: expect.objectContaining({ status: "queued" }) }),
+    ]);
+
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
+    await waitForRun(parent.id, 1);
+    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(1);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
+      expect.objectContaining({ id: run.id, completionDelivery: expect.objectContaining({ status: "acknowledged" }) }),
+    ]);
+    expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Delegated task “Research” completed") })]),
+    );
     await app.close();
   });
 

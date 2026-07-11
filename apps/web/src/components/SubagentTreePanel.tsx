@@ -79,6 +79,11 @@ function RunNode({
       <Collapse in={expanded} unmountOnExit>
         <Stack id={detailId} spacing={1} sx={{ p: 1.25, bgcolor: "action.hover" }}>
           {node.delegationSummary ? <Typography variant="body2">{node.delegationSummary}</Typography> : null}
+          {node.completionDelivery ? (
+            <Typography variant="caption" color={node.completionDelivery.status === "failed" ? "error.main" : "text.secondary"}>
+              Parent completion delivery: {node.completionDelivery.status}
+            </Typography>
+          ) : null}
           {transcript ? (
             <Box component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12 }}>
               {transcript}
