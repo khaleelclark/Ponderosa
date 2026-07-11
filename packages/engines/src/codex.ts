@@ -162,7 +162,7 @@ export class CodexAdapter implements Adapter {
       ...this.configArgs(opts.model, opts.effort),
       prompt,
     ];
-    return this.run(args, opts.cwd, opts.signal);
+    return this.run(args, opts.cwd, opts.signal, opts.environment);
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
@@ -175,16 +175,22 @@ export class CodexAdapter implements Adapter {
       ...this.configArgs(opts.model, opts.effort),
       opts.prompt,
     ];
-    return this.run(args, opts.cwd, opts.signal);
+    return this.run(args, opts.cwd, opts.signal, opts.environment);
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */
-  private run(args: string[], cwd: string, signal: AbortSignal): AsyncIterable<AgentEvent> {
+  private run(
+    args: string[],
+    cwd: string,
+    signal: AbortSignal,
+    environment?: Record<string, string>,
+  ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
       args,
       cwd,
       signal,
+      environment,
       spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,
       map: mapCodexEvent,

@@ -120,9 +120,9 @@ describe("CodexAdapter.seed (fake codex)", () => {
 
 describe("CodexAdapter.continue argv", () => {
   it("uses codex exec resume with the stored session id and next prompt only", async () => {
-    const calls: Array<{ bin: string; args: readonly string[]; cwd?: string; detached?: boolean }> = [];
-    const spawnFn = ((bin: string, args: readonly string[], opts: { cwd?: string; detached?: boolean }) => {
-      calls.push({ bin, args, cwd: opts.cwd, detached: opts.detached });
+    const calls: Array<{ bin: string; args: readonly string[]; cwd?: string; detached?: boolean; env?: NodeJS.ProcessEnv }> = [];
+    const spawnFn = ((bin: string, args: readonly string[], opts: { cwd?: string; detached?: boolean; env?: NodeJS.ProcessEnv }) => {
+      calls.push({ bin, args, cwd: opts.cwd, detached: opts.detached, env: opts.env });
       return spawn(process.execPath, [fakeCodex, "seed"], opts);
     }) as unknown as typeof spawn;
 
@@ -136,6 +136,7 @@ describe("CodexAdapter.continue argv", () => {
         resumeSessionId: "sess-abc",
         model: "gpt-test",
         effort: "high",
+        environment: { PONDEROSA_AGENT_MESSAGE_TOKEN: "scoped-token" },
         signal: controller.signal,
       }),
     );
@@ -144,6 +145,7 @@ describe("CodexAdapter.continue argv", () => {
     expect(calls[0]?.bin).toBe("codex-test");
     expect(calls[0]?.cwd).toBe(cwd);
     expect(calls[0]?.detached).toBe(process.platform !== "win32");
+    expect(calls[0]?.env?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBe("scoped-token");
     expect(calls[0]?.args.slice(0, 4)).toEqual([
       "exec",
       "resume",

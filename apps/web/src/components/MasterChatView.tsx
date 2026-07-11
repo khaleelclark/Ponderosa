@@ -188,7 +188,7 @@ export function MasterChatView({
     mutationFn: async ({ agentIds, text }: { agentIds: string[]; text: string }) => {
       setDispatchedAgentIds((current) => new Set([...current, ...agentIds]));
       await api.sendMasterChatMessage(masterChatId, { text });
-      await Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text })));
+      await Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text, sourceChannel: "main" })));
     },
     onSuccess: (_data, variables) => {
       invalidate();

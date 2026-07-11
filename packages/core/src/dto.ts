@@ -197,6 +197,8 @@ export interface SendMessageRequest {
   text: string;
   model?: string;
   effort?: string;
+  /** Set by a master-chat client when this turn originated in that room. */
+  sourceChannel?: "main";
 }
 
 /** POST /api/threads/:id/messages response — the run id for the started turn. */
@@ -204,6 +206,15 @@ export interface SendMessageResponse {
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
   mode: "seed" | "continue";
+}
+
+/** Destinations available to an agent through its short-lived run capability. */
+export type AgentMessageChannel = "individual" | "main" | "collaboration";
+
+/** POST /api/agent-messages body. The server derives the author from the capability. */
+export interface SendAgentMessageRequest {
+  channel: AgentMessageChannel;
+  text: string;
 }
 
 /** POST /api/threads/:id/cancel response. */

@@ -16,6 +16,7 @@ export interface StreamProcessOptions {
   args: string[];
   cwd: string;
   signal: AbortSignal;
+  environment?: Record<string, string>;
   spawnFn: SpawnFn;
   /** ms to wait after SIGTERM before SIGKILL on cancel. */
   killGraceMs: number;
@@ -33,7 +34,7 @@ export interface StreamProcessOptions {
 export async function* streamProcess(
   opts: StreamProcessOptions,
 ): AsyncIterable<AgentEvent> {
-  const { bin, args, cwd, signal, spawnFn, killGraceMs, map, label } = opts;
+  const { bin, args, cwd, signal, environment, spawnFn, killGraceMs, map, label } = opts;
 
   if (signal.aborted) {
     yield { type: "error", message: "run aborted before start" };
@@ -42,6 +43,7 @@ export async function* streamProcess(
 
   const child: ChildProcess = spawnFn(bin, args, {
     cwd,
+    env: { ...process.env, ...environment },
     stdio: ["ignore", "pipe", "pipe"],
     // Give each run its own process group. Agent CLIs can spawn long-running
     // commands, so cancelling only the CLI would leave its descendants alive.

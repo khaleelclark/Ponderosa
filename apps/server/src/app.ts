@@ -4,6 +4,7 @@ import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import type {
   Adapter,
+  AgentMessageChannel,
   AgentEvent,
   ArtifactContentDto,
   ChatMessage,
@@ -13,6 +14,7 @@ import type {
   HealthDto,
   MasterChatMessageDto,
   SseEventEnvelope,
+  SendAgentMessageRequest,
   ThreadDto,
 } from "@ponderosa/core";
 import { artifactContentPath, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
@@ -34,6 +36,7 @@ export interface CreateServerOptions {
 interface ActiveRun {
   runId: string;
   controller: AbortController;
+  messageCapability: string;
 }
 
 interface PendingMentionTurn {
@@ -41,6 +44,22 @@ interface PendingMentionTurn {
   agentMentionDepth: number;
   agentMentionTrail: string[];
   collaborationMasterChatId: string;
+  sourceAuthorThreadId?: string;
+}
+
+interface AgentMessageCapability {
+  threadId: string;
+  masterChatId?: string;
+  runId: string;
+  mentionDepth: number;
+  mentionTrail: string[];
+}
+
+interface InboundMessageContext {
+  channel: AgentMessageChannel;
+  author: string;
+  mentionedAgents: string[];
+  addressedToCurrentAgent: boolean;
 }
 
 type Subscriber = (stored: StoredLogEvent) => void;
@@ -90,6 +109,42 @@ function mentionedAgentThreads(text: string, threads: ThreadDto[], authorThreadI
   return [...mentioned.values()];
 }
 
+function inboundContext(
+  channel: AgentMessageChannel,
+  author: string,
+  text: string,
+  threads: ThreadDto[],
+  currentThreadId: string,
+): InboundMessageContext {
+  const mentioned = mentionedAgentThreads(text, threads, "");
+  return {
+    channel,
+    author,
+    mentionedAgents: mentioned.map((thread) => `@${agentMentionHandle(thread.title)}`),
+    addressedToCurrentAgent: mentioned.some((thread) => thread.id === currentThreadId),
+  };
+}
+
+function messageContextPrompt(context: InboundMessageContext): string[] {
+  return [
+    "Incoming message metadata:",
+    `- channel: ${context.channel}`,
+    `- author: ${context.author}`,
+    `- tagged agents: ${context.mentionedAgents.join(", ") || "none"}`,
+    `- you were tagged: ${context.addressedToCurrentAgent ? "yes" : "no"}`,
+    "Use this metadata to distinguish a direct request from a message aimed at someone else.",
+  ];
+}
+
+function agentMessagingPrompt(): string[] {
+  return [
+    "You can send an additional message to any Ponderosa channel with your shell tool:",
+    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message"}\'',
+    'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
+    "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
+  ];
+}
+
 /**
  * Give a master-chat agent the shared room context and a lightweight teammate
  * response contract. This is intentionally part of the next user prompt (rather
@@ -99,6 +154,7 @@ function masterChatPrompt(
   messages: MasterChatMessageDto[],
   threads: ThreadDto[],
   currentRequest: string,
+  context: InboundMessageContext,
 ): string {
   const names = new Map(threads.map((thread) => [thread.id, thread.title]));
   const transcript = messages
@@ -121,6 +177,8 @@ function masterChatPrompt(
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only your new update or result in a natural, conversational tone.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
+    ...messageContextPrompt(context),
+    ...agentMessagingPrompt(),
     "",
     "Current master chat history:",
     transcript || "(No earlier messages.)",
@@ -135,6 +193,7 @@ function collaborationChatPrompt(
   messages: MasterChatMessageDto[],
   threads: ThreadDto[],
   currentRequest: string,
+  context: InboundMessageContext,
 ): string {
   const names = new Map(threads.map((thread) => [thread.id, thread.title]));
   const transcript = messages
@@ -154,9 +213,22 @@ function collaborationChatPrompt(
     "To involve a teammate, @mention their full hyphenated handle; a valid mention provides this collaboration context and starts their turn.",
     "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
     "Do not claim to have seen the main chat.",
+    ...messageContextPrompt(context),
+    ...agentMessagingPrompt(),
     "",
     "Collaboration chat history:",
     transcript || "(No earlier collaboration messages.)",
+    "",
+    "Latest message for you:",
+    currentRequest,
+  ].join("\n");
+}
+
+function individualChatPrompt(currentRequest: string, context: InboundMessageContext): string {
+  return [
+    "You are replying in your individual Ponderosa agent chat.",
+    ...messageContextPrompt(context),
+    ...agentMessagingPrompt(),
     "",
     "Latest message for you:",
     currentRequest,
@@ -258,6 +330,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
+  const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   const pendingMentionTurns = new Map<string, PendingMentionTurn[]>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct thread request.
@@ -272,10 +345,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     agentMentionDepth: number,
     agentMentionTrail: string[],
     collaborationMasterChatId: string,
+    sourceAuthorThreadId?: string,
   ): boolean {
     const pending = pendingMentionTurns.get(threadId) ?? [];
     if (pending.length >= MAX_PENDING_MENTION_TURNS) return false;
-    pending.push({ text, agentMentionDepth, agentMentionTrail, collaborationMasterChatId });
+    pending.push({ text, agentMentionDepth, agentMentionTrail, collaborationMasterChatId, sourceAuthorThreadId });
     pendingMentionTurns.set(threadId, pending);
     return true;
   }
@@ -305,9 +379,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   app.addHook("onRequest", async (request, reply) => {
+    const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    if (request.url === "/api/agent-messages" && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health") return;
-    const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     if (provided !== opts.authToken) {
       return reply.code(401).send({ error: "unauthorized" });
     }
@@ -334,6 +409,102 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (set?.size === 0) subscribers.delete(threadId);
     };
   }
+
+  function dispatchCollaborationMentions(
+    masterChatId: string,
+    authorThreadId: string,
+    text: string,
+    relayDepth: number,
+    mentionTrail: string[],
+  ): void {
+    const detail = store.getCollaborationChatDetail(masterChatId);
+    const targets = detail ? mentionedAgentThreads(text, detail.threads, authorThreadId) : [];
+    for (const target of targets) {
+      const fingerprint = mentionRelayFingerprint(authorThreadId, target.id, text);
+      const blockedReason = mentionTrail.includes(fingerprint)
+        ? "the same handoff already occurred in this collaboration chain"
+        : relayDepth >= MAX_AGENT_MENTION_RELAYS
+          ? "the collaboration reached its 12-handoff safety limit"
+          : undefined;
+      if (blockedReason) {
+        store.appendMasterChatMessage(
+          masterChatId,
+          {
+            role: "system",
+            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because ${blockedReason}. Please ask the manager to continue the conversation.`,
+          },
+          undefined,
+          "collaboration",
+        );
+      } else if (
+        queueMentionTurn(
+          target.id,
+          text,
+          relayDepth + 1,
+          [...mentionTrail, fingerprint],
+          masterChatId,
+          authorThreadId,
+        )
+      ) {
+        void dispatchNextMentionTurn(target.id);
+      } else {
+        store.appendMasterChatMessage(
+          masterChatId,
+          {
+            role: "system",
+            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up queue is full. Please retry after they finish some queued work.`,
+          },
+          undefined,
+          "collaboration",
+        );
+      }
+    }
+  }
+
+  app.post<{
+    Body: SendAgentMessageRequest;
+  }>("/api/agent-messages", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    if (!capability) return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    const active = activeRuns.get(capability.threadId);
+    if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    const channel = request.body?.channel;
+    const text = request.body?.text?.trim();
+    if (!(["individual", "main", "collaboration"] as const).includes(channel)) {
+      return reply.code(400).send({ error: "channel must be individual, main, or collaboration" });
+    }
+    if (!text) return reply.code(400).send({ error: "text is required" });
+    if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
+
+    if (channel === "individual") {
+      const stored = store.appendEvent(capability.threadId, { type: "text", delta: text });
+      publish(capability.threadId, stored);
+      return { channel, messageId: `thread-event-${stored.seq}` };
+    }
+    if (!capability.masterChatId) {
+      return reply.code(409).send({ error: "agent is not linked to a master chat" });
+    }
+    const message = store.appendMasterChatMessage(
+      capability.masterChatId,
+      { role: "assistant", text },
+      capability.threadId,
+      channel,
+    );
+    if (!message) return reply.code(404).send({ error: "master chat not found" });
+    if (channel === "collaboration") {
+      dispatchCollaborationMentions(
+        capability.masterChatId,
+        capability.threadId,
+        text,
+        capability.mentionDepth,
+        capability.mentionTrail,
+      );
+    }
+    return { channel, messageId: message.id };
+  });
 
   app.get("/api/health", async (): Promise<HealthDto> => ({
     status: "ok",
@@ -486,7 +657,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           method: "POST",
           url: `/api/threads/${thread.id}/messages`,
           headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
-          payload: { text: initialMessage, model: request.body.model, effort: request.body.effort },
+          payload: {
+            text: initialMessage,
+            model: request.body.model,
+            effort: request.body.effort,
+            sourceChannel: "main",
+          },
         });
         if (turn.statusCode >= 400) {
           store.deleteThread(thread.id);
@@ -540,6 +716,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agentMentionDepth?: number;
       agentMentionTrail?: string[];
       collaborationMasterChatId?: string;
+      sourceChannel?: "main";
+      sourceAuthorThreadId?: string;
     };
   }>(
     "/api/threads/:id/messages",
@@ -589,6 +767,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }));
       const runId = randomUUID();
       const controller = new AbortController();
+      const messageCapability = randomUUID();
       const resumeSessionId = store.resumeSessionId(thread.id);
       const mode = resumeSessionId ? "continue" : "seed";
 
@@ -601,16 +780,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const collaboration = collaborationMasterChatId
         ? store.getCollaborationChatDetail(collaborationMasterChatId)
         : undefined;
+      const sourceChannel: AgentMessageChannel = collaboration
+        ? "collaboration"
+        : request.body.sourceChannel === "main"
+          ? "main"
+          : "individual";
+      const contextThreads = collaboration?.threads ?? masterChat?.threads ?? [thread];
+      const sourceAuthor = collaboration && request.body.sourceAuthorThreadId
+        ? contextThreads.find((candidate) => candidate.id === request.body.sourceAuthorThreadId)?.title ?? "Agent"
+        : "Manager";
+      const context = inboundContext(sourceChannel, sourceAuthor, text, contextThreads, thread.id);
       const prompt = collaboration
-        ? collaborationChatPrompt(collaboration.messages, collaboration.threads, text)
-        : masterChat
-          ? masterChatPrompt(masterChat.messages, masterChat.threads, text)
-          : text;
+        ? collaborationChatPrompt(collaboration.messages, collaboration.threads, text, context)
+        : masterChat && sourceChannel === "main"
+          ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
+          : individualChatPrompt(text, context);
+      const agentMessageUrl = `${request.protocol}://${request.headers.host ?? "127.0.0.1"}/api/agent-messages`;
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text });
       publish(thread.id, userStored);
 
-      activeRuns.set(thread.id, { runId, controller });
+      activeRuns.set(thread.id, { runId, controller, messageCapability });
+      agentMessageCapabilities.set(messageCapability, {
+        threadId: thread.id,
+        masterChatId: thread.masterChatId,
+        runId,
+        mentionDepth: mentionDepth ?? 0,
+        mentionTrail,
+      });
 
       void (async () => {
         // Accumulate the agent's human-facing message so it can post its actual
@@ -628,6 +825,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   resumeSessionId,
                   model: request.body.model,
                   effort: request.body.effort,
+                  environment: {
+                    PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+                    PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+                  },
                   signal: controller.signal,
                 })
             : engine.adapter.seed({
@@ -637,6 +838,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   history,
                   model: request.body.model,
                   effort: request.body.effort,
+                  environment: {
+                    PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+                    PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+                  },
                   signal: controller.signal,
                 });
 
@@ -654,9 +859,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runError = message;
         } finally {
           activeRuns.delete(thread.id);
+          agentMessageCapabilities.delete(messageCapability);
           // Post a group-chat status unless the run was cancelled/aborted (cancel or
           // thread deletion), in which case a report-back would be misleading.
-          if (thread.masterChatId && !controller.signal.aborted) {
+          if (thread.masterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
             const statusText = runError
               ? `⚠️ Stuck — ${runError.slice(0, 200)}`
               : summarizeFinalMessage(finalText) ??
@@ -668,58 +874,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 thread.masterChatId,
                 { role: "assistant", text: statusText },
                 thread.id,
-                collaborationMasterChatId ? "collaboration" : "main",
+                sourceChannel,
               );
 
               // A tag in a main-chat report is ordinary text. A tag in the
               // collaboration chat is an opt-in handoff and can start a turn.
-              const relayDepth = request.body.agentMentionDepth ?? 0;
               if (!runError && collaborationMasterChatId) {
-                const detail = store.getCollaborationChatDetail(collaborationMasterChatId);
-                const targets = detail
-                  ? mentionedAgentThreads(statusText, detail.threads, thread.id)
-                  : [];
-                for (const target of targets) {
-                  const fingerprint = mentionRelayFingerprint(thread.id, target.id, statusText);
-                  const blockedReason = mentionTrail.includes(fingerprint)
-                    ? "the same handoff already occurred in this collaboration chain"
-                    : relayDepth >= MAX_AGENT_MENTION_RELAYS
-                      ? "the collaboration reached its 12-handoff safety limit"
-                      : undefined;
-                  if (blockedReason) {
-                    store.appendMasterChatMessage(
-                      thread.masterChatId,
-                      {
-                        role: "assistant",
-                        text: `⚠️ @${agentMentionHandle(target.title)} was not notified because ${blockedReason}. Please ask the manager to continue the conversation.`,
-                      },
-                      undefined,
-                      "collaboration",
-                    );
-                  } else if (
-                    queueMentionTurn(
-                      target.id,
-                      statusText,
-                      relayDepth + 1,
-                      [...mentionTrail, fingerprint],
-                      collaborationMasterChatId,
-                    )
-                  ) {
-                    void dispatchNextMentionTurn(target.id);
-                  } else {
-                    // Never fail silently: the bounded queue protects server
-                    // availability while telling the room which handoff needs a retry.
-                    store.appendMasterChatMessage(
-                      thread.masterChatId,
-                      {
-                        role: "assistant",
-                        text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up queue is full. Please retry after they finish some queued work.`,
-                      },
-                      undefined,
-                      "collaboration",
-                    );
-                  }
-                }
+                dispatchCollaborationMentions(
+                  collaborationMasterChatId,
+                  thread.id,
+                  statusText,
+                  mentionDepth ?? 0,
+                  mentionTrail,
+                );
               }
             } catch {
               // Master chat may have been deleted mid-run; ignore.
