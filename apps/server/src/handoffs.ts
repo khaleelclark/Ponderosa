@@ -81,6 +81,22 @@ export class CollaborationDeliveryStore {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
+  /**
+   * Recover work after a process restart. A `delivered` record only means its
+   * follow-up turn started; without an acknowledgement the process may have
+   * stopped before the recipient handled it, so it is safe to retry.
+   */
+  recoverUnacknowledged(): string[] {
+    for (const delivery of [...this.deliveries.values()]) {
+      if (delivery.status === "delivered") this.requeue(delivery.id);
+    }
+    return [...new Set(
+      [...this.deliveries.values()]
+        .filter((delivery) => delivery.status === "queued")
+        .map((delivery) => delivery.targetThreadId),
+    )];
+  }
+
   get(id: string): CollaborationDelivery | undefined {
     return this.deliveries.get(id);
   }

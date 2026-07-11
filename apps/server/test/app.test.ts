@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
 import { createServer, type EngineRegistration } from "../src/app.js";
+import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -742,8 +743,103 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
       expect.objectContaining({ id: run.id, completionDelivery: expect.objectContaining({ status: "acknowledged" }) }),
     ]);
-    expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("Delegated task “Research” completed") })]),
+    const completionMessage = store.getCollaborationChatDetail(master.id)?.messages.find(
+      (message) => message.text.includes("Delegated task “Research” completed"),
+    );
+    expect(completionMessage?.text).toContain("@Parent, the result is ready");
+    expect(completionMessage?.text).not.toContain("has been notified");
+    await app.close();
+  });
+
+  it("delivers an ordinary collaboration result from a delegated child", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Child result delivery" });
+    const parent = store.createThread(project.id, { title: "Cedar Breaks", engine: "codex", masterChatId: master.id });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Delegate research." } });
+    await waitForSeedCount(1);
+    const delegationToken = adapter.seeds[0]!.environment!.PONDEROSA_DELEGATION_TOKEN;
+    const delegated = await app.inject({
+      method: "POST",
+      url: "/api/agent-delegations",
+      headers: { authorization: `Bearer ${delegationToken}` },
+      payload: { displayLabel: "Research", delegationPrompt: "Research and report back.", runtime: "codex", idempotencyKey: "child-result" },
+    });
+    expect(delegated.statusCode).toBe(202);
+    const run = delegated.json<{ run: { childThreadId: string } }>().run;
+    await waitForSeedCount(2);
+    const childToken = adapter.seeds.find((seed) => seed.threadId === run.childThreadId)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(childToken).toBeTruthy();
+
+    const result = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${childToken}` },
+      payload: { channel: "collaboration", text: "@Cedar-Breaks Huntsville result is ready.", idempotencyKey: "huntsville-result" },
+    });
+    expect(result.statusCode).toBe(200);
+
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
+    await waitForRun(parent.id);
+    expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
+      "Latest message for you:\n@Cedar-Breaks Huntsville result is ready.",
+    );
+    expect(store.getCollaborationChatDetail(master.id)?.messages).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("delivery dispatch rejected (400)") })]),
+    );
+
+    await cancelAndWait(app, run.childThreadId);
+    await app.close();
+  });
+
+  it("recovers queued and interrupted collaboration deliveries after restart in FIFO order", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Restart recovery" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const firstMessage = store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@Parent interrupted first result" },
+      undefined,
+      "collaboration",
+    )!;
+    const secondMessage = store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@Parent queued second result" },
+      undefined,
+      "collaboration",
+    )!;
+    const deliveries = new CollaborationDeliveryStore(dataDir);
+    const first = deliveries.queue({
+      masterChatId: master.id,
+      messageId: firstMessage.id,
+      targetThreadId: parent.id,
+      text: firstMessage.text,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "tag",
+    }).delivery;
+    deliveries.markDelivered(first.id);
+    deliveries.queue({
+      masterChatId: master.id,
+      messageId: secondMessage.id,
+      targetThreadId: parent.id,
+      text: secondMessage.text,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "tag",
+    });
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(parent.id, 2);
+
+    expect(adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
+      "Latest message for you:\n@Parent interrupted first result",
+    );
+    expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
+      "Latest message for you:\n@Parent queued second result",
     );
     await app.close();
   });

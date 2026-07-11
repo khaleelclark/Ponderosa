@@ -532,6 +532,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   });
 
+  app.addHook("onReady", async () => {
+    // Resume handoffs left queued or unacknowledged by a previous process after
+    // Fastify has finished registering the internal dispatch route.
+    const recipients = collaborationDeliveries.recoverUnacknowledged();
+    for (const threadId of recipients) {
+      setImmediate(() => void dispatchNextTurn(threadId));
+    }
+  });
+
   app.addHook("onClose", async () => {
     closed = true;
     for (const run of activeRuns.values()) run.controller.abort();
@@ -643,8 +652,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       {
         role: "system",
         text: run.status === "completed"
-          ? `✅ Delegated task “${run.delegationSummary}” completed; @${agentMentionHandle(parent.title)} has been notified.`
-          : `⚠️ Delegated task “${run.delegationSummary}” failed; @${agentMentionHandle(parent.title)} has been notified.`,
+          ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.`
+          : `⚠️ Delegated task “${run.delegationSummary}” failed. @${agentMentionHandle(parent.title)}, review the failure.`,
       },
       run.childThreadId,
       "collaboration",
@@ -1046,8 +1055,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           threadId: childThread.id,
           masterChatId: run.masterChatId,
           runId: run.id,
-          mentionDepth: run.depth,
-          mentionTrail: [childThread.id],
+          // Delegation lineage and collaboration relay-loop detection are
+          // independent. Only actual @mention handoffs add relay fingerprints.
+          mentionDepth: 0,
+          mentionTrail: [],
         });
         delegationCapabilities.set(delegationCapability, {
           parentRunId: run.id,
