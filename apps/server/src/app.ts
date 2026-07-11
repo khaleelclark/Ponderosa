@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isUtf8 } from "node:buffer";
-import { existsSync, promises as fs } from "node:fs";
+import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type {
@@ -14,6 +14,7 @@ import type {
   EngineDto,
   FilesResponse,
   HealthDto,
+  ReadinessDto,
   MasterChatMessageDto,
   SseEventEnvelope,
   SendAgentMessageRequest,
@@ -566,7 +567,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
-    if (request.url === "/api/health") return;
+    if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
       return reply.code(401).send({ error: "unauthorized" });
     }
@@ -1010,6 +1011,58 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     service: "ponderosa",
     version: "0.0.0",
   }));
+
+  app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
+    let dataDirectory: ReadinessDto["checks"]["dataDirectory"];
+    try {
+      await fs.access(opts.dataDir, fsConstants.R_OK | fsConstants.W_OK);
+      dataDirectory = { ok: true, detail: "data directory is readable and writable" };
+    } catch (error) {
+      dataDirectory = { ok: false, detail: `data directory unavailable: ${error instanceof Error ? error.message : String(error)}` };
+    }
+
+    let projections: ReadinessDto["checks"]["projections"];
+    try {
+      store.listProjects();
+      projections = { ok: true, detail: "projection database query succeeded" };
+    } catch (error) {
+      projections = { ok: false, detail: `projection database unavailable: ${error instanceof Error ? error.message : String(error)}` };
+    }
+
+    const runtimeStatuses = await Promise.all([...engines.entries()].map(async ([id, registration]) => {
+      try {
+        const status = registration.authStatus
+          ? await registration.authStatus()
+          : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+        return { id, authenticated: status.authenticated, ...(status.detail ? { detail: status.detail } : {}) };
+      } catch (error) {
+        return { id, authenticated: false, detail: `runtime check failed: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    }));
+    const available = runtimeStatuses.filter((runtime) => runtime.authenticated).length;
+    const runtimes = {
+      ok: available > 0,
+      detail: engines.size === 0
+        ? "no runtimes are configured"
+        : `${available} of ${engines.size} configured runtimes available`,
+    };
+    const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok;
+    const body: ReadinessDto = {
+      status: canAcceptWork ? "ready" : "not_ready",
+      service: "ponderosa",
+      version: "0.0.0",
+      canAcceptWork,
+      checks: {
+        daemon: { ok: !closed, detail: closed ? "daemon is shutting down" : "daemon request loop is running" },
+        dataDirectory,
+        projections,
+        runtimes,
+      },
+      runtimes: runtimeStatuses,
+    };
+    if (!canAcceptWork) reply.code(503);
+    return body;
+  });
 
   app.get("/api/projects", async () => store.listProjects());
   app.post<{ Body: { label: string; hostPath: string } }>("/api/projects", async (request, reply) => {
