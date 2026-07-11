@@ -41,7 +41,7 @@ import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } fr
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
-import { ChatMarkdown, Composer, scrollChatToBottom } from "./panes";
+import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { useMasterChatStreams } from "../hooks/useMasterChatStreams";
 
 export function MasterChatView({
@@ -84,6 +84,9 @@ export function MasterChatView({
   const [effort, setEffort] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const shouldFollowNewMessages = useRef(true);
+  const displayedMasterChatId = useRef(masterChatId);
+  const displayedConversation = useRef(conversation);
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
 
@@ -109,10 +112,18 @@ export function MasterChatView({
   );
 
   useLayoutEffect(() => {
-    if (chatScrollRef.current) {
+    if (
+      displayedMasterChatId.current !== masterChatId ||
+      displayedConversation.current !== conversation
+    ) {
+      displayedMasterChatId.current = masterChatId;
+      displayedConversation.current = conversation;
+      shouldFollowNewMessages.current = true;
+    }
+    if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
     }
-  }, [conversation, messages, collaborationMessages, liveReplies]);
+  }, [masterChatId, conversation, messages, collaborationMessages, liveReplies]);
 
   useEffect(() => {
     if (!masterChat || initializedFor.current === masterChat.id) {
@@ -453,7 +464,15 @@ export function MasterChatView({
         </Stack>
       </Box>
 
-      <Box ref={chatScrollRef} sx={{ minHeight: 0, overflow: "auto" }}>
+      <Box
+        ref={chatScrollRef}
+        onScroll={() => {
+          if (chatScrollRef.current) {
+            shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
+          }
+        }}
+        sx={{ minHeight: 0, overflow: "auto" }}
+      >
         <Box sx={{ p: 1.5 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {conversation === "collaboration" ? (
