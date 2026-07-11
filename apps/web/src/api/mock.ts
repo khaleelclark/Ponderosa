@@ -355,6 +355,19 @@ export const mockApi: PonderosaApi = {
       },
     ];
   },
+  listSubagents() {
+    return delay([]);
+  },
+  getSubagentTranscript(runId) {
+    return delay({ runId, items: [], hasMore: false });
+  },
+  cancelSubagent(runId) {
+    return delay({ requestedRunId: runId, scope: "branch" as const, affected: [], completed: true });
+  },
+  subscribeSubagents(_masterChatId, _lastSeenSeq, handlers) {
+    window.setTimeout(() => handlers.onOpen?.(), 0);
+    return { close() {} };
+  },
   listThreads(projectId) {
     return delay(threads.filter((thread) => thread.projectId === projectId && !thread.archived));
   },

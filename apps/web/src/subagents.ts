@@ -2,6 +2,7 @@ import type {
   CancelSubagentResponse,
   SubagentEventEnvelope,
   SubagentRunDto,
+  SubagentTranscriptPageDto,
 } from "@ponderosa/core";
 
 export type { SubagentStatus } from "@ponderosa/core";
@@ -96,6 +97,49 @@ export function applyCancellationResult(
     });
   }
   return { ...store, runs };
+}
+
+export function mergeTranscriptPage(store: SubagentStore, page: SubagentTranscriptPageDto): SubagentStore {
+  const existing = store.output.get(page.runId) ?? [];
+  const bySeq = new Map(existing.map((chunk) => [chunk.chunkSeq, chunk]));
+  for (const item of page.items) {
+    bySeq.set(item.chunkSeq, { runId: page.runId, chunkSeq: item.chunkSeq, cursor: item.cursor, text: item.text });
+  }
+  const output = new Map(store.output);
+  output.set(page.runId, [...bySeq.values()].sort((a, b) => a.chunkSeq - b.chunkSeq));
+  return { ...store, output };
+}
+
+export function clearSubagentTranscript(store: SubagentStore, runId: string): SubagentStore {
+  const output = new Map(store.output);
+  output.delete(runId);
+  return { ...store, output };
+}
+
+export async function loadTranscriptPages(
+  runId: string,
+  fetchPage: (after?: string) => Promise<SubagentTranscriptPageDto>,
+  onPage: (page: SubagentTranscriptPageDto) => void,
+  onCursorExpired: () => void,
+): Promise<void> {
+  let after: string | undefined;
+  let restarted = false;
+  for (;;) {
+    try {
+      const page = await fetchPage(after);
+      onPage(page);
+      if (!page.hasMore || !page.nextCursor) return;
+      after = page.nextCursor;
+    } catch (error) {
+      if (error instanceof Error && "status" in error && error.status === 410 && !restarted) {
+        restarted = true;
+        after = undefined;
+        onCursorExpired();
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 export function buildSubagentTree(runs: Iterable<SubagentRunDto>): SubagentTreeNode[] {

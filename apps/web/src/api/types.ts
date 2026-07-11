@@ -14,6 +14,11 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
+  SubagentEventEnvelope,
+  SubagentRunDto,
+  SubagentTranscriptPageDto,
+  CancelSubagentRequest,
+  CancelSubagentResponse,
   ThreadDetailDto,
   ThreadDto,
 } from "@ponderosa/core";
@@ -38,6 +43,18 @@ export interface StreamHandlers {
   onError?(error: unknown): void;
 }
 
+export interface SubagentStreamHandlers {
+  onEvent(envelope: SubagentEventEnvelope): void;
+  onOpen?(): void;
+  onError?(error: unknown): void;
+}
+
+export class ApiRequestError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
 export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
@@ -49,6 +66,10 @@ export interface PonderosaApi {
   deleteMasterChat(masterChatId: string): Promise<void>;
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   sendCollaborationMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
+  listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;
+  getSubagentTranscript(runId: string, after?: string): Promise<SubagentTranscriptPageDto>;
+  cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;
+  subscribeSubagents(masterChatId: string, lastSeenSeq: number | undefined, handlers: SubagentStreamHandlers): StreamSubscription;
   listThreads(projectId: string): Promise<ThreadDto[]>;
   createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;
   /** User-facing wrapper around createThread that spawns an agent, optionally under a master chat. */

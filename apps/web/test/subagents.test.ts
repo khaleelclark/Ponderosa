@@ -6,6 +6,8 @@ import {
   buildSubagentTree,
   emptySubagentStore,
   isSubagentUiEnabled,
+  loadTranscriptPages,
+  mergeTranscriptPage,
   subagentTranscript,
 } from "../src/subagents";
 
@@ -40,7 +42,7 @@ describe("subagent UI adapter", () => {
     expect(isSubagentUiEnabled({ PUBLIC_PONDEROSA_SUBAGENTS: "false" })).toBe(false);
   });
 
-  it("upserts lifecycle events and ignores replayed or stale changes", () => {
+  it("resumes from the reconnect cursor and ignores replayed or stale changes", () => {
     let store = emptySubagentStore();
     store = applySubagentEnvelope(store, envelope(1, { type: "subagent_spawned", run: run("parent") }));
     store = applySubagentEnvelope(store, envelope(2, {
@@ -66,6 +68,29 @@ describe("subagent UI adapter", () => {
     store = applySubagentEnvelope(store, envelope(1, { type: "subagent_output", runId: "run", runVersion: 1, chunkSeq: 2, cursor: "b", delta: "world" }));
     store = applySubagentEnvelope(store, envelope(2, { type: "subagent_output", runId: "run", runVersion: 1, chunkSeq: 1, cursor: "a", delta: "hello " }));
     store = applySubagentEnvelope(store, envelope(3, { type: "subagent_output", runId: "run", runVersion: 1, chunkSeq: 2, cursor: "b", delta: "duplicate" }));
+    expect(subagentTranscript(store, "run")).toBe("hello world");
+  });
+
+  it("reloads transcript pagination from the beginning after cursor expiry", async () => {
+    const requested: Array<string | undefined> = [];
+    let expired = false;
+    let store = emptySubagentStore();
+    await loadTranscriptPages(
+      "run",
+      async (after) => {
+        requested.push(after);
+        if (!expired) {
+          expired = true;
+          throw Object.assign(new Error("expired"), { status: 410 });
+        }
+        return after === undefined
+          ? { runId: "run", items: [{ chunkSeq: 1, cursor: "one", ts: "now", text: "hello " }], nextCursor: "one", hasMore: true }
+          : { runId: "run", items: [{ chunkSeq: 2, cursor: "two", ts: "now", text: "world" }], hasMore: false };
+      },
+      (page) => { store = mergeTranscriptPage(store, page); },
+      () => { store = emptySubagentStore(); },
+    );
+    expect(requested).toEqual([undefined, undefined, "one"]);
     expect(subagentTranscript(store, "run")).toBe("hello world");
   });
 

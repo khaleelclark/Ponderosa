@@ -45,6 +45,7 @@ import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
 import { useMasterChatStreams } from "../hooks/useMasterChatStreams";
+import { useSubagents } from "../hooks/useSubagents";
 
 export function MasterChatView({
   masterChatId,
@@ -93,6 +94,8 @@ export function MasterChatView({
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const showSubagents = isSubagentUiEnabled(env);
+  const liveSubagents = useSubagents(masterChatId, showSubagents);
+  const subagentBinding = subagents ?? liveSubagents;
 
   const masterChat = detailQuery.data?.masterChat;
   const messages = detailQuery.data?.messages ?? [];
@@ -485,12 +488,12 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
-            {conversation === "collaboration" && showSubagents && subagents ? (
+            {conversation === "collaboration" && showSubagents && subagentBinding ? (
               <SubagentTreePanel
-                store={subagents.store}
-                cancelling={subagents.cancelling}
-                onCancel={subagents.cancel}
-                onExpand={subagents.loadTranscript}
+                store={subagentBinding.store}
+                cancelling={subagentBinding.cancelling}
+                onCancel={subagentBinding.cancel}
+                onExpand={subagentBinding.loadTranscript}
               />
             ) : null}
             {conversation === "main" && pollingFallbackCount > 0 ? (
