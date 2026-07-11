@@ -34,6 +34,8 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
+  /** Host-local origin injected into runtime tools; agents run on this server host. */
+  agentBaseUrl?: string;
   logger?: boolean;
 }
 
@@ -175,7 +177,11 @@ function agentDelegationPrompt(): string[] {
   ];
 }
 
-function agentMessageEndpoint(request: { protocol: string; headers: Record<string, unknown> }): string {
+function agentMessageEndpoint(
+  request: { protocol: string; headers: Record<string, unknown> },
+  configuredBaseUrl?: string,
+): string {
+  if (configuredBaseUrl) return `${configuredBaseUrl.replace(/\/$/, "")}/api/agent-messages`;
   const forwarded = request.headers["x-forwarded-proto"];
   const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
   const forwardedProtocol = typeof forwardedValue === "string"
@@ -916,9 +922,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             history: context.history,
             model: context.model,
             environment: {
-              PONDEROSA_AGENT_MESSAGE_URL: agentMessageEndpoint(request),
+              PONDEROSA_AGENT_MESSAGE_URL: agentMessageEndpoint(request, opts.agentBaseUrl),
               PONDEROSA_AGENT_MESSAGE_TOKEN: delegationCapability,
-              PONDEROSA_DELEGATION_URL: `${agentMessageEndpoint(request).replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+              PONDEROSA_DELEGATION_URL: `${agentMessageEndpoint(request, opts.agentBaseUrl).replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
               PONDEROSA_DELEGATION_TOKEN: delegationCapability,
               PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
             },
@@ -1200,7 +1206,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : masterChat && sourceChannel === "main"
           ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
           : individualChatPrompt(text, context);
-      const agentMessageUrl = agentMessageEndpoint(request);
+      const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text });
       publish(thread.id, userStored);
