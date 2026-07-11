@@ -41,6 +41,7 @@ interface ActiveRun {
   runId: string;
   controller: AbortController;
   messageCapability: string;
+  delegatedRunId?: string;
 }
 
 /** A deferred user or agent turn.  Queues are per-thread and FIFO. */
@@ -580,7 +581,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!capability || capability.controller.signal.aborted) {
         return reply.code(401).send({ error: { code: "forbidden", message: "invalid or expired delegation capability", retryable: false } });
       }
-      const forbiddenOwnership = ["parentRunId", "parentThreadId", "threadId", "masterChatId", "rootRunId", "registrationId", "credential"]
+      const forbiddenOwnership = ["parentRunId", "parentThreadId", "childThreadId", "threadId", "masterChatId", "rootRunId", "registrationId", "credential"]
         .find((field) => request.body && field in request.body);
       if (forbiddenOwnership) {
         return reply.code(403).send({ error: { code: "unauthorized_parent", message: `ownership field ${forbiddenOwnership} is server-controlled`, retryable: false } });
@@ -596,7 +597,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const context = store.getCollaborationChatDetail(capability.masterChatId);
         if (!context) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
         const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({ id, role, text, ...(authorThreadId ? { authorThreadId } : {}) }));
-        const spawned = delegations.spawn(capability.masterChatId, {
+        let spawned = delegations.spawn(capability.masterChatId, {
           parentRunId: capability.parentRunId,
           displayLabel: input.displayLabel,
           delegationPrompt: input.delegationPrompt,
@@ -604,6 +605,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           model: input.model,
           idempotencyKey: input.idempotencyKey,
         }, true, contextMessages, capability.threadId);
+        if (!spawned.run.childThreadId) {
+          const masterChat = store.getMasterChat(capability.masterChatId);
+          if (!masterChat) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
+          const child = store.createThread(masterChat.projectId, {
+            title: spawned.run.displayLabel,
+            engine: input.runtime,
+            masterChatId: capability.masterChatId,
+            model: input.model,
+          });
+          const initial = store.appendEvent(child.id, {
+            type: "user_message",
+            text: `Delegated task: ${spawned.run.delegationSummary}`,
+          });
+          publish(child.id, initial);
+          const run = delegations.bindChildThread(spawned.run.id, child.id);
+          spawned = { ...spawned, run };
+        }
         const launch = await app.inject({
           method: "POST",
           url: `/api/internal/subagents/${spawned.run.id}/launch`,
@@ -805,9 +823,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           text,
           ...(authorThreadId ? { authorThreadId } : {}),
         }));
-        return reply.code(201).send(
-          delegations.spawn(request.params.id, input, parentIsRunning, contextMessages, parentEntry?.[0]),
-        );
+        let spawned = delegations.spawn(request.params.id, input, parentIsRunning, contextMessages, parentEntry?.[0]);
+        if (!spawned.run.childThreadId) {
+          const masterChat = store.getMasterChat(request.params.id)!;
+          const child = store.createThread(masterChat.projectId, {
+            title: spawned.run.displayLabel,
+            engine: input.runtime,
+            masterChatId: request.params.id,
+            model: input.model,
+          });
+          const initial = store.appendEvent(child.id, {
+            type: "user_message",
+            text: `Delegated task: ${spawned.run.delegationSummary}`,
+          });
+          publish(child.id, initial);
+          spawned = { ...spawned, run: delegations.bindChildThread(spawned.run.id, child.id) };
+        }
+        return reply.code(201).send(spawned);
       } catch (error) {
         return delegationFailure(error, reply);
       }
@@ -832,15 +864,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
       const controller = new AbortController();
       const delegationCapability = randomUUID();
+      let childThread: ThreadDto | undefined;
+      let parentThread: ThreadDto | undefined;
       try {
         // Proof consumption, the running transition, and controller publication
         // complete synchronously before success is returned. Invalid/replayed
         // requests never enter the asynchronous launch or settlement path.
         const run = delegations.claim(request.params.runId, input);
+        childThread = run.childThreadId ? store.getThread(run.childThreadId) : undefined;
+        parentThread = run.parentThreadId ? store.getThread(run.parentThreadId) : undefined;
+        if (!childThread) {
+          throw new DelegationError("registration_mismatch", "delegated child thread is unavailable", 409);
+        }
         subagentControllers.set(run.id, controller);
+        activeRuns.set(childThread.id, {
+          runId: run.id,
+          controller,
+          messageCapability: delegationCapability,
+          delegatedRunId: run.id,
+        });
+        agentMessageCapabilities.set(delegationCapability, {
+          threadId: childThread.id,
+          masterChatId: run.masterChatId,
+          runId: run.id,
+          mentionDepth: run.depth,
+          mentionTrail: [childThread.id],
+        });
         delegationCapabilities.set(delegationCapability, {
           parentRunId: run.id,
-          threadId: run.id,
+          threadId: childThread.id,
           masterChatId: run.masterChatId,
           controller,
         });
@@ -851,12 +903,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let runtimeError: string | undefined;
         try {
           const stream = engine.adapter.seed({
-            threadId: request.params.runId,
+            threadId: childThread!.id,
             cwd: project.hostPath,
-            prompt: `${context.prompt}\n\n${agentDelegationPrompt().join("\n")}`,
+            prompt: [
+              context.prompt,
+              "",
+              `You are a first-class delegated Ponderosa agent${parentThread ? ` created by @${agentMentionHandle(parentThread.title)}` : ""}.`,
+              "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
+              ...agentMessagingPrompt(),
+              ...agentDelegationPrompt(),
+            ].join("\n"),
             history: context.history,
             model: context.model,
             environment: {
+              PONDEROSA_AGENT_MESSAGE_URL: agentMessageEndpoint(request),
+              PONDEROSA_AGENT_MESSAGE_TOKEN: delegationCapability,
               PONDEROSA_DELEGATION_URL: `${agentMessageEndpoint(request).replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
               PONDEROSA_DELEGATION_TOKEN: delegationCapability,
               PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -869,6 +930,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           });
           for await (const event of stream) {
             if (event.type === "text" && event.delta) delegations.appendOutput(request.params.runId, event.delta);
+            const stored = store.appendEvent(childThread!.id, event);
+            publish(childThread!.id, stored);
             if (event.type === "error") runtimeError = event.message;
           }
           if (controller.signal.aborted) delegations.settle(request.params.runId, "failed", "delegated runtime aborted");
@@ -881,7 +944,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (subagentControllers.get(request.params.runId) === controller) {
             subagentControllers.delete(request.params.runId);
           }
+          if (childThread && activeRuns.get(childThread.id)?.controller === controller) {
+            activeRuns.delete(childThread.id);
+          }
+          agentMessageCapabilities.delete(delegationCapability);
           delegationCapabilities.delete(delegationCapability);
+          if (childThread) void dispatchNextTurn(childThread.id);
         }
       })();
       return reply.code(202).send({ runId: request.params.runId, accepted: true });
@@ -1309,6 +1377,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = activeRuns.get(request.params.id);
     if (!run) return { cancelled: false };
     run.controller.abort();
+    if (run.delegatedRunId) {
+      delegations.cancel(run.delegatedRunId, `thread-cancel-${randomUUID()}`);
+    }
     return { cancelled: true };
   });
 

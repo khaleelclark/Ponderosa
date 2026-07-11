@@ -168,6 +168,17 @@ Runtimes are explicitly instructed that built-in `spawn_agent`, `Task`, or simil
 subagent mechanisms are forbidden under Ponderosa; they must report bridge
 failures and must never silently fall back to an untracked child.
 
+Each delegated child is also backed by a canonical Ponderosa thread. “Subagent”
+describes its server-recorded origin and lineage, not a reduced feature tier. The
+child therefore has the normal Agent detail surface, persistent event log,
+messages, tasks, artifacts, resumable runtime session, direct follow-up queue, and
+thread cancellation. Its thread is linked to the same master chat, so the child
+and parent participate in Collaboration under their own thread identities and can
+hand work back and forth with ordinary `@mentions`. The delegation audit remains
+the authority for parent/child/root lineage and the initial delegated lifecycle;
+the thread event log remains canonical for the child agent's work and subsequent
+turns. The raw delegation prompt is not copied into the public thread history.
+
 The central engineering decision: **the app is an orchestrator over
 subscription-backed agent runtimes, not a chat client over provider API keys.**
 
