@@ -24,6 +24,8 @@ export interface StreamProcessOptions {
   map: (raw: unknown, ctx: { cwd: string }) => AgentEvent[];
   /** Human label for error messages, e.g. "codex" / "claude". */
   label: string;
+  /** Optional stdin payload. Use this for unbounded user/context text, never argv. */
+  stdin?: string;
 }
 
 /**
@@ -44,6 +46,7 @@ export async function* streamProcess(
     killGraceMs,
     map,
     label,
+    stdin,
   } = opts;
 
   if (signal.aborted) {
@@ -54,11 +57,20 @@ export async function* streamProcess(
   const child: ChildProcess = spawnFn(bin, args, {
     cwd,
     env: { ...process.env, ...environment },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     // Give each run its own process group. Agent CLIs can spawn long-running
     // commands, so cancelling only the CLI would leave its descendants alive.
     detached: process.platform !== "win32",
   });
+
+  // Large prompts cannot safely be argv entries: POSIX limits the combined
+  // argument and environment size and Node surfaces that launch failure as
+  // E2BIG. Stream prompt text after spawn instead. Ignore a late EPIPE here;
+  // the process exit/spawn error below remains the canonical error signal.
+  if (stdin !== undefined && child.stdin) {
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(stdin);
+  }
 
   let stderrTail = "";
   child.stderr?.setEncoding("utf8");

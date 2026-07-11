@@ -12,6 +12,14 @@ if (mode === "seed") {
   w({ type: "item.completed", item: { id: "i1", type: "agent_message", text: "done" } });
   w({ type: "turn.completed", usage: { input_tokens: 5, output_tokens: 2 } });
   process.exit(0);
+} else if (mode === "stdin") {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) input += chunk;
+  w({ type: "thread.started", thread_id: "sess-stdin" });
+  w({ type: "item.completed", item: { id: "i1", type: "agent_message", text: `stdin-bytes:${Buffer.byteLength(input)}` } });
+  w({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } });
+  process.exit(0);
 } else if (mode === "hang") {
   w({ type: "thread.started", thread_id: "sess-hang" });
   process.on("SIGTERM", () => process.exit(143));

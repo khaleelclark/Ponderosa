@@ -163,9 +163,9 @@ export class CodexAdapter implements Adapter {
       "--json",
       "--skip-git-repo-check",
       ...this.configArgs(opts.model, opts.effort),
-      prompt,
+      "-",
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, prompt);
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
@@ -176,9 +176,9 @@ export class CodexAdapter implements Adapter {
       "--json",
       "--skip-git-repo-check",
       ...this.configArgs(opts.model, opts.effort),
-      opts.prompt,
+      "-",
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt);
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */
@@ -187,6 +187,7 @@ export class CodexAdapter implements Adapter {
     cwd: string,
     signal: AbortSignal,
     environment?: Record<string, string>,
+    stdin?: string,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
@@ -198,6 +199,7 @@ export class CodexAdapter implements Adapter {
       killGraceMs: this.killGraceMs,
       map: mapCodexEvent,
       label: "codex",
+      stdin,
     });
   }
 }

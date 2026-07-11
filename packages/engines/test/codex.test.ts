@@ -118,8 +118,8 @@ describe("CodexAdapter.seed (fake codex)", () => {
   });
 });
 
-describe("CodexAdapter.continue argv", () => {
-  it("uses codex exec resume with the stored session id and next prompt only", async () => {
+describe("CodexAdapter.continue transport", () => {
+  it("uses codex exec resume with the stored session id and reads the next prompt from stdin", async () => {
     const calls: Array<{ bin: string; args: readonly string[]; cwd?: string; detached?: boolean; env?: NodeJS.ProcessEnv }> = [];
     const spawnFn = ((bin: string, args: readonly string[], opts: { cwd?: string; detached?: boolean; env?: NodeJS.ProcessEnv }) => {
       calls.push({ bin, args, cwd: opts.cwd, detached: opts.detached, env: opts.env });
@@ -156,7 +156,28 @@ describe("CodexAdapter.continue argv", () => {
     expect(calls[0]?.args).toContain("-m");
     expect(calls[0]?.args).toContain("gpt-test");
     expect(calls[0]?.args).toContain("model_reasoning_effort=\"high\"");
-    expect(calls[0]?.args.at(-1)).toBe("second turn only");
+    expect(calls[0]?.args.at(-1)).toBe("-");
+    expect(calls[0]?.args).not.toContain("second turn only");
+  });
+
+  it("streams prompts larger than the OS argv limit through stdin", async () => {
+    const prompt = "x".repeat(3 * 1024 * 1024);
+    const controller = new AbortController();
+    const events = await collect(
+      fakeAdapter("stdin").continue({
+        threadId: "t1",
+        cwd,
+        prompt,
+        resumeSessionId: "sess-large",
+        signal: controller.signal,
+      }),
+    );
+
+    expect(events).toContainEqual({
+      type: "text",
+      delta: `stdin-bytes:${Buffer.byteLength(prompt)}`,
+    });
+    expect(events.at(-1)?.type).toBe("turn_done");
   });
 
   it("lets the authenticated CLI choose its defaults when overrides are omitted", async () => {
