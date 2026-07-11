@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
 import { createServer, type EngineRegistration } from "../src/app.js";
@@ -873,14 +873,15 @@ describe("server chunk F", () => {
     const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const intent = { targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
-    store.appendMasterChatMessage(
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T12:00:00.000Z"));
+    const older = store.appendMasterChatMessage(
       master.id,
       { role: "user", text: "@Parent older message missing its inbox write" },
       undefined,
       "collaboration",
       [intent],
-    );
-    await sleep(2);
+    )!;
     const newer = store.appendMasterChatMessage(
       master.id,
       { role: "user", text: "@Parent newer message already queued" },
@@ -888,6 +889,8 @@ describe("server chunk F", () => {
       "collaboration",
       [intent],
     )!;
+    vi.useRealTimers();
+    expect(older.createdAt).toBe(newer.createdAt);
     deliveries.queue({
       masterChatId: master.id,
       messageId: newer.id,
@@ -897,6 +900,7 @@ describe("server chunk F", () => {
       mentionTrail: [],
       kind: "tag",
       createdAt: newer.createdAt,
+      orderKey: store.getMasterChatMessageDeliveryOrderKey(master.id, newer.id),
     });
 
     const app = createServer({ dataDir, store, engines, logger: false });

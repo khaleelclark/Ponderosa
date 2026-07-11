@@ -19,6 +19,8 @@ export interface CollaborationDelivery {
   model?: string;
   effort?: string;
   sourceChannel?: "main";
+  /** Canonical total-order key for messages sharing the same millisecond. */
+  orderKey?: string;
   status: CollaborationDeliveryStatus;
   createdAt: string;
   deliveredAt?: string;
@@ -99,7 +101,7 @@ export class CollaborationDeliveryStore {
   pending(threadId: string): CollaborationDelivery[] {
     return [...this.deliveries.values()]
       .filter((delivery) => delivery.targetThreadId === threadId && delivery.status === "queued")
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
   }
 
   pendingCount(threadId: string): number {

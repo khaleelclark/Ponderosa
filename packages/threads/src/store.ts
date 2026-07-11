@@ -125,6 +125,7 @@ interface MasterChatMessageJson {
   channel?: MasterChatChannel;
   deliveryIntents?: MasterChatDeliveryIntent[];
   messageReceiptKey?: string;
+  deliveryOrderKey?: string;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -356,6 +357,10 @@ export class ThreadStore {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
     const now = new Date().toISOString();
+    const messagePath = channel === "collaboration"
+      ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
+      : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId);
+    const appendSequence = readJsonLines<MasterChatMessageJson>(messagePath).length + 1;
     const message: MasterChatMessageJson = {
       id: randomUUID(),
       masterChatId,
@@ -366,12 +371,13 @@ export class ThreadStore {
       channel,
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
+      ...(channel === "collaboration"
+        ? { deliveryOrderKey: `${now}:${String(appendSequence).padStart(12, "0")}` }
+        : {}),
     };
     mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
     appendFileSync(
-      channel === "collaboration"
-        ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
-        : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+      messagePath,
       JSON.stringify(message) + "\n",
       "utf8",
     );
@@ -406,6 +412,7 @@ export class ThreadStore {
     message: MasterChatMessageDto;
     intent: MasterChatDeliveryIntent;
     messageReceiptKey?: string;
+    deliveryOrderKey: string;
   }> {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return [];
@@ -422,7 +429,16 @@ export class ThreadStore {
       },
       intent,
       messageReceiptKey: message.messageReceiptKey,
+      deliveryOrderKey: message.deliveryOrderKey ?? `${message.createdAt}:${String(0).padStart(12, "0")}`,
     })));
+  }
+
+  getMasterChatMessageDeliveryOrderKey(masterChatId: string, messageId: string): string | undefined {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return undefined;
+    return readJsonLines<MasterChatMessageJson>(
+      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+    ).find((message) => message.id === messageId)?.deliveryOrderKey;
   }
 
   getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {

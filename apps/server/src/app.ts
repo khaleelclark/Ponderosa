@@ -513,7 +513,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const completionMessages = new Set<string>();
     for (const project of store.listProjects()) {
       for (const master of store.listMasterChats(project.id)) {
-        for (const { message, intent, messageReceiptKey } of store.getMasterChatDeliveryIntents(master.id)) {
+        for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getMasterChatDeliveryIntents(master.id)) {
           if (message.createdAt < boundary) continue;
           if (messageReceiptKey) collaborationDeliveries.rememberMessageReceipt(messageReceiptKey, message.id);
           const queued = collaborationDeliveries.queue({
@@ -527,6 +527,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             kind: intent.kind,
             delegatedRunId: intent.delegatedRunId,
             createdAt: message.createdAt,
+            orderKey: deliveryOrderKey,
           });
           recipients.add(intent.targetThreadId);
           if (intent.delegatedRunId) {
@@ -644,6 +645,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     authorThreadId: string | undefined,
     intents: MasterChatDeliveryIntent[],
   ): void {
+    const orderKey = store.getMasterChatMessageDeliveryOrderKey(masterChatId, message.id);
     for (const intent of intents) {
       queueCollaborationDelivery({
         masterChatId,
@@ -656,6 +658,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         kind: intent.kind,
         delegatedRunId: intent.delegatedRunId,
         createdAt: message.createdAt,
+        orderKey,
       });
     }
   }
@@ -737,6 +740,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       kind: "delegation_completion",
       delegatedRunId: run.id,
       createdAt: message.createdAt,
+      orderKey: store.getMasterChatMessageDeliveryOrderKey(run.masterChatId, message.id),
     });
     if (!delivery) return;
     syncDelegatedCompletion(delivery.id);
