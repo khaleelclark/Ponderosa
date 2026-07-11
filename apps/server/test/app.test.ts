@@ -503,6 +503,25 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("uses the forwarded HTTPS protocol for an agent messaging endpoint behind a proxy", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    adapter.mode = "hang";
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      headers: { host: "pine.example.test", "x-forwarded-proto": "https" },
+      payload: { text: "Use the routed endpoint." },
+    });
+    await waitForSeedCount(1);
+    expect(adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe(
+      "https://pine.example.test/api/agent-messages",
+    );
+    await cancelAndWait(app, thread.id);
+    await app.close();
+  });
+
   it("queues an agent-authored mention until the tagged agent finishes its active turn", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

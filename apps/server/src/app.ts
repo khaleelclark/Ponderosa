@@ -145,6 +145,19 @@ function agentMessagingPrompt(): string[] {
   ];
 }
 
+function agentMessageEndpoint(request: { protocol: string; headers: Record<string, unknown> }): string {
+  const forwarded = request.headers["x-forwarded-proto"];
+  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+  const forwardedProtocol = typeof forwardedValue === "string"
+    ? forwardedValue.split(",", 1)[0]?.trim().toLowerCase()
+    : undefined;
+  const protocol = forwardedProtocol === "https" || forwardedProtocol === "http"
+    ? forwardedProtocol
+    : request.protocol;
+  const host = typeof request.headers.host === "string" ? request.headers.host : "127.0.0.1";
+  return `${protocol}://${host}/api/agent-messages`;
+}
+
 /**
  * Give a master-chat agent the shared room context and a lightweight teammate
  * response contract. This is intentionally part of the next user prompt (rather
@@ -795,7 +808,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : masterChat && sourceChannel === "main"
           ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
           : individualChatPrompt(text, context);
-      const agentMessageUrl = `${request.protocol}://${request.headers.host ?? "127.0.0.1"}/api/agent-messages`;
+      const agentMessageUrl = agentMessageEndpoint(request);
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text });
       publish(thread.id, userStored);
