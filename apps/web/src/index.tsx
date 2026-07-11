@@ -1,11 +1,11 @@
 import CssBaseline from "@mui/material/CssBaseline";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./global.css";
-import { theme } from "./theme";
+import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -16,6 +16,28 @@ const queryClient = new QueryClient({
   },
 });
 
+function Root(): JSX.Element {
+  const [colorMode, setColorMode] = useState<ColorMode>(loadColorMode);
+  const theme = useMemo(() => createPonderosaTheme(colorMode), [colorMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(COLOR_MODE_STORAGE_KEY, colorMode);
+    document.documentElement.style.colorScheme = colorMode;
+  }, [colorMode]);
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <App
+          colorMode={colorMode}
+          onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
+        />
+      </ThemeProvider>
+    </QueryClientProvider>
+  );
+}
+
 const container = document.getElementById("root");
 if (!container) {
   throw new Error("Root container #root not found");
@@ -23,11 +45,6 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <App />
-      </ThemeProvider>
-    </QueryClientProvider>
+    <Root />
   </StrictMode>,
 );
