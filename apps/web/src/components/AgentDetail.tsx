@@ -30,7 +30,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDetailDto, MasterChatDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -72,6 +72,7 @@ export function AgentDetail({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
+  const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
 
   const detail = threadQuery.data;
   const engine =
@@ -174,7 +175,7 @@ export function AgentDetail({
     : undefined;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} />,
+    chat: <ChatPane messages={detail.messages} onReply={setReplyTo} />,
     log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,
@@ -333,9 +334,10 @@ export function AgentDetail({
           placeholder={stream.running ? "Queue a follow-up for this agent" : "Message this agent directly"}
           onSend={(text) => {
             sendMessage.mutate(
-              { text, model: model || undefined, effort: effort || undefined },
+              { text, model: model || undefined, effort: effort || undefined, replyToMessageId: replyTo?.id },
               {
                 onSuccess: (response) => {
+                  setReplyTo(undefined);
                   setQueuedMessageNotice(
                     response.queued
                       ? `Queued in position ${response.position}; it will start when the current response finishes.`
@@ -347,6 +349,8 @@ export function AgentDetail({
             setTab("chat");
           }}
           onCancel={() => cancelRun.mutate()}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(undefined)}
         />
       </Box>
 

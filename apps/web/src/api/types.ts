@@ -30,6 +30,7 @@ export interface CreateAgentOptions {
   effort?: string;
   /** Starts the first turn as part of creation, avoiding a stranded idle agent. */
   initialMessage?: string;
+  replyToMessageId?: string;
 }
 
 export interface StreamSubscription {

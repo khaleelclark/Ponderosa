@@ -19,6 +19,7 @@ import type {
   SendAgentMessageRequest,
   SubagentRunDto,
   ThreadDto,
+  MessageReferenceDto,
 } from "@ponderosa/core";
 import { artifactContentPath, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { DelegationError, DelegationStore } from "./delegations.js";
@@ -59,6 +60,8 @@ interface PendingTurn {
   sourceAuthorThreadId?: string;
   /** Set only by the server's persisted collaboration delivery dispatcher. */
   collaborationDeliveryId?: string;
+  replyTo?: MessageReferenceDto;
+  replyToMessageId?: string;
 }
 
 interface AgentMessageCapability {
@@ -223,7 +226,8 @@ function masterChatPrompt(
         : message.role === "user"
           ? "Manager"
           : "Team";
-      return `${speaker}: ${message.text}`;
+      const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
+      return `${speaker}${quoted}: ${message.text}`;
     })
     .join("\n");
 
@@ -263,7 +267,8 @@ function collaborationChatPrompt(
         : message.role === "user"
           ? "Manager"
           : "Team";
-      return `${speaker}: ${message.text}`;
+      const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
+      return `${speaker}${quoted}: ${message.text}`;
     })
     .join("\n");
   return [
@@ -295,6 +300,12 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
     "Latest message for you:",
     currentRequest,
   ].join("\n");
+}
+
+function replyContext(reference: MessageReferenceDto | undefined): string {
+  if (!reference) return "";
+  const quote = reference.text.replace(/\s+/g, " ").trim().slice(0, 1200);
+  return `\nReplying specifically to this earlier message:\n> ${quote}\n`;
 }
 
 function envelope(threadId: string, stored: StoredLogEvent): SseEventEnvelope | undefined {
@@ -435,6 +446,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceChannel: delivery.sourceChannel,
       sourceAuthorThreadId: delivery.authorThreadId,
       collaborationDeliveryId: delivery.id,
+      replyToMessageId: delivery.replyToMessageId,
     };
   }
 
@@ -1073,15 +1085,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { role?: "user" | "assistant" | "system"; text: string };
+    Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string };
   }>("/api/master-chats/:id/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
-    const message = store.appendMasterChatMessage(request.params.id, {
-      role: request.body.role,
-      text,
-    });
+    let message;
+    try {
+      message = store.appendMasterChatMessage(request.params.id, {
+        role: request.body.role,
+        text,
+        replyToMessageId: request.body.replyToMessageId,
+      });
+    } catch {
+      return reply.code(400).send({ error: "reply target was not found in this conversation" });
+    }
     return message ?? reply.code(404).send({ error: "master chat not found" });
   });
 
@@ -1092,7 +1110,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string };
+    Body: { text: string; replyToMessageId?: string };
   }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
@@ -1101,13 +1119,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
     const routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
-    const message = store.appendMasterChatMessage(
+    let message;
+    try { message = store.appendMasterChatMessage(
       request.params.id,
-      { role: "user", text },
+      { role: "user", text, replyToMessageId: request.body.replyToMessageId },
       undefined,
       "collaboration",
       routing.intents,
-    );
+    ); } catch { return reply.code(400).send({ error: "reply target was not found in this conversation" }); }
     const notifiedAgentIds: string[] = [];
     queueRecordedCollaborationMessage(request.params.id, message!, undefined, routing.intents);
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetThreadId));
@@ -1190,7 +1209,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string; initialMessage?: string };
+    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string; initialMessage?: string; replyToMessageId?: string };
   }>(
     "/api/projects/:id/threads",
     async (request, reply) => {
@@ -1204,12 +1223,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (!masterChat || masterChat.projectId !== request.params.id) {
           return reply.code(400).send({ error: "master chat does not belong to project" });
         }
+        if (request.body.replyToMessageId && !store.getMasterChatMessages(request.body.masterChatId, "main").some((message) => message.id === request.body.replyToMessageId)) {
+          return reply.code(400).send({ error: "reply target was not found in this conversation" });
+        }
       }
       const initialMessage = request.body.initialMessage?.trim();
       const thread = store.createThread(request.params.id, request.body);
       if (initialMessage) {
         if (thread.masterChatId) {
-          store.appendMasterChatMessage(thread.masterChatId, { text: initialMessage });
+          store.appendMasterChatMessage(thread.masterChatId, { text: initialMessage, replyToMessageId: request.body.replyToMessageId });
         }
         const turn = await app.inject({
           method: "POST",
@@ -1286,6 +1308,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveryId?: string;
       sourceChannel?: "main";
       sourceAuthorThreadId?: string;
+      replyToMessageId?: string;
     };
   }>(
     "/api/threads/:id/messages",
@@ -1349,7 +1372,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         collaborationDeliveryId,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
         sourceAuthorThreadId: request.body.sourceAuthorThreadId,
+        replyToMessageId: request.body.replyToMessageId,
+        replyTo: request.body.replyToMessageId
+          ? (() => {
+              const target = store.getMessages(thread.id).find((message) => message.id === request.body.replyToMessageId);
+              return target ? { messageId: target.id, text: target.text, role: target.role } : undefined;
+            })()
+          : undefined,
       };
+      if (request.body.replyToMessageId && !pendingTurn.replyTo) {
+        return reply.code(400).send({ error: "reply target was not found in this conversation" });
+      }
       if (activeRuns.has(thread.id)) {
         // A dispatcher that lost the claim race needs to restore the dequeued
         // item at the head itself; ordinary manager and agent messages join the
@@ -1371,6 +1404,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           model: request.body.model,
           effort: request.body.effort,
           sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
+          replyToMessageId: request.body.replyToMessageId,
         });
         if (!delivery) return reply.code(503).send({ error: "turn could not be persisted" });
         const position = collaborationDeliveries.pendingCount(thread.id);
@@ -1408,14 +1442,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? contextThreads.find((candidate) => candidate.id === request.body.sourceAuthorThreadId)?.title ?? "Agent"
         : "Manager";
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextThreads, thread.id);
-      const prompt = collaboration
+      const basePrompt = collaboration
         ? collaborationChatPrompt(collaboration.messages, collaboration.threads, text, context)
         : masterChat && sourceChannel === "main"
           ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
           : individualChatPrompt(text, context);
+      const prompt = `${basePrompt}${replyContext(pendingTurn.replyTo)}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
-      const userStored = store.appendEvent(thread.id, { type: "user_message", text });
+      const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo });
       publish(thread.id, userStored);
 
       activeRuns.set(thread.id, { runId, controller, messageCapability });

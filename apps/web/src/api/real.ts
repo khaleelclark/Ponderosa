@@ -139,6 +139,7 @@ export const realApi: PonderosaApi = {
       model: options.model,
       effort: options.effort,
       initialMessage: options.initialMessage,
+      replyToMessageId: options.replyToMessageId,
     });
   },
   updateThread(threadId, patch) {

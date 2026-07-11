@@ -68,6 +68,15 @@ export interface MasterChatMessageDto {
    * own messages.
    */
   authorThreadId?: string;
+  /** Immutable quoted context captured when this reply was sent. */
+  replyTo?: MessageReferenceDto;
+}
+
+export interface MessageReferenceDto {
+  messageId: string;
+  text: string;
+  role: "user" | "assistant" | "system";
+  authorThreadId?: string;
 }
 
 /** The two deliberately separate conversations owned by a master chat. */
@@ -90,6 +99,7 @@ export interface MasterChatDetailDto {
 export interface CreateMasterChatMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
+  replyToMessageId?: string;
 }
 
 // ─── Threads ─────────────────────────────────────────────────────────────────
@@ -124,6 +134,8 @@ export interface CreateThreadRequest {
   effort?: string;
   /** Optional first turn, dispatched atomically with thread creation. */
   initialMessage?: string;
+  /** Master-chat message referenced by the optional first turn. */
+  replyToMessageId?: string;
 }
 
 /** PATCH /api/threads/:id body (rename / archive). */
@@ -142,6 +154,7 @@ export interface MessageDto {
   role: "user" | "assistant";
   text: string;
   createdAt: string;
+  replyTo?: MessageReferenceDto;
 }
 
 /** A Tasks-pane execution unit (SPEC §7 `tasks`). */
@@ -199,6 +212,7 @@ export interface SendMessageRequest {
   effort?: string;
   /** Set by a master-chat client when this turn originated in that room. */
   sourceChannel?: "main";
+  replyToMessageId?: string;
 }
 
 /** POST /api/threads/:id/messages response when a turn starts immediately. */

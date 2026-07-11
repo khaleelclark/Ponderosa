@@ -4,6 +4,8 @@ import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import SendIcon from "@mui/icons-material/Send";
+import ReplyIcon from "@mui/icons-material/Reply";
+import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import {
@@ -115,6 +117,10 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
   element.scrollTop = element.scrollHeight;
 }
 
+export function replyFallbackText(text: string): string {
+  return text.trim() || "Original message unavailable";
+}
+
 export function codeBlockText(children: ReactNode): string {
   if (typeof children === "string" || typeof children === "number") {
     return String(children);
@@ -209,7 +215,7 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
-export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element {
+export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onReply?(message: MessageDto): void }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
@@ -241,6 +247,8 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
       {chatMessages.map((message) => (
         <Box
           key={message.id}
+          id={`message-${message.id}`}
+          tabIndex={-1}
           sx={{
             alignSelf: message.role === "user" ? "flex-end" : "flex-start",
             maxWidth: "min(680px, 92%)",
@@ -254,7 +262,22 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
             boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
           }}
         >
+          {message.replyTo ? (
+            <Box
+              component="button"
+              onClick={() => {
+                const target = document.getElementById(`message-${message.replyTo!.messageId}`);
+                target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                target?.focus({ preventScroll: true });
+              }}
+              sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
+              aria-label="Go to replied-to message"
+            >
+              <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
+            </Box>
+          ) : null}
           <ChatMarkdown>{message.text}</ChatMarkdown>
+          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
         </Box>
       ))}
     </Stack>
@@ -595,6 +618,8 @@ export function Composer({
   allowUnmentionedSend = true,
   onSend,
   onCancel,
+  replyTo,
+  onCancelReply,
 }: {
   disabled: boolean;
   running: boolean;
@@ -607,6 +632,8 @@ export function Composer({
   allowUnmentionedSend?: boolean;
   onSend(text: string): void;
   onCancel?(): void;
+  replyTo?: { text: string };
+  onCancelReply?(): void;
 }): JSX.Element {
   const [text, setText] = useState("");
   const [caret, setCaret] = useState(0);
@@ -678,6 +705,15 @@ export function Composer({
         p: 1,
       }}
     >
+      {replyTo ? (
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5 }}>
+          <Box sx={{ minWidth: 0, flex: 1, borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
+            <Typography variant="caption" color="text.secondary">Replying to</Typography>
+            <Typography variant="body2" noWrap>{replyTo.text}</Typography>
+          </Box>
+          <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
+        </Stack>
+      ) : null}
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>
         <Box ref={anchorRef} sx={{ flex: 1 }}>
           <TextField

@@ -1594,4 +1594,21 @@ describe("server chunk F", () => {
     expect(project.id).toBeTruthy();
     await app.close();
   }, 10000);
+
+  it("validates individual reply targets and sends compact quoted context", async () => {
+    const { app, project, thread } = await createProjectAndThread();
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Original question" } });
+    await waitForRun(thread.id);
+    const original = store.getMessages(thread.id)[0]!;
+    const other = store.createThread(project.id, { title: "Other", engine: "codex" });
+    const rejected = await app.inject({ method: "POST", url: `/api/threads/${other.id}/messages`, payload: { text: "Cross-boundary", replyToMessageId: original.id } });
+    expect(rejected.statusCode).toBe(400);
+    const accepted = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Specific answer", replyToMessageId: original.id } });
+    expect(accepted.statusCode).toBe(200);
+    expect(adapter.continues.at(-1)?.prompt).toContain("Replying specifically to this earlier message");
+    expect(adapter.continues.at(-1)?.prompt).toContain("Original question");
+    expect(store.getMessages(thread.id).find((message) => message.text === "Specific answer")?.replyTo?.messageId).toBe(original.id);
+    await waitForRun(thread.id);
+    await app.close();
+  });
 });

@@ -126,6 +126,7 @@ interface MasterChatMessageJson {
   deliveryIntents?: MasterChatDeliveryIntent[];
   messageReceiptKey?: string;
   deliveryOrderKey?: string;
+  replyTo?: import("@ponderosa/core").MessageReferenceDto;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -379,6 +380,9 @@ export class ThreadStore {
       createdAt: now,
       authorThreadId: authorThreadId ?? null,
       channel,
+      ...(input.replyToMessageId
+        ? { replyTo: this.masterChatReference(masterChatId, channel, input.replyToMessageId) }
+        : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
       ...(channel === "collaboration"
@@ -399,6 +403,7 @@ export class ThreadStore {
       createdAt: message.createdAt,
       authorThreadId: message.authorThreadId,
       channel: message.channel,
+      replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
     }).run();
     this.db
       .update(masterChats)
@@ -415,6 +420,7 @@ export class ThreadStore {
       text: message.text,
       createdAt: message.createdAt,
       authorThreadId: authorThreadId ?? undefined,
+      replyTo: message.replyTo,
     };
   }
 
@@ -469,7 +475,19 @@ export class ThreadStore {
         text: row.text,
         createdAt: row.createdAt,
         authorThreadId: row.authorThreadId ?? undefined,
+        replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
       }));
+  }
+
+  private masterChatReference(masterChatId: string, channel: MasterChatChannel, messageId: string) {
+    const target = this.getMasterChatMessages(masterChatId, channel).find((message) => message.id === messageId);
+    if (!target) throw new Error("reply target was not found in this conversation");
+    return {
+      messageId: target.id,
+      text: target.text,
+      role: target.role,
+      authorThreadId: target.authorThreadId,
+    };
   }
 
   // ─── Threads ───────────────────────────────────────────────────────────────
@@ -597,6 +615,7 @@ export class ThreadStore {
         role: r.role === "user" ? "user" : "assistant",
         text: r.text,
         createdAt: r.createdAt,
+        replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
       }));
   }
 
@@ -757,6 +776,7 @@ export class ThreadStore {
                 createdAt: message.createdAt,
                 authorThreadId: message.authorThreadId,
                 channel: message.channel ?? channel,
+                replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
               }).run();
             }
           }
