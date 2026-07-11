@@ -635,6 +635,7 @@ export function MasterChatView({
           <TextField
             autoFocus
             fullWidth
+            label="Master chat name"
             value={renameValue}
             onChange={(event) => setRenameValue(event.target.value)}
             sx={{ mt: 1 }}

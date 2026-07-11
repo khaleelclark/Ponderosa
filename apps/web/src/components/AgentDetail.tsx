@@ -179,13 +179,19 @@ export function AgentDetail({
   return (
     <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto auto 1fr auto" }}>
       <Box sx={{ px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+        <Stack
+          direction="row"
+          spacing={1}
+          useFlexGap
+          flexWrap="wrap"
+          sx={{ alignItems: "center", minWidth: 0 }}
+        >
           <Tooltip title="Back to agents">
             <IconButton aria-label="Back to agents" onClick={onBack} edge="start">
               <ArrowBackIcon />
             </IconButton>
           </Tooltip>
-          <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "calc(100% - 48px)", sm: "auto" } }}>
             <Typography variant="h6" noWrap>
               {detail.thread.title}
             </Typography>
@@ -211,8 +217,14 @@ export function AgentDetail({
             variant={stream.connected ? "filled" : "outlined"}
           />
           {running ? (
-            <Button size="small" color="error" variant="outlined" onClick={() => cancelRun.mutate()}>
-              Cancel
+            <Button
+              size="small"
+              color="error"
+              variant="outlined"
+              disabled={cancelRun.isPending}
+              onClick={() => cancelRun.mutate()}
+            >
+              {cancelRun.isPending ? "Stopping…" : "Cancel"}
             </Button>
           ) : null}
           <Tooltip title="Rename agent">
