@@ -53,6 +53,8 @@ export class DelegationError extends Error {
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 const publicRun = ({ delegationPrompt: _prompt, model: _model, effort: _effort, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
+export const MAX_DELEGATION_DESCENDANTS = 100;
+export const MAX_CONCURRENT_DELEGATIONS = 100;
 
 interface SpawnResult {
   run: SubagentRunDto;
@@ -276,9 +278,12 @@ export class DelegationStore {
     if (depth > 3) throw new DelegationError("depth_limit_exceeded", "delegation depth limit exceeded", 409);
     const rootRunId = parent?.rootRunId ?? input.parentRunId;
     const descendants = [...this.runs.values()].filter((run) => run.rootRunId === rootRunId);
-    if (descendants.length >= 12) throw new DelegationError("descendant_limit_exceeded", "descendant limit exceeded", 409);
-    if (descendants.filter((run) => run.status === "queued" || run.status === "running").length >= 4) {
+    const activeDescendants = descendants.filter((run) => run.status === "queued" || run.status === "running");
+    if (activeDescendants.length >= MAX_CONCURRENT_DELEGATIONS) {
       throw new DelegationError("concurrency_limit_exceeded", "delegation concurrency limit exceeded", 409, true);
+    }
+    if (descendants.length >= MAX_DELEGATION_DESCENDANTS) {
+      throw new DelegationError("descendant_limit_exceeded", "descendant limit exceeded", 409);
     }
 
     const now = new Date().toISOString();
