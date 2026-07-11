@@ -38,6 +38,7 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
+import { MessageTimestamp } from "./MessageTimestamp";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -285,6 +286,7 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
             </Box>)}
           </Stack> : null}
           {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+          <MessageTimestamp value={message.createdAt} />
         </Box>
       ))}
     </Stack>

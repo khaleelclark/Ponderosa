@@ -47,6 +47,7 @@ import { compactViewportQuery } from "../responsive";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
+import { MessageTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
 
 export function MasterChatView({
@@ -582,6 +583,7 @@ export function MasterChatView({
                       </Box>)}
                     </Stack> : null}
                     <Button size="small" color="inherit" onClick={() => setReplyTo(message)} sx={{ mt: .5 }}>Reply</Button>
+                    <MessageTimestamp value={message.createdAt} />
                   </Box>
                 </Box>
               );
