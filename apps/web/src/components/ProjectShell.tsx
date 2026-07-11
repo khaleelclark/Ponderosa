@@ -291,7 +291,7 @@ export function ProjectShell({
         {loading ? <LinearProgress /> : null}
         {sidebar}
       </Box>
-      <Box sx={{ minHeight: 0, display: "grid", bgcolor: "#fbfcf8" }}>{main}</Box>
+      <Box sx={{ minHeight: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
       {dialogs}
     </Box>
   );

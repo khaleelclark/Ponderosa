@@ -1,5 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
+import LightModeIcon from "@mui/icons-material/LightMode";
 import {
   Alert,
   AppBar,
@@ -32,6 +34,7 @@ import {
   useRoute,
   type Route,
 } from "./routing";
+import type { ColorMode } from "./theme";
 
 function ProjectTabs({
   projects,
@@ -73,7 +76,13 @@ function ProjectTabs({
   );
 }
 
-export default function App(): JSX.Element {
+export default function App({
+  colorMode,
+  onToggleColorMode,
+}: {
+  colorMode: ColorMode;
+  onToggleColorMode(): void;
+}): JSX.Element {
   const queryClient = useQueryClient();
   const { route, navigate } = useRoute();
   const projectsQuery = useProjects();
@@ -149,6 +158,15 @@ export default function App(): JSX.Element {
             color={engines.some((engine) => engine.authenticated) ? "success" : "warning"}
             variant="outlined"
           />
+          <Tooltip title={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
+            <IconButton
+              aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              onClick={onToggleColorMode}
+              sx={{ ml: 0.5 }}
+            >
+              {colorMode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
+            </IconButton>
+          </Tooltip>
         </Toolbar>
         <ProjectTabs
           projects={projects}
