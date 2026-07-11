@@ -33,7 +33,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
+import type { EngineDto, MasterChatDto, MasterChatMessageDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -78,6 +78,7 @@ export function MasterChatView({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
+  const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -168,10 +169,12 @@ export function MasterChatView({
         model: model || undefined,
         effort: effort || undefined,
         initialMessage: text,
+        replyToMessageId: replyTo?.id,
       });
       return agent;
     },
     onSuccess: () => {
+      setReplyTo(undefined);
       invalidate();
     },
   });
@@ -179,11 +182,12 @@ export function MasterChatView({
   // Route a message to an existing agent (a follow-up turn) instead of spawning.
   // Recorded in the shared pool so it stays as context for future agents.
   const reply = useMutation({
-    mutationFn: async ({ agentIds, text }: { agentIds: string[]; text: string }) => {
-      await api.sendMasterChatMessage(masterChatId, { text });
+    mutationFn: async ({ agentIds, text, replyToMessageId }: { agentIds: string[]; text: string; replyToMessageId?: string }) => {
+      await api.sendMasterChatMessage(masterChatId, { text, replyToMessageId });
       return Promise.all(agentIds.map((agentId) => api.sendMessage(agentId, { text, sourceChannel: "main" })));
     },
     onSuccess: (responses, variables) => {
+      setReplyTo(undefined);
       invalidate();
       const queuedTitles = variables.agentIds
         .filter((_, index) => responses[index]?.queued)
@@ -200,8 +204,9 @@ export function MasterChatView({
   });
 
   const collaborate = useMutation({
-    mutationFn: (text: string) => api.sendCollaborationMessage(masterChatId, { text }),
+    mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) => api.sendCollaborationMessage(masterChatId, { text, replyToMessageId }),
     onSuccess: () => {
+      setReplyTo(undefined);
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
       if (masterChat) void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
     },
@@ -294,12 +299,12 @@ export function MasterChatView({
 
   const submit = (text: string) => {
     if (conversation === "collaboration") {
-      collaborate.mutate(text);
+      collaborate.mutate({ text, replyToMessageId: replyTo?.id });
       return;
     }
     const targets = findMentioned(text);
     if (targets.length > 0) {
-      reply.mutate({ agentIds: targets.map((target) => target.id), text });
+      reply.mutate({ agentIds: targets.map((target) => target.id), text, replyToMessageId: replyTo?.id });
     } else {
       spawn.mutate(text);
     }
@@ -357,7 +362,10 @@ export function MasterChatView({
             variant={conversation === "collaboration" ? "contained" : "outlined"}
             size="small"
             startIcon={<ForumOutlinedIcon />}
-            onClick={() => setConversation((current) => current === "main" ? "collaboration" : "main")}
+            onClick={() => {
+              setReplyTo(undefined);
+              setConversation((current) => current === "main" ? "collaboration" : "main");
+            }}
             aria-pressed={conversation === "collaboration"}
           >
             {conversation === "collaboration" ? "Main Chat" : "Collaboration"}
@@ -491,6 +499,8 @@ export function MasterChatView({
               return (
                 <Box
                   key={message.id}
+                  id={`master-message-${message.id}`}
+                  tabIndex={-1}
                   sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: "min(680px, 92%)" }}
                 >
                   {message.authorThreadId ? (
@@ -514,7 +524,17 @@ export function MasterChatView({
                       borderColor: "divider",
                     }}
                   >
+                    {message.replyTo ? (
+                      <Box component="button" aria-label="Go to replied-to message" onClick={() => {
+                        const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
+                        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        target?.focus({ preventScroll: true });
+                      }} sx={{ display: "block", width: "100%", mb: .75, p: .75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}>
+                        <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
+                      </Box>
+                    ) : null}
                     <ChatMarkdown>{message.text}</ChatMarkdown>
+                    <Button size="small" color="inherit" onClick={() => setReplyTo(message)} sx={{ mt: .5 }}>Reply</Button>
                   </Box>
                 </Box>
               );
@@ -629,6 +649,8 @@ export function MasterChatView({
                 : "@mention an agent, or select a signed-in engine to spawn one"
           }
           onSend={submit}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(undefined)}
         />
       </Box>
 

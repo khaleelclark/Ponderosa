@@ -13,6 +13,7 @@ import type { AgentEvent } from "@ponderosa/core";
 export interface UserMessageEvent {
   type: "user_message";
   text: string;
+  replyTo?: import("@ponderosa/core").MessageReferenceDto;
 }
 
 /** Anything that can be appended to a thread's `events.jsonl`. */

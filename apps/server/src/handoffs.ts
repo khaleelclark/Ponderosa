@@ -19,6 +19,7 @@ export interface CollaborationDelivery {
   model?: string;
   effort?: string;
   sourceChannel?: "main";
+  replyToMessageId?: string;
   /** Canonical total-order key for messages sharing the same millisecond. */
   orderKey?: string;
   status: CollaborationDeliveryStatus;

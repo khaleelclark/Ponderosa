@@ -204,6 +204,26 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
       threads: [{ id: thread.id, masterChatId: masterChat.id }],
     });
   });
+
+  it("persists reply references canonically for thread and master-chat messages", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const first = store.appendMasterChatMessage(master.id, { text: "Original context" })!;
+    store.appendMasterChatMessage(master.id, { text: "Answer", replyToMessageId: first.id });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    store.appendEvent(thread.id, { type: "user_message", text: "Thread original" });
+    const originalMessageId = store.getMessages(thread.id)[0]!.id;
+    store.appendEvent(thread.id, {
+      type: "user_message",
+      text: "Thread answer",
+      replyTo: { messageId: originalMessageId, text: "Thread original", role: "user" },
+    });
+
+    store.rebuildProjections();
+    expect(store.getMasterChatMessages(master.id)[1]?.replyTo).toMatchObject({ messageId: first.id, text: "Original context" });
+    expect(store.getMessages(thread.id)[1]?.replyTo).toMatchObject({ text: "Thread original" });
+    expect(() => store.appendMasterChatMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
+  });
 });
 
 describe("artifactContentPath", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isChatNearBottom, scrollChatToBottom } from "../src/components/panes";
+import { isChatNearBottom, replyFallbackText, scrollChatToBottom } from "../src/components/panes";
 
 describe("scrollChatToBottom", () => {
   it("positions a chat viewport at the end of its content", () => {
@@ -16,5 +16,12 @@ describe("scrollChatToBottom", () => {
 
   it("stops following messages when the reader scrolls up", () => {
     expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 400 })).toBe(false);
+  });
+});
+
+describe("replyFallbackText", () => {
+  it("keeps quoted context and degrades gracefully when unavailable", () => {
+    expect(replyFallbackText("  original context  ")).toBe("original context");
+    expect(replyFallbackText("   ")).toBe("Original message unavailable");
   });
 });
