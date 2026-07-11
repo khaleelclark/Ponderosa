@@ -71,17 +71,17 @@ export function AgentsTab({
   };
 
   const renderSubagent = (run: SubagentTreeNode): JSX.Element => (
-    <Box key={run.id} sx={{ ml: { xs: 2, sm: 4 }, borderLeft: 2, borderColor: "divider", pl: 1 }}>
+    <Box key={run.id} sx={{ ml: { xs: 1, sm: 4 }, minWidth: 0, borderLeft: 2, borderColor: "divider", pl: 1 }}>
       <Paper
         component={ButtonBase}
         disabled={!run.childThreadId}
         onClick={() => run.childThreadId && onOpenAgent(run.childThreadId)}
         aria-label={`Open subagent ${run.displayLabel}`}
         variant="outlined"
-        sx={{ p: 1.25, bgcolor: "action.hover", display: "block", width: "100%", textAlign: "left" }}
+        sx={{ p: 1.25, bgcolor: "action.hover", display: "block", width: "100%", maxWidth: "100%", boxSizing: "border-box", overflow: "hidden", textAlign: "left" }}
       >
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-          <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 140 }}>{run.displayLabel}</Typography>
+          <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, flexBasis: { xs: "100%", sm: 140 }, overflowWrap: "anywhere" }}>{run.displayLabel}</Typography>
           <Chip size="small" variant="outlined" color="secondary" label="Subagent" />
           <Chip size="small" label={run.status} color={subagentColor(run.status)} />
         </Stack>
@@ -140,7 +140,7 @@ export function AgentsTab({
   );
 
   return (
-    <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto auto 1fr" }}>
+    <Box sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
       <Stack
         direction="row"
         spacing={1}
@@ -149,7 +149,7 @@ export function AgentsTab({
         <Typography variant="h6" sx={{ flex: 1 }}>
           Agents
         </Typography>
-        <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={onNewAgent}>
+        <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={onNewAgent} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
         </Button>
       </Stack>
@@ -204,7 +204,7 @@ export function AgentsTab({
         </FormControl>
       </Stack>
 
-      <Box sx={{ minHeight: 0, overflow: "auto", p: { xs: 1.5, md: 2 }, pt: 0 }}>
+      <Box sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>
         {filtered.length === 0 ? (
           <Alert
             severity="info"
