@@ -227,23 +227,26 @@ describe("CodexAdapter launch authorization", () => {
     const spawnFn = vi.fn() as unknown as typeof spawn;
     const adapter = new CodexAdapter({ spawnFn });
 
-    const events = [];
-    for await (const event of adapter.seed({
-      threadId: "delegated",
-      cwd,
-      prompt: "work",
-      history: [],
-      signal: new AbortController().signal,
-      authorizeLaunch: async () => {
-        throw new Error("registration_mismatch");
-      },
-    })) {
-      events.push(event);
-    }
+    const rejection = Object.assign(new Error("proof rejected"), {
+      code: "registration_mismatch",
+    });
 
+    const consume = async () => {
+      for await (const _event of adapter.seed({
+        threadId: "delegated",
+        cwd,
+        prompt: "work",
+        history: [],
+        signal: new AbortController().signal,
+        authorizeLaunch: async () => {
+          throw rejection;
+        },
+      })) {
+        // Authorization rejects before the provider can emit an event.
+      }
+    };
+
+    await expect(consume()).rejects.toBe(rejection);
     expect(spawnFn).not.toHaveBeenCalled();
-    expect(events).toEqual([
-      { type: "error", message: "launch authorization failed: registration_mismatch" },
-    ]);
   });
 });

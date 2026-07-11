@@ -60,13 +60,10 @@ export async function* streamProcess(
   }
 
   if (beforeSpawn) {
-    try {
-      await beforeSpawn(signal);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      yield { type: "error", message: `launch authorization failed: ${message}` };
-      return;
-    }
+    // Deliberately let authorization errors escape unchanged. Server
+    // orchestration owns the structured delegation error contract and must be
+    // able to distinguish replay, expiry, mismatch, and policy rejection.
+    await beforeSpawn(signal);
 
     // Claiming registration may race with branch cancellation. Never create the
     // provider process after the run has been cancelled, even if claim succeeded.

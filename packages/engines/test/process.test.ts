@@ -45,17 +45,17 @@ describe("streamProcess launch authorization", () => {
   it("does not spawn when registration claim is rejected", async () => {
     const spawnFn = vi.fn() as unknown as SpawnFn;
 
-    const events = await collect(async () => {
-      throw new Error("registration_consumed");
-    }, undefined, spawnFn);
+    const rejection = Object.assign(new Error("proof rejected"), {
+      code: "registration_consumed",
+    });
+
+    await expect(
+      collect(async () => {
+        throw rejection;
+      }, undefined, spawnFn),
+    ).rejects.toBe(rejection);
 
     expect(spawnFn).not.toHaveBeenCalled();
-    expect(events).toEqual([
-      {
-        type: "error",
-        message: "launch authorization failed: registration_consumed",
-      },
-    ]);
   });
 
   it("does not spawn when cancellation races a successful claim", async () => {
