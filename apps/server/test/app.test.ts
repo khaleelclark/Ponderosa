@@ -13,6 +13,7 @@ class MockAdapter implements Adapter {
   displayName = "Mock Codex";
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
+  abortedSeeds = 0;
   mode: "normal" | "hang" = "normal";
   responseText = "done";
 
@@ -30,6 +31,7 @@ class MockAdapter implements Adapter {
     yield { type: "session", sessionId: "sess-1" };
     if (this.mode === "hang") {
       await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
+      this.abortedSeeds += 1;
       yield { type: "error", message: "run cancelled" };
       return;
     }
@@ -1023,14 +1025,17 @@ describe("server chunk F", () => {
       payload: { scope: "branch", idempotencyKey: "launch-cancel-1" },
     });
     expect(cancel.json()).toMatchObject({ affected: [{ runId: spawned.run.id, status: "cancelled" }] });
-    for (let i = 0; i < 80; i += 1) {
-      const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
-      if (list.json<Array<{ status: string }>>()[0]?.status === "cancelled") break;
+    for (let i = 0; i < 80 && adapter.abortedSeeds === 0; i += 1) {
       await sleep(10);
     }
+    expect(adapter.abortedSeeds).toBe(1);
+    const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
+    expect(list.json<Array<{ status: string }>>()[0]?.status).toBe("cancelled");
     const lifecycle = readFileSync(path.join(dataDir, "delegations.jsonl"), "utf8");
     expect(lifecycle).toContain('"status":"running"');
     expect(lifecycle).toContain('"status":"cancelled"');
+    expect(lifecycle).not.toContain('"status":"failed"');
+    expect(lifecycle).not.toContain('"status":"completed"');
     await cancelAndWait(app, thread.id);
     await app.close();
   });
