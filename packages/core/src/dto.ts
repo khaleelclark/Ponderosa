@@ -379,6 +379,26 @@ export interface HealthDto {
   version: string;
 }
 
+export interface ReadinessCheckDto {
+  ok: boolean;
+  detail: string;
+}
+
+/** GET /api/ready response. Readiness is allowed to be unavailable (HTTP 503). */
+export interface ReadinessDto {
+  status: "ready" | "not_ready";
+  service: "ponderosa";
+  version: string;
+  canAcceptWork: boolean;
+  checks: {
+    daemon: ReadinessCheckDto;
+    dataDirectory: ReadinessCheckDto;
+    projections: ReadinessCheckDto;
+    runtimes: ReadinessCheckDto;
+  };
+  runtimes: Array<{ id: string; authenticated: boolean; detail?: string }>;
+}
+
 // ─── v2 (stubbed 501 in v1 — SPEC §8) ────────────────────────────────────────
 
 /** POST /api/threads/:id/switch-engine body (v2). */

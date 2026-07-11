@@ -122,6 +122,45 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: str
 }
 
 describe("server chunk F", () => {
+  it("separates daemon liveness from work readiness", async () => {
+    const app = createServer({ dataDir, store, engines, authToken: "operator-secret", logger: false });
+
+    const health = await app.inject({ method: "GET", url: "/api/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual({ status: "ok", service: "ponderosa", version: "0.0.0" });
+
+    const ready = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({
+      status: "ready",
+      canAcceptWork: true,
+      checks: {
+        daemon: { ok: true },
+        dataDirectory: { ok: true },
+        projections: { ok: true },
+        runtimes: { ok: true },
+      },
+      runtimes: [{ id: "codex", authenticated: true }],
+    });
+    await app.close();
+
+    const unavailable = createServer({
+      dataDir,
+      store: new ThreadStore(dataDir),
+      engines: [{ adapter, authStatus: async () => ({ authenticated: false, detail: "login required" }) }],
+      logger: false,
+    });
+    const notReady = await unavailable.inject({ method: "GET", url: "/api/ready" });
+    expect(notReady.statusCode).toBe(503);
+    expect(notReady.json()).toMatchObject({
+      status: "not_ready",
+      canAcceptWork: false,
+      checks: { daemon: { ok: true }, dataDirectory: { ok: true }, projections: { ok: true }, runtimes: { ok: false } },
+      runtimes: [{ id: "codex", authenticated: false, detail: "login required" }],
+    });
+    await unavailable.close();
+  });
+
   it("creates master chats, records control messages, and spawns linked agent threads", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const projectRes = await app.inject({
