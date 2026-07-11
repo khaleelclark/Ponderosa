@@ -430,7 +430,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
    * Persist before enqueueing. A tag therefore survives cancellation, process
    * restart, and dispatch races instead of existing only in collaboration history.
    */
-  function queueCollaborationDelivery(input: Omit<CollaborationDelivery, "id" | "status" | "createdAt">): CollaborationDelivery | undefined {
+  function queueCollaborationDelivery(
+    input: Omit<CollaborationDelivery, "id" | "status" | "createdAt"> & { createdAt?: string },
+  ): CollaborationDelivery | undefined {
     if (closed) return undefined;
     const queued = collaborationDeliveries.queue(input);
     void dispatchNextTurn(queued.delivery.targetThreadId);
@@ -524,6 +526,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             mentionTrail: intent.mentionTrail,
             kind: intent.kind,
             delegatedRunId: intent.delegatedRunId,
+            createdAt: message.createdAt,
           });
           recipients.add(intent.targetThreadId);
           if (intent.delegatedRunId) {
@@ -652,6 +655,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: intent.mentionTrail,
         kind: intent.kind,
         delegatedRunId: intent.delegatedRunId,
+        createdAt: message.createdAt,
       });
     }
   }
@@ -732,6 +736,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       mentionTrail: [],
       kind: "delegation_completion",
       delegatedRunId: run.id,
+      createdAt: message.createdAt,
     });
     if (!delivery) return;
     syncDelegatedCompletion(delivery.id);

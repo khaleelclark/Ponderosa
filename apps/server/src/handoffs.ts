@@ -82,14 +82,16 @@ export class CollaborationDeliveryStore {
     return delivery;
   }
 
-  queue(input: Omit<CollaborationDelivery, "id" | "status" | "createdAt">): { delivery: CollaborationDelivery; replayed: boolean } {
+  queue(
+    input: Omit<CollaborationDelivery, "id" | "status" | "createdAt"> & { createdAt?: string },
+  ): { delivery: CollaborationDelivery; replayed: boolean } {
     const previous = this.byMessageTarget.get(`${input.messageId}:${input.targetThreadId}`);
     if (previous) return { delivery: this.deliveries.get(previous)!, replayed: true };
     const delivery: CollaborationDelivery = {
       ...input,
       id: randomUUID(),
       status: "queued",
-      createdAt: new Date().toISOString(),
+      createdAt: input.createdAt ?? new Date().toISOString(),
     };
     return { delivery: this.persist(delivery, "delivery"), replayed: false };
   }

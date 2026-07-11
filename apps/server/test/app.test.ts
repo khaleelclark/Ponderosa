@@ -867,6 +867,50 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("preserves canonical FIFO when an older message is reconstructed", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "FIFO crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const deliveries = new CollaborationDeliveryStore(dataDir);
+    const intent = { targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
+    store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@Parent older message missing its inbox write" },
+      undefined,
+      "collaboration",
+      [intent],
+    );
+    await sleep(2);
+    const newer = store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@Parent newer message already queued" },
+      undefined,
+      "collaboration",
+      [intent],
+    )!;
+    deliveries.queue({
+      masterChatId: master.id,
+      messageId: newer.id,
+      targetThreadId: parent.id,
+      text: newer.text,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "tag",
+      createdAt: newer.createdAt,
+    });
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(parent.id, 2);
+    const turns = [
+      ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
+      ...adapter.continues.filter((turn) => turn.threadId === parent.id),
+    ];
+    expect(turns[0]?.prompt).toContain("Latest message for you:\n@Parent older message missing its inbox write");
+    expect(turns[1]?.prompt).toContain("Latest message for you:\n@Parent newer message already queued");
+    await app.close();
+  });
+
   it("does not infer delivery for canonical messages without an authorized intent", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Blocked recovery" });
