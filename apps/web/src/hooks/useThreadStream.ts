@@ -42,21 +42,25 @@ function projectedTaskUpdateId(threadId: string, taskId: string): string {
   return `${threadId}:t:${taskId}`;
 }
 
-function updateThreadDetail(threadId: string, envelope: SseEventEnvelope, detail: ThreadDetailDto): ThreadDetailDto {
+export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope, detail: ThreadDetailDto): ThreadDetailDto {
   const { event, seq, ts } = envelope;
 
   if (event.type === "text") {
-    if (detail.messages.some((message) => message.seq === seq)) {
+    // Query-cache updates and live SSE events can interleave. Normalize a
+    // transient sparse/invalid cache entry before reading message properties so
+    // one bad slot cannot take down the entire React tree.
+    const messages = detail.messages.filter((message): message is MessageDto => Boolean(message));
+    if (messages.some((message) => message.seq === seq)) {
       return detail;
     }
-    const last = detail.messages.at(-1);
+    const last = messages.at(-1);
     const shouldAppend = last?.role === "assistant" && last.id.startsWith("live-agent-");
     const nextMessages: MessageDto[] = shouldAppend
-      ? detail.messages.map((message) =>
+      ? messages.map((message) =>
           message.id === last.id ? { ...message, text: `${message.text}${event.delta}` } : message,
         )
       : [
-          ...detail.messages,
+          ...messages,
           {
             id: `live-agent-${threadId}-${seq}`,
             threadId,
