@@ -5,28 +5,38 @@ export interface SubagentRunView {
   parentRunId?: string;
   rootRunId: string;
   depth: number;
-  title: string;
-  prompt: string;
+  displayLabel: string;
+  /** Redacted, UI-safe delegation context. Full prompts require separate access. */
+  delegationSummary?: string;
   status: SubagentStatus;
   createdAt: string;
+  updatedAt: string;
   startedAt?: string;
   finishedAt?: string;
-  resultSummary?: string;
-  failure?: { code?: string; message: string };
+  failure?: { code: string; message: string; retryable: boolean; occurredAt: string };
   version: number;
   cancellable: boolean;
 }
 
 export interface SubagentOutputChunk {
   runId: string;
-  cursor: number;
+  chunkSeq: number;
+  cursor: string;
   text: string;
 }
 
 export type SubagentLifecycleEvent =
   | { seq: number; type: "upsert"; run: SubagentRunView }
-  | { seq: number; type: "patch"; runId: string; version: number; patch: Partial<Omit<SubagentRunView, "id" | "version">> }
   | { seq: number; type: "output"; chunk: SubagentOutputChunk };
+
+export interface SubagentCancellationResult {
+  affected: Array<{
+    runId: string;
+    status: SubagentStatus;
+    version: number;
+    updatedAt: string;
+  }>;
+}
 
 export interface SubagentStore {
   lastSeq: number;
@@ -53,31 +63,42 @@ export function applySubagentEvent(store: SubagentStore, event: SubagentLifecycl
 
   if (event.type === "output") {
     const existing = store.output.get(event.chunk.runId) ?? [];
-    if (existing.some((chunk) => chunk.cursor === event.chunk.cursor)) {
+    if (existing.some((chunk) => chunk.chunkSeq === event.chunk.chunkSeq)) {
       return { ...store, lastSeq: event.seq };
     }
     const output = new Map(store.output);
-    output.set(event.chunk.runId, [...existing, event.chunk].sort((a, b) => a.cursor - b.cursor));
+    output.set(event.chunk.runId, [...existing, event.chunk].sort((a, b) => a.chunkSeq - b.chunkSeq));
     return { ...store, lastSeq: event.seq, output };
   }
 
-  const current = store.runs.get(event.type === "upsert" ? event.run.id : event.runId);
-  const incomingVersion = event.type === "upsert" ? event.run.version : event.version;
-  if (current && incomingVersion <= current.version) {
-    return { ...store, lastSeq: event.seq };
-  }
-  if (event.type === "patch" && !current) {
-    // A replay can deliver a patch before its snapshot/upsert. Keep advancing the
-    // global cursor; the next authoritative upsert supplies the complete node.
+  const current = store.runs.get(event.run.id);
+  if (current && event.run.version <= current.version) {
     return { ...store, lastSeq: event.seq };
   }
 
   const runs = new Map(store.runs);
-  const next = event.type === "upsert"
-    ? event.run
-    : { ...current!, ...event.patch, id: event.runId, version: event.version };
-  runs.set(next.id, next);
+  runs.set(event.run.id, event.run);
   return { ...store, lastSeq: event.seq, runs };
+}
+
+/** Applies only server-confirmed cancellation states; requests remain local UI state. */
+export function applyCancellationResult(
+  store: SubagentStore,
+  result: SubagentCancellationResult,
+): SubagentStore {
+  const runs = new Map(store.runs);
+  for (const affected of result.affected) {
+    const current = runs.get(affected.runId);
+    if (!current || affected.version < current.version) continue;
+    runs.set(affected.runId, {
+      ...current,
+      status: affected.status,
+      version: affected.version,
+      updatedAt: affected.updatedAt,
+      cancellable: affected.status === "queued" || affected.status === "running",
+    });
+  }
+  return { ...store, runs };
 }
 
 export function buildSubagentTree(runs: Iterable<SubagentRunView>): SubagentTreeNode[] {
