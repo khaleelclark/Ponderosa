@@ -6,7 +6,7 @@ export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged
 
 export interface CollaborationDelivery {
   id: string;
-  masterChatId: string;
+  masterChatId?: string;
   messageId: string;
   targetThreadId: string;
   authorThreadId?: string;
@@ -14,8 +14,13 @@ export interface CollaborationDelivery {
   relayDepth: number;
   mentionTrail: string[];
   /** A delegated result is delivered by the server; ordinary messages are tags. */
-  kind: "tag" | "delegation_completion";
+  kind: "direct" | "tag" | "delegation_completion";
   delegatedRunId?: string;
+  model?: string;
+  effort?: string;
+  sourceChannel?: "main";
+  /** Canonical total-order key for messages sharing the same millisecond. */
+  orderKey?: string;
   status: CollaborationDeliveryStatus;
   createdAt: string;
   deliveredAt?: string;
@@ -25,7 +30,8 @@ export interface CollaborationDelivery {
 
 type Record =
   | { type: "delivery" | "replace"; delivery: CollaborationDelivery }
-  | { type: "message_receipt"; key: string; messageId: string };
+  | { type: "message_receipt"; key: string; messageId: string }
+  | { type: "reconciliation_boundary"; createdAt: string };
 
 /**
  * Durable delivery ledger for collaboration handoffs. Collaboration text remains
@@ -38,6 +44,7 @@ export class CollaborationDeliveryStore {
   private readonly byMessageTarget = new Map<string, string>();
   private readonly messageReceipts = new Map<string, string>();
   private readonly file: string;
+  private boundary: string | undefined;
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, "collaboration-deliveries.jsonl");
@@ -51,9 +58,23 @@ export class CollaborationDeliveryStore {
         this.messageReceipts.set(record.key, record.messageId);
         continue;
       }
+      if (record.type === "reconciliation_boundary") {
+        this.boundary = record.createdAt;
+        continue;
+      }
       this.deliveries.set(record.delivery.id, record.delivery);
       this.byMessageTarget.set(`${record.delivery.messageId}:${record.delivery.targetThreadId}`, record.delivery.id);
     }
+    if (!this.boundary) {
+      this.boundary = [...this.deliveries.values()]
+        .map((delivery) => delivery.createdAt)
+        .sort()[0] ?? new Date().toISOString();
+      appendFileSync(this.file, `${JSON.stringify({ type: "reconciliation_boundary", createdAt: this.boundary } satisfies Record)}\n`, "utf8");
+    }
+  }
+
+  reconciliationBoundary(): string {
+    return this.boundary!;
   }
 
   private persist(delivery: CollaborationDelivery, type: "delivery" | "replace"): CollaborationDelivery {
@@ -63,14 +84,16 @@ export class CollaborationDeliveryStore {
     return delivery;
   }
 
-  queue(input: Omit<CollaborationDelivery, "id" | "status" | "createdAt">): { delivery: CollaborationDelivery; replayed: boolean } {
+  queue(
+    input: Omit<CollaborationDelivery, "id" | "status" | "createdAt"> & { createdAt?: string },
+  ): { delivery: CollaborationDelivery; replayed: boolean } {
     const previous = this.byMessageTarget.get(`${input.messageId}:${input.targetThreadId}`);
     if (previous) return { delivery: this.deliveries.get(previous)!, replayed: true };
     const delivery: CollaborationDelivery = {
       ...input,
       id: randomUUID(),
       status: "queued",
-      createdAt: new Date().toISOString(),
+      createdAt: input.createdAt ?? new Date().toISOString(),
     };
     return { delivery: this.persist(delivery, "delivery"), replayed: false };
   }
@@ -78,7 +101,11 @@ export class CollaborationDeliveryStore {
   pending(threadId: string): CollaborationDelivery[] {
     return [...this.deliveries.values()]
       .filter((delivery) => delivery.targetThreadId === threadId && delivery.status === "queued")
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
+  }
+
+  pendingCount(threadId: string): number {
+    return this.pending(threadId).length;
   }
 
   /**

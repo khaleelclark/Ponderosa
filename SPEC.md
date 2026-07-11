@@ -153,17 +153,18 @@ and idempotency key); the server derives the parent run, thread, master chat, an
 root lineage from the capability. Model-supplied ownership or registration fields
 are rejected.
 
-The bridge routes creation through the canonical delegation store, then consumes
-the existing one-time registration proof internally before launching the selected
-adapter. The proof and raw prompt never appear in public DTOs, logs, or UI
-responses. Public records contain lineage, runtime, safe summary, lifecycle
-status, and timestamps. Queued, running, output, terminal failure/completion, and
-cancellation events are appended to the delegation audit log and streamed to the
-lineage UI. Limits for depth, descendants, concurrency, authorization,
-idempotency, cancellation, and replay remain enforced by that store.
+The bridge routes creation through the canonical delegation store and calls a
+private server launch service directly. There is no public create/register/claim
+handshake and no route that accepts a caller-supplied parent run. Raw prompts
+never appear in public DTOs, logs, or UI responses. Public records contain
+lineage, runtime, safe summary, lifecycle status, and timestamps. Queued,
+running, terminal failure/completion, and cancellation events are appended to the
+delegation audit log and streamed to the lineage UI. The child thread event log
+is the sole work/output transcript. Limits remain server-enforced.
 
-Delegated children receive a newly bound capability so recursive work follows the
-same path. Capabilities are revoked when their owning run ends or is cancelled.
+Delegated children receive separate least-privilege messaging and delegation
+capabilities so recursive work follows the same path without one token granting
+both operations. Capabilities are revoked when their owning run ends or is cancelled.
 Runtimes are explicitly instructed that built-in `spawn_agent`, `Task`, or similar
 subagent mechanisms are forbidden under Ponderosa; they must report bridge
 failures and must never silently fall back to an untracked child.
@@ -183,11 +184,12 @@ turns. The raw delegation prompt is not copied into the public thread history.
 
 Delegation is asynchronous. A parent that creates delegated work **ends its turn**
 after recording the expected tasks; it must not poll, sleep, or keep a tool wait
-open for children. Ponderosa records each collaboration `@mention` as a durable,
-recipient-specific FIFO delivery. If the recipient is active, the tag is not
-injected into its in-flight runtime: it starts one follow-up turn at the next safe
-turn boundary. Several tags are separate deliveries in arrival order, not a
-coalesced prompt.
+open for children. Ponderosa records manager replies, collaboration `@mentions`,
+and automatic completion notices in one durable, recipient-specific FIFO inbox.
+If the recipient is active, the follow-up is not injected into its in-flight
+runtime: it starts one turn at the next safe boundary. Messages remain separate
+in arrival order rather than being coalesced. Capacity delays dispatch; it never
+terminally fails an already-persisted message.
 
 Cancellation does not consume deliveries. Tags still waiting behind an active run
 remain queued, and a collaboration-delivery turn that is itself cancelled returns
@@ -202,9 +204,18 @@ On server startup, persisted `queued` deliveries resume automatically. A
 returned to `queued`, and retried in the recipient's original FIFO order. This is
 an at-least-once recovery boundary: runtime prompts must tolerate a replay after a
 process failure, while transport retries remain idempotent by message receipt.
+Canonical collaboration messages store their resolved recipient intents in the
+same append. Startup recreates any missing inbox record from those intents,
+closing the crash window between message persistence and inbox persistence
+without replaying blocked mentions or pre-inbox chat history.
 Delegation depth is lineage metadata only; collaboration relay depth and its
 loop-detection fingerprints start fresh for each delegated runtime and advance
 only when that runtime emits an actual `@mention` handoff.
+
+Startup also reconciles delegated lifecycle state. Previously running children
+become retryable interrupted failures because process ownership and capabilities
+cannot survive a server restart; authorized queued children launch through the
+same private service. Stale records therefore cannot consume concurrency forever.
 
 Terminal delegated runs also produce a first-class completion delivery to their
 server-derived parent—children need not rely on free-form tags just to report a

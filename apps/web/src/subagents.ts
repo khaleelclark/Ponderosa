@@ -2,22 +2,13 @@ import type {
   CancelSubagentResponse,
   SubagentEventEnvelope,
   SubagentRunDto,
-  SubagentTranscriptPageDto,
 } from "@ponderosa/core";
 
 export type { SubagentStatus } from "@ponderosa/core";
 
-export interface SubagentOutputChunk {
-  runId: string;
-  chunkSeq: number;
-  cursor: string;
-  text: string;
-}
-
 export interface SubagentStore {
   lastSeq: number;
   runs: ReadonlyMap<string, SubagentRunDto>;
-  output: ReadonlyMap<string, readonly SubagentOutputChunk[]>;
 }
 
 export interface SubagentTreeNode extends SubagentRunDto {
@@ -28,7 +19,6 @@ export interface SubagentUiBinding {
   store: SubagentStore;
   cancelling?: ReadonlySet<string>;
   cancel(run: SubagentRunDto): void;
-  loadTranscript?(run: SubagentRunDto): void;
 }
 
 export function isSubagentUiEnabled(env: Record<string, string | undefined>): boolean {
@@ -39,7 +29,6 @@ export function isSubagentUiEnabled(env: Record<string, string | undefined>): bo
 export const emptySubagentStore = (): SubagentStore => ({
   lastSeq: 0,
   runs: new Map(),
-  output: new Map(),
 });
 
 export function hydrateSubagentStore(runs: readonly SubagentRunDto[]): SubagentStore {
@@ -51,22 +40,6 @@ export function hydrateSubagentStore(runs: readonly SubagentRunDto[]): SubagentS
  */
 export function applySubagentEnvelope(store: SubagentStore, envelope: SubagentEventEnvelope): SubagentStore {
   if (envelope.seq <= store.lastSeq) return store;
-
-  if (envelope.event.type === "subagent_output") {
-    const chunk: SubagentOutputChunk = {
-      runId: envelope.event.runId,
-      chunkSeq: envelope.event.chunkSeq,
-      cursor: envelope.event.cursor,
-      text: envelope.event.delta,
-    };
-    const existing = store.output.get(chunk.runId) ?? [];
-    if (existing.some((candidate) => candidate.chunkSeq === chunk.chunkSeq)) {
-      return { ...store, lastSeq: envelope.seq };
-    }
-    const output = new Map(store.output);
-    output.set(chunk.runId, [...existing, chunk].sort((a, b) => a.chunkSeq - b.chunkSeq));
-    return { ...store, lastSeq: envelope.seq, output };
-  }
 
   const run = envelope.event.run;
   const current = store.runs.get(run.id);
@@ -99,49 +72,6 @@ export function applyCancellationResult(
   return { ...store, runs };
 }
 
-export function mergeTranscriptPage(store: SubagentStore, page: SubagentTranscriptPageDto): SubagentStore {
-  const existing = store.output.get(page.runId) ?? [];
-  const bySeq = new Map(existing.map((chunk) => [chunk.chunkSeq, chunk]));
-  for (const item of page.items) {
-    bySeq.set(item.chunkSeq, { runId: page.runId, chunkSeq: item.chunkSeq, cursor: item.cursor, text: item.text });
-  }
-  const output = new Map(store.output);
-  output.set(page.runId, [...bySeq.values()].sort((a, b) => a.chunkSeq - b.chunkSeq));
-  return { ...store, output };
-}
-
-export function clearSubagentTranscript(store: SubagentStore, runId: string): SubagentStore {
-  const output = new Map(store.output);
-  output.delete(runId);
-  return { ...store, output };
-}
-
-export async function loadTranscriptPages(
-  runId: string,
-  fetchPage: (after?: string) => Promise<SubagentTranscriptPageDto>,
-  onPage: (page: SubagentTranscriptPageDto) => void,
-  onCursorExpired: () => void,
-): Promise<void> {
-  let after: string | undefined;
-  let restarted = false;
-  for (;;) {
-    try {
-      const page = await fetchPage(after);
-      onPage(page);
-      if (!page.hasMore || !page.nextCursor) return;
-      after = page.nextCursor;
-    } catch (error) {
-      if (error instanceof Error && "status" in error && error.status === 410 && !restarted) {
-        restarted = true;
-        after = undefined;
-        onCursorExpired();
-        continue;
-      }
-      throw error;
-    }
-  }
-}
-
 export function buildSubagentTree(runs: Iterable<SubagentRunDto>): SubagentTreeNode[] {
   const nodes = new Map<string, SubagentTreeNode>();
   for (const run of runs) nodes.set(run.id, { ...run, children: [] });
@@ -170,8 +100,4 @@ export function subagentRootsByParentThread(
     grouped.set(root.parentThreadId, [...(grouped.get(root.parentThreadId) ?? []), root]);
   }
   return grouped;
-}
-
-export function subagentTranscript(store: SubagentStore, runId: string): string {
-  return (store.output.get(runId) ?? []).map((chunk) => chunk.text).join("");
 }

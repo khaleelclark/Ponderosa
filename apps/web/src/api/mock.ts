@@ -358,9 +358,6 @@ export const mockApi: PonderosaApi = {
   listSubagents() {
     return delay([]);
   },
-  getSubagentTranscript(runId) {
-    return delay({ runId, items: [], hasMore: false });
-  },
   cancelSubagent(runId) {
     return delay({ requestedRunId: runId, scope: "branch" as const, affected: [], completed: true });
   },

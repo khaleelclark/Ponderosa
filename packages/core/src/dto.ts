@@ -282,15 +282,6 @@ export interface SubagentRunDto {
   completionDelivery?: SubagentCompletionDeliveryDto;
 }
 
-export interface SpawnSubagentRequest {
-  parentRunId: string;
-  displayLabel: string;
-  delegationPrompt: string;
-  runtime: string;
-  model?: string;
-  idempotencyKey: string;
-}
-
 /** Agent-facing delegation input. Ownership is always resolved from its bearer capability. */
 export interface AgentDelegationRequest {
   displayLabel: string;
@@ -304,32 +295,6 @@ export interface AgentDelegationResponse {
   run: SubagentRunDto;
   accepted: boolean;
   replayed: boolean;
-}
-
-export interface SubagentRegistrationDto {
-  id: string;
-  credential: string;
-  expiresAt: string;
-  runtime: string;
-}
-
-export interface SpawnSubagentResponse {
-  run: SubagentRunDto;
-  registration: SubagentRegistrationDto;
-  replayed: boolean;
-}
-
-export interface ClaimSubagentRegistrationRequest {
-  registrationId: string;
-  credential: string;
-  parentRunId: string;
-  masterChatId: string;
-  runtime: string;
-}
-
-export interface ClaimSubagentRegistrationResponse {
-  run: SubagentRunDto;
-  claimedAt: string;
 }
 
 export interface CancelSubagentRequest {
@@ -351,11 +316,8 @@ export interface CancelSubagentResponse {
 
 export type DelegationErrorCode =
   | "unauthorized_parent"
-  | "registration_required"
-  | "registration_not_found"
-  | "registration_expired"
-  | "registration_consumed"
-  | "registration_mismatch"
+  | "lifecycle_conflict"
+  | "lifecycle_integrity"
   | "parent_not_running"
   | "depth_limit_exceeded"
   | "descendant_limit_exceeded"
@@ -374,29 +336,7 @@ export interface SubagentEventEnvelope {
   ts: string;
   event:
     | { type: "subagent_spawned"; run: SubagentRunDto }
-    | { type: "subagent_updated"; run: SubagentRunDto }
-    | {
-        type: "subagent_output";
-        runId: string;
-        runVersion: number;
-        chunkSeq: number;
-        cursor: string;
-        delta: string;
-      };
-}
-
-export interface SubagentTranscriptItemDto {
-  chunkSeq: number;
-  cursor: string;
-  ts: string;
-  text: string;
-}
-
-export interface SubagentTranscriptPageDto {
-  runId: string;
-  items: SubagentTranscriptItemDto[];
-  nextCursor?: string;
-  hasMore: boolean;
+    | { type: "subagent_updated"; run: SubagentRunDto };
 }
 
 // ─── Engines ─────────────────────────────────────────────────────────────────

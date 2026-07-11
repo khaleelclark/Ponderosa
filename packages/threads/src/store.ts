@@ -107,6 +107,14 @@ interface MasterChatJson {
   archived: boolean;
 }
 
+export interface MasterChatDeliveryIntent {
+  targetThreadId: string;
+  relayDepth: number;
+  mentionTrail: string[];
+  kind: "tag" | "delegation_completion";
+  delegatedRunId?: string;
+}
+
 interface MasterChatMessageJson {
   id: string;
   masterChatId: string;
@@ -115,6 +123,9 @@ interface MasterChatMessageJson {
   createdAt: string;
   authorThreadId?: string | null;
   channel?: MasterChatChannel;
+  deliveryIntents?: MasterChatDeliveryIntent[];
+  messageReceiptKey?: string;
+  deliveryOrderKey?: string;
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -139,13 +150,28 @@ export class ThreadStore {
   private readonly client: Database.Database;
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
+  private readonly deliverySequenceFile: string;
+  private deliverySequence: number;
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(projectsDir(dataDir), { recursive: true });
+    this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
+    this.deliverySequence = readJsonLines<{ sequence: number }>(this.deliverySequenceFile)
+      .reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
     const opened = openDb(dbPath(dataDir));
     this.db = opened.db;
     this.client = opened.client;
+    // Canonical files are written before their SQLite projections. Rebuilding
+    // on startup closes the crash window where a durable append succeeded but
+    // the projection write did not, and keeps every read path deterministic.
+    this.rebuildProjections();
+  }
+
+  nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
+    this.deliverySequence += 1;
+    appendFileSync(this.deliverySequenceFile, `${JSON.stringify({ sequence: this.deliverySequence })}\n`, "utf8");
+    return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
   }
 
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
@@ -336,10 +362,15 @@ export class ThreadStore {
     input: CreateMasterChatMessageRequest,
     authorThreadId?: string,
     channel: MasterChatChannel = "main",
+    deliveryIntents?: MasterChatDeliveryIntent[],
+    messageReceiptKey?: string,
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
     const now = new Date().toISOString();
+    const messagePath = channel === "collaboration"
+      ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
+      : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId);
     const message: MasterChatMessageJson = {
       id: randomUUID(),
       masterChatId,
@@ -348,16 +379,27 @@ export class ThreadStore {
       createdAt: now,
       authorThreadId: authorThreadId ?? null,
       channel,
+      ...(deliveryIntents?.length ? { deliveryIntents } : {}),
+      ...(messageReceiptKey ? { messageReceiptKey } : {}),
+      ...(channel === "collaboration"
+        ? { deliveryOrderKey: this.nextDeliveryOrderKey(now) }
+        : {}),
     };
     mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
     appendFileSync(
-      channel === "collaboration"
-        ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
-        : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+      messagePath,
       JSON.stringify(message) + "\n",
       "utf8",
     );
-    this.db.insert(masterChatMessages).values(message).run();
+    this.db.insert(masterChatMessages).values({
+      id: message.id,
+      masterChatId: message.masterChatId,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      authorThreadId: message.authorThreadId,
+      channel: message.channel,
+    }).run();
     this.db
       .update(masterChats)
       .set({ updatedAt: now })
@@ -374,6 +416,39 @@ export class ThreadStore {
       createdAt: message.createdAt,
       authorThreadId: authorThreadId ?? undefined,
     };
+  }
+
+  getMasterChatDeliveryIntents(masterChatId: string): Array<{
+    message: MasterChatMessageDto;
+    intent: MasterChatDeliveryIntent;
+    messageReceiptKey?: string;
+    deliveryOrderKey: string;
+  }> {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return [];
+    return readJsonLines<MasterChatMessageJson>(
+      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+    ).flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
+      message: {
+        id: message.id,
+        masterChatId: message.masterChatId,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        authorThreadId: message.authorThreadId ?? undefined,
+      },
+      intent,
+      messageReceiptKey: message.messageReceiptKey,
+      deliveryOrderKey: message.deliveryOrderKey ?? `${message.createdAt}:${String(0).padStart(12, "0")}`,
+    })));
+  }
+
+  getMasterChatMessageDeliveryOrderKey(masterChatId: string, messageId: string): string | undefined {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return undefined;
+    return readJsonLines<MasterChatMessageJson>(
+      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+    ).find((message) => message.id === messageId)?.deliveryOrderKey;
   }
 
   getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
@@ -674,7 +749,15 @@ export class ThreadStore {
             ["collaboration", collaborationChatMessagesPath(this.dataDir, projectId, masterChatId)],
           ] as const) {
             for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
-              this.db.insert(masterChatMessages).values({ ...message, channel: message.channel ?? channel }).run();
+              this.db.insert(masterChatMessages).values({
+                id: message.id,
+                masterChatId: message.masterChatId,
+                role: message.role,
+                text: message.text,
+                createdAt: message.createdAt,
+                authorThreadId: message.authorThreadId,
+                channel: message.channel ?? channel,
+              }).run();
             }
           }
         }

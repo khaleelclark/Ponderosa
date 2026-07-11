@@ -6,10 +6,7 @@ import {
   buildSubagentTree,
   emptySubagentStore,
   isSubagentUiEnabled,
-  loadTranscriptPages,
-  mergeTranscriptPage,
   subagentRootsByParentThread,
-  subagentTranscript,
 } from "../src/subagents";
 
 const run = (id: string, overrides: Partial<SubagentRunDto> = {}): SubagentRunDto => ({
@@ -75,37 +72,6 @@ describe("subagent UI adapter", () => {
     const grouped = subagentRootsByParentThread([parent, nested]);
     expect(grouped.get("agent-1")?.map((item) => item.id)).toEqual(["child"]);
     expect(grouped.get("agent-1")?.[0]?.children.map((item) => item.id)).toEqual(["nested"]);
-  });
-
-  it("deduplicates and orders transcript chunks by the per-run cursor", () => {
-    let store = emptySubagentStore();
-    store = applySubagentEnvelope(store, envelope(1, { type: "subagent_output", runId: "run", runVersion: 1, chunkSeq: 2, cursor: "b", delta: "world" }));
-    store = applySubagentEnvelope(store, envelope(2, { type: "subagent_output", runId: "run", runVersion: 1, chunkSeq: 1, cursor: "a", delta: "hello " }));
-    store = applySubagentEnvelope(store, envelope(3, { type: "subagent_output", runId: "run", runVersion: 1, chunkSeq: 2, cursor: "b", delta: "duplicate" }));
-    expect(subagentTranscript(store, "run")).toBe("hello world");
-  });
-
-  it("reloads transcript pagination from the beginning after cursor expiry", async () => {
-    const requested: Array<string | undefined> = [];
-    let expired = false;
-    let store = emptySubagentStore();
-    await loadTranscriptPages(
-      "run",
-      async (after) => {
-        requested.push(after);
-        if (!expired) {
-          expired = true;
-          throw Object.assign(new Error("expired"), { status: 410 });
-        }
-        return after === undefined
-          ? { runId: "run", items: [{ chunkSeq: 1, cursor: "one", ts: "now", text: "hello " }], nextCursor: "one", hasMore: true }
-          : { runId: "run", items: [{ chunkSeq: 2, cursor: "two", ts: "now", text: "world" }], hasMore: false };
-      },
-      (page) => { store = mergeTranscriptPage(store, page); },
-      () => { store = emptySubagentStore(); },
-    );
-    expect(requested).toEqual([undefined, undefined, "one"]);
-    expect(subagentTranscript(store, "run")).toBe("hello world");
   });
 
   it("applies cancellation only after a server-confirmed result", () => {
