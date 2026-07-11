@@ -1050,6 +1050,55 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("delegates through a run-bound bridge without exposing ownership or registration proof", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Delegation room" });
+    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    await waitForSeedCount(1);
+    const environment = adapter.seeds[0]!.environment!;
+    expect(environment.PONDEROSA_DELEGATION_URL).toContain("/api/agent-delegations");
+    expect(environment.PONDEROSA_INTERNAL_SUBAGENTS_DISABLED).toBe("1");
+
+    const spoof = await app.inject({
+      method: "POST",
+      url: "/api/agent-delegations",
+      headers: { authorization: `Bearer ${environment.PONDEROSA_DELEGATION_TOKEN}` },
+      payload: { parentRunId: "another-run", displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "spoof-1" },
+    });
+    expect(spoof.statusCode).toBe(403);
+    expect(spoof.json()).toMatchObject({ error: { code: "unauthorized_parent" } });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent-delegations",
+      headers: { authorization: `Bearer ${environment.PONDEROSA_DELEGATION_TOKEN}` },
+      payload: { displayLabel: "Safe review", delegationPrompt: "private secret task", runtime: "codex", idempotencyKey: "bridge-1" },
+    });
+    expect(response.statusCode).toBe(202);
+    const created = response.json<{ run: { id: string; parentRunId: string; rootRunId: string; runtime: string; status: string }; accepted: boolean }>();
+    expect(created).toMatchObject({ accepted: true, run: { runtime: "codex", status: "running" } });
+    expect(created.run.parentRunId).toBe(created.run.rootRunId);
+    expect(JSON.stringify(response.json())).not.toContain("private secret task");
+    expect(JSON.stringify(response.json())).not.toContain("credential");
+    await waitForSeedCount(2);
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${created.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "bridge-cancel-1" },
+    });
+    expect(cancel.json()).toMatchObject({ affected: [{ runId: created.run.id, status: "cancelled" }] });
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
+      expect.objectContaining({ id: created.run.id, status: "cancelled", delegationSummary: "Safe review" }),
+    ]);
+    await cancelAndWait(app, thread.id);
+    await app.close();
+  });
+
   it("repairs delegation persistence permissions on startup", async () => {
     const file = path.join(dataDir, "delegations.jsonl");
     writeFileSync(file, "", { mode: 0o644 });

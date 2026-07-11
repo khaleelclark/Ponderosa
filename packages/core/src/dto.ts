@@ -274,6 +274,21 @@ export interface SpawnSubagentRequest {
   idempotencyKey: string;
 }
 
+/** Agent-facing delegation input. Ownership is always resolved from its bearer capability. */
+export interface AgentDelegationRequest {
+  displayLabel: string;
+  delegationPrompt: string;
+  runtime: string;
+  model?: string;
+  idempotencyKey: string;
+}
+
+export interface AgentDelegationResponse {
+  run: SubagentRunDto;
+  accepted: boolean;
+  replayed: boolean;
+}
+
 export interface SubagentRegistrationDto {
   id: string;
   credential: string;
