@@ -1593,6 +1593,30 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("validates, scopes, persists, serves, and prevents deletion of sent image attachments", async () => {
+    const { app, thread } = await createProjectAndThread();
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const rejected = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/attachments`, headers: { "content-type": "image/png" }, payload: Buffer.from("<svg><script/></svg>") });
+    expect(rejected.statusCode).toBe(415);
+    const uploaded = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/attachments`, headers: { "content-type": "image/png", "x-ponderosa-filename": "../../screen.png" }, payload: png });
+    expect(uploaded.statusCode).toBe(201);
+    const attachment = uploaded.json<{ id: string; name: string; url: string }>();
+    expect(attachment.name).toBe("screen.png");
+    expect(attachment.url).not.toContain(dataDir);
+    const send = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Inspect this", attachmentIds: [attachment.id] } });
+    expect(send.statusCode).toBe(200);
+    await waitForRun(thread.id);
+    expect(store.getMessages(thread.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, threadId: thread.id });
+    store.rebuildProjections();
+    expect(store.getMessages(thread.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, threadId: thread.id });
+    expect(adapter.seeds[0]?.prompt).toContain("Attached images");
+    expect(adapter.seeds[0]?.prompt).not.toContain("base64");
+    expect((await app.inject({ method: "GET", url: attachment.url })).headers["x-content-type-options"]).toBe("nosniff");
+    expect((await app.inject({ method: "DELETE", url: attachment.url })).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: `/api/threads/not-${thread.id}/messages`, payload: { text: "x", attachmentIds: [attachment.id] } })).statusCode).toBe(404);
+    await app.close();
+  });
+
   it("streams live SSE and replays from last seen seq without duplicates", async () => {
     const { app, project, thread } = await createProjectAndThread();
     await app.listen({ port: 0, host: "127.0.0.1" });

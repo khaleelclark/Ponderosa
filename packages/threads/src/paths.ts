@@ -121,3 +121,8 @@ export function attachmentsDir(
 ): string {
   return path.join(threadDir(dataDir, projectId, threadId), "attachments");
 }
+
+export function attachmentPath(dataDir: string, projectId: string, threadId: string, filename: string): string {
+  if (!/^[a-f0-9-]+\.(png|jpg|gif|webp)$/.test(filename)) throw new Error("invalid attachment filename");
+  return path.join(attachmentsDir(dataDir, projectId, threadId), filename);
+}

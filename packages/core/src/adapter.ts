@@ -18,6 +18,13 @@ export interface ChatMessage {
   text: string;
   /** ISO-8601 timestamp; optional so callers can synthesize history cheaply. */
   createdAt?: string;
+  attachments?: Array<{
+    name: string;
+    mediaType: string;
+    size: number;
+    localPath: string;
+    available: boolean;
+  }>;
 }
 
 /** A selectable model for an engine (e.g. Codex's model set). */

@@ -16,13 +16,14 @@ import type {
   HealthDto,
   ReadinessDto,
   MasterChatMessageDto,
+  ImageAttachmentDto,
   SseEventEnvelope,
   SendAgentMessageRequest,
   SubagentRunDto,
   ThreadDto,
   MessageReferenceDto,
 } from "@ponderosa/core";
-import { artifactContentPath, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { DelegationError, DelegationStore } from "./delegations.js";
 import { CollaborationDeliveryStore, type CollaborationDelivery } from "./handoffs.js";
 
@@ -93,12 +94,49 @@ const MAX_AGENT_MENTION_RELAYS = 12;
 const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const MAX_ATTACHMENT_REQUEST_BYTES = MAX_ATTACHMENT_BYTES + 16 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = 4;
 
 function secretEqual(provided: string | undefined, expected: string): boolean {
   if (provided === undefined) return false;
   const actual = Buffer.from(provided);
   const wanted = Buffer.from(expected);
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+}
+
+function inspectImage(buffer: Buffer): Pick<ImageAttachmentDto, "mediaType" | "width" | "height"> | undefined {
+  if (buffer.length >= 33 && buffer.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) && buffer.includes(Buffer.from("IEND"))) {
+    const width = buffer.readUInt32BE(16), height = buffer.readUInt32BE(20);
+    if (buffer.subarray(12, 16).toString("ascii") === "IHDR" && width && height) return { mediaType: "image/png", width, height };
+  }
+  if (buffer.length >= 10 && ["GIF87a", "GIF89a"].includes(buffer.subarray(0, 6).toString("ascii"))) {
+    const width = buffer.readUInt16LE(6), height = buffer.readUInt16LE(8);
+    if (width && height && buffer[buffer.length - 1] === 0x3b) return { mediaType: "image/gif", width, height };
+  }
+  if (buffer.length >= 30 && buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.readUInt32LE(4) + 8 <= buffer.length && buffer.subarray(8, 12).toString("ascii") === "WEBP") {
+    const kind = buffer.subarray(12, 16).toString("ascii");
+    if (kind === "VP8X") return { mediaType: "image/webp", width: 1 + buffer.readUIntLE(24, 3), height: 1 + buffer.readUIntLE(27, 3) };
+    if (kind === "VP8L" && buffer[20] === 0x2f) {
+      const bits = buffer.readUInt32LE(21); return { mediaType: "image/webp", width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+    }
+  }
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) { offset++; continue; }
+      const marker = buffer[offset + 1]!; offset += 2;
+      if (marker === 0xd8 || marker === 0xd9) continue;
+      const length = buffer.readUInt16BE(offset);
+      if (length < 2 || offset + length > buffer.length) return undefined;
+      if ([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)) {
+        const height = buffer.readUInt16BE(offset + 3), width = buffer.readUInt16BE(offset + 5);
+        if (width && height && buffer[buffer.length - 2] === 0xff && buffer[buffer.length - 1] === 0xd9) return { mediaType: "image/jpeg", width, height };
+      }
+      offset += length;
+    }
+  }
+  return undefined;
 }
 
 function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
@@ -418,7 +456,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   let closed = false;
 
   const app = Fastify({
-    bodyLimit: 256 * 1024,
+    bodyLimit: MAX_ATTACHMENT_REQUEST_BYTES,
     logger: opts.logger === false ? false : {
       redact: {
         paths: ["req.headers.authorization", "req.headers.x-ponderosa-prompt-access"],
@@ -426,6 +464,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       },
     },
   });
+  for (const mediaType of ["image/png", "image/jpeg", "image/gif", "image/webp", "application/octet-stream"]) {
+    app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: MAX_ATTACHMENT_REQUEST_BYTES }, (_request, body, done) => done(null, body));
+  }
 
   function delegationFailure(error: unknown, reply: FastifyReply) {
     if (error instanceof DelegationError) {
@@ -1349,6 +1390,71 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     reply.code(501).send({ error: "search is a v2 endpoint" }),
   );
 
+  const attachmentMetadata = async (threadId: string, id: string): Promise<ImageAttachmentDto | undefined> => {
+    if (!/^[a-f0-9-]{36}$/.test(id)) return undefined;
+    const thread = store.getThread(threadId);
+    if (!thread) return undefined;
+    try {
+      const metadata = JSON.parse(await fs.readFile(path.join(attachmentsDir(opts.dataDir, thread.projectId, threadId), `${id}.json`), "utf8")) as ImageAttachmentDto;
+      return metadata.id === id && metadata.threadId === threadId && ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(metadata.mediaType) ? metadata : undefined;
+    } catch { return undefined; }
+  };
+
+  app.get("/api/attachment-limits", async () => ({
+    maxFileBytes: MAX_ATTACHMENT_BYTES,
+    maxRequestBytes: MAX_ATTACHMENT_REQUEST_BYTES,
+    maxAttachmentsPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
+    acceptedMediaTypes: ["image/png", "image/jpeg", "image/gif", "image/webp"],
+  }));
+
+  app.post<{ Params: { id: string }; Body: Buffer }>("/api/threads/:id/attachments", async (request, reply) => {
+    const thread = store.getThread(request.params.id);
+    if (!thread) return reply.code(404).send({ error: "thread not found" });
+    const body = request.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: "image body is required" });
+    if (body.length > MAX_ATTACHMENT_BYTES) return reply.code(413).send({ error: "image exceeds 8 MiB limit" });
+    const inspected = inspectImage(body);
+    if (!inspected) return reply.code(415).send({ error: "malformed or unsupported image; use PNG, JPEG, GIF, or WebP" });
+    const id = randomUUID();
+    const extension = inspected.mediaType === "image/jpeg" ? "jpg" : inspected.mediaType.slice(6);
+    const filename = `${id}.${extension}`;
+    const suppliedName = String(request.headers["x-ponderosa-filename"] ?? "image");
+    const name = path.basename(suppliedName).replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 160) || "image";
+    const metadata: ImageAttachmentDto = {
+      id, threadId: thread.id, name, ...inspected, size: body.length,
+      url: `/api/threads/${encodeURIComponent(thread.id)}/attachments/${id}`,
+    };
+    await fs.mkdir(attachmentsDir(opts.dataDir, thread.projectId, thread.id), { recursive: true });
+    await fs.writeFile(attachmentPath(opts.dataDir, thread.projectId, thread.id, filename), body, { flag: "wx", mode: 0o600 });
+    await fs.writeFile(path.join(attachmentsDir(opts.dataDir, thread.projectId, thread.id), `${id}.json`), JSON.stringify(metadata), { flag: "wx", mode: 0o600 });
+    return reply.code(201).send(metadata);
+  });
+
+  app.get<{ Params: { id: string; attachmentId: string } }>("/api/threads/:id/attachments/:attachmentId", async (request, reply) => {
+    const metadata = await attachmentMetadata(request.params.id, request.params.attachmentId);
+    const thread = store.getThread(request.params.id);
+    if (!metadata || !thread || metadata.threadId !== thread.id) return reply.code(404).send({ error: "attachment not found" });
+    const extension = metadata.mediaType === "image/jpeg" ? "jpg" : metadata.mediaType.slice(6);
+    try {
+      const content = await fs.readFile(attachmentPath(opts.dataDir, thread.projectId, thread.id, `${metadata.id}.${extension}`));
+      return reply.header("content-type", metadata.mediaType).header("content-disposition", "inline").header("x-content-type-options", "nosniff").send(content);
+    } catch { return reply.code(410).send({ error: "attachment file is unavailable" }); }
+  });
+
+  app.delete<{ Params: { id: string; attachmentId: string } }>("/api/threads/:id/attachments/:attachmentId", async (request, reply) => {
+    const metadata = await attachmentMetadata(request.params.id, request.params.attachmentId);
+    const thread = store.getThread(request.params.id);
+    if (!metadata || !thread || metadata.threadId !== thread.id) return reply.code(404).send({ error: "attachment not found" });
+    const referenced = store.getMessages(thread.id).some((message) => message.attachments?.some((item) => item.id === metadata.id));
+    if (referenced) return reply.code(409).send({ error: "sent attachments cannot be deleted" });
+    const extension = metadata.mediaType === "image/jpeg" ? "jpg" : metadata.mediaType.slice(6);
+    await Promise.allSettled([
+      fs.unlink(attachmentPath(opts.dataDir, thread.projectId, thread.id, `${metadata.id}.${extension}`)),
+      fs.unlink(path.join(attachmentsDir(opts.dataDir, thread.projectId, thread.id), `${metadata.id}.json`)),
+    ]);
+    return reply.code(204).send();
+  });
+
   app.post<{
     Params: { id: string };
     Body: {
@@ -1362,6 +1468,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceChannel?: "main";
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
+      attachmentIds?: string[];
     };
   }>(
     "/api/threads/:id/messages",
@@ -1372,8 +1479,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!project) return reply.code(404).send({ error: "project not found" });
       const engine = engines.get(thread.activeEngine);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
-      const text = request.body?.text?.trim();
-      if (!text) return reply.code(400).send({ error: "text is required" });
+      const text = request.body?.text?.trim() ?? "";
+      const attachmentIds = request.body?.attachmentIds ?? [];
+      if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
+      const attached = (await Promise.all(attachmentIds.map((id) => attachmentMetadata(thread.id, id))));
+      if (attached.some((item) => !item || item.threadId !== thread.id)) return reply.code(400).send({ error: "attachment does not belong to thread" });
+      const messageAttachments = attached as ImageAttachmentDto[];
+      if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
       const collaborationMasterChatId = request.body.collaborationMasterChatId;
       if (collaborationMasterChatId !== undefined && collaborationMasterChatId !== thread.masterChatId) {
@@ -1437,6 +1549,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
       }
       if (activeRuns.has(thread.id)) {
+        if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
         // A dispatcher that lost the claim race needs to restore the dequeued
         // item at the head itself; ordinary manager and agent messages join the
         // FIFO queue and receive an explicit acknowledgement.
@@ -1468,6 +1581,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
+        attachments: message.attachments?.map((item) => ({
+          name: item.name,
+          mediaType: item.mediaType,
+          size: item.size,
+          localPath: attachmentPath(opts.dataDir, thread.projectId, thread.id, `${item.id}.${item.mediaType === "image/jpeg" ? "jpg" : item.mediaType.slice(6)}`),
+          available: existsSync(attachmentPath(opts.dataDir, thread.projectId, thread.id, `${item.id}.${item.mediaType === "image/jpeg" ? "jpg" : item.mediaType.slice(6)}`)),
+        })),
       }));
       const runId = randomUUID();
       const controller = new AbortController();
@@ -1500,10 +1620,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : masterChat && sourceChannel === "main"
           ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
           : individualChatPrompt(text, context);
-      const prompt = `${basePrompt}${replyContext(pendingTurn.replyTo)}`;
+      const attachmentContext = messageAttachments.length ? `\n\nAttached images (validated local files scoped to this thread):\n${messageAttachments.map((item) => `- ${item.name} (${item.mediaType}, ${item.width}x${item.height}, ${item.size} bytes): ${attachmentPath(opts.dataDir, thread.projectId, thread.id, `${item.id}.${item.mediaType === "image/jpeg" ? "jpg" : item.mediaType.slice(6)}`)}`).join("\n")}` : "";
+      const prompt = `${basePrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
-      const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo });
+      const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo, attachments: messageAttachments });
       publish(thread.id, userStored);
 
       activeRuns.set(thread.id, { runId, controller, messageCapability });

@@ -10,6 +10,7 @@ import type {
   UpdateMasterChatRequest,
   UpdateThreadRequest,
   EngineDto,
+  ImageAttachmentDto,
   ProjectDto,
   SendMessageRequest,
   SendMessageResponse,
@@ -167,6 +168,17 @@ export const realApi: PonderosaApi = {
       method: "POST",
       body: JSON.stringify(request satisfies SendMessageRequest),
     });
+  },
+  uploadAttachment(threadId, file) {
+    return requestJson<ImageAttachmentDto>(`/api/threads/${encodeURIComponent(threadId)}/attachments`, {
+      method: "POST",
+      headers: { "content-type": file.type || "application/octet-stream", "x-ponderosa-filename": file.name },
+      body: file,
+    });
+  },
+  async deleteAttachment(threadId, attachmentId) {
+    const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
+    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
   async cancelRun(threadId) {
     await requestJson(`/api/threads/${encodeURIComponent(threadId)}/cancel`, { method: "POST" });

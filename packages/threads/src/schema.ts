@@ -51,6 +51,7 @@ export const masterChatMessages = sqliteTable("master_chat_messages", {
   // Main chat is manager-facing. Collaboration is opt-in and only sent to tagged agents.
   channel: text("channel").notNull().default("main"),
   replyToJson: text("reply_to_json"),
+  attachmentsJson: text("attachments_json"),
 });
 
 export const messages = sqliteTable("messages", {
@@ -61,6 +62,7 @@ export const messages = sqliteTable("messages", {
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
   replyToJson: text("reply_to_json"),
+  attachmentsJson: text("attachments_json"),
 });
 
 export const tasks = sqliteTable("tasks", {

@@ -127,6 +127,7 @@ interface MasterChatMessageJson {
   messageReceiptKey?: string;
   deliveryOrderKey?: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
+  attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
 function writeJson(file: string, data: unknown): void {
@@ -383,6 +384,7 @@ export class ThreadStore {
       ...(input.replyToMessageId
         ? { replyTo: this.masterChatReference(masterChatId, channel, input.replyToMessageId) }
         : {}),
+      ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
       ...(channel === "collaboration"
@@ -404,6 +406,7 @@ export class ThreadStore {
       authorThreadId: message.authorThreadId,
       channel: message.channel,
       replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
+      attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
     }).run();
     this.db
       .update(masterChats)
@@ -421,6 +424,7 @@ export class ThreadStore {
       createdAt: message.createdAt,
       authorThreadId: authorThreadId ?? undefined,
       replyTo: message.replyTo,
+      attachments: message.attachments,
     };
   }
 
@@ -476,6 +480,7 @@ export class ThreadStore {
         createdAt: row.createdAt,
         authorThreadId: row.authorThreadId ?? undefined,
         replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
+        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
       }));
   }
 
@@ -616,6 +621,7 @@ export class ThreadStore {
         text: r.text,
         createdAt: r.createdAt,
         replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
+        attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
       }));
   }
 
@@ -777,6 +783,7 @@ export class ThreadStore {
                 authorThreadId: message.authorThreadId,
                 channel: message.channel ?? channel,
                 replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
+                attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
               }).run();
             }
           }
