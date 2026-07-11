@@ -1819,6 +1819,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             // A cancelled delivery turn is not an acknowledgement. Put it back
             // into the durable queue; ordinary pending deliveries remain queued.
             if (controller.signal.aborted) collaborationDeliveries.requeue(collaborationDeliveryId);
+            else if (runError) collaborationDeliveries.retryFailedTurn(collaborationDeliveryId, runError);
             else collaborationDeliveries.acknowledge(collaborationDeliveryId);
             syncDelegatedCompletion(collaborationDeliveryId);
           }

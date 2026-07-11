@@ -26,6 +26,8 @@ export interface CollaborationDelivery {
   createdAt: string;
   deliveredAt?: string;
   acknowledgedAt?: string;
+  /** Number of recipient turns started for this delivery, including retries. */
+  attempts?: number;
   failure?: string;
 }
 
@@ -129,10 +131,20 @@ export class CollaborationDeliveryStore {
     return this.deliveries.get(id);
   }
 
+  getForMessageTarget(messageId: string, targetThreadId: string): CollaborationDelivery | undefined {
+    const id = this.byMessageTarget.get(`${messageId}:${targetThreadId}`);
+    return id ? this.deliveries.get(id) : undefined;
+  }
+
   markDelivered(id: string): CollaborationDelivery | undefined {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status !== "queued") return delivery;
-    return this.persist({ ...delivery, status: "delivered", deliveredAt: new Date().toISOString() }, "replace");
+    return this.persist({
+      ...delivery,
+      status: "delivered",
+      deliveredAt: new Date().toISOString(),
+      attempts: (delivery.attempts ?? 0) + 1,
+    }, "replace");
   }
 
   requeue(id: string): CollaborationDelivery | undefined {
@@ -146,6 +158,19 @@ export class CollaborationDeliveryStore {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status !== "delivered") return delivery;
     return this.persist({ ...delivery, status: "acknowledged", acknowledgedAt: new Date().toISOString() }, "replace");
+  }
+
+  /**
+   * A process accepting a turn is not proof that the recipient handled it.
+   * Retry one failed runtime turn, then retain a terminal failed record instead
+   * of creating an unbounded crash/retry loop.
+   */
+  retryFailedTurn(id: string, failure: string, maxAttempts = 2): CollaborationDelivery | undefined {
+    const delivery = this.deliveries.get(id);
+    if (!delivery || delivery.status !== "delivered") return delivery;
+    if ((delivery.attempts ?? 1) >= maxAttempts) return this.fail(id, failure);
+    const { deliveredAt: _deliveredAt, ...queued } = delivery;
+    return this.persist({ ...queued, status: "queued", failure }, "replace");
   }
 
   fail(id: string, failure: string): CollaborationDelivery | undefined {

@@ -18,6 +18,7 @@ class MockAdapter implements Adapter {
   abortedSeeds = 0;
   mode: "normal" | "hang" | "boundary" = "normal";
   responseText = "done";
+  failuresRemaining = 0;
 
   listModels(): ModelOption[] {
     return [{ id: "mock-model", label: "Mock Model" }];
@@ -30,6 +31,11 @@ class MockAdapter implements Adapter {
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
     this.seeds.push(opts);
     yield { type: "session", sessionId: "sess-1" };
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      yield { type: "error", message: "simulated runtime failure" };
+      return;
+    }
     if (this.mode === "hang") {
       await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
       this.abortedSeeds += 1;
@@ -51,6 +57,11 @@ class MockAdapter implements Adapter {
 
   async *continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
     this.continues.push(opts);
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      yield { type: "error", message: "simulated runtime failure" };
+      return;
+    }
     yield { type: "text", delta: `continued ${opts.resumeSessionId}` };
     yield { type: "turn_done" };
   }
@@ -455,6 +466,59 @@ describe("server chunk F", () => {
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "@Yosemite can you review this?" })]),
     );
+    await app.close();
+  });
+
+  it("acknowledges a collaboration delivery only after a successful recipient turn", async () => {
+    adapter.failuresRemaining = 1;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Retry recipient failure" });
+    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", masterChatId: master.id });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Yosemite retry this failed turn" },
+    });
+    const messageId = response.json<{ message: { id: string } }>().message.id;
+    await waitForRun(recipient.id);
+
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.continues).toHaveLength(1);
+    expect(delivery).toMatchObject({ status: "acknowledged", attempts: 2 });
+    await app.close();
+  });
+
+  it("fails a collaboration delivery after its bounded recipient-turn retry", async () => {
+    adapter.failuresRemaining = 2;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Bounded recipient failure" });
+    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", masterChatId: master.id });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Yosemite fail this turn twice" },
+    });
+    const messageId = response.json<{ message: { id: string } }>().message.id;
+    for (let i = 0; i < 80 && adapter.continues.length < 1; i += 1) await sleep(10);
+    for (let i = 0; i < 80; i += 1) {
+      const state = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
+      if (state?.status === "failed") break;
+      await sleep(10);
+    }
+
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
+    expect(delivery).toMatchObject({
+      status: "failed",
+      attempts: 2,
+      failure: "simulated runtime failure",
+    });
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.continues).toHaveLength(1);
     await app.close();
   });
 
