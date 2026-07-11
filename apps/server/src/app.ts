@@ -26,6 +26,7 @@ import type {
 import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { DelegationError, DelegationStore } from "./delegations.js";
 import { CollaborationDeliveryStore, type CollaborationDelivery } from "./handoffs.js";
+import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -443,6 +444,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const activeRuns = new Map<string, ActiveRun>();
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
+  const engineAuthStatuses = new EngineAuthStatusCache();
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
   const dispatchingTurns = new Set<string>();
@@ -1098,7 +1100,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const runtimeStatuses = await Promise.all([...engines.entries()].map(async ([id, registration]) => {
       try {
         const status = registration.authStatus
-          ? await registration.authStatus()
+          ? await engineAuthStatuses.get(id, registration.authStatus)
           : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
         return { id, authenticated: status.authenticated, ...(status.detail ? { detail: status.detail } : {}) };
       } catch (error) {
@@ -1937,7 +1939,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       Array.from(engines.values()).map(async ({ adapter, authStatus }) => {
         let status: EngineAuthStatus;
         try {
-          status = authStatus ? await authStatus() : { authenticated: false };
+          status = authStatus
+            ? await engineAuthStatuses.get(adapter.id, authStatus)
+            : { authenticated: false };
         } catch (err) {
           status = {
             authenticated: false,
