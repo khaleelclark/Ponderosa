@@ -18,10 +18,12 @@ import type {
   SseEventEnvelope,
   SendAgentMessageRequest,
   SpawnSubagentRequest,
+  SubagentRunDto,
   ThreadDto,
 } from "@ponderosa/core";
 import { artifactContentPath, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { DelegationError, DelegationStore } from "./delegations.js";
+import { CollaborationDeliveryStore, type CollaborationDelivery } from "./handoffs.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -56,6 +58,8 @@ interface PendingTurn {
   collaborationMasterChatId?: string;
   sourceChannel?: "main";
   sourceAuthorThreadId?: string;
+  /** Set only by the server's persisted collaboration delivery dispatcher. */
+  collaborationDeliveryId?: string;
 }
 
 interface AgentMessageCapability {
@@ -160,10 +164,14 @@ function messageContextPrompt(context: InboundMessageContext): string[] {
 function agentMessagingPrompt(): string[] {
   return [
     "You can send an additional message to any Ponderosa channel with your shell tool:",
-    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message"}\'',
+    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message","idempotencyKey":"stable-retry-key"}\'',
     'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
     "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
-    "A valid collaboration @mention to a busy teammate is queued automatically and starts as soon as their current turn finishes.",
+    "A valid collaboration @mention is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
+    "After delegating work, end your turn. Do not poll, sleep, or remain active waiting for results. Delegated agents run asynchronously; their completion automatically queues a parent follow-up, and explicit collaboration tags do the same.",
+    "Each valid tag is a separate FIFO delivery (not coalesced). If a tag arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued tags remain queued; a cancelled delivery turn itself is retried.",
+    "Track expected work in delegated-agent status/lineage: queued/running/completed/failed plus completion-delivery state. A child does not need to tag you for its terminal result—the server notifies you automatically—but it should tag you for interim findings or questions.",
+    "Accumulate results across those notification turns and update the manager once every expected task has reported.",
   ];
 }
 
@@ -383,6 +391,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
   const delegations = new DelegationStore(opts.dataDir);
+  const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const subagentControllers = new Map<string, AbortController>();
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
@@ -394,6 +403,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   // request claims the thread in the tiny dispatch race window.
   const turnDispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
+  let closed = false;
 
   const app = Fastify({ logger: opts.logger ?? true });
 
@@ -422,14 +432,52 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return pending.length;
   }
 
+  function pendingTurnFromDelivery(delivery: CollaborationDelivery): PendingTurn {
+    return {
+      text: delivery.text,
+      agentMentionDepth: delivery.relayDepth,
+      agentMentionTrail: delivery.mentionTrail,
+      collaborationMasterChatId: delivery.masterChatId,
+      sourceAuthorThreadId: delivery.authorThreadId,
+      collaborationDeliveryId: delivery.id,
+    };
+  }
+
+  /**
+   * Persist before enqueueing. A tag therefore survives cancellation, process
+   * restart, and dispatch races instead of existing only in collaboration history.
+   */
+  function queueCollaborationDelivery(input: Omit<CollaborationDelivery, "id" | "status" | "createdAt">): CollaborationDelivery | undefined {
+    if (closed) return undefined;
+    const queued = collaborationDeliveries.queue(input);
+    if (!queued.replayed) {
+      const position = queueTurn(queued.delivery.targetThreadId, pendingTurnFromDelivery(queued.delivery));
+      if (position === undefined) {
+        collaborationDeliveries.fail(queued.delivery.id, "the follow-up queue is full");
+        return undefined;
+      }
+    }
+    void dispatchNextTurn(queued.delivery.targetThreadId);
+    return queued.delivery;
+  }
+
   async function dispatchNextTurn(threadId: string): Promise<void> {
+    if (closed) return;
     if (activeRuns.has(threadId)) return;
-    const pending = pendingTurns.get(threadId);
+    // Rehydrate any delivery that was persisted before a server restart. This
+    // keeps collaboration handoffs out of the "history but never notified" state.
+    const pending = pendingTurns.get(threadId) ?? [];
+    if (pending.length === 0) {
+      for (const delivery of collaborationDeliveries.pending(threadId)) pending.push(pendingTurnFromDelivery(delivery));
+      if (pending.length > 0) pendingTurns.set(threadId, pending);
+    }
     const next = pending?.[0];
     if (!pending || !next) return;
     pending.shift();
     if (pending.length === 0) pendingTurns.delete(threadId);
 
+    if (next.collaborationDeliveryId) collaborationDeliveries.markDelivered(next.collaborationDeliveryId);
+    if (next.collaborationDeliveryId) syncDelegatedCompletion(next.collaborationDeliveryId);
     const response = await app.inject({
       method: "POST",
       url: `/api/threads/${threadId}/messages`,
@@ -442,12 +490,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       },
       payload: next,
     });
+    // `app.close()` may have run while the internal injection was in flight.
+    // Never mutate a delivery ledger after shutdown has revoked its data dir.
+    if (closed) return;
     // Another request may have claimed the agent between our check and the
     // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
+      if (next.collaborationDeliveryId) {
+        collaborationDeliveries.requeue(next.collaborationDeliveryId);
+        syncDelegatedCompletion(next.collaborationDeliveryId);
+      }
       const remaining = pendingTurns.get(threadId) ?? [];
       remaining.unshift(next);
       pendingTurns.set(threadId, remaining);
+    } else if (response.statusCode >= 300 && next.collaborationDeliveryId) {
+      collaborationDeliveries.fail(next.collaborationDeliveryId, `delivery dispatch rejected (${response.statusCode})`);
+      syncDelegatedCompletion(next.collaborationDeliveryId);
+      const delivery = collaborationDeliveries.get(next.collaborationDeliveryId);
+      const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
+      if (delivery && target) {
+        store.appendMasterChatMessage(
+          delivery.masterChatId,
+          {
+            role: "system",
+            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
+          },
+          undefined,
+          "collaboration",
+        );
+      }
     }
   }
 
@@ -462,6 +533,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.addHook("onClose", async () => {
+    closed = true;
     for (const run of activeRuns.values()) run.controller.abort();
     for (const controller of subagentControllers.values()) controller.abort();
     store.close();
@@ -486,6 +558,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function dispatchCollaborationMentions(
     masterChatId: string,
+    messageId: string,
     authorThreadId: string,
     text: string,
     relayDepth: number,
@@ -510,16 +583,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           undefined,
           "collaboration",
         );
-      } else if (
-        queueTurn(target.id, {
-          text,
-          agentMentionDepth: relayDepth + 1,
-          agentMentionTrail: [...mentionTrail, fingerprint],
-          collaborationMasterChatId: masterChatId,
-          sourceAuthorThreadId: authorThreadId,
-        })
-      ) {
-        void dispatchNextTurn(target.id);
+      } else if (queueCollaborationDelivery({
+        masterChatId,
+        messageId,
+        targetThreadId: target.id,
+        authorThreadId,
+        text,
+        relayDepth: relayDepth + 1,
+        mentionTrail: [...mentionTrail, fingerprint],
+        kind: "tag",
+      })) {
+        // Delivery is queued persistently and dispatched at the next safe turn boundary.
       } else {
         store.appendMasterChatMessage(
           masterChatId,
@@ -532,6 +606,70 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         );
       }
     }
+  }
+
+  function syncDelegatedCompletion(deliveryId: string): void {
+    const delivery = collaborationDeliveries.get(deliveryId);
+    if (!delivery?.delegatedRunId) return;
+    const completionDelivery = {
+      status: delivery.status,
+      createdAt: delivery.createdAt,
+      ...(delivery.deliveredAt ? { deliveredAt: delivery.deliveredAt } : {}),
+      ...(delivery.acknowledgedAt ? { acknowledgedAt: delivery.acknowledgedAt } : {}),
+      ...(delivery.failure ? { failure: delivery.failure } : {}),
+    } as NonNullable<SubagentRunDto["completionDelivery"]>;
+    try {
+      delegations.setCompletionDelivery(delivery.delegatedRunId, completionDelivery);
+    } catch {
+      // A deleted delegation cannot retain a delivery record; no retry target remains.
+    }
+  }
+
+  /** Completion is first-class: it is recorded and delivered even if a child never tags its parent. */
+  function notifyParentOfDelegatedCompletion(run: SubagentRunDto): void {
+    if (closed) return;
+    if ((run.status !== "completed" && run.status !== "failed") || !run.parentThreadId) return;
+    const parent = store.getThread(run.parentThreadId);
+    if (!parent) {
+      delegations.setCompletionDelivery(run.id, {
+        status: "failed",
+        createdAt: new Date().toISOString(),
+        failure: "parent agent is no longer available",
+      });
+      return;
+    }
+    const message = store.appendMasterChatMessage(
+      run.masterChatId,
+      {
+        role: "system",
+        text: run.status === "completed"
+          ? `✅ Delegated task “${run.delegationSummary}” completed; @${agentMentionHandle(parent.title)} has been notified.`
+          : `⚠️ Delegated task “${run.delegationSummary}” failed; @${agentMentionHandle(parent.title)} has been notified.`,
+      },
+      run.childThreadId,
+      "collaboration",
+    );
+    if (!message) return;
+    const delivery = queueCollaborationDelivery({
+      masterChatId: run.masterChatId,
+      messageId: message.id,
+      targetThreadId: parent.id,
+      authorThreadId: run.childThreadId,
+      text: message.text,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "delegation_completion",
+      delegatedRunId: run.id,
+    });
+    if (!delivery) {
+      delegations.setCompletionDelivery(run.id, {
+        status: "failed",
+        createdAt: new Date().toISOString(),
+        failure: "parent follow-up queue is full",
+      });
+      return;
+    }
+    syncDelegatedCompletion(delivery.id);
   }
 
   app.post<{
@@ -551,11 +689,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
+    const idempotencyKey = request.body?.idempotencyKey?.trim();
+    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    const receiptKey = idempotencyKey ? `${capability.runId}:${channel}:${idempotencyKey}` : undefined;
+    if (receiptKey) {
+      const previousMessageId = collaborationDeliveries.messageReceipt(receiptKey);
+      if (previousMessageId) return { channel, messageId: previousMessageId, replayed: true };
+    }
 
     if (channel === "individual") {
       const stored = store.appendEvent(capability.threadId, { type: "text", delta: text });
       publish(capability.threadId, stored);
-      return { channel, messageId: `thread-event-${stored.seq}` };
+      const messageId = `thread-event-${stored.seq}`;
+      if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
+      return { channel, messageId, replayed: false };
     }
     if (!capability.masterChatId) {
       return reply.code(409).send({ error: "agent is not linked to a master chat" });
@@ -567,16 +714,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       channel,
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
+    if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (channel === "collaboration") {
       dispatchCollaborationMentions(
         capability.masterChatId,
+        message.id,
         capability.threadId,
         text,
         capability.mentionDepth,
         capability.mentionTrail,
       );
     }
-    return { channel, messageId: message.id };
+    return { channel, messageId: message.id, replayed: false };
   });
 
   app.post<{ Body: AgentDelegationRequest & Record<string, unknown> }>(
@@ -642,7 +791,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
         if (launch.statusCode !== 202) {
           const failure = launch.json<{ error?: { message?: string } }>();
-          delegations.settle(spawned.run.id, "failed", failure.error?.message ?? "delegated launch was rejected");
+          notifyParentOfDelegatedCompletion(
+            delegations.settle(spawned.run.id, "failed", failure.error?.message ?? "delegated launch was rejected"),
+          );
           return reply.code(launch.statusCode).send(failure);
         }
         return reply.code(202).send({ run: delegations.get(spawned.run.id), accepted: true, replayed: spawned.replayed });
@@ -753,14 +904,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     const notifiedAgentIds: string[] = [];
     for (const target of mentionedAgentThreads(text, detail.threads, "")) {
-      if (queueTurn(target.id, {
+      if (queueCollaborationDelivery({
+        masterChatId: request.params.id,
+        messageId: message!.id,
+        targetThreadId: target.id,
         text,
-        agentMentionDepth: 0,
-        agentMentionTrail: [],
-        collaborationMasterChatId: request.params.id,
-      }) !== undefined) {
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "tag",
+      })) {
         notifiedAgentIds.push(target.id);
-        void dispatchNextTurn(target.id);
       } else {
         store.appendMasterChatMessage(
           request.params.id,
@@ -940,12 +1093,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             publish(childThread!.id, stored);
             if (event.type === "error") runtimeError = event.message;
           }
-          if (controller.signal.aborted) delegations.settle(request.params.runId, "failed", "delegated runtime aborted");
-          else if (runtimeError) delegations.settle(request.params.runId, "failed", runtimeError);
-          else delegations.settle(request.params.runId, "completed");
+          if (controller.signal.aborted) notifyParentOfDelegatedCompletion(delegations.settle(request.params.runId, "failed", "delegated runtime aborted"));
+          else if (runtimeError) notifyParentOfDelegatedCompletion(delegations.settle(request.params.runId, "failed", runtimeError));
+          else notifyParentOfDelegatedCompletion(delegations.settle(request.params.runId, "completed"));
         } catch (error) {
           runtimeError = error instanceof Error ? error.message : String(error);
-          delegations.settle(request.params.runId, "failed", runtimeError);
+          notifyParentOfDelegatedCompletion(delegations.settle(request.params.runId, "failed", runtimeError));
         } finally {
           if (subagentControllers.get(request.params.runId) === controller) {
             subagentControllers.delete(request.params.runId);
@@ -1105,6 +1258,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agentMentionDepth?: number;
       agentMentionTrail?: string[];
       collaborationMasterChatId?: string;
+      collaborationDeliveryId?: string;
       sourceChannel?: "main";
       sourceAuthorThreadId?: string;
     };
@@ -1128,6 +1282,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey
       ) {
         return reply.code(403).send({ error: "collaboration context must be delivered by a successful @mention" });
+      }
+      const collaborationDeliveryId = request.body.collaborationDeliveryId;
+      if (
+        collaborationDeliveryId !== undefined &&
+        (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
+          !collaborationMasterChatId ||
+          collaborationDeliveries.get(collaborationDeliveryId)?.targetThreadId !== thread.id)
+      ) {
+        return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (
@@ -1154,6 +1317,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         agentMentionDepth: mentionDepth ?? 0,
         agentMentionTrail: mentionTrail,
         collaborationMasterChatId,
+        collaborationDeliveryId,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
         sourceAuthorThreadId: request.body.sourceAuthorThreadId,
       };
@@ -1296,7 +1460,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             try {
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
-              store.appendMasterChatMessage(
+              const report = store.appendMasterChatMessage(
                 thread.masterChatId,
                 { role: "assistant", text: statusText },
                 thread.id,
@@ -1305,9 +1469,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
               // A tag in a main-chat report is ordinary text. A tag in the
               // collaboration chat is an opt-in handoff and can start a turn.
-              if (!runError && collaborationMasterChatId) {
+              if (!runError && collaborationMasterChatId && report) {
                 dispatchCollaborationMentions(
                   collaborationMasterChatId,
+                  report.id,
                   thread.id,
                   statusText,
                   mentionDepth ?? 0,
@@ -1317,6 +1482,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             } catch {
               // Master chat may have been deleted mid-run; ignore.
             }
+          }
+          if (collaborationDeliveryId) {
+            // A cancelled delivery turn is not an acknowledgement. Put it back
+            // into the durable queue; ordinary pending deliveries remain queued.
+            if (controller.signal.aborted) collaborationDeliveries.requeue(collaborationDeliveryId);
+            else collaborationDeliveries.acknowledge(collaborationDeliveryId);
+            syncDelegatedCompletion(collaborationDeliveryId);
           }
           // Mentions received while this agent was working are never dropped.
           // Start the oldest queued follow-up as soon as its current turn closes.

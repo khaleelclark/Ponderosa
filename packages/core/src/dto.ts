@@ -226,6 +226,8 @@ export type AgentMessageChannel = "individual" | "main" | "collaboration";
 export interface SendAgentMessageRequest {
   channel: AgentMessageChannel;
   text: string;
+  /** Stable across a transport retry so a collaboration tag is delivered once. */
+  idempotencyKey?: string;
 }
 
 /** POST /api/threads/:id/cancel response. */
@@ -242,6 +244,15 @@ export interface SubagentFailureDto {
   message: string;
   retryable: boolean;
   occurredAt: string;
+}
+
+/** Server-recorded delivery state for the automatic parent completion notice. */
+export interface SubagentCompletionDeliveryDto {
+  status: "queued" | "delivered" | "acknowledged" | "failed";
+  createdAt: string;
+  deliveredAt?: string;
+  acknowledgedAt?: string;
+  failure?: string;
 }
 
 /** Public run shape. The raw delegation prompt is deliberately excluded. */
@@ -267,6 +278,8 @@ export interface SubagentRunDto {
   finishedAt?: string;
   updatedAt: string;
   failure?: SubagentFailureDto;
+  /** Present after a terminal child run when its parent can receive a notice. */
+  completionDelivery?: SubagentCompletionDeliveryDto;
 }
 
 export interface SpawnSubagentRequest {
