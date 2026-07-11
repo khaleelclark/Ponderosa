@@ -162,6 +162,7 @@ function agentMessagingPrompt(): string[] {
   return [
     "You can send an additional message to any Ponderosa channel with your shell tool:",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message","idempotencyKey":"stable-retry-key"}\'',
+    "For a collaboration tag, write @Full-Agent-Handle at the start of the message or separate it from preceding text with whitespace.",
     'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
     "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
     "A valid collaboration @mention is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
