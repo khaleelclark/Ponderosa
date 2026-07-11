@@ -10,6 +10,7 @@ import type {
   MasterChatDto,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
+  UpdateThreadMasterChatMembershipsRequest,
   EngineDto,
   ImageAttachmentDto,
   ProjectDto,
@@ -81,6 +82,7 @@ export interface PonderosaApi {
   /** User-facing wrapper around createThread that spawns an agent, optionally under a master chat. */
   createAgent(projectId: string, masterChatId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
   updateThread(threadId: string, patch: UpdateThreadRequest): Promise<ThreadDto>;
+  updateThreadMasterChatMemberships(threadId: string, request: UpdateThreadMasterChatMembershipsRequest): Promise<ThreadDto>;
   deleteThread(threadId: string): Promise<void>;
   getThread(threadId: string): Promise<ThreadDetailDto>;
   listEngines(): Promise<EngineDto[]>;

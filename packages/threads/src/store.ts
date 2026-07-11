@@ -35,6 +35,7 @@ import type {
   ThreadDetailDto,
   ThreadDto,
   ThreadState,
+  UpdateThreadMasterChatMembershipsRequest,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
 } from "@ponderosa/core";
@@ -59,6 +60,7 @@ import {
   projects,
   tasks,
   threads,
+  threadMasterChatMemberships,
 } from "./schema.js";
 import {
   artifactsDir,
@@ -91,6 +93,7 @@ interface ThreadJson {
   id: string;
   projectId: string;
   masterChatId?: string;
+  masterChatIds?: string[];
   title: string;
   activeEngine: string;
   createdAt: string;
@@ -331,7 +334,7 @@ export class ThreadStore {
     return {
       masterChat,
       messages: this.getMasterChatMessages(id, "main"),
-      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatId === id),
+      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatIds.includes(id)),
     };
   }
 
@@ -340,7 +343,7 @@ export class ThreadStore {
     if (!masterChat) return undefined;
     return {
       messages: this.getMasterChatMessages(id, "collaboration"),
-      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatId === id),
+      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatIds.includes(id)),
     };
   }
 
@@ -383,16 +386,16 @@ export class ThreadStore {
   deleteMasterChat(id: string): boolean {
     const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
     if (!row) return false;
-    const linkedThreads = this.db.select().from(threads).where(eq(threads.masterChatId, id)).all();
+    const linkedThreads = this.listThreads(row.projectId).filter((thread) => thread.masterChatIds.includes(id));
     this.db.transaction((tx) => {
-      tx.update(threads).set({ masterChatId: null }).where(eq(threads.masterChatId, id)).run();
+      tx.delete(threadMasterChatMemberships).where(eq(threadMasterChatMemberships.masterChatId, id)).run();
       tx.delete(masterChatMessages).where(eq(masterChatMessages.masterChatId, id)).run();
       tx.delete(masterChats).where(eq(masterChats.id, id)).run();
     });
     for (const thread of linkedThreads) {
-      const path = threadJsonPath(this.dataDir, thread.projectId, thread.id);
-      const json = readJson<ThreadJson>(path);
-      writeJson(path, { ...json, masterChatId: undefined });
+      const remaining = thread.masterChatIds.filter((memberId) => memberId !== id);
+      const primary = thread.masterChatId === id ? remaining[0] : thread.masterChatId;
+      this.persistThreadMemberships(thread.id, remaining, primary);
     }
     rmSync(masterChatDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
     return true;
@@ -546,6 +549,7 @@ export class ThreadStore {
       id,
       projectId,
       masterChatId: input.masterChatId,
+      masterChatIds: input.masterChatId ? [input.masterChatId] : [],
       title: input.title,
       activeEngine: input.engine,
       createdAt: now,
@@ -571,6 +575,9 @@ export class ThreadStore {
         presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
       })
       .run();
+    if (input.masterChatId) {
+      this.db.insert(threadMasterChatMemberships).values({ threadId: id, masterChatId: input.masterChatId, position: 0 }).run();
+    }
     return this.rowToThreadDto(id)!;
   }
 
@@ -609,6 +616,27 @@ export class ThreadStore {
     return this.rowToThreadDto(id);
   }
 
+  updateThreadMasterChatMemberships(
+    id: string,
+    input: UpdateThreadMasterChatMembershipsRequest,
+  ): ThreadDto | undefined {
+    const thread = this.getThread(id);
+    if (!thread) return undefined;
+    const ids = [...new Set(input.masterChatIds)];
+    if (ids.length !== input.masterChatIds.length) throw new Error("duplicate master chat membership");
+    if (ids.length > 0 && !input.primaryMasterChatId) throw new Error("primary master chat is required");
+    if (input.primaryMasterChatId && !ids.includes(input.primaryMasterChatId)) {
+      throw new Error("primary master chat must be a member");
+    }
+    for (const masterChatId of ids) {
+      const master = this.getMasterChat(masterChatId);
+      if (!master || master.projectId !== thread.projectId) throw new Error("master chat does not belong to project");
+      if (master.archived && !thread.masterChatIds.includes(masterChatId)) throw new Error("archived master chat cannot accept assignments");
+    }
+    this.persistThreadMemberships(id, ids, input.primaryMasterChatId);
+    return this.getThread(id);
+  }
+
   /**
    * Permanently delete a thread: its projection rows AND its on-disk canonical
    * log directory (`thread.json`, `events.jsonl`, artifacts, attachments). This is
@@ -625,6 +653,7 @@ export class ThreadStore {
       tx.delete(artifacts).where(eq(artifacts.threadId, id)).run();
       tx.delete(tasks).where(eq(tasks.threadId, id)).run();
       tx.delete(messages).where(eq(messages.threadId, id)).run();
+      tx.delete(threadMasterChatMemberships).where(eq(threadMasterChatMemberships.threadId, id)).run();
       tx.delete(threads).where(eq(threads.id, id)).run();
     });
 
@@ -769,6 +798,7 @@ export class ThreadStore {
     this.db.delete(tasks).run();
     this.db.delete(messages).run();
     this.db.delete(threads).run();
+    this.db.delete(threadMasterChatMemberships).run();
     this.db.delete(masterChatMessages).run();
     this.db.delete(masterChats).run();
     this.db.delete(projects).run();
@@ -844,12 +874,16 @@ export class ThreadStore {
         const tj = threadJsonPath(this.dataDir, projectId, threadId);
         if (!existsSync(tj)) continue;
         const t = readJson<ThreadJson>(tj);
+        const membershipIds = [...new Set(t.masterChatIds ?? (t.masterChatId ? [t.masterChatId] : []))];
+        const primaryMasterChatId = t.masterChatId && membershipIds.includes(t.masterChatId)
+          ? t.masterChatId
+          : membershipIds[0];
         this.db
           .insert(threads)
           .values({
             id: t.id,
             projectId: t.projectId,
-            masterChatId: t.masterChatId ?? null,
+            masterChatId: primaryMasterChatId ?? null,
             title: t.title,
             activeEngine: t.activeEngine,
             createdAt: t.createdAt,
@@ -858,6 +892,12 @@ export class ThreadStore {
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
           })
           .run();
+        membershipIds.forEach((masterChatId, position) => {
+          this.db.insert(threadMasterChatMemberships).values({ threadId: t.id, masterChatId, position }).run();
+        });
+        if (t.masterChatIds === undefined || t.masterChatId !== primaryMasterChatId) {
+          writeJson(tj, { ...t, masterChatId: primaryMasterChatId, masterChatIds: membershipIds });
+        }
 
         const logFile = eventsPath(this.dataDir, projectId, threadId);
         rmSync(artifactsDir(this.dataDir, projectId, threadId), {
@@ -1001,6 +1041,9 @@ export class ThreadStore {
       id: row.id,
       projectId: row.projectId,
       masterChatId: row.masterChatId ?? undefined,
+      masterChatIds: this.db.select().from(threadMasterChatMemberships)
+        .where(eq(threadMasterChatMemberships.threadId, row.id))
+        .orderBy(asc(threadMasterChatMemberships.position)).all().map((membership) => membership.masterChatId),
       title: row.title,
       activeEngine: row.activeEngine,
       state,
@@ -1009,6 +1052,24 @@ export class ThreadStore {
       archived: row.archived === 1,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
+  }
+
+
+  private persistThreadMemberships(id: string, masterChatIds: string[], primaryMasterChatId?: string): void {
+    const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
+    if (!row) throw new Error(`unknown thread: ${id}`);
+    const now = new Date().toISOString();
+    const jsonPath = threadJsonPath(this.dataDir, row.projectId, id);
+    const json = readJson<ThreadJson>(jsonPath);
+    // Canonical metadata is committed first; SQLite remains a rebuildable projection.
+    writeJson(jsonPath, { ...json, masterChatId: primaryMasterChatId, masterChatIds, updatedAt: now });
+    this.db.transaction((tx) => {
+      tx.delete(threadMasterChatMemberships).where(eq(threadMasterChatMemberships.threadId, id)).run();
+      masterChatIds.forEach((masterChatId, position) => {
+        tx.insert(threadMasterChatMemberships).values({ threadId: id, masterChatId, position }).run();
+      });
+      tx.update(threads).set({ masterChatId: primaryMasterChatId ?? null, updatedAt: now }).where(eq(threads.id, id)).run();
+    });
   }
 
   private masterChatRowToDto(row: typeof masterChats.$inferSelect): MasterChatDto {

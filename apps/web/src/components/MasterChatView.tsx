@@ -194,7 +194,12 @@ export function MasterChatView({
         return { agentId, attachments };
       }));
       await api.sendMasterChatMessage(masterChatId, { text, attachments: perAgent[0]?.attachments, replyToMessageId });
-      return Promise.all(perAgent.map(({ agentId, attachments }) => api.sendMessage(agentId, { text, attachmentIds: attachments.map((item) => item.id), sourceChannel: "main" })));
+      return Promise.all(perAgent.map(({ agentId, attachments }) => api.sendMessage(agentId, {
+        text,
+        attachmentIds: attachments.map((item) => item.id),
+        sourceChannel: "main",
+        sourceMasterChatId: masterChatId,
+      })));
     },
     onSuccess: (responses, variables) => {
       setReplyTo(undefined);

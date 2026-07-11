@@ -30,6 +30,7 @@ import { api } from "../api";
 import { subagentRootsByParentThread, type SubagentTreeNode } from "../subagents";
 import {
   agentActivity,
+  agentBelongsToMasterChat,
   agentStatusColor,
   agentStatusLabel,
   relativeTime,
@@ -112,7 +113,7 @@ export function AgentsTab({
   const filtered = agents.filter((agent) => {
     if (childThreadIds.has(agent.id)) return false;
     const status = statusByAgentId.get(agent.id) ?? "idle";
-    if (statusFilter === "unassigned" && agent.masterChatId) {
+    if (statusFilter === "unassigned" && agent.masterChatIds.length > 0) {
       return false;
     }
     if (statusFilter === "running" && status !== "running") {
@@ -124,7 +125,7 @@ export function AgentsTab({
     if (statusFilter === "completed" && status !== "completed") {
       return false;
     }
-    if (masterFilter !== "all" && agent.masterChatId !== masterFilter) {
+    if (masterFilter !== "all" && !agentBelongsToMasterChat(agent, masterFilter)) {
       return false;
     }
     return true;
@@ -261,6 +262,9 @@ export function AgentsTab({
                         color={agent.masterChatId ? "default" : "warning"}
                         label={masterName(agent.masterChatId)}
                       />
+                      {agent.masterChatIds.length > 1 ? (
+                        <Chip size="small" variant="outlined" label={`+${agent.masterChatIds.length - 1} chats`} />
+                      ) : null}
                       <Typography variant="caption" color="text.secondary">
                         updated {relativeTime(agent.updatedAt)}
                       </Typography>

@@ -9,6 +9,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -20,6 +21,7 @@ import {
   InputLabel,
   LinearProgress,
   Link,
+  ListItemText,
   MenuItem,
   Select,
   Stack,
@@ -71,6 +73,9 @@ export function AgentDetail({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  const [membershipOpen, setMembershipOpen] = useState(false);
+  const [membershipIds, setMembershipIds] = useState<string[]>([]);
+  const [primaryMasterChatId, setPrimaryMasterChatId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
 
@@ -132,6 +137,21 @@ export function AgentDetail({
       void queryClient.invalidateQueries({ queryKey: ["threads"] });
       void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
       setRenameOpen(false);
+    },
+  });
+
+  const updateMemberships = useMutation({
+    mutationFn: () => api.updateThreadMasterChatMemberships(agentId, {
+      masterChatIds: membershipIds,
+      primaryMasterChatId: membershipIds.length ? primaryMasterChatId : undefined,
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
+        current ? { ...current, thread: updated } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
+      setMembershipOpen(false);
     },
   });
 
@@ -257,6 +277,13 @@ export function AgentDetail({
               <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
+          <Button size="small" variant="outlined" onClick={() => {
+            setMembershipIds(detail.thread.masterChatIds);
+            setPrimaryMasterChatId(detail.thread.masterChatId ?? "");
+            setMembershipOpen(true);
+          }}>
+            Assign chats
+          </Button>
         </Stack>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
           <Chip
@@ -405,6 +432,52 @@ export function AgentDetail({
             onClick={() => rename.mutate(renameValue.trim())}
           >
             Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={membershipOpen} onClose={() => setMembershipOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Master chat membership</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <FormControl fullWidth>
+              <InputLabel id="agent-memberships-label">Master chats</InputLabel>
+              <Select
+                labelId="agent-memberships-label"
+                multiple
+                value={membershipIds}
+                label="Master chats"
+                renderValue={(selected) => selected.map((id) => masterChats.find((chat) => chat.id === id)?.title ?? id).join(", ")}
+                onChange={(event) => {
+                  const ids = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
+                  setMembershipIds(ids);
+                  if (!ids.includes(primaryMasterChatId)) setPrimaryMasterChatId(ids[0] ?? "");
+                }}
+              >
+                {masterChats.filter((chat) => !chat.archived || membershipIds.includes(chat.id)).map((chat) => (
+                  <MenuItem key={chat.id} value={chat.id}>
+                    <Checkbox checked={membershipIds.includes(chat.id)} />
+                    <ListItemText primary={chat.title} secondary={chat.archived ? "Archived" : undefined} />
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl fullWidth disabled={membershipIds.length === 0}>
+              <InputLabel id="agent-primary-chat-label">Home chat</InputLabel>
+              <Select labelId="agent-primary-chat-label" value={primaryMasterChatId} label="Home chat" onChange={(event) => setPrimaryMasterChatId(event.target.value)}>
+                {membershipIds.map((id) => <MenuItem key={id} value={id}>{masterChats.find((chat) => chat.id === id)?.title ?? id}</MenuItem>)}
+              </Select>
+            </FormControl>
+            <Typography variant="body2" color="text.secondary">
+              The home chat controls default routing and delegation lineage. Every membership shares this agent's single session and event log.
+            </Typography>
+            {updateMemberships.isError ? <Alert severity="error">{String(updateMemberships.error)}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
+          <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryMasterChatId)} onClick={() => updateMemberships.mutate()}>
+            Save membership
           </Button>
         </DialogActions>
       </Dialog>

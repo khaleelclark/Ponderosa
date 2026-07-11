@@ -9,6 +9,7 @@ import type {
   MasterChatDto,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
+  UpdateThreadMasterChatMembershipsRequest,
   EngineDto,
   ImageAttachmentDto,
   ProjectDto,
@@ -152,6 +153,12 @@ export const realApi: PonderosaApi = {
     return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}`, {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateThreadRequest),
+    });
+  },
+  updateThreadMasterChatMemberships(threadId, membership) {
+    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/master-chat-memberships`, {
+      method: "PUT",
+      body: JSON.stringify(membership satisfies UpdateThreadMasterChatMembershipsRequest),
     });
   },
   async deleteThread(threadId) {

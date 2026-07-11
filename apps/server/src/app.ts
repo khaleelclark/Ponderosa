@@ -1404,6 +1404,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  app.put<{
+    Params: { id: string };
+    Body: { masterChatIds: string[]; primaryMasterChatId?: string };
+  }>("/api/threads/:id/master-chat-memberships", async (request, reply) => {
+    if (!Array.isArray(request.body?.masterChatIds)) {
+      return reply.code(400).send({ error: "masterChatIds is required" });
+    }
+    try {
+      const thread = store.updateThreadMasterChatMemberships(request.params.id, request.body);
+      return thread ?? reply.code(404).send({ error: "thread not found" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid membership" });
+    }
+  });
+
   app.delete<{ Params: { id: string } }>("/api/threads/:id", async (request, reply) => {
     const { id } = request.params;
     // Abort any in-flight run so its process is killed before we remove the log.
@@ -1510,6 +1525,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationMasterChatId?: string;
       collaborationDeliveryId?: string;
       sourceChannel?: "main";
+      sourceMasterChatId?: string;
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
       attachmentIds?: string[];
@@ -1540,6 +1556,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey
       ) {
         return reply.code(403).send({ error: "collaboration context must be delivered by a successful @mention" });
+      }
+      const sourceMasterChatId = request.body.sourceMasterChatId;
+      if (sourceMasterChatId !== undefined && !thread.masterChatIds.includes(sourceMasterChatId)) {
+        return reply.code(400).send({ error: "master chat does not belong to thread" });
+      }
+      if (request.body.sourceChannel === "main" && sourceMasterChatId) {
+        const sourceMaster = store.getMasterChat(sourceMasterChatId);
+        if (!sourceMaster || sourceMaster.archived) {
+          return reply.code(400).send({ error: "archived master chats cannot route new turns" });
+        }
       }
       const collaborationDeliveryId = request.body.collaborationDeliveryId;
       const inboxDelivery = collaborationDeliveryId
@@ -1643,8 +1669,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // Main-chat turns receive the manager-facing room. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
       // particular linked agent.
-      const masterChat = thread.masterChatId
-        ? store.getMasterChatDetail(thread.masterChatId)
+      const routingMasterChatId = sourceMasterChatId ?? thread.masterChatId;
+      const masterChat = routingMasterChatId
+        ? store.getMasterChatDetail(routingMasterChatId)
         : undefined;
       const collaboration = collaborationMasterChatId
         ? store.getCollaborationChatDetail(collaborationMasterChatId)
@@ -1753,7 +1780,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           delegationCapabilities.delete(delegationCapability);
           // Post a group-chat status unless the run was cancelled/aborted (cancel or
           // thread deletion), in which case a report-back would be misleading.
-          if (thread.masterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
+          if (routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
             const statusText = runError
               ? `⚠️ Stuck — ${runError.slice(0, 200)}`
               : summarizeFinalMessage(finalText) ??
@@ -1771,7 +1798,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
               const report = store.appendMasterChatMessage(
-                thread.masterChatId,
+                routingMasterChatId,
                 { role: "assistant", text: statusText },
                 thread.id,
                 sourceChannel,

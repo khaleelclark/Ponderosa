@@ -40,7 +40,8 @@ later turns.
 Cross the UI↔server boundary; JSON-serializable, no Node types. One DTO per SPEC §7
 projection plus request/response bodies for every SPEC §8 endpoint:
 `ProjectDto`, `CreateProjectRequest`; `ThreadDto`, `ThreadState`, `ThreadDetailDto`,
-`CreateThreadRequest`, `UpdateThreadRequest`; `MessageDto`, `TaskDto`, `ArtifactDto`,
+`CreateThreadRequest`, `UpdateThreadRequest`, `UpdateThreadMasterChatMembershipsRequest`;
+`MessageDto`, `TaskDto`, `ArtifactDto`,
 `ArtifactKind`, `ArtifactContentDto`; `SendMessageRequest`/`Response`,
 `CancelResponse`; `EngineDto`; `FileEntryDto`, `FilesResponse`; `HealthDto`; and the
 v2 (501-stubbed) `SwitchEngineRequest`, `SearchResultDto`, `SearchResponse`.
@@ -77,3 +78,8 @@ v2 (501-stubbed) `SwitchEngineRequest`, `SearchResultDto`, `SearchResponse`.
    branch without exposing session ids.
 7. **`config`/`logger` are subpath exports, not in the barrel** — so `apps/web`
    importing core types never bundles `node:os`/`node:path`/`process`.
+8. **Agent/master-chat membership is additive.** `ThreadDto.masterChatIds` is the
+   complete ordered membership set; nullable `masterChatId` is the primary/home
+   member retained for routing and backward compatibility. The PUT membership DTO
+   replaces both atomically and the server rejects a primary outside the set or any
+   cross-project room. One thread/session/event log serves every membership.

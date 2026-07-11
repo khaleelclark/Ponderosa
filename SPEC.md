@@ -119,9 +119,25 @@ Project
   spawn many agents from one master chat concurrently. Its messages are a history
   pool that new agents inherit as context; its optional default engine/model/effort
   just prefill the spawn dialog and can be changed per agent at any time.
-- **An Agent is a `Thread`.** Threads with no `masterChatId` appear as **Unassigned**
-  agents — old threads need no migration. Threads with a `masterChatId` appear both
-  under their master chat and in the project-wide **Agents** tab.
+- **An Agent is a `Thread`.** An agent has an ordered, canonical set of master-chat
+  memberships and may belong to zero, one, or many rooms in its project. Its nullable
+  `masterChatId` remains the deterministic **primary/home chat** for default runtime
+  routing, agent-originated main-channel replies, and delegation lineage; it must be
+  a member. `masterChatIds` exposes the complete roster membership. Legacy metadata
+  containing only `masterChatId` migrates additively to a one-element set during
+  projection rebuild. No agent session, event log, or thread is copied.
+- Managers may atomically replace membership and choose the home chat. Main-channel
+  turns sent from a secondary room use that room's history and report back there;
+  direct agent turns use no room context. Agent-authored bridge messages and delegated
+  children use the home chat unless processing a collaboration delivery from another
+  membership. Collaboration mentions resolve against that room's full member roster.
+  Membership and home changes do not rewrite delegation lineage already recorded.
+- Membership is project-scoped and cross-project assignment is rejected. Agents with
+  no memberships appear as **Unassigned**. Archiving a master chat preserves historical
+  membership and roster display but prevents new routed turns/assignments. Deleting a
+  master chat removes only that membership; if it was home, the first remaining ordered
+  membership becomes home, otherwise the agent becomes unassigned. Archiving/deleting
+  an agent retains the existing whole-thread semantics and never affects other agents.
 - **Where work happens:** an Agent's detail view (Chat · Live Log · Tasks · Artifacts)
   drives the existing thread runtime; the Agents tab is where you cancel a run or
   give an agent direct context. Sending a Master Chat message **only records** the
@@ -553,6 +569,7 @@ agent_presets(id, project_id, name, description, guidance, engine,
 threads(id, project_id, title, active_engine,
         active_session_id,
         state_branch, state_commit, created_at, updated_at, archived)
+thread_master_chat_memberships(thread_id, master_chat_id, position)
 messages(id, thread_id, seq, role, text, created_at)          -- Chat pane
 tasks(id, thread_id, title, status, engine, created_at, updated_at)  -- Tasks pane
 artifacts(id, thread_id, task_id, kind, path, summary, created_at)   -- Artifacts pane
@@ -581,6 +598,7 @@ POST   /api/projects/:id/threads           # { title, engine, model, effort }
 
 GET    /api/threads/:id                    # thread + messages + tasks + artifacts + state
 PATCH  /api/threads/:id                    # rename / archive
+PUT    /api/threads/:id/master-chat-memberships # replace set + primary/home atomically
 POST   /api/threads/:id/switch-engine      # (v2) { engine } -> explicit event; new seeded session
 
 POST   /api/threads/:id/messages           # send a user turn -> continue() or seed()
