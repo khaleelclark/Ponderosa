@@ -38,6 +38,8 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
+import { directMessageSender } from "../messageSender";
+import { MessageSenderLabel } from "./MessageSenderLabel";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -216,7 +218,7 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
-export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onReply?(message: MessageDto): void }): JSX.Element {
+export function ChatPane({ messages, agentName, onReply }: { messages: MessageDto[]; agentName: string; onReply?(message: MessageDto): void }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
@@ -261,8 +263,11 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
             border: message.role === "assistant" ? 1 : 0,
             borderColor: "divider",
             boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+            overflowWrap: "anywhere",
+            userSelect: "text",
           }}
         >
+          <MessageSenderLabel name={directMessageSender(message.role, agentName)} />
           {message.replyTo ? (
             <Box
               component="button"

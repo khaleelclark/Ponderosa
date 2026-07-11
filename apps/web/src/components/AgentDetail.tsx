@@ -202,7 +202,7 @@ export function AgentDetail({
     : undefined;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} onReply={setReplyTo} />,
+    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} onReply={setReplyTo} />,
     log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,
