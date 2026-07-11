@@ -30,6 +30,13 @@ describe("agent mentions", () => {
     expect(findMentionedAgent("please ask @rivière-nord", [thread("Rivière-Nord")])?.title).toBe("Rivière-Nord");
   });
 
+  it("requires a whitespace mention boundary", () => {
+    const acadia = thread("Acadia");
+    expect(findMentionedAgent(".@Acadia this is not a tag", [acadia])).toBeUndefined();
+    expect(findMentionedAgent(".@Acadia, nor is this", [acadia])).toBeUndefined();
+    expect(findMentionedAgent(". @Acadia this is a tag", [acadia])).toBe(acadia);
+  });
+
   it("does not route a stale name after an agent is renamed", () => {
     const renamed = thread("Bryce");
     expect(findMentionedAgent("@Bryce status?", [renamed])).toBe(renamed);

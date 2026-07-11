@@ -300,6 +300,9 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- channel: main");
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
+    expect(adapter.seeds[0]?.prompt).toContain(
+      "separate it from preceding text with whitespace",
+    );
 
     store.appendMasterChatMessage(master.id, { text: "@Aspen Is it tested?" });
     await app.inject({
