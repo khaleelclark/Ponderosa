@@ -53,7 +53,7 @@ export function Sidebar({
     agents.some((agent) => agent.masterChatId === masterChatId && runningAgentIds.has(agent.id));
 
   return (
-    <Box sx={{ minWidth: 0, py: 0.5 }}>
+    <Box component="nav" aria-label="Project navigation" sx={{ minWidth: 0, py: 0.5, pb: "max(4px, env(safe-area-inset-bottom))" }}>
       <Stack direction="row" sx={{ alignItems: "center", px: 1, py: 0.5 }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1, px: 1 }}>
           Master Chats
@@ -92,6 +92,8 @@ export function Sidebar({
                 />
                 {masterHasRunning(master.id) ? (
                   <Box
+                    role="img"
+                    aria-label="Has running agents"
                     sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "info.main", ml: 1 }}
                   />
                 ) : null}

@@ -136,8 +136,8 @@ export function AgentDetail({
 
   if (threadQuery.isLoading) {
     return (
-      <Box sx={{ p: 3 }}>
-        <CircularProgress size={24} />
+      <Box sx={{ p: 3 }} role="status" aria-live="polite">
+        <CircularProgress size={24} aria-label="Loading agent" />
       </Box>
     );
   }
@@ -181,7 +181,7 @@ export function AgentDetail({
   };
 
   return (
-    <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto auto 1fr auto" }}>
+    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
       <Box sx={{ px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
@@ -213,7 +213,7 @@ export function AgentDetail({
               )}
             </Typography>
           </Box>
-          <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
+          <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} aria-label={`Agent status: ${agentStatusLabel(status)}`} />
           {subagent ? (
             <Chip
               size="small"
@@ -296,10 +296,11 @@ export function AgentDetail({
             </Select>
           </FormControl>
         </Stack>
-        {running ? <LinearProgress sx={{ mt: 1 }} /> : null}
+        {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
       </Box>
 
       <Tabs
+        aria-label="Agent details"
         value={tab}
         onChange={(_event, value: AgentTab) => setTab(value)}
         variant="scrollable"
@@ -312,10 +313,10 @@ export function AgentDetail({
         <Tab value="artifacts" icon={<DifferenceIcon />} iconPosition="start" label="Artifacts" sx={{ minHeight: 48 }} />
       </Tabs>
 
-      <Box sx={{ minHeight: 0, overflow: tab === "chat" ? "hidden" : "auto" }}>{panes[tab]}</Box>
+      <Box role="tabpanel" aria-label={`${tab === "log" ? "Live log" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>
 
-      <Box>
-        {queuedMessageNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
+      <Box sx={{ minWidth: 0 }}>
+        {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {stream.running ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             This agent is working. New messages will be queued and start automatically.

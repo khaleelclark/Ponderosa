@@ -224,6 +224,8 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
 
   return (
     <Stack
+      component="section"
+      aria-label="Conversation"
       ref={scrollRef}
       spacing={1.25}
       onScroll={() => {
@@ -234,9 +236,7 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
       sx={{ p: 1.5, pb: 3, height: "100%", minHeight: 0, overflowY: "auto" }}
     >
       {chatMessages.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          Send a message to this agent to start the conversation.
-        </Typography>
+        <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
       {chatMessages.map((message) => (
         <Box
@@ -676,10 +676,11 @@ export function Composer({
         borderTop: 1,
         borderColor: "divider",
         p: 1,
+        pb: "max(8px, env(safe-area-inset-bottom))",
       }}
     >
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-end" }}>
-        <Box ref={anchorRef} sx={{ flex: 1 }}>
+        <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
           <TextField
             fullWidth
             multiline
@@ -691,6 +692,7 @@ export function Composer({
             placeholder={running ? "Agent is working" : (placeholder ?? "Send a message")}
             inputProps={{
               "aria-label": "Message",
+              enterKeyHint: "send",
               role: mentionHandles ? "combobox" : undefined,
               "aria-autocomplete": mentionHandles ? "list" : undefined,
               "aria-expanded": mentionHandles ? menuOpen : undefined,
@@ -780,7 +782,7 @@ export function Composer({
         ) : (
           <Tooltip title="Send">
             <span>
-              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label="Send message">
+              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"}>
                 <SendIcon />
               </IconButton>
             </span>

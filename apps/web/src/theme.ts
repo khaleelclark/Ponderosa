@@ -66,7 +66,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       MuiButton: {
         styleOverrides: {
           root: {
-            minHeight: 40,
+            minHeight: 44,
           },
         },
       },
@@ -74,6 +74,28 @@ export function createPonderosaTheme(mode: ColorMode) {
         styleOverrides: {
           root: {
             minWidth: 44,
+            minHeight: 44,
+          },
+        },
+      },
+      MuiTab: {
+        styleOverrides: {
+          root: {
+            minHeight: 48,
+            minWidth: 72,
+          },
+        },
+      },
+      MuiListItemButton: {
+        styleOverrides: {
+          root: {
+            minHeight: 48,
+          },
+        },
+      },
+      MuiToggleButton: {
+        styleOverrides: {
+          root: {
             minHeight: 44,
           },
         },

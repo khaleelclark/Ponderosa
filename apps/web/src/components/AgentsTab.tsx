@@ -129,6 +129,14 @@ export function AgentsTab({
     }
     return true;
   });
+  const statusCounts = agents.reduce(
+    (counts, agent) => {
+      const status = statusByAgentId.get(agent.id) ?? "idle";
+      counts[status] += 1;
+      return counts;
+    },
+    { running: 0, waiting: 0, completed: 0, error: 0, idle: 0 } satisfies Record<AgentStatus, number>,
+  );
 
   return (
     <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto auto 1fr" }}>
@@ -150,6 +158,18 @@ export function AgentsTab({
         spacing={1}
         sx={{ alignItems: { sm: "center" }, px: { xs: 1.5, md: 2 }, py: 1 }}
       >
+        <Stack
+          direction="row"
+          spacing={0.75}
+          useFlexGap
+          flexWrap="wrap"
+          role="status"
+          aria-label={`${statusCounts.running} running, ${statusCounts.waiting} waiting, ${statusCounts.completed} completed`}
+        >
+          <Chip size="small" color="info" label={`${statusCounts.running} running`} />
+          <Chip size="small" color="warning" label={`${statusCounts.waiting} waiting`} />
+          <Chip size="small" color="success" label={`${statusCounts.completed} completed`} />
+        </Stack>
         <Box sx={{ maxWidth: "100%", overflowX: "auto", pb: 0.25 }}>
           <ToggleButtonGroup
             size="small"
