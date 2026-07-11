@@ -216,6 +216,18 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
+export function UserMessageLabel(): JSX.Element {
+  return (
+    <Typography
+      variant="caption"
+      component="div"
+      sx={{ mb: 0.25, mr: 0.5, fontWeight: 700, color: "text.secondary", textAlign: "right" }}
+    >
+      User
+    </Typography>
+  );
+}
+
 export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onReply?(message: MessageDto): void }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -253,38 +265,45 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
           sx={{
             alignSelf: message.role === "user" ? "flex-end" : "flex-start",
             maxWidth: "min(680px, 92%)",
-            px: 1.5,
-            py: 1,
-            borderRadius: 2,
-            bgcolor: message.role === "user" ? "primary.main" : "background.paper",
-            color: message.role === "user" ? "primary.contrastText" : "text.primary",
-            border: message.role === "assistant" ? 1 : 0,
-            borderColor: "divider",
-            boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+            minWidth: 0,
           }}
         >
-          {message.replyTo ? (
-            <Box
-              component="button"
-              onClick={() => {
-                const target = document.getElementById(`message-${message.replyTo!.messageId}`);
-                target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                target?.focus({ preventScroll: true });
-              }}
-              sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
-              aria-label="Go to replied-to message"
-            >
-              <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
-            </Box>
-          ) : null}
-          <ChatMarkdown>{message.text}</ChatMarkdown>
-          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
-          {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-            {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
-              <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-            </Box>)}
-          </Stack> : null}
-          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+          {message.role === "user" ? <UserMessageLabel /> : null}
+          <Box
+            sx={{
+              px: 1.5,
+              py: 1,
+              borderRadius: 2,
+              bgcolor: message.role === "user" ? "primary.main" : "background.paper",
+              color: message.role === "user" ? "primary.contrastText" : "text.primary",
+              border: message.role === "assistant" ? 1 : 0,
+              borderColor: "divider",
+              boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+            }}
+          >
+            {message.replyTo ? (
+              <Box
+                component="button"
+                onClick={() => {
+                  const target = document.getElementById(`message-${message.replyTo!.messageId}`);
+                  target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  target?.focus({ preventScroll: true });
+                }}
+                sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
+                aria-label="Go to replied-to message"
+              >
+                <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
+              </Box>
+            ) : null}
+            <ChatMarkdown>{message.text}</ChatMarkdown>
+            {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+            {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+              {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
+                <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+              </Box>)}
+            </Stack> : null}
+            {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+          </Box>
         </Box>
       ))}
     </Stack>

@@ -45,7 +45,7 @@ import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
-import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
+import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
 import { useSubagents } from "../hooks/useSubagents";
 
@@ -554,7 +554,7 @@ export function MasterChatView({
                     >
                       {agentTitle(message.authorThreadId)}
                     </Link>
-                  ) : null}
+                  ) : <UserMessageLabel />}
                   <Box
                     sx={{
                       px: 1.5,
