@@ -2,6 +2,7 @@ import type { AgentEvent, ArtifactDto, MessageDto, SseEventEnvelope, TaskDto, Th
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { compactDefined } from "../collections";
 
 export interface ExecutionItem {
   id: string;
@@ -49,7 +50,7 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
     // Query-cache updates and live SSE events can interleave. Normalize a
     // transient sparse/invalid cache entry before reading message properties so
     // one bad slot cannot take down the entire React tree.
-    const messages = detail.messages.filter((message): message is MessageDto => Boolean(message));
+    const messages = compactDefined(detail.messages);
     if (messages.some((message) => message.seq === seq)) {
       return detail;
     }
@@ -74,8 +75,9 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
   }
 
   if (event.type === "task_update") {
+    const tasks = compactDefined(detail.tasks);
     const canonicalId = projectedTaskUpdateId(threadId, event.taskId);
-    const existing = detail.tasks.find((task) => task.id === canonicalId || task.id === event.taskId);
+    const existing = tasks.find((task) => task.id === canonicalId || task.id === event.taskId);
     const nextTask: TaskDto = {
       id: existing?.id ?? canonicalId,
       threadId,
@@ -86,14 +88,15 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
       updatedAt: ts,
     };
     const nextTasks = existing
-      ? detail.tasks.map((task) => (task.id === canonicalId || task.id === event.taskId ? nextTask : task))
-      : [...detail.tasks, nextTask];
+      ? tasks.map((task) => (task.id === canonicalId || task.id === event.taskId ? nextTask : task))
+      : [...tasks, nextTask];
     return { ...detail, tasks: nextTasks };
   }
 
   if (event.type === "file_change") {
+    const artifacts = compactDefined(detail.artifacts);
     if (
-      detail.artifacts.some(
+      artifacts.some(
         (artifact) => artifact.id === projectedArtifactId(threadId, seq) || artifact.id === `live-artifact-${seq}`,
       )
     ) {
@@ -107,12 +110,13 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
       summary: `${event.kind} ${event.path}`,
       createdAt: ts,
     };
-    return { ...detail, artifacts: [...detail.artifacts, artifact] };
+    return { ...detail, artifacts: [...artifacts, artifact] };
   }
 
   if (event.type === "test_result") {
+    const artifacts = compactDefined(detail.artifacts);
     if (
-      detail.artifacts.some(
+      artifacts.some(
         (artifact) => artifact.id === projectedArtifactId(threadId, seq) || artifact.id === `live-artifact-${seq}`,
       )
     ) {
@@ -126,7 +130,7 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
       summary: event.summary,
       createdAt: ts,
     };
-    return { ...detail, artifacts: [...detail.artifacts, artifact] };
+    return { ...detail, artifacts: [...artifacts, artifact] };
   }
 
   return detail;
