@@ -351,6 +351,13 @@ export const mockApi: PonderosaApi = {
     masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: request.text, createdAt: new Date().toISOString() }];
     await delay(undefined, 80);
   },
+  async sendDirectReply(masterChatId, request) {
+    await this.sendMasterChatMessage(masterChatId, {
+      text: request.text,
+      replyToMessageId: request.replyToMessageId,
+    });
+    return { messageId: request.idempotencyKey, targetAuthorThreadId: request.targetAuthorThreadId, replayed: false, queued: false };
+  },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
     collaborationMessages[masterChatId] = [

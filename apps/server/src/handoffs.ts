@@ -20,6 +20,7 @@ export interface CollaborationDelivery {
   effort?: string;
   sourceChannel?: "main";
   replyToMessageId?: string;
+  attachmentIds?: string[];
   /** Canonical total-order key for messages sharing the same millisecond. */
   orderKey?: string;
   status: CollaborationDeliveryStatus;

@@ -1882,4 +1882,135 @@ describe("server chunk F", () => {
     await waitForRun(thread.id);
     await app.close();
   });
+
+  it("delivers Reply Directly once and replays a stable receipt", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "direct.png" },
+      payload: png,
+    });
+    expect(upload.statusCode).toBe(201);
+    const attachmentId = upload.json<{ id: string }>().id;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ replayed: false, targetAuthorThreadId: author.id });
+    await waitForRun(author.id);
+
+    const replayed = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
+    });
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
+    expect(store.getMessages(author.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
+    expect(store.getMasterChatMessages(master.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    expect(store.getMessages(author.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    const conflict = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Changed payload", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-1" },
+    });
+    expect(conflict.statusCode).toBe(409);
+
+    const concurrentPayload = { text: "Concurrent follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-concurrent" };
+    const concurrent = await Promise.all([
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload }),
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload }),
+    ]);
+    expect(concurrent.some((response) => response.statusCode === 200)).toBe(true);
+    const concurrentReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload });
+    expect(concurrentReplay.json()).toMatchObject({ replayed: true });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === concurrentPayload.text)).toHaveLength(1);
+    await waitForRun(author.id, 2);
+
+    const spoofed = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Wrong target", replyToMessageId: report.id, targetAuthorThreadId: other.id, idempotencyKey: "reply-2" },
+    });
+    expect(spoofed.statusCode).toBe(400);
+    expect(spoofed.json()).toMatchObject({ error: expect.stringMatching(/must be the author/) });
+    await app.close();
+  });
+
+  it("recovers the direct-reply crash window from the canonical intent without duplicates", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Recovery room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const receiptKey = `direct-reply:${master.id}:crash-window`;
+    const canonical = store.appendMasterChatMessage(
+      master.id,
+      { text: "Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
+      undefined,
+      "main",
+      [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+      receiptKey,
+    )!;
+    await app.close();
+
+    store = new ThreadStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    await restarted.ready();
+    await waitForRun(author.id);
+    const replay = await restarted.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "crash-window" },
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
+    expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
+    await restarted.close();
+
+    store = new ThreadStore(dataDir);
+    const restartedAgain = createServer({ dataDir, store, engines, logger: false });
+    await restartedAgain.ready();
+    const secondReplay = await restartedAgain.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "crash-window" },
+    });
+    expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
+    await restartedAgain.close();
+  });
+
+  it("queues one direct reply for a busy author and deduplicates retries", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Busy room" });
+    const author = store.createThread(project.id, { title: "Busy author", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Working" }, author.id)!;
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Current work" } });
+    await waitForSeedCount(1);
+
+    const payload = { text: "Queued follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "busy-reply" };
+    const first = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    const retry = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    expect(first.json()).toMatchObject({ replayed: false, queued: true });
+    expect(retry.json()).toMatchObject({ replayed: true, queued: true, messageId: first.json<{ messageId: string }>().messageId });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+
+    adapter.mode = "normal";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
+    for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
+    expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+    await app.close();
+  });
 });

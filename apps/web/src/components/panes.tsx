@@ -627,6 +627,7 @@ export function Composer({
   onCancel,
   replyTo,
   onCancelReply,
+  replyLabel,
 }: {
   disabled: boolean;
   running: boolean;
@@ -641,6 +642,7 @@ export function Composer({
   onCancel?(): void;
   replyTo?: { text: string };
   onCancelReply?(): void;
+  replyLabel?: string;
 }): JSX.Element {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Array<{ file: File; preview: string }>>([]);
@@ -725,7 +727,7 @@ export function Composer({
       {replyTo ? (
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5 }}>
           <Box sx={{ minWidth: 0, flex: 1, borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
-            <Typography variant="caption" color="text.secondary">Replying to</Typography>
+            <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
             <Typography variant="body2" noWrap>{replyTo.text}</Typography>
           </Box>
           <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
