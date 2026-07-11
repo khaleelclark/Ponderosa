@@ -37,6 +37,7 @@ import type { EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { compactDefined } from "../collections";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
@@ -97,9 +98,11 @@ export function MasterChatView({
   const subagentBinding = subagents ?? liveSubagents;
 
   const masterChat = detailQuery.data?.masterChat;
-  const messages = detailQuery.data?.messages ?? [];
-  const threads = detailQuery.data?.threads ?? [];
-  const collaborationMessages = collaborationQuery.data?.messages ?? [];
+  // Live query updates can briefly leave sparse entries in cached collections.
+  // Compact at the page boundary so historical chats remain renderable.
+  const messages = compactDefined(detailQuery.data?.messages ?? []);
+  const threads = compactDefined(detailQuery.data?.threads ?? []);
+  const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
   useLayoutEffect(() => {
     if (
       displayedMasterChatId.current !== masterChatId ||
