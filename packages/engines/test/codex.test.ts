@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
 import { CodexAdapter, readCodexModels, renderSeedPrompt } from "../src/codex.js";
 
@@ -219,5 +219,34 @@ describe("CodexAdapter surface", () => {
     writeFileSync(cachePath, "not json");
     expect(readCodexModels(cachePath)).toEqual([{ id: "", label: "Codex default" }]);
     rmSync(tempDir, { recursive: true });
+  });
+});
+
+describe("CodexAdapter launch authorization", () => {
+  it("rejects a delegated run before spawning codex", async () => {
+    const spawnFn = vi.fn() as unknown as typeof spawn;
+    const adapter = new CodexAdapter({ spawnFn });
+
+    const rejection = Object.assign(new Error("proof rejected"), {
+      code: "registration_mismatch",
+    });
+
+    const consume = async () => {
+      for await (const _event of adapter.seed({
+        threadId: "delegated",
+        cwd,
+        prompt: "work",
+        history: [],
+        signal: new AbortController().signal,
+        authorizeLaunch: async () => {
+          throw rejection;
+        },
+      })) {
+        // Authorization rejects before the provider can emit an event.
+      }
+    };
+
+    await expect(consume()).rejects.toBe(rejection);
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 });

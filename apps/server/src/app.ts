@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type {
   Adapter,
   AgentMessageChannel,
   AgentEvent,
   ArtifactContentDto,
   ChatMessage,
+  ClaimSubagentRegistrationRequest,
   EngineAuthStatus,
   EngineDto,
   FilesResponse,
@@ -15,9 +16,11 @@ import type {
   MasterChatMessageDto,
   SseEventEnvelope,
   SendAgentMessageRequest,
+  SpawnSubagentRequest,
   ThreadDto,
 } from "@ponderosa/core";
 import { artifactContentPath, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { DelegationError, DelegationStore } from "./delegations.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -343,6 +346,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
+  const delegations = new DelegationStore(opts.dataDir);
+  const subagentControllers = new Map<string, AbortController>();
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   const pendingMentionTurns = new Map<string, PendingMentionTurn[]>();
   // Capability used only by this server's queue dispatcher. It prevents a client
@@ -351,6 +356,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const subscribers = new Map<string, Set<Subscriber>>();
 
   const app = Fastify({ logger: opts.logger ?? true });
+
+  function delegationFailure(error: unknown, reply: FastifyReply) {
+    if (error instanceof DelegationError) {
+      return reply.code(error.statusCode).send({
+        error: { code: error.code, message: error.message, retryable: error.retryable },
+      });
+    }
+    throw error;
+  }
 
   function queueMentionTurn(
     threadId: string,
@@ -403,6 +417,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     for (const run of activeRuns.values()) run.controller.abort();
+    for (const controller of subagentControllers.values()) controller.abort();
     store.close();
   });
 
@@ -637,6 +652,178 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     return { message, notifiedAgentIds };
   });
+
+  app.get<{ Params: { id: string } }>("/api/master-chats/:id/subagents", async (request, reply) => {
+    if (!store.getMasterChat(request.params.id)) return reply.code(404).send({ error: "master chat not found" });
+    return delegations.list(request.params.id);
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { lastEventId?: string } }>(
+    "/api/master-chats/:id/subagents/stream",
+    async (request, reply) => {
+      if (!store.getMasterChat(request.params.id)) return reply.code(404).send({ error: "master chat not found" });
+      const raw = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
+      let lastSeq = Number(Array.isArray(raw) ? raw[0] : raw) || 0;
+      reply.hijack();
+      reply.raw.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive" });
+      for (const envelope of delegations.eventsSince(request.params.id, lastSeq)) {
+        writeSse(reply.raw, "message", envelope.seq, envelope);
+        lastSeq = envelope.seq;
+      }
+      const unsubscribe = delegations.subscribe((envelope) => {
+        if (envelope.masterChatId === request.params.id && envelope.seq > lastSeq) {
+          writeSse(reply.raw, "message", envelope.seq, envelope);
+          lastSeq = envelope.seq;
+        }
+      });
+      const heartbeat = setInterval(() => writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }), 15_000);
+      request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: SpawnSubagentRequest }>(
+    "/api/master-chats/:id/subagents",
+    async (request, reply) => {
+      if (!store.getMasterChat(request.params.id)) return reply.code(404).send({ error: "master chat not found" });
+      const input = request.body;
+      if (!input?.parentRunId || !input.displayLabel?.trim() || !input.delegationPrompt?.trim() || !input.runtime?.trim() || !input.idempotencyKey?.trim()) {
+        return reply.code(400).send({
+          error: { code: "forbidden", message: "parentRunId, displayLabel, delegationPrompt, runtime, and idempotencyKey are required", retryable: false },
+        });
+      }
+      if (!engines.has(input.runtime)) {
+        return reply.code(400).send({
+          error: { code: "forbidden", message: "runtime is not configured", retryable: false },
+        });
+      }
+      const parentIsRunning = [...activeRuns.values()].some((run) => run.runId === input.parentRunId);
+      try {
+        const context = store.getCollaborationChatDetail(request.params.id)!;
+        const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({
+          id,
+          role,
+          text,
+          ...(authorThreadId ? { authorThreadId } : {}),
+        }));
+        return reply.code(201).send(delegations.spawn(request.params.id, input, parentIsRunning, contextMessages));
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+    },
+  );
+
+  app.post<{ Params: { runId: string }; Body: ClaimSubagentRegistrationRequest }>(
+    "/api/internal/subagents/:runId/launch",
+    async (request, reply) => {
+      const input = request.body;
+      if (!input?.registrationId || !input.credential) {
+        return reply.code(401).send({ error: { code: "registration_required", message: "registration proof is required", retryable: false } });
+      }
+      const context = delegations.launchContext(request.params.runId);
+      if (!context) return reply.code(404).send({ error: { code: "subagent_not_found", message: "subagent was not found", retryable: false } });
+      const engine = engines.get(context.runtime);
+      const masterChat = store.getMasterChat(input.masterChatId);
+      const project = masterChat ? store.getProject(masterChat.projectId) : undefined;
+      if (!engine || !project) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "delegated runtime context is unavailable", retryable: false } });
+      }
+
+      const controller = new AbortController();
+      try {
+        // Proof consumption, the running transition, and controller publication
+        // complete synchronously before success is returned. Invalid/replayed
+        // requests never enter the asynchronous launch or settlement path.
+        const run = delegations.claim(request.params.runId, input);
+        subagentControllers.set(run.id, controller);
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+      void (async () => {
+        let runtimeError: string | undefined;
+        try {
+          const stream = engine.adapter.seed({
+            threadId: request.params.runId,
+            cwd: project.hostPath,
+            prompt: context.prompt,
+            history: context.history,
+            model: context.model,
+            signal: controller.signal,
+            authorizeLaunch: async (signal) => {
+              if (signal.aborted) throw new Error("delegated launch cancelled");
+              if (subagentControllers.get(request.params.runId) !== controller) throw new Error("delegated launch lost controller ownership");
+            },
+          });
+          for await (const event of stream) {
+            if (event.type === "text" && event.delta) delegations.appendOutput(request.params.runId, event.delta);
+            if (event.type === "error") runtimeError = event.message;
+          }
+          if (controller.signal.aborted) delegations.settle(request.params.runId, "failed", "delegated runtime aborted");
+          else if (runtimeError) delegations.settle(request.params.runId, "failed", runtimeError);
+          else delegations.settle(request.params.runId, "completed");
+        } catch (error) {
+          runtimeError = error instanceof Error ? error.message : String(error);
+          delegations.settle(request.params.runId, "failed", runtimeError);
+        } finally {
+          if (subagentControllers.get(request.params.runId) === controller) {
+            subagentControllers.delete(request.params.runId);
+          }
+        }
+      })();
+      return reply.code(202).send({ runId: request.params.runId, accepted: true });
+    },
+  );
+
+  app.post<{ Params: { runId: string }; Body: { scope: "branch"; idempotencyKey: string } }>(
+    "/api/subagents/:runId/cancel",
+    async (request, reply) => {
+      if (request.body?.scope !== "branch" || !request.body.idempotencyKey?.trim()) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "branch scope and idempotencyKey are required", retryable: false } });
+      }
+      try {
+        const result = delegations.cancel(request.params.runId, request.body.idempotencyKey);
+        for (const affected of result.affected) {
+          subagentControllers.get(affected.runId)?.abort();
+          subagentControllers.delete(affected.runId);
+        }
+        return result;
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+    },
+  );
+
+  app.get<{ Params: { runId: string } }>("/api/subagents/:runId/prompt", async (request, reply) => {
+    // Raw prompts may contain secrets. They are never part of list/detail DTOs and
+    // require the configured operator credential even on otherwise open installs.
+    if (!opts.authToken || request.headers["x-ponderosa-prompt-access"] !== opts.authToken) {
+      return reply.code(403).send({ error: { code: "forbidden", message: "full prompt access is forbidden", retryable: false } });
+    }
+    const prompt = delegations.rawPrompt(request.params.runId);
+    return prompt === undefined
+      ? reply.code(404).send({ error: { code: "subagent_not_found", message: "subagent was not found", retryable: false } })
+      : { prompt };
+  });
+
+  app.get<{ Params: { runId: string }; Querystring: { after?: string; limit?: string } }>(
+    "/api/subagents/:runId/transcript",
+    async (request, reply) => {
+      try {
+        const limit = Math.min(200, Math.max(1, Number(request.query.limit) || 100));
+        return delegations.transcript(request.params.runId, request.query.after, limit);
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+    },
+  );
+
+  app.post<{ Params: { runId: string }; Body: { text: string } }>(
+    "/api/internal/subagents/:runId/output",
+    async (request, reply) => {
+      if (!request.body?.text) return reply.code(400).send({ error: { code: "forbidden", message: "text is required", retryable: false } });
+      try { return delegations.appendOutput(request.params.runId, request.body.text); }
+      catch (error) { return delegationFailure(error, reply); }
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/threads", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });

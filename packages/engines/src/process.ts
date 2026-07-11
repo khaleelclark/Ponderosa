@@ -24,6 +24,13 @@ export interface StreamProcessOptions {
   map: (raw: unknown, ctx: { cwd: string }) => AgentEvent[];
   /** Human label for error messages, e.g. "codex" / "claude". */
   label: string;
+  /**
+   * Optional runtime authorization boundary. Subagent orchestration uses this to
+   * atomically claim its server-issued registration before the provider process
+   * can be created. Keep the proof/transport contract outside this low-level
+   * process helper.
+   */
+  beforeSpawn?: (signal: AbortSignal) => Promise<void>;
 }
 
 /**
@@ -34,11 +41,36 @@ export interface StreamProcessOptions {
 export async function* streamProcess(
   opts: StreamProcessOptions,
 ): AsyncIterable<AgentEvent> {
-  const { bin, args, cwd, signal, environment, spawnFn, killGraceMs, map, label } = opts;
+  const {
+    bin,
+    args,
+    cwd,
+    signal,
+    environment,
+    spawnFn,
+    killGraceMs,
+    map,
+    label,
+    beforeSpawn,
+  } = opts;
 
   if (signal.aborted) {
     yield { type: "error", message: "run aborted before start" };
     return;
+  }
+
+  if (beforeSpawn) {
+    // Deliberately let authorization errors escape unchanged. Server
+    // orchestration owns the structured delegation error contract and must be
+    // able to distinguish replay, expiry, mismatch, and policy rejection.
+    await beforeSpawn(signal);
+
+    // Claiming registration may race with branch cancellation. Never create the
+    // provider process after the run has been cancelled, even if claim succeeded.
+    if (signal.aborted) {
+      yield { type: "error", message: "run aborted before start" };
+      return;
+    }
   }
 
   const child: ChildProcess = spawnFn(bin, args, {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ class MockAdapter implements Adapter {
   displayName = "Mock Codex";
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
+  abortedSeeds = 0;
   mode: "normal" | "hang" = "normal";
   responseText = "done";
 
@@ -25,10 +26,12 @@ class MockAdapter implements Adapter {
   }
 
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
+    await opts.authorizeLaunch?.(opts.signal);
     this.seeds.push(opts);
     yield { type: "session", sessionId: "sess-1" };
     if (this.mode === "hang") {
       await new Promise<void>((resolve) => opts.signal.addEventListener("abort", () => resolve(), { once: true }));
+      this.abortedSeeds += 1;
       yield { type: "error", message: "run cancelled" };
       return;
     }
@@ -871,6 +874,189 @@ describe("server chunk F", () => {
 
     await app.close();
     rmSync(webDist, { recursive: true, force: true });
+  });
+
+  it("registers, persists, and cancels a delegated branch with single-use proof", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Delegation room" });
+    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    const parentRunId = parentTurn.json<{ runId: string }>().runId;
+
+    const unsupported = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "Unsupported",
+        delegationPrompt: "Do not launch",
+        runtime: "not-configured",
+        idempotencyKey: "unsupported-1",
+      },
+    });
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json()).toMatchObject({ error: { code: "forbidden" } });
+
+    const spawn = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "API review",
+        delegationPrompt: "Review secret=redacted API behavior",
+        runtime: "codex",
+        idempotencyKey: "spawn-1",
+      },
+    });
+    expect(spawn.statusCode).toBe(201);
+    const created = spawn.json<{ run: { id: string; version: number; delegationSummary: string }; registration: { id: string; credential: string } }>();
+    expect(created.run.version).toBe(1);
+    expect(JSON.stringify(created.run)).not.toContain("delegationPrompt");
+    expect(created.run.delegationSummary).toBe("API review");
+
+    const spawnReplay = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "API review",
+        delegationPrompt: "Review secret=redacted API behavior",
+        runtime: "codex",
+        idempotencyKey: "spawn-1",
+      },
+    });
+    expect(spawnReplay.statusCode).toBe(201);
+    const replayedSpawn = spawnReplay.json<typeof created & { replayed: boolean }>();
+    expect(replayedSpawn.replayed).toBe(true);
+    expect(replayedSpawn.run.id).toBe(created.run.id);
+    expect(replayedSpawn.registration.credential).not.toBe(created.registration.credential);
+
+    const conflictingSpawn = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "Different task",
+        delegationPrompt: "Different prompt",
+        runtime: "codex",
+        idempotencyKey: "spawn-1",
+      },
+    });
+    expect(conflictingSpawn.json()).toMatchObject({ error: { code: "idempotency_conflict" } });
+
+    const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
+    expect(list.json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: created.run.id })]);
+
+    const claimPayload = {
+      registrationId: replayedSpawn.registration.id,
+      credential: replayedSpawn.registration.credential,
+      parentRunId,
+      masterChatId: master.id,
+      runtime: "codex",
+    };
+    const orphanClaim = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
+    expect(orphanClaim.statusCode).toBe(404);
+
+    await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "first chunk" } });
+    await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "second chunk" } });
+    const firstPage = await app.inject({ method: "GET", url: `/api/subagents/${created.run.id}/transcript?limit=1` });
+    expect(firstPage.json()).toMatchObject({ runId: created.run.id, items: [{ chunkSeq: 1, text: "first chunk" }], nextCursor: "1", hasMore: true });
+    const secondPage = await app.inject({ method: "GET", url: `/api/subagents/${created.run.id}/transcript?after=1&limit=1` });
+    expect(secondPage.json()).toMatchObject({ items: [{ chunkSeq: 2, text: "second chunk" }], hasMore: false });
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${created.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "cancel-1" },
+    });
+    const cancellation = cancel.json();
+    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 2 }] });
+    const cancelReplay = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${created.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "cancel-1" },
+    });
+    expect(cancelReplay.json()).toEqual(cancellation);
+    await cancelAndWait(app, thread.id);
+    await app.close();
+  });
+
+  it("repairs delegation persistence permissions on startup", async () => {
+    const file = path.join(dataDir, "delegations.jsonl");
+    writeFileSync(file, "", { mode: 0o644 });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    await app.close();
+  });
+
+  it("launches a claimed adapter and cancellation produces a terminal lifecycle event", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Delegation room" });
+    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    const parentRunId = parentTurn.json<{ runId: string }>().runId;
+    const spawned = (await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: { parentRunId, displayLabel: "Worker", delegationPrompt: "Do the work", runtime: "codex", model: "mock-model", idempotencyKey: "launch-1" },
+    })).json<{ run: { id: string }; registration: { id: string; credential: string } }>();
+    const claim = {
+      registrationId: spawned.registration.id,
+      credential: spawned.registration.credential,
+      parentRunId,
+      masterChatId: master.id,
+      runtime: "codex",
+    };
+
+    const invalidQueued = await app.inject({
+      method: "POST",
+      url: `/api/internal/subagents/${spawned.run.id}/launch`,
+      payload: { ...claim, credential: "invalid" },
+    });
+    expect(invalidQueued.statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ status: string }>>()[0]?.status).toBe("queued");
+
+    const [firstLaunch, duplicateLaunch] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim }),
+      app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim }),
+    ]);
+    expect([firstLaunch.statusCode, duplicateLaunch.statusCode].sort()).toEqual([202, 409]);
+    await waitForSeedCount(2);
+    expect(adapter.seeds[1]?.authorizeLaunch).toBeTypeOf("function");
+    expect(adapter.seeds[1]?.model).toBe("mock-model");
+
+    const invalidRunning = await app.inject({
+      method: "POST",
+      url: `/api/internal/subagents/${spawned.run.id}/launch`,
+      payload: { ...claim, credential: "invalid" },
+    });
+    expect(invalidRunning.statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ status: string }>>()[0]?.status).toBe("running");
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${spawned.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "launch-cancel-1" },
+    });
+    expect(cancel.json()).toMatchObject({ affected: [{ runId: spawned.run.id, status: "cancelled" }] });
+    for (let i = 0; i < 80 && adapter.abortedSeeds === 0; i += 1) {
+      await sleep(10);
+    }
+    expect(adapter.abortedSeeds).toBe(1);
+    const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
+    expect(list.json<Array<{ status: string }>>()[0]?.status).toBe("cancelled");
+    const lifecycle = readFileSync(path.join(dataDir, "delegations.jsonl"), "utf8");
+    expect(lifecycle).toContain('"status":"running"');
+    expect(lifecycle).toContain('"status":"cancelled"');
+    expect(lifecycle).not.toContain('"status":"failed"');
+    expect(lifecycle).not.toContain('"status":"completed"');
+    expect(statSync(path.join(dataDir, "delegations.jsonl")).mode & 0o777).toBe(0o600);
+    await cancelAndWait(app, thread.id);
+    await app.close();
   });
 
   it("streams live SSE and replays from last seen seq without duplicates", async () => {

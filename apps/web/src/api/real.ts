@@ -14,10 +14,15 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
+  SubagentEventEnvelope,
+  SubagentRunDto,
+  SubagentTranscriptPageDto,
+  CancelSubagentRequest,
+  CancelSubagentResponse,
   ThreadDetailDto,
   ThreadDto,
 } from "@ponderosa/core";
-import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
+import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription } from "./types";
 
 const API_BASE = "";
 
@@ -33,7 +38,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   }
 
   return (await response.json()) as T;
@@ -97,6 +102,31 @@ export const realApi: PonderosaApi = {
       method: "POST",
       body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
     });
+  },
+  listSubagents(masterChatId) {
+    return requestJson<SubagentRunDto[]>(`/api/master-chats/${encodeURIComponent(masterChatId)}/subagents`);
+  },
+  getSubagentTranscript(runId, after) {
+    return requestJson<SubagentTranscriptPageDto>(
+      `/api/subagents/${encodeURIComponent(runId)}/transcript${toQuery({ after, limit: 100 })}`,
+    );
+  },
+  cancelSubagent(runId, request) {
+    return requestJson<CancelSubagentResponse>(`/api/subagents/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(request satisfies CancelSubagentRequest),
+    });
+  },
+  subscribeSubagents(masterChatId, lastSeenSeq, handlers): StreamSubscription {
+    const source = new EventSource(
+      `/api/master-chats/${encodeURIComponent(masterChatId)}/subagents/stream${toQuery({ lastEventId: lastSeenSeq })}`,
+    );
+    source.onopen = () => handlers.onOpen?.();
+    source.onerror = (event) => handlers.onError?.(event);
+    source.addEventListener("message", (event) => {
+      handlers.onEvent(JSON.parse(event.data as string) as SubagentEventEnvelope);
+    });
+    return { close: () => source.close() };
   },
   listThreads(projectId) {
     return requestJson<ThreadDto[]>(`/api/projects/${encodeURIComponent(projectId)}/threads`);

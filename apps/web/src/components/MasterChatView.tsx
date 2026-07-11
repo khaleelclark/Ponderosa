@@ -41,8 +41,11 @@ import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } fr
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
+import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
+import { SubagentTreePanel } from "./SubagentTreePanel";
 import { useMasterChatStreams } from "../hooks/useMasterChatStreams";
+import { useSubagents } from "../hooks/useSubagents";
 
 export function MasterChatView({
   masterChatId,
@@ -52,6 +55,7 @@ export function MasterChatView({
   onNewAgent,
   onArchived,
   onDeleted,
+  subagents,
 }: {
   masterChatId: string;
   engines: EngineDto[];
@@ -60,6 +64,8 @@ export function MasterChatView({
   onNewAgent(master: MasterChatDto): void;
   onArchived(): void;
   onDeleted(): void;
+  /** Normalized UI binding; REST/SSE details stay in the future transport hook. */
+  subagents?: SubagentUiBinding;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const detailQuery = useMasterChat(masterChatId);
@@ -86,6 +92,10 @@ export function MasterChatView({
   const displayedConversation = useRef(conversation);
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+  const showSubagents = isSubagentUiEnabled(env);
+  const liveSubagents = useSubagents(masterChatId, showSubagents);
+  const subagentBinding = subagents ?? liveSubagents;
 
   const masterChat = detailQuery.data?.masterChat;
   const messages = detailQuery.data?.messages ?? [];
@@ -478,6 +488,14 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
+            {conversation === "collaboration" && showSubagents && subagentBinding ? (
+              <SubagentTreePanel
+                store={subagentBinding.store}
+                cancelling={subagentBinding.cancelling}
+                onCancel={subagentBinding.cancel}
+                onExpand={subagentBinding.loadTranscript}
+              />
+            ) : null}
             {conversation === "main" && pollingFallbackCount > 0 ? (
               <Alert severity="info">
                 {pollingFallbackCount} additional active {pollingFallbackCount === 1 ? "agent is" : "agents are"}
