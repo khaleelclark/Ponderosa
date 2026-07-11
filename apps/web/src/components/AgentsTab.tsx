@@ -23,10 +23,11 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { MasterChatDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { MasterChatDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { subagentRootsByParentThread, type SubagentTreeNode } from "../subagents";
 import {
   agentActivity,
   agentStatusColor,
@@ -42,6 +43,7 @@ export function AgentsTab({
   masterChats,
   statusByAgentId,
   detailByAgentId,
+  subagents,
   onOpenAgent,
   onNewAgent,
 }: {
@@ -49,6 +51,7 @@ export function AgentsTab({
   masterChats: MasterChatDto[];
   statusByAgentId: Map<string, AgentStatus>;
   detailByAgentId: Map<string, ThreadDetailDto | undefined>;
+  subagents: SubagentRunDto[];
   onOpenAgent(agentId: string): void;
   onNewAgent(): void;
 }): JSX.Element {
@@ -56,6 +59,34 @@ export function AgentsTab({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
+  const subagentsByParent = subagentRootsByParentThread(subagents);
+
+  const subagentColor = (status: SubagentRunDto["status"]): "default" | "info" | "success" | "error" => {
+    if (status === "running") return "info";
+    if (status === "completed") return "success";
+    if (status === "failed") return "error";
+    return "default";
+  };
+
+  const renderSubagent = (run: SubagentTreeNode): JSX.Element => (
+    <Box key={run.id} sx={{ ml: { xs: 2, sm: 4 }, borderLeft: 2, borderColor: "divider", pl: 1 }}>
+      <Paper variant="outlined" sx={{ p: 1.25, bgcolor: "action.hover" }}>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+          <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 140 }}>{run.displayLabel}</Typography>
+          <Chip size="small" variant="outlined" color="secondary" label="Subagent" />
+          <Chip size="small" label={run.status} color={subagentColor(run.status)} />
+        </Stack>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 0.75, alignItems: "center" }}>
+          <Chip size="small" variant="outlined" label={run.runtime} />
+          <Typography variant="caption" color="text.secondary">
+            depth {run.depth} · updated {relativeTime(run.updatedAt)}
+          </Typography>
+        </Stack>
+        {run.failure ? <Alert severity="error" sx={{ mt: 1 }}>{run.failure.message}</Alert> : null}
+      </Paper>
+      {run.children.map(renderSubagent)}
+    </Box>
+  );
 
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteThread(agentId),
@@ -169,12 +200,13 @@ export function AgentsTab({
             {filtered.map((agent) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const activity = agentActivity(detailByAgentId.get(agent.id));
+              const delegated = subagentsByParent.get(agent.id) ?? [];
               return (
-                <Paper
-                  key={agent.id}
-                  variant="outlined"
-                  sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
-                >
+                <Stack key={agent.id} spacing={0.75}>
+                  <Paper
+                    variant="outlined"
+                    sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
+                  >
                   <ButtonBase
                     onClick={() => onOpenAgent(agent.id)}
                     aria-label={`Open agent ${agent.title}`}
@@ -225,7 +257,9 @@ export function AgentsTab({
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                </Paper>
+                  </Paper>
+                  {delegated.map(renderSubagent)}
+                </Stack>
               );
             })}
           </Stack>

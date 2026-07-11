@@ -1066,7 +1066,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-delegations",
       headers: { authorization: `Bearer ${environment.PONDEROSA_DELEGATION_TOKEN}` },
-      payload: { parentRunId: "another-run", displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "spoof-1" },
+      payload: { parentThreadId: "another-thread", displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "spoof-1" },
     });
     expect(spoof.statusCode).toBe(403);
     expect(spoof.json()).toMatchObject({ error: { code: "unauthorized_parent" } });
@@ -1078,8 +1078,9 @@ describe("server chunk F", () => {
       payload: { displayLabel: "Safe review", delegationPrompt: "private secret task", runtime: "codex", idempotencyKey: "bridge-1" },
     });
     expect(response.statusCode).toBe(202);
-    const created = response.json<{ run: { id: string; parentRunId: string; rootRunId: string; runtime: string; status: string }; accepted: boolean }>();
+    const created = response.json<{ run: { id: string; parentThreadId?: string; parentRunId: string; rootRunId: string; runtime: string; status: string }; accepted: boolean }>();
     expect(created).toMatchObject({ accepted: true, run: { runtime: "codex", status: "running" } });
+    expect(created.run.parentThreadId).toBe(thread.id);
     expect(created.run.parentRunId).toBe(created.run.rootRunId);
     expect(JSON.stringify(response.json())).not.toContain("private secret task");
     expect(JSON.stringify(response.json())).not.toContain("credential");

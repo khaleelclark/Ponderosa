@@ -1,12 +1,13 @@
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { EngineDto, MasterChatDto, ThreadDetailDto } from "@ponderosa/core";
+import type { EngineDto, MasterChatDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
+import { isSubagentUiEnabled } from "../subagents";
 import { useMasterChats, useThreads } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -43,6 +44,21 @@ export function ProjectShell({
   const threadsQuery = useThreads(projectId);
   const masterChats = masterChatsQuery.data ?? [];
   const agents = threadsQuery.data ?? [];
+  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
+  const showSubagents = isSubagentUiEnabled(env);
+
+  const subagentQueries = useQueries({
+    queries: masterChats.map((master) => ({
+      queryKey: ["subagents", master.id],
+      queryFn: () => api.listSubagents(master.id),
+      enabled: showSubagents,
+      refetchInterval: 5_000,
+    })),
+  });
+  const subagents = useMemo(
+    () => subagentQueries.flatMap((query) => query.data ?? []) as SubagentRunDto[],
+    [subagentQueries],
+  );
 
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
@@ -184,6 +200,7 @@ export function ProjectShell({
         masterChats={masterChats}
         statusByAgentId={statusByAgentId}
         detailByAgentId={detailByAgentId}
+        subagents={subagents}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={() => setAgentDialog({ open: true, defaultName: suggestedName() })}
       />

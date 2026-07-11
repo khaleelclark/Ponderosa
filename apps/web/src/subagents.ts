@@ -161,6 +161,17 @@ export function buildSubagentTree(runs: Iterable<SubagentRunDto>): SubagentTreeN
   return roots;
 }
 
+export function subagentRootsByParentThread(
+  runs: Iterable<SubagentRunDto>,
+): ReadonlyMap<string, readonly SubagentTreeNode[]> {
+  const grouped = new Map<string, SubagentTreeNode[]>();
+  for (const root of buildSubagentTree(runs)) {
+    if (!root.parentThreadId) continue;
+    grouped.set(root.parentThreadId, [...(grouped.get(root.parentThreadId) ?? []), root]);
+  }
+  return grouped;
+}
+
 export function subagentTranscript(store: SubagentStore, runId: string): string {
   return (store.output.get(runId) ?? []).map((chunk) => chunk.text).join("");
 }

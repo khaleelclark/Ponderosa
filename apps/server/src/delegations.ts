@@ -194,6 +194,7 @@ export class DelegationStore {
     input: SpawnSubagentRequest,
     parentIsRunning: boolean,
     contextMessages: Array<{ id: string; role: string; text: string; authorThreadId?: string }>,
+    parentThreadId?: string,
   ): SpawnSubagentResponse {
     const parent = this.runs.get(input.parentRunId);
     if (parent && parent.masterChatId !== masterChatId) throw new DelegationError("unauthorized_parent", "parent run belongs to another master chat", 403);
@@ -239,6 +240,9 @@ export class DelegationStore {
     const run: RunRecord = {
       id: runId,
       masterChatId,
+      ...(parent?.parentThreadId || parentThreadId
+        ? { parentThreadId: parent?.parentThreadId ?? parentThreadId }
+        : {}),
       parentRunId: input.parentRunId,
       rootRunId,
       contextSnapshotId: randomUUID(),
