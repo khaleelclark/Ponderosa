@@ -4,9 +4,12 @@
 > that machine and manage them from any device (starting with a phone in bed) —
 > less "chat with an AI," more "manage a small remote engineering team."
 
-**Status:** Spec / pre-implementation. Written to be handed to Claude Code as the
-implementation brief. Captures decisions made, the reasoning behind them, and the
-concrete build plan.
+**Status:** Living design record. The core vertical slice and later orchestration
+capabilities are implemented; sections that say "planned," "proposed," "v2," or
+"v3" remain directional until their code is merged. See
+[`docs/V1_ROADMAP.md`](./docs/V1_ROADMAP.md) for an evidence-based inventory and
+release plan. This document preserves the original decisions and reasoning rather
+than pretending every historical roadmap statement shipped unchanged.
 
 ---
 
@@ -269,8 +272,9 @@ history. One abstraction (the **Adapter**) covers both.
 ### Decisions locked in
 - **Starting engine: Codex CLI** — best fit for headless orchestration today, but
   **not locked in.** The `Adapter` interface exists precisely so the engine is
-  swappable; nothing outside `packages/engines` assumes Codex. Claude is the
-  planned second engine.
+  swappable; nothing outside `packages/engines` assumes Codex. Claude is now an
+  implemented second adapter; explicit switching within an existing Agent remains
+  deferred.
 - **Execution: direct on host.** Backend runs as your user (systemd); the agents
   it spawns inherit real fs/shell access and the on-disk subscription tokens, and
   read each project's own md files from its cwd. No Docker bind-mount gymnastics
@@ -435,7 +439,7 @@ The server routes these: `text`/`reasoning` → Chat; `command`/`file_change`/
   under `~/.codex/`. **This is the savings path.** Config: `~/.codex/config.toml`,
   `AGENTS.md` in project roots, sandbox + MCP settings.
 
-### Claude adapter (planned second engine)
+### Claude adapter (implemented second engine)
 - **Library:** Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) — Claude Code as
   a library: built-in Read/Write/Edit/Bash/Glob/Grep/WebSearch/WebFetch, full loop,
   sessions, hooks, MCP. `query(prompt, options)` with streaming; options carry
@@ -468,7 +472,7 @@ Any runtime with "run to completion, stream events, resume by id" implements
 | Deploy             | Backend as a **host systemd service**; static frontend served by it. Reachability is a deployment choice (§10). Docker deferred. | Backend needs real host access (§11); host process makes that natural. |
 | PWA                | Rsbuild PWA/service-worker plugin (Workbox) + web manifest | Installable, phone-native, no app store. Native mobile is a possible future. |
 
-### Monorepo layout (proposed)
+### Monorepo layout (current)
 ```
 ponderosa/
   apps/
@@ -716,7 +720,13 @@ loads everything from the server (§2). PWA now; native mobile a possible future
 
 ---
 
-## 13. Roadmap
+## 13. Original roadmap and current interpretation
+
+This section is the original sequencing model and remains useful historical
+context. It is not a current feature-status ledger: some later concepts (including
+the Claude adapter, Master Chats, collaboration, and delegated-agent lineage) have
+already shipped, while other items remain proposed or deferred. Use
+[`docs/V1_ROADMAP.md`](./docs/V1_ROADMAP.md) for current/next/later status.
 
 **Overall v1 stance:** thin vertical slice through every layer, working end-to-end;
 mostly testing; polish nothing until the loop works (§1).
