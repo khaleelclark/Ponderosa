@@ -224,6 +224,7 @@ function agentMessagingPrompt(): string[] {
     "Each valid tag is a separate FIFO delivery (not coalesced). If a tag arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued tags remain queued; a cancelled delivery turn itself is retried.",
     "Track expected work in delegated-agent status/lineage: queued/running/completed/failed plus completion-delivery state. A child does not need to tag you for its terminal result—the server notifies you automatically—but it should tag you for interim findings or questions.",
     "Accumulate results across those notification turns and update the manager once every expected task has reported.",
+    'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
   ];
 }
 
@@ -445,6 +446,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
+  // An agent can request rollover while its capability is live. The reset is
+  // applied only after the turn ends, so it never destroys an in-flight session.
+  const scheduledSessionRollovers = new Set<string>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
   const dispatchingTurns = new Set<string>();
   // Capability used only by this server's queue dispatcher. It prevents a client
@@ -619,7 +623,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -898,6 +902,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { channel, messageId: message.id, replayed: false };
   });
 
+  app.post("/api/agent-session/rollover", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    if (!capability) return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    const active = activeRuns.get(capability.threadId);
+    if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    scheduledSessionRollovers.add(capability.threadId);
+    return { scheduled: true, afterRunId: capability.runId };
+  });
+
   /**
    * The sole delegated launch path. Ownership has already been derived from the
    * active run capability; no HTTP caller can provide or replay launch proofs.
@@ -962,6 +978,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
+            PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
             PONDEROSA_DELEGATION_TOKEN: delegationCapabilityToken,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -983,6 +1000,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         runtimeError = error instanceof Error ? error.message : String(error);
         notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", runtimeError));
       } finally {
+        if (scheduledSessionRollovers.delete(childThread.id)) {
+          store.clearResumeSession(childThread.id, "explicit_compaction");
+        }
         if (activeRuns.get(childThread.id)?.controller === controller) activeRuns.delete(childThread.id);
         agentMessageCapabilities.delete(messageCapabilityToken);
         delegationCapabilities.delete(delegationCapabilityToken);
@@ -1730,6 +1750,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+            PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
             PONDEROSA_DELEGATION_TOKEN: delegationCapability,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -1758,6 +1779,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
           let sessionId = resumeSessionId;
           let rolloverAttempted = false;
+          let sawMaterialRuntimeEvent = false;
           while (true) {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
@@ -1773,6 +1795,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               if (
                 sessionId &&
                 !rolloverAttempted &&
+                !sawMaterialRuntimeEvent &&
                 event.type === "error" &&
                 shouldRolloverEngineSession(engine.adapter.id, event.message)
               ) {
@@ -1787,6 +1810,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 const stored = store.appendEvent(thread.id, buffered);
                 publish(thread.id, stored);
               }
+              if (event.type !== "error") sawMaterialRuntimeEvent = true;
               const stored = store.appendEvent(thread.id, event);
               publish(thread.id, stored);
               if (event.type === "text") finalText += event.delta;
@@ -1802,6 +1826,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           publish(thread.id, stored);
           runError = message;
         } finally {
+          if (scheduledSessionRollovers.delete(thread.id)) {
+            store.clearResumeSession(thread.id, "explicit_compaction");
+          }
           if (activeRuns.get(thread.id)?.controller === controller) activeRuns.delete(thread.id);
           agentMessageCapabilities.delete(messageCapability);
           delegationCapabilities.delete(delegationCapability);

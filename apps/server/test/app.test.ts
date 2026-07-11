@@ -16,7 +16,7 @@ class MockAdapter implements Adapter {
   readonly seeds: SeedOptions[] = [];
   readonly continues: ContinueOptions[] = [];
   abortedSeeds = 0;
-  mode: "normal" | "hang" | "boundary" | "resume_compaction_fail" = "normal";
+  mode: "normal" | "hang" | "boundary" | "resume_compaction_fail" | "material_compaction_fail" = "normal";
   responseText = "done";
   failuresRemaining = 0;
 
@@ -68,6 +68,12 @@ class MockAdapter implements Adapter {
         type: "error",
         message: "codex exited with code 1: Failed to run pre-sampling compact",
       };
+      return;
+    }
+    if (this.mode === "material_compaction_fail") {
+      yield { type: "session", sessionId: opts.resumeSessionId };
+      yield { type: "command", command: "touch already-ran", cwd: opts.cwd };
+      yield { type: "error", message: "codex exited with code 1: Failed to run pre-sampling compact" };
       return;
     }
     yield { type: "text", delta: `continued ${opts.resumeSessionId}` };
@@ -391,6 +397,44 @@ describe("server chunk F", () => {
       item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
     )).toBe(false);
     expect(store.resumeSessionId(thread.id)).toBe("sess-1");
+    await app.close();
+  });
+
+  it("does not replay a failed resume after material side effects", async () => {
+    const { app, thread } = await createProjectAndThread();
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first" } });
+    await waitForRun(thread.id);
+
+    adapter.mode = "material_compaction_fail";
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second" } });
+    await vi.waitFor(() => {
+      expect(store.readEvents(thread.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
+    });
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "command" && item.event.command === "touch already-ran")).toBe(true);
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
+    await app.close();
+  });
+
+  it("lets an active agent schedule a safe session rollover at turn completion", async () => {
+    const { app, thread } = await createProjectAndThread();
+    adapter.mode = "boundary";
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "work then refresh" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const url = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_ROLLOVER_URL;
+    expect(token).toBeTruthy();
+    expect(url).toBe("http://127.0.0.1:8787/api/agent-session/rollover");
+
+    const scheduled = await app.inject({ method: "POST", url: "/api/agent-session/rollover", headers: { authorization: `Bearer ${token}` } });
+    expect(scheduled.statusCode).toBe(200);
+    expect(scheduled.json()).toMatchObject({ scheduled: true });
+    await waitForRun(thread.id);
+
+    expect(store.resumeSessionId(thread.id)).toBeUndefined();
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "session_reset" && item.event.reason === "explicit_compaction")).toBe(true);
     await app.close();
   });
 

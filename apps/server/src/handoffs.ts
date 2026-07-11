@@ -157,7 +157,8 @@ export class CollaborationDeliveryStore {
   acknowledge(id: string): CollaborationDelivery | undefined {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status !== "delivered") return delivery;
-    return this.persist({ ...delivery, status: "acknowledged", acknowledgedAt: new Date().toISOString() }, "replace");
+    const { failure: _failure, ...succeeded } = delivery;
+    return this.persist({ ...succeeded, status: "acknowledged", acknowledgedAt: new Date().toISOString() }, "replace");
   }
 
   /**
@@ -169,7 +170,7 @@ export class CollaborationDeliveryStore {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status !== "delivered") return delivery;
     if ((delivery.attempts ?? 1) >= maxAttempts) return this.fail(id, failure);
-    const { deliveredAt: _deliveredAt, ...queued } = delivery;
+    const { deliveredAt: _deliveredAt, failure: _failure, ...queued } = delivery;
     return this.persist({ ...queued, status: "queued", failure }, "replace");
   }
 
