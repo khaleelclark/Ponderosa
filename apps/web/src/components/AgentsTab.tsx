@@ -178,6 +178,7 @@ export function AgentsTab({
             value={statusFilter}
             onChange={(_event, value: StatusFilter | null) => value && setStatusFilter(value)}
             aria-label="Filter agents by status"
+            sx={{ "& .MuiToggleButton-root": { minHeight: 44 } }}
           >
             <ToggleButton value="all">All</ToggleButton>
             <ToggleButton value="running">Running</ToggleButton>
@@ -285,7 +286,7 @@ export function AgentsTab({
                       size="small"
                       aria-label={`Delete agent ${agent.title}`}
                       onClick={() => setPendingDelete(agent)}
-                      sx={{ m: 1 }}
+                      sx={{ m: 0.75, minWidth: 44, minHeight: 44 }}
                     >
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>

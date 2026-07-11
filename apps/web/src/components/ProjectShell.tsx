@@ -273,6 +273,7 @@ export function ProjectShell({
               <IconButton
                 aria-label="Open project navigation"
                 onClick={() => navigate({ kind: "project", projectId })}
+                sx={{ minWidth: 44, minHeight: 44 }}
               >
                 <ArrowBackIcon />
               </IconButton>
@@ -282,7 +283,7 @@ export function ProjectShell({
               <IconButton
                 aria-label="Manage agent presets"
                 onClick={() => setPresetsOpen(true)}
-                sx={{ ml: "auto" }}
+                sx={{ ml: "auto", minWidth: 44, minHeight: 44 }}
               >
                 <TuneIcon />
               </IconButton>

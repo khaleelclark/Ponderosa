@@ -165,7 +165,7 @@ export default function App({
             <IconButton
               aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               onClick={onToggleColorMode}
-              sx={{ ml: 0.5 }}
+              sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}
             >
               {colorMode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
             </IconButton>

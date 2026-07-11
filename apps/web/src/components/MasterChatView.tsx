@@ -43,6 +43,7 @@ import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } fr
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
+import { compactViewportQuery } from "../responsive";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
@@ -95,6 +96,7 @@ export function MasterChatView({
   const displayedConversation = useRef(conversation);
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
+  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const showSubagents = isSubagentUiEnabled(env);
   const liveSubagents = useSubagents(masterChatId, showSubagents);
@@ -375,6 +377,7 @@ export function MasterChatView({
             aria-haspopup="dialog"
             aria-expanded={agentsOpen}
             aria-label={`View ${threads.length} agents`}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
             <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({threads.length})
           </Button>
@@ -388,6 +391,7 @@ export function MasterChatView({
             }}
             aria-pressed={conversation === "collaboration"}
             aria-label={conversation === "collaboration" ? "Switch to main chat" : "Switch to collaboration chat"}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
             {conversation === "collaboration" ? "Main" : "Collab"}
           </Button>
@@ -396,6 +400,7 @@ export function MasterChatView({
             size="small"
             startIcon={<AddIcon />}
             onClick={() => onNewAgent(masterChat)}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
             <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New </Box>Agent
           </Button>
@@ -406,7 +411,7 @@ export function MasterChatView({
             onClick={() => setRunSetupOpen((open) => !open)}
             aria-expanded={runSetupOpen}
             aria-controls="master-run-setup"
-            sx={{ display: { xs: "inline-flex", sm: "none" } }}
+            sx={{ display: compactViewport ? "inline-flex" : "none", minHeight: 44 }}
           >
             Setup
           </Button>
@@ -416,7 +421,7 @@ export function MasterChatView({
           id="master-run-setup"
           direction={{ xs: "column", sm: "row" }}
           spacing={1}
-          sx={{ mt: 1, display: { xs: runSetupOpen ? "flex" : "none", sm: "flex" } }}
+          sx={{ mt: 1, display: compactViewport && !runSetupOpen ? "none" : "flex" }}
         >
           <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 190 } }}>
             <InputLabel id="master-engine-label">Engine</InputLabel>

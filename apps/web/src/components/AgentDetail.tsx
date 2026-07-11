@@ -43,6 +43,7 @@ import { agentStatusColor, agentStatusLabel, deriveAgentStatus } from "../agents
 import { useThread } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
+import { compactViewportQuery } from "../responsive";
 import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane } from "./panes";
 
 type AgentTab = "chat" | "log" | "tasks" | "artifacts";
@@ -83,7 +84,7 @@ export function AgentDetail({
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const theme = useTheme();
-  const compactViewport = useMediaQuery(`${theme.breakpoints.down("sm")}, (max-height: 600px)`);
+  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   const detail = threadQuery.data;
   const engine =
@@ -248,6 +249,7 @@ export function AgentDetail({
               label="Subagent"
               onClick={subagent.parentThreadId ? () => onOpenAgent(subagent.parentThreadId!) : undefined}
               clickable={Boolean(subagent.parentThreadId)}
+              sx={{ minHeight: compactViewport ? 44 : undefined }}
             />
           ) : null}
           <Chip
@@ -263,6 +265,7 @@ export function AgentDetail({
               variant="outlined"
               disabled={cancelRun.isPending}
               onClick={() => cancelRun.mutate()}
+              sx={{ minHeight: compactViewport ? 44 : undefined }}
             >
               {cancelRun.isPending ? "Stopping…" : "Cancel"}
             </Button>
@@ -284,7 +287,7 @@ export function AgentDetail({
               <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
-          <Button size="small" variant="outlined" onClick={() => {
+          <Button size="small" variant="outlined" sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
             setMembershipIds(detail.thread.masterChatIds);
             setPrimaryMasterChatId(detail.thread.masterChatId ?? "");
             setMembershipOpen(true);
@@ -299,6 +302,7 @@ export function AgentDetail({
               onClick={() => setRunSetupOpen((open) => !open)}
               aria-expanded={runSetupOpen}
               aria-controls="agent-run-setup"
+              sx={{ minHeight: 44 }}
             >
               Setup
             </Button>
