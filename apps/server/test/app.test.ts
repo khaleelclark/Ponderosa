@@ -873,6 +873,57 @@ describe("server chunk F", () => {
     rmSync(webDist, { recursive: true, force: true });
   });
 
+  it("registers, claims, persists, and cancels a delegated branch with single-use proof", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Delegation room" });
+    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const parentTurn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    const parentRunId = parentTurn.json<{ runId: string }>().runId;
+
+    const spawn = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/subagents`,
+      payload: {
+        parentRunId,
+        displayLabel: "API review",
+        delegationPrompt: "Review secret=redacted API behavior",
+        runtime: "codex",
+        idempotencyKey: "spawn-1",
+      },
+    });
+    expect(spawn.statusCode).toBe(201);
+    const created = spawn.json<{ run: { id: string; version: number; delegationSummary: string }; registration: { id: string; credential: string } }>();
+    expect(created.run.version).toBe(1);
+    expect(JSON.stringify(created.run)).not.toContain("delegationPrompt");
+
+    const list = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` });
+    expect(list.json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: created.run.id })]);
+
+    const claimPayload = {
+      registrationId: created.registration.id,
+      credential: created.registration.credential,
+      parentRunId,
+      masterChatId: master.id,
+      runtime: "codex",
+    };
+    const claim = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
+    expect(claim.json<{ run: { status: string; version: number } }>().run).toMatchObject({ status: "running", version: 2 });
+    const replay = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
+    expect(replay.statusCode).toBe(409);
+    expect(replay.json()).toMatchObject({ error: { code: "registration_consumed" } });
+
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/subagents/${created.run.id}/cancel`,
+      payload: { scope: "branch", idempotencyKey: "cancel-1" },
+    });
+    expect(cancel.json()).toMatchObject({ completed: true, affected: [{ id: created.run.id, status: "cancelled", version: 3 }] });
+    await cancelAndWait(app, thread.id);
+    await app.close();
+  });
+
   it("streams live SSE and replays from last seen seq without duplicates", async () => {
     const { app, project, thread } = await createProjectAndThread();
     await app.listen({ port: 0, host: "127.0.0.1" });

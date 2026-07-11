@@ -222,6 +222,121 @@ export interface CancelResponse {
   cancelled: boolean;
 }
 
+// ─── Subagent delegation ────────────────────────────────────────────────
+
+export type SubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+export interface SubagentFailureDto {
+  code: string;
+  message: string;
+  retryable: boolean;
+  occurredAt: string;
+}
+
+/** Public run shape. The raw delegation prompt is deliberately excluded. */
+export interface SubagentRunDto {
+  id: string;
+  masterChatId: string;
+  parentRunId: string;
+  rootRunId: string;
+  contextSnapshotId: string;
+  depth: number;
+  version: number;
+  displayLabel: string;
+  delegationSummary: string;
+  runtime: string;
+  status: SubagentStatus;
+  canCancel: boolean;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  updatedAt: string;
+  failure?: SubagentFailureDto;
+}
+
+export interface SpawnSubagentRequest {
+  parentRunId: string;
+  displayLabel: string;
+  delegationPrompt: string;
+  runtime: string;
+  model?: string;
+  idempotencyKey: string;
+}
+
+export interface SubagentRegistrationDto {
+  id: string;
+  credential: string;
+  expiresAt: string;
+  runtime: string;
+}
+
+export interface SpawnSubagentResponse {
+  run: SubagentRunDto;
+  registration: SubagentRegistrationDto;
+  replayed: boolean;
+}
+
+export interface ClaimSubagentRegistrationRequest {
+  registrationId: string;
+  credential: string;
+  parentRunId: string;
+  masterChatId: string;
+  runtime: string;
+}
+
+export interface ClaimSubagentRegistrationResponse {
+  run: SubagentRunDto;
+  claimedAt: string;
+}
+
+export interface CancelSubagentRequest {
+  scope: "branch";
+  idempotencyKey: string;
+}
+
+export interface CancelSubagentResponse {
+  requestedRunId: string;
+  scope: "branch";
+  affected: Array<Pick<SubagentRunDto, "id" | "status" | "version" | "updatedAt">>;
+  completed: boolean;
+}
+
+export type DelegationErrorCode =
+  | "unauthorized_parent"
+  | "registration_required"
+  | "registration_not_found"
+  | "registration_expired"
+  | "registration_consumed"
+  | "registration_mismatch"
+  | "parent_not_running"
+  | "depth_limit_exceeded"
+  | "descendant_limit_exceeded"
+  | "concurrency_limit_exceeded"
+  | "idempotency_conflict"
+  | "subagent_not_found"
+  | "forbidden";
+
+export interface DelegationErrorDto {
+  error: { code: DelegationErrorCode; message: string; retryable: boolean };
+}
+
+export interface SubagentEventEnvelope {
+  masterChatId: string;
+  seq: number;
+  ts: string;
+  event:
+    | { type: "subagent_spawned"; run: SubagentRunDto }
+    | { type: "subagent_updated"; run: SubagentRunDto }
+    | {
+        type: "subagent_output";
+        runId: string;
+        runVersion: number;
+        chunkSeq: number;
+        cursor: string;
+        delta: string;
+      };
+}
+
 // ─── Engines ─────────────────────────────────────────────────────────────────
 
 /** GET /api/engines entry — an engine, its options, and live auth status. */
