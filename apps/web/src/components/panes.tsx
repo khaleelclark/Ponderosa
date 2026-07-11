@@ -104,6 +104,14 @@ function compactPath(path: string): string {
   return `${parts[0]}/.../${parts.at(-1)}`;
 }
 
+export const CHAT_BOTTOM_THRESHOLD = 48;
+
+export function isChatNearBottom(
+  element: Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">,
+): boolean {
+  return element.scrollHeight - element.clientHeight - element.scrollTop <= CHAT_BOTTOM_THRESHOLD;
+}
+
 export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "scrollTop">): void {
   element.scrollTop = element.scrollHeight;
 }
@@ -207,9 +215,10 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
     (message) => message.role === "user" || message.role === "assistant",
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldFollowNewMessages = useRef(true);
 
   useLayoutEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(scrollRef.current);
     }
   }, [chatMessages]);
@@ -218,6 +227,11 @@ export function ChatPane({ messages }: { messages: MessageDto[] }): JSX.Element 
     <Stack
       ref={scrollRef}
       spacing={1.25}
+      onScroll={() => {
+        if (scrollRef.current) {
+          shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+        }
+      }}
       sx={{ p: 1.5, pb: 3, height: "100%", minHeight: 0, overflowY: "auto" }}
     >
       {chatMessages.length === 0 ? (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scrollChatToBottom } from "../src/components/panes";
+import { isChatNearBottom, scrollChatToBottom } from "../src/components/panes";
 
 describe("scrollChatToBottom", () => {
   it("positions a chat viewport at the end of its content", () => {
@@ -8,5 +8,13 @@ describe("scrollChatToBottom", () => {
     scrollChatToBottom(viewport);
 
     expect(viewport.scrollTop).toBe(840);
+  });
+
+  it("keeps following messages while the reader is near the bottom", () => {
+    expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 460 })).toBe(true);
+  });
+
+  it("stops following messages when the reader scrolls up", () => {
+    expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 400 })).toBe(false);
   });
 });
