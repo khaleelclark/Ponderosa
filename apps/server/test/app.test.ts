@@ -915,6 +915,48 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("preserves mixed collaboration and direct FIFO when timestamps tie", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Mixed FIFO crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const deliveries = new CollaborationDeliveryStore(dataDir);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T12:00:00.000Z"));
+    const older = store.appendMasterChatMessage(
+      master.id,
+      { role: "user", text: "@Parent older collaboration message missing its inbox write" },
+      undefined,
+      "collaboration",
+      [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
+    )!;
+    const directCreatedAt = new Date().toISOString();
+    deliveries.queue({
+      messageId: "newer-direct-manager-message",
+      targetThreadId: parent.id,
+      text: "Newer direct manager message already queued",
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "direct",
+      createdAt: directCreatedAt,
+      orderKey: store.nextDeliveryOrderKey(directCreatedAt),
+    });
+    vi.useRealTimers();
+    expect(older.createdAt).toBe(directCreatedAt);
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(parent.id, 2);
+    const turns = [
+      ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
+      ...adapter.continues.filter((turn) => turn.threadId === parent.id),
+    ];
+    expect(turns[0]?.prompt).toContain(
+      "Latest message for you:\n@Parent older collaboration message missing its inbox write",
+    );
+    expect(turns[1]?.prompt).toContain("Latest message for you:\nNewer direct manager message already queued");
+    await app.close();
+  });
+
   it("does not infer delivery for canonical messages without an authorized intent", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Blocked recovery" });

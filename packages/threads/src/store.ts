@@ -150,10 +150,15 @@ export class ThreadStore {
   private readonly client: Database.Database;
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
+  private readonly deliverySequenceFile: string;
+  private deliverySequence: number;
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(projectsDir(dataDir), { recursive: true });
+    this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
+    this.deliverySequence = readJsonLines<{ sequence: number }>(this.deliverySequenceFile)
+      .reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
     const opened = openDb(dbPath(dataDir));
     this.db = opened.db;
     this.client = opened.client;
@@ -161,6 +166,12 @@ export class ThreadStore {
     // on startup closes the crash window where a durable append succeeded but
     // the projection write did not, and keeps every read path deterministic.
     this.rebuildProjections();
+  }
+
+  nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
+    this.deliverySequence += 1;
+    appendFileSync(this.deliverySequenceFile, `${JSON.stringify({ sequence: this.deliverySequence })}\n`, "utf8");
+    return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
   }
 
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
@@ -360,7 +371,6 @@ export class ThreadStore {
     const messagePath = channel === "collaboration"
       ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
       : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId);
-    const appendSequence = readJsonLines<MasterChatMessageJson>(messagePath).length + 1;
     const message: MasterChatMessageJson = {
       id: randomUUID(),
       masterChatId,
@@ -372,7 +382,7 @@ export class ThreadStore {
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
       ...(channel === "collaboration"
-        ? { deliveryOrderKey: `${now}:${String(appendSequence).padStart(12, "0")}` }
+        ? { deliveryOrderKey: this.nextDeliveryOrderKey(now) }
         : {}),
     };
     mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });

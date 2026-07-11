@@ -1306,6 +1306,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (request.headers["x-ponderosa-turn-dispatch"] === turnDispatchKey) {
           return reply.code(409).send({ error: "thread already has an active run" });
         }
+        const createdAt = new Date().toISOString();
         const delivery = queueCollaborationDelivery({
           masterChatId: thread.masterChatId,
           messageId: `direct-${randomUUID()}`,
@@ -1314,6 +1315,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           relayDepth: mentionDepth ?? 0,
           mentionTrail,
           kind: "direct",
+          createdAt,
+          orderKey: store.nextDeliveryOrderKey(createdAt),
           model: request.body.model,
           effort: request.body.effort,
           sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
