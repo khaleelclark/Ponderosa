@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldIgnoreComposerKey, shouldSendComposerKey } from "../src/components/panes";
+import { canSubmitComposerText, shouldIgnoreComposerKey, shouldSendComposerKey } from "../src/components/panes";
 
 describe("composer keyboard behavior", () => {
   it("sends on Enter", () => {
@@ -17,5 +17,23 @@ describe("composer keyboard behavior", () => {
 
   it("does not send repeated Enter keydowns", () => {
     expect(shouldSendComposerKey({ key: "Enter", shiftKey: false, isComposing: false, repeat: true })).toBe(false);
+  });
+});
+
+describe("composer submission availability", () => {
+  const base = {
+    text: "hello",
+    disabled: false,
+    running: false,
+    allowUnmentionedSend: false,
+    mentionedBusyHandles: [] as string[],
+  };
+
+  it("allows an existing-agent reply when spawning is unavailable", () => {
+    expect(canSubmitComposerText({ ...base, text: "@Acadia hello", mentionedHandles: ["Acadia"] })).toBe(true);
+  });
+
+  it("blocks an unmentioned spawn when the selected engine is unavailable", () => {
+    expect(canSubmitComposerText({ ...base, mentionedHandles: [] })).toBe(false);
   });
 });
