@@ -28,4 +28,40 @@ describe("updateThreadDetail", () => {
       { ...liveMessage, text: "Hello world" },
     ]);
   });
+
+  it("ignores invalid cached tasks while projecting a task update", () => {
+    const detail = {
+      messages: [],
+      tasks: [undefined],
+      artifacts: [],
+      thread: { activeEngine: "codex" },
+    } as unknown as ThreadDetailDto;
+    const envelope = {
+      seq: 4,
+      ts: "2026-07-11T08:00:02.000Z",
+      event: { type: "task_update", taskId: "task-1", title: "Run checks", status: "running" },
+    } as SseEventEnvelope;
+
+    expect(updateThreadDetail("thread-1", envelope, detail).tasks).toEqual([
+      expect.objectContaining({ id: "thread-1:t:task-1", title: "Run checks", status: "running" }),
+    ]);
+  });
+
+  it("ignores invalid cached artifacts while projecting a file change", () => {
+    const detail = {
+      messages: [],
+      tasks: [],
+      artifacts: [undefined],
+      thread: { activeEngine: "codex" },
+    } as unknown as ThreadDetailDto;
+    const envelope = {
+      seq: 5,
+      ts: "2026-07-11T08:00:03.000Z",
+      event: { type: "file_change", path: "src/app.ts", kind: "modified" },
+    } as SseEventEnvelope;
+
+    expect(updateThreadDetail("thread-1", envelope, detail).artifacts).toEqual([
+      expect.objectContaining({ id: "live-artifact-5", path: "src/app.ts" }),
+    ]);
+  });
 });
