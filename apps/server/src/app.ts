@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -85,6 +86,16 @@ interface InboundMessageContext {
 type Subscriber = (stored: StoredLogEvent) => void;
 
 const MAX_AGENT_MENTION_RELAYS = 12;
+const MAX_TEXT_LENGTH = 64 * 1024;
+const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
+
+function secretEqual(provided: string | undefined, expected: string): boolean {
+  if (provided === undefined) return false;
+  const actual = Buffer.from(provided);
+  const wanted = Buffer.from(expected);
+  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+}
 
 function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
   return event.type !== "user_message";
@@ -184,20 +195,13 @@ function agentDelegationPrompt(): string[] {
 }
 
 function agentMessageEndpoint(
-  request: { protocol: string; headers: Record<string, unknown> },
+  _request: { protocol: string; headers: Record<string, unknown> },
   configuredBaseUrl?: string,
 ): string {
   if (configuredBaseUrl) return `${configuredBaseUrl.replace(/\/$/, "")}/api/agent-messages`;
-  const forwarded = request.headers["x-forwarded-proto"];
-  const forwardedValue = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  const forwardedProtocol = typeof forwardedValue === "string"
-    ? forwardedValue.split(",", 1)[0]?.trim().toLowerCase()
-    : undefined;
-  const protocol = forwardedProtocol === "https" || forwardedProtocol === "http"
-    ? forwardedProtocol
-    : request.protocol;
-  const host = typeof request.headers.host === "string" ? request.headers.host : "127.0.0.1";
-  return `${protocol}://${host}/api/agent-messages`;
+  // Capabilities are injected into host-local runtimes. Never let an external
+  // Host/X-Forwarded-* header choose where those bearer tokens are sent.
+  return "http://127.0.0.1:8787/api/agent-messages";
 }
 
 /**
@@ -376,12 +380,11 @@ async function readScopedPath(root: string, relInput: string | undefined): Promi
     };
   }
 
+  if (stat.size > MAX_FILE_BYTES) throw new Error("file exceeds 2 MiB browser limit");
   const buffer = await fs.readFile(targetReal);
-  try {
-    return { kind: "file", path: rel, content: buffer.toString("utf8"), encoding: "utf-8" };
-  } catch {
-    return { kind: "file", path: rel, content: buffer.toString("base64"), encoding: "base64" };
-  }
+  return isUtf8(buffer)
+    ? { kind: "file", path: rel, content: buffer.toString("utf8"), encoding: "utf-8" }
+    : { kind: "file", path: rel, content: buffer.toString("base64"), encoding: "base64" };
 }
 
 export function createServer(opts: CreateServerOptions): FastifyInstance {
@@ -402,7 +405,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const subscribers = new Map<string, Set<Subscriber>>();
   let closed = false;
 
-  const app = Fastify({ logger: opts.logger ?? true });
+  const app = Fastify({
+    bodyLimit: 256 * 1024,
+    logger: opts.logger === false ? false : {
+      redact: {
+        paths: ["req.headers.authorization", "req.headers.x-ponderosa-prompt-access"],
+        censor: "[REDACTED]",
+      },
+    },
+  });
 
   function delegationFailure(error: unknown, reply: FastifyReply) {
     if (error instanceof DelegationError) {
@@ -556,9 +567,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health") return;
-    if (provided !== opts.authToken) {
+    if (!secretEqual(provided, opts.authToken)) {
       return reply.code(401).send({ error: "unauthorized" });
     }
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (!request.url.startsWith("/api/") || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
+    const origin = request.headers.origin;
+    if (!origin) return; // Non-browser clients and host-local runtime bridges.
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return reply.code(403).send({ error: "cross-origin mutation forbidden" });
+    }
+    const requestHost = request.headers.host?.toLowerCase();
+    if (!requestHost || originHost !== requestHost) {
+      return reply.code(403).send({ error: "cross-origin mutation forbidden" });
+    }
+  });
+
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    return payload;
   });
 
   app.addHook("onReady", async () => {
@@ -922,6 +957,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!engines.has(input.runtime)) {
         return reply.code(400).send({ error: { code: "forbidden", message: "runtime is not configured", retryable: false } });
       }
+      if (input.displayLabel.length > 100 || input.delegationPrompt.length > MAX_TEXT_LENGTH || input.idempotencyKey.length > 200 || (input.model?.length ?? 0) > 200) {
+        return reply.code(400).send({ error: { code: "forbidden", message: "delegation fields exceed their size limits", retryable: false } });
+      }
       try {
         const context = store.getCollaborationChatDetail(capability.masterChatId);
         if (!context) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
@@ -1039,6 +1077,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>("/api/master-chats/:id/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
+    if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const message = store.appendMasterChatMessage(request.params.id, {
       role: request.body.role,
       text,
@@ -1057,6 +1096,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
+    if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const detail = store.getCollaborationChatDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
@@ -1083,6 +1123,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     "/api/master-chats/:id/subagents/stream",
     async (request, reply) => {
       if (!store.getMasterChat(request.params.id)) return reply.code(404).send({ error: "master chat not found" });
+      if ((subscribers.get(`subagents:${request.params.id}`)?.size ?? 0) >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
+        return reply.code(429).send({ error: "too many stream subscribers" });
+      }
       const raw = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
       let lastSeq = Number(Array.isArray(raw) ? raw[0] : raw) || 0;
       reply.hijack();
@@ -1097,8 +1140,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           lastSeq = envelope.seq;
         }
       });
+      const subagentKey = `subagents:${request.params.id}`;
+      const marker: Subscriber = () => {};
+      let subagentSet = subscribers.get(subagentKey);
+      if (!subagentSet) subscribers.set(subagentKey, subagentSet = new Set());
+      subagentSet.add(marker);
       const heartbeat = setInterval(() => writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }), 15_000);
-      request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
+      request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); subagentSet?.delete(marker); });
     },
   );
 
@@ -1125,7 +1173,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.get<{ Params: { runId: string } }>("/api/subagents/:runId/prompt", async (request, reply) => {
     // Raw prompts may contain secrets. They are never part of list/detail DTOs and
     // require the configured operator credential even on otherwise open installs.
-    if (!opts.authToken || request.headers["x-ponderosa-prompt-access"] !== opts.authToken) {
+    const promptAccess = request.headers["x-ponderosa-prompt-access"];
+    if (!opts.authToken || typeof promptAccess !== "string" || !secretEqual(promptAccess, opts.authToken)) {
       return reply.code(403).send({ error: { code: "forbidden", message: "full prompt access is forbidden", retryable: false } });
     }
     const prompt = delegations.rawPrompt(request.params.runId);
@@ -1249,6 +1298,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim();
       if (!text) return reply.code(400).send({ error: "text is required" });
+      if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
       const collaborationMasterChatId = request.body.collaborationMasterChatId;
       if (collaborationMasterChatId !== undefined && collaborationMasterChatId !== thread.masterChatId) {
         return reply.code(400).send({ error: "collaboration chat does not belong to thread" });
@@ -1503,6 +1553,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     "/api/threads/:id/stream",
     async (request, reply) => {
       if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
+      if ((subscribers.get(request.params.id)?.size ?? 0) >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
+        return reply.code(429).send({ error: "too many stream subscribers" });
+      }
       const lastEventId = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
       const sinceSeq = Number(Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
       const replayFrom = Number.isFinite(sinceSeq) ? sinceSeq : 0;
@@ -1578,6 +1631,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const artifact = store.getArtifact(thread.id, request.params.aid);
       if (!artifact) return reply.code(404).send({ error: "artifact not found" });
       const file = artifactContentPath(opts.dataDir, thread.projectId, thread.id, artifact.path);
+      if (existsSync(file) && (await fs.stat(file)).size > MAX_FILE_BYTES) return reply.code(413).send({ error: "artifact exceeds 2 MiB viewer limit" });
       const content = existsSync(file) ? await fs.readFile(file, "utf8") : "";
       return { ...artifact, content, contentType: contentTypeForArtifact(artifact.path) };
     },
@@ -1631,6 +1685,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const targetExists = await pathExists(target);
         const file = targetExists ? target : path.join(root, "index.html");
         if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
+        const [rootReal, fileReal] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
+        if (fileReal !== rootReal && !fileReal.startsWith(rootReal + path.sep)) return reply.code(404).send();
         return reply
           .header("Cache-Control", cacheControlForStatic(file))
           .type(contentTypeForStatic(file))
