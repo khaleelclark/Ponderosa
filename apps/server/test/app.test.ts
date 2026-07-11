@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -876,7 +876,7 @@ describe("server chunk F", () => {
     rmSync(webDist, { recursive: true, force: true });
   });
 
-  it("registers, claims, persists, and cancels a delegated branch with single-use proof", async () => {
+  it("registers, persists, and cancels a delegated branch with single-use proof", async () => {
     adapter.mode = "hang";
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -956,18 +956,8 @@ describe("server chunk F", () => {
       masterChatId: master.id,
       runtime: "codex",
     };
-    const claim = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
-    expect(claim.json<{ run: { status: string; version: number } }>().run).toMatchObject({ status: "running", version: 2 });
-    const probe = await app.inject({
-      method: "POST",
-      url: `/api/internal/subagents/${created.run.id}/registration/claim`,
-      payload: { ...claimPayload, credential: "invalid-probe" },
-    });
-    expect(probe.statusCode).toBe(403);
-    expect(probe.json()).toMatchObject({ error: { code: "registration_mismatch" } });
-    const replay = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
-    expect(replay.statusCode).toBe(409);
-    expect(replay.json()).toMatchObject({ error: { code: "registration_consumed" } });
+    const orphanClaim = await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/registration/claim`, payload: claimPayload });
+    expect(orphanClaim.statusCode).toBe(404);
 
     await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "first chunk" } });
     await app.inject({ method: "POST", url: `/api/internal/subagents/${created.run.id}/output`, payload: { text: "second chunk" } });
@@ -982,7 +972,7 @@ describe("server chunk F", () => {
       payload: { scope: "branch", idempotencyKey: "cancel-1" },
     });
     const cancellation = cancel.json();
-    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 3 }] });
+    expect(cancellation).toMatchObject({ completed: true, affected: [{ runId: created.run.id, status: "cancelled", version: 2 }] });
     const cancelReplay = await app.inject({
       method: "POST",
       url: `/api/subagents/${created.run.id}/cancel`,
@@ -990,6 +980,14 @@ describe("server chunk F", () => {
     });
     expect(cancelReplay.json()).toEqual(cancellation);
     await cancelAndWait(app, thread.id);
+    await app.close();
+  });
+
+  it("repairs delegation persistence permissions on startup", async () => {
+    const file = path.join(dataDir, "delegations.jsonl");
+    writeFileSync(file, "", { mode: 0o644 });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    expect(statSync(file).mode & 0o777).toBe(0o600);
     await app.close();
   });
 
@@ -1004,7 +1002,7 @@ describe("server chunk F", () => {
     const spawned = (await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/subagents`,
-      payload: { parentRunId, displayLabel: "Worker", delegationPrompt: "Do the work", runtime: "codex", idempotencyKey: "launch-1" },
+      payload: { parentRunId, displayLabel: "Worker", delegationPrompt: "Do the work", runtime: "codex", model: "mock-model", idempotencyKey: "launch-1" },
     })).json<{ run: { id: string }; registration: { id: string; credential: string } }>();
     const claim = {
       registrationId: spawned.registration.id,
@@ -1014,10 +1012,30 @@ describe("server chunk F", () => {
       runtime: "codex",
     };
 
-    const launch = await app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim });
-    expect(launch.statusCode).toBe(202);
+    const invalidQueued = await app.inject({
+      method: "POST",
+      url: `/api/internal/subagents/${spawned.run.id}/launch`,
+      payload: { ...claim, credential: "invalid" },
+    });
+    expect(invalidQueued.statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ status: string }>>()[0]?.status).toBe("queued");
+
+    const [firstLaunch, duplicateLaunch] = await Promise.all([
+      app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim }),
+      app.inject({ method: "POST", url: `/api/internal/subagents/${spawned.run.id}/launch`, payload: claim }),
+    ]);
+    expect([firstLaunch.statusCode, duplicateLaunch.statusCode].sort()).toEqual([202, 409]);
     await waitForSeedCount(2);
     expect(adapter.seeds[1]?.authorizeLaunch).toBeTypeOf("function");
+    expect(adapter.seeds[1]?.model).toBe("mock-model");
+
+    const invalidRunning = await app.inject({
+      method: "POST",
+      url: `/api/internal/subagents/${spawned.run.id}/launch`,
+      payload: { ...claim, credential: "invalid" },
+    });
+    expect(invalidRunning.statusCode).toBe(403);
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ status: string }>>()[0]?.status).toBe("running");
 
     const cancel = await app.inject({
       method: "POST",
@@ -1036,6 +1054,7 @@ describe("server chunk F", () => {
     expect(lifecycle).toContain('"status":"cancelled"');
     expect(lifecycle).not.toContain('"status":"failed"');
     expect(lifecycle).not.toContain('"status":"completed"');
+    expect(statSync(path.join(dataDir, "delegations.jsonl")).mode & 0o777).toBe(0o600);
     await cancelAndWait(app, thread.id);
     await app.close();
   });

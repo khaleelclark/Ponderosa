@@ -713,25 +713,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   );
 
   app.post<{ Params: { runId: string }; Body: ClaimSubagentRegistrationRequest }>(
-    "/api/internal/subagents/:runId/registration/claim",
-    async (request, reply) => {
-      const input = request.body;
-      if (!input?.registrationId || !input.credential) {
-        return reply.code(401).send({ error: { code: "registration_required", message: "registration proof is required", retryable: false } });
-      }
-      try {
-        const run = delegations.claim(request.params.runId, input);
-        // Claim and controller publication are synchronous in the single-daemon
-        // launch transition, so cancellation cannot observe running without a target.
-        subagentControllers.set(run.id, new AbortController());
-        return { run, claimedAt: run.startedAt! };
-      } catch (error) {
-        return delegationFailure(error, reply);
-      }
-    },
-  );
-
-  app.post<{ Params: { runId: string }; Body: ClaimSubagentRegistrationRequest }>(
     "/api/internal/subagents/:runId/launch",
     async (request, reply) => {
       const input = request.body;
@@ -748,6 +729,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
 
       const controller = new AbortController();
+      try {
+        // Proof consumption, the running transition, and controller publication
+        // complete synchronously before success is returned. Invalid/replayed
+        // requests never enter the asynchronous launch or settlement path.
+        const run = delegations.claim(request.params.runId, input);
+        subagentControllers.set(run.id, controller);
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
       void (async () => {
         let runtimeError: string | undefined;
         try {
@@ -756,15 +746,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             cwd: project.hostPath,
             prompt: context.prompt,
             history: context.history,
+            model: context.model,
             signal: controller.signal,
             authorizeLaunch: async (signal) => {
               if (signal.aborted) throw new Error("delegated launch cancelled");
-              const run = delegations.claim(request.params.runId, input);
-              subagentControllers.set(run.id, controller);
-              if (signal.aborted) {
-                subagentControllers.delete(run.id);
-                throw new Error("delegated launch cancelled");
-              }
+              if (subagentControllers.get(request.params.runId) !== controller) throw new Error("delegated launch lost controller ownership");
             },
           });
           for await (const event of stream) {
@@ -778,7 +764,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runtimeError = error instanceof Error ? error.message : String(error);
           delegations.settle(request.params.runId, "failed", runtimeError);
         } finally {
-          subagentControllers.delete(request.params.runId);
+          if (subagentControllers.get(request.params.runId) === controller) {
+            subagentControllers.delete(request.params.runId);
+          }
         }
       })();
       return reply.code(202).send({ runId: request.params.runId, accepted: true });

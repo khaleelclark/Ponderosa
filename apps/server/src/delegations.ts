@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type {
   CancelSubagentResponse,
@@ -22,6 +22,7 @@ interface RegistrationRecord {
 
 interface RunRecord extends SubagentRunDto {
   delegationPrompt: string;
+  model?: string;
   contextSnapshot: {
     id: string;
     masterChatId: string;
@@ -52,7 +53,7 @@ export class DelegationError extends Error {
 }
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
-const publicRun = ({ delegationPrompt: _prompt, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
+const publicRun = ({ delegationPrompt: _prompt, model: _model, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
 
 export class DelegationStore {
   private readonly runs = new Map<string, RunRecord>();
@@ -64,7 +65,9 @@ export class DelegationStore {
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, "delegations.jsonl");
-    if (!existsSync(this.file)) return;
+    mkdirSync(path.dirname(this.file), { recursive: true });
+    if (!existsSync(this.file)) closeSync(openSync(this.file, "a", 0o600));
+    chmodSync(this.file, 0o600);
     for (const line of readFileSync(this.file, "utf8").split("\n")) {
       if (!line) continue;
       const record = JSON.parse(line) as PersistedRecord;
@@ -156,6 +159,7 @@ export class DelegationStore {
     return {
       prompt: run.delegationPrompt,
       runtime: run.runtime,
+      model: run.model,
       history: run.contextSnapshot.messages.flatMap((message) =>
         message.role === "user" || message.role === "assistant"
           ? [{ role: message.role, text: message.text }]
@@ -243,6 +247,7 @@ export class DelegationStore {
       displayLabel: input.displayLabel.trim().slice(0, 100),
       delegationSummary: input.displayLabel.trim().slice(0, 100),
       delegationPrompt: input.delegationPrompt,
+      model: input.model,
       runtime: input.runtime,
       status: "queued",
       canCancel: true,
