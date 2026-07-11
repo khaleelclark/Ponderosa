@@ -8,9 +8,13 @@ port, webhook listener, or deploy SSH key.
 The production checkout and service are:
 
 ```
-/home/phoenix/khaleel/ponderosa
+/home/phoenix/khaleel/ponderosa-deploy
 ponderosa.service
 ```
+
+Keep this checkout dedicated to deployment. Agents and developers must use a
+different clone or Git worktree. The workflow deliberately refuses to deploy
+over local changes; it never cleans, resets, or deletes them.
 
 ## One-time setup
 
@@ -47,6 +51,40 @@ sudo ./svc.sh status
 
 GitHub should show an online runner named `pine` with the labels
 `self-hosted`, `linux`, `x64`, and `pine`.
+
+## Dedicated production checkout
+
+Create the deployment-only clone once as `phoenix`:
+
+```bash
+git clone git@github.com:khaleelclark/Ponderosa.git /home/phoenix/khaleel/ponderosa-deploy
+git -C /home/phoenix/khaleel/ponderosa-deploy checkout master
+```
+
+Point the service at that checkout with a systemd override:
+
+```bash
+sudo systemctl edit ponderosa.service
+```
+
+Add:
+
+```ini
+[Service]
+WorkingDirectory=/home/phoenix/khaleel/ponderosa-deploy
+```
+
+Then apply and verify it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ponderosa.service
+systemctl show ponderosa.service -p WorkingDirectory
+```
+
+Do not repurpose an agent checkout as the deployment directory. If the
+deployment checkout ever becomes dirty, preserve or commit that work elsewhere;
+the workflow will stop rather than overwrite it.
 
 ## Least-privilege restart permission
 

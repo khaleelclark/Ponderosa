@@ -51,7 +51,9 @@ jobs:
     steps:
       - name: Build and restart the merged revision
         env:
-          DEPLOY_DIR: /home/phoenix/khaleel/ponderosa
+          # Reserved for production deployments. Agent work happens in separate
+          # checkouts/worktrees so an in-progress task cannot block deployment.
+          DEPLOY_DIR: /home/phoenix/khaleel/ponderosa-deploy
           DEPLOY_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
