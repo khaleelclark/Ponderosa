@@ -32,6 +32,7 @@ import type {
   ThreadDto,
   MessageReferenceDto,
   ReactionActor,
+  RuntimeSession,
   SetMessageReactionRequest,
   SetMessageReactionResponse,
 } from "@ponderosa/core";
@@ -105,6 +106,7 @@ interface ActiveRun {
   ownershipState: RuntimeOwnershipState;
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
+  runtimeSession?: RuntimeSession;
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -614,6 +616,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
+  const runtimeSessions = new Map<string, { session: RuntimeSession; iterator: AsyncIterator<AgentEvent> }>();
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const runLedger = new RunLedger(opts.dataDir);
@@ -1208,6 +1211,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       run.controller.abort();
     }
     activeRuns.clear();
+    await Promise.allSettled([...runtimeSessions.values()].map(({ session }) => session.close()));
+    runtimeSessions.clear();
     await Promise.allSettled([...deliveryDispatches]);
     assets.close();
     store.close();
@@ -2590,6 +2595,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       run.controller.abort();
       releaseActiveRun(id, run, "cancelled");
     }
+    const runtime = runtimeSessions.get(id);
+    if (runtime) {
+      await runtime.session.close();
+      runtimeSessions.delete(id);
+    }
     const delegated = delegations.findByChildThread(id);
     if (delegated && (delegated.status === "queued" || delegated.status === "running" || delegated.status === "awaiting_disposition")) {
       const cancelled = delegations.cancel(delegated.id, `thread-delete-${randomUUID()}`);
@@ -2823,8 +2833,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (request.body.replyToMessageId && !pendingTurn.replyTo) {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
       }
-      if (activeRuns.has(thread.id)) {
+      const existingRun = activeRuns.get(thread.id);
+      if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
+        if (existingRun.runtimeSession) {
+          const steered = await existingRun.runtimeSession.steer({
+            prompt: text,
+            kind: requestedDeliveryIds.length > 0
+              ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
+              : "user_message",
+            model: request.body.model,
+            effort: request.body.effort,
+            clientMessageId: communicationEventId,
+          });
+          if (steered.status === "accepted") {
+            const stored = store.appendEvent(thread.id, {
+              type: "user_message",
+              text,
+              communicationEventId,
+              replyTo: pendingTurn.replyTo,
+            });
+            publish(thread.id, stored);
+            if (requestedDeliveryIds.length > 0) {
+              collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
+              for (const id of requestedDeliveryIds) syncDeliveryOutcome(id);
+            }
+            renewExecutionLease(thread.id, existingRun);
+            return { queued: false, steered: true, runId: existingRun.runId, mode: "steer", communicationEventId };
+          }
+        }
         // A dispatcher that lost the claim race needs to restore the dequeued
         // item at the head itself; ordinary manager and agent messages join the
         // FIFO queue and receive an explicit acknowledgement.
@@ -3029,8 +3066,52 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_DELEGATION_TOKEN: delegationCapability,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
           };
+          let persistentRuntime = engine.adapter.openSession ? runtimeSessions.get(thread.id) : undefined;
+          if (engine.adapter.openSession && !persistentRuntime) {
+            const session = await engine.adapter.openSession({
+              threadId: thread.id,
+              cwd: project.hostPath,
+              resumeSessionId,
+              history,
+              model: request.body.model,
+              effort: request.body.effort,
+              environment,
+              signal: controller.signal,
+            });
+            persistentRuntime = { session, iterator: session.events[Symbol.asyncIterator]() };
+            runtimeSessions.set(thread.id, persistentRuntime);
+          }
+          if (persistentRuntime) activeRun.runtimeSession = persistentRuntime.session;
+          let persistentTurnStarted = false;
           const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
-            ? engine.adapter.continue({
+            ? persistentRuntime
+              ? {
+                  async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+                    if (!persistentTurnStarted) {
+                      await persistentRuntime!.session.startTurn({
+                        prompt,
+                        kind: requestedDeliveryIds.length > 0
+                          ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
+                          : "user_message",
+                        model: request.body.model,
+                        effort: request.body.effort,
+                        clientMessageId: communicationEventId,
+                      });
+                      persistentTurnStarted = true;
+                    }
+                    while (true) {
+                      const next = await persistentRuntime!.iterator.next();
+                      if (next.done) {
+                        runtimeSessions.delete(thread.id);
+                        yield { type: "error", message: "persistent engine session stopped" };
+                        return;
+                      }
+                      yield next.value;
+                      if (next.value.type === "turn_done" || next.value.type === "error") return;
+                    }
+                  },
+                }
+              : engine.adapter.continue({
                   threadId: thread.id,
                   cwd: project.hostPath,
                   prompt,
@@ -3040,7 +3121,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   environment,
                   signal: controller.signal,
                 })
-            : engine.adapter.seed({
+            : persistentRuntime
+              ? {
+                  async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+                    if (!persistentTurnStarted) {
+                      await persistentRuntime!.session.startTurn({
+                        prompt,
+                        kind: requestedDeliveryIds.length > 0
+                          ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
+                          : "user_message",
+                        model: request.body.model,
+                        effort: request.body.effort,
+                        clientMessageId: communicationEventId,
+                      });
+                      persistentTurnStarted = true;
+                    }
+                    while (true) {
+                      const next = await persistentRuntime!.iterator.next();
+                      if (next.done) {
+                        runtimeSessions.delete(thread.id);
+                        yield { type: "error", message: "persistent engine session stopped" };
+                        return;
+                      }
+                      yield next.value;
+                      if (next.value.type === "turn_done" || next.value.type === "error") return;
+                    }
+                  },
+                }
+              : engine.adapter.seed({
                   threadId: thread.id,
                   cwd: project.hostPath,
                   prompt,
@@ -3315,6 +3423,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = activeRuns.get(request.params.id);
     if (!run || !transitionRun(request.params.id, run, "cancelling")) return { cancelled: false };
     run.controller.abort();
+    runtimeSessions.delete(request.params.id);
     const lifecycle = store.appendEvent(request.params.id, {
       type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled",
     });
@@ -3329,6 +3438,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
     if (activeRuns.has(request.params.id)) {
       return reply.code(409).send({ error: "cannot compact a thread with an active run", retryable: true });
+    }
+    const runtime = runtimeSessions.get(request.params.id);
+    if (runtime) {
+      await runtime.session.close();
+      runtimeSessions.delete(request.params.id);
     }
     return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
   });

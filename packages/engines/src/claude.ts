@@ -15,12 +15,15 @@ import type {
   EngineCapabilities,
   EffortOption,
   ModelOption,
+  OpenRuntimeSessionOptions,
+  RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./codex.js";
 import { streamProcess, type SpawnFn } from "./process.js";
 import { discoverCliMcps, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
+import { ClaudeStreamSession } from "./claude-stream-session.js";
 
 export interface ClaudeAdapterOptions {
   /** Path/name of the claude binary. Default: "claude". */
@@ -89,11 +92,21 @@ export class ClaudeAdapter implements Adapter {
       { path: path.join(claudeHome, "skills"), source: "skill", skillFilesOnly: true },
     ]);
     return {
-      steering: false,
-      persistentSessions: false,
+      steering: true,
+      persistentSessions: true,
       commands,
       mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList),
     };
+  }
+
+  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    return Promise.resolve(new ClaudeStreamSession({
+      ...opts,
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      permissionMode: this.permissionMode,
+      killGraceMs: this.killGraceMs,
+    }));
   }
 
   /** Flags shared by seed + continue. */

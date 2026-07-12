@@ -683,7 +683,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies to busy agents queue automatically.</>
+              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies steer active agents when supported and otherwise wait durably.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (

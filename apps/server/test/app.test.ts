@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
 import { boundedSeedHistory, createServer, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
@@ -106,6 +106,49 @@ class MockAdapter implements Adapter {
   }
 }
 
+class TestEventQueue implements AsyncIterable<AgentEvent> {
+  private values: AgentEvent[] = [];
+  private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
+  push(value: AgentEvent): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value, done: false }); else this.values.push(value);
+  }
+  [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+    return { next: () => {
+      const value = this.values.shift();
+      return value ? Promise.resolve({ value, done: false }) : new Promise((resolve) => this.waiters.push(resolve));
+    } };
+  }
+}
+
+class SteerableMockAdapter extends MockAdapter {
+  readonly starts: RuntimeTurnInput[] = [];
+  readonly steers: RuntimeTurnInput[] = [];
+  opened = 0;
+
+  async openSession(_opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.opened += 1;
+    const queue = new TestEventQueue();
+    queue.push({ type: "session", sessionId: "persistent-session" });
+    return {
+      engineThreadId: "persistent-session",
+      events: queue,
+      startTurn: async (input) => {
+        this.starts.push(input);
+        return { turnId: "persistent-turn" };
+      },
+      steer: async (input) => {
+        this.steers.push(input);
+        queue.push({ type: "text", delta: "steered result" });
+        queue.push({ type: "turn_done" });
+        return { status: "accepted", turnId: "persistent-turn" };
+      },
+      interrupt: async () => undefined,
+      close: async () => undefined,
+    };
+  }
+}
+
 let dataDir: string;
 let repoDir: string;
 let store: ThreadStore;
@@ -183,6 +226,31 @@ describe("message reactions", () => {
     expect(store.getReactionNotificationOutbox()).toEqual([]);
     const detail = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}` });
     expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true }]);
+    await app.close();
+  });
+});
+
+describe("persistent engine steering", () => {
+  it("steers an active agent immediately instead of adding a FIFO delivery", async () => {
+    const steerable = new SteerableMockAdapter();
+    engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Steering", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Persistent", engine: "codex" });
+
+    const first = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" } });
+    expect(first.statusCode).toBe(200);
+    await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
+    const second = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Use the new direction" } });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ queued: false, steered: true, mode: "steer" });
+    expect(steerable.opened).toBe(1);
+    expect(steerable.steers).toEqual([expect.objectContaining({ prompt: "Use the new direction", kind: "user_message" })]);
+    await waitForRun(thread.id);
+    expect(store.getMessages(thread.id).map((message) => message.text)).toEqual(expect.arrayContaining([
+      "Start working", "Use the new direction", "steered result",
+    ]));
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
     await app.close();
   });
 });

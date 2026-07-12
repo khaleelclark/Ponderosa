@@ -972,7 +972,7 @@ export function Composer({
           {mentionedHandles.length > 0 ? (
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
               {mentionedBusyHandles.length > 0
-                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — your message will be queued.`
+                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
                   ? "Notifying every eligible agent in this collaboration room"
                   : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}

@@ -358,7 +358,9 @@ export interface StartedMessageResponse {
   queued: false;
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
-  mode: "seed" | "continue";
+  mode: "seed" | "continue" | "steer";
+  /** True when the message was accepted by the already-active engine turn. */
+  steered?: boolean;
   communicationEventId?: string;
 }
 

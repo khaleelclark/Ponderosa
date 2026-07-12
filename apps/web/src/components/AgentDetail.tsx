@@ -383,7 +383,7 @@ export function AgentDetail({
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {stream.running ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
-            This agent is working. New messages will be queued and start automatically.
+            This agent is working. New messages steer the active turn when supported and otherwise wait in its durable mailbox.
           </Alert>
         ) : null}
         {sendMessage.isError || cancelRun.isError ? (
@@ -396,7 +396,7 @@ export function AgentDetail({
           commands={commands}
           disabled={sendMessage.isPending}
           running={false}
-          placeholder={stream.running ? "Queue a follow-up for this agent" : "Message this agent directly"}
+          placeholder={stream.running ? "Steer this agent's active turn" : "Message this agent directly"}
           onSend={(text, files) => {
             if (files.length === 0 && text === "/cancel") {
               setQueuedMessageNotice("Cancelling the active turn…");
@@ -420,7 +420,9 @@ export function AgentDetail({
                       setQueuedMessageNotice(
                         response.queued
                           ? `Queued in position ${response.position}; it will start when the current response finishes.`
-                          : undefined,
+                          : response.steered
+                            ? "Steered into the active turn."
+                            : undefined,
                       );
                     },
                   },

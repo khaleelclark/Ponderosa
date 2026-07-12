@@ -20,11 +20,14 @@ import type {
   EngineCapabilities,
   EffortOption,
   ModelOption,
+  OpenRuntimeSessionOptions,
+  RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
 import { mapCodexEvent } from "./events.js";
 import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
 import { discoverCliMcps, discoverMarkdownCommands, parseCodexMcpList } from "./capabilities.js";
+import { CodexAppServerSession } from "./codex-app-server.js";
 
 export type { SpawnFn };
 
@@ -155,11 +158,21 @@ export class CodexAdapter implements Adapter {
       { path: path.join(codexHome, "skills"), source: "skill", skillFilesOnly: true },
     ]);
     return {
-      steering: false,
-      persistentSessions: false,
+      steering: true,
+      persistentSessions: true,
       commands,
       mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseCodexMcpList),
     };
+  }
+
+  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    return CodexAppServerSession.open({
+      ...opts,
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      sandboxMode: this.sandboxMode,
+      killGraceMs: this.killGraceMs,
+    });
   }
 
   /** Config overrides accepted by BOTH `exec` and `exec resume`. */
