@@ -5,8 +5,9 @@
 //
 // Routing (SPEC §5, AGENTS.md invariant 3 — Chat is human-facing only):
 //   user_message → messages (role user)            ← Chat
-//   text         → messages (role assistant)        ← Chat
-//   reasoning    → events index ONLY (NOT Chat)     ← kept clean; see NOTE
+//   text         → events index ONLY                 ← transient Thinking detail
+//   agent_output → events index ONLY                 ← durable Thinking response
+//   reasoning    → events index ONLY (NOT Chat)     ← transient Thinking detail
 //   command      → Tasks (timeline) + task lifecycle
 //   file_change  → Tasks + Artifacts (a diff artifact)
 //   test_result  → Tasks + Artifacts (a test_report artifact)
@@ -15,11 +16,8 @@
 //   turn_done    → close the current task (done)
 //   * (all)      → events index row (searchable log)
 //
-// NOTE on reasoning: SPEC §5 lists reasoning alongside text as "→ Chat", but
-// AGENTS.md invariant 3 says Chat holds intent/conversation only. We resolve the
-// tension by NOT projecting reasoning into the durable Chat (messages) table — it
-// stays in the queryable events index and can be rendered live/secondary by the UI.
-// Recorded in CONTRACTS/README.
+// Only explicit communication events may create a Chat projection. Runtime text
+// and reasoning remain scoped to their originating execution.
 
 import type { TaskStatus } from "@ponderosa/core";
 import { artifactId, eventRowId, messageId, taskId } from "./ids.js";
@@ -142,26 +140,10 @@ export function projectEvent(
       break;
     }
 
-    case "text": {
-      if (event.delta.trim() !== "") {
-        ops.push({
-          kind: "insert_message",
-          row: {
-            id: messageId(threadId, seq),
-            communicationEventId: event.communicationEventId ?? null,
-            threadId,
-            seq,
-            role: "assistant",
-            text: event.delta,
-            createdAt: ts,
-            replyToJson: null,
-            attachmentsJson: null,
-          },
-        });
-        ops.push({ kind: "touch_thread", updatedAt: ts });
-      }
+    case "text":
+    case "agent_output":
+      // Ordinary runtime output is execution data, never an inferred message.
       break;
-    }
 
     case "communication_projection": {
       ops.push({

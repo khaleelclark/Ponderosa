@@ -81,14 +81,30 @@ describe("V1 reliability safety net", () => {
     const continued = await adapter.continueStarted.promise;
     expect(continued.prompt).toContain("second turn");
     expect(continued.resumeSessionId).toBe("controlled-session");
+    while (!store.readEvents(thread.id).some(({ event }) => event.type === "agent_output")) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
 
     const detail = (await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{
       messages: Array<{ role: string; text: string }>;
+      thinking: Array<{ executionId: string; kind: string; text: string; completed: boolean }>;
     }>();
     expect(detail.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "first turn" }),
       expect.objectContaining({ role: "user", text: "second turn" }),
-      expect.objectContaining({ role: "assistant", text: "queued turn completed" }),
+    ]));
+    expect(detail.messages.some((message) => message.text === "queued turn completed")).toBe(false);
+    expect(detail.thinking).toEqual([
+      expect.objectContaining({
+        executionId: expect.any(String), kind: "response", text: "queued turn completed", completed: true,
+      }),
+    ]);
+    expect(store.readCommunicationEvents(project.id).some((event) =>
+      event.sender.kind === "agent" && event.text === "queued turn completed")).toBe(false);
+    expect(store.readEvents(thread.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "agent_output", executionId: detail.thinking[0]!.executionId, text: "queued turn completed",
+      }) }),
     ]));
     await app.close();
   });

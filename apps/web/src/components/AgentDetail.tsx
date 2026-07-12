@@ -5,6 +5,7 @@ import DifferenceIcon from "@mui/icons-material/Difference";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import TimelineIcon from "@mui/icons-material/Timeline";
+import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
 import {
   Alert,
@@ -45,10 +46,20 @@ import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane } from "./panes";
+import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane, ThinkingPane } from "./panes";
 import { userReactionMessage } from "./EmojiReactionPicker";
 
-type AgentTab = "chat" | "log" | "tasks" | "artifacts";
+type AgentTab = "chat" | "thinking" | "log" | "tasks" | "artifacts";
+
+const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
+  { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
+  { value: "thinking", label: "Thinking", icon: <PsychologyOutlinedIcon /> },
+  { value: "log", label: "Live Log", icon: <TimelineIcon /> },
+  { value: "tasks", label: "Tasks", icon: <TerminalIcon /> },
+  { value: "artifacts", label: "Artifacts", icon: <DifferenceIcon /> },
+];
+
+export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
 
 export function AgentDetail({
   agentId,
@@ -221,6 +232,7 @@ export function AgentDetail({
 
   const panes: Record<AgentTab, JSX.Element> = {
     chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReact={(emoji) => sendMessage.mutateAsync({ text: userReactionMessage(emoji) }).then(() => undefined)} onReply={setReplyTo} />,
+    thinking: <ThinkingPane entries={detail.thinking} />,
     log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,
@@ -391,10 +403,7 @@ export function AgentDetail({
         scrollButtons="auto"
         sx={{ borderBottom: 1, borderColor: "divider", minHeight: 48, maxWidth: "100%" }}
       >
-        <Tab value="chat" icon={<ChatBubbleOutlineIcon />} iconPosition="start" label="Chat" sx={{ minHeight: 48 }} />
-        <Tab value="log" icon={<TimelineIcon />} iconPosition="start" label="Live Log" sx={{ minHeight: 48 }} />
-        <Tab value="tasks" icon={<TerminalIcon />} iconPosition="start" label="Tasks" sx={{ minHeight: 48 }} />
-        <Tab value="artifacts" icon={<DifferenceIcon />} iconPosition="start" label="Artifacts" sx={{ minHeight: 48 }} />
+        {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48 }} />)}
       </Tabs>
 
       <Box role="tabpanel" aria-label={`${tab === "log" ? "Live log" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>

@@ -4,10 +4,12 @@
 // by seq (critical for phones locking/unlocking).
 
 import type { AgentEvent } from "./events.js";
-import type { AgentLifecycleReason, AgentLifecycleStatus, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
+import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentLifecycleStatus, AgentOutputEvent, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
 
 /** Canonical thread events visible on the live wire, including server-owned records. */
-export type ThreadStreamEvent = AgentEvent
+export type ThreadStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" }>
+  | AgentExecutionDeltaEvent
+  | AgentOutputEvent
   | { type: "user_message"; communicationEventId?: string; text: string; replyTo?: MessageReferenceDto; attachments?: ImageAttachmentDto[] }
   | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" }
   | { type: "communication_projection"; communicationEventId: string; text: string; role?: "user" | "assistant" | "system"; attachments?: ImageAttachmentDto[] }
@@ -23,6 +25,8 @@ export interface SseEventEnvelope {
   seq: number;
   ts: string;
   event: ThreadStreamEvent;
+  /** True for catch-up records written before the live subscription boundary. */
+  replayed?: boolean;
 }
 
 /**

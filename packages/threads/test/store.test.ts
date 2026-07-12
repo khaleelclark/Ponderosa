@@ -448,7 +448,7 @@ describe("ThreadStore — multi-master-chat membership", () => {
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
   { type: "session", sessionId: "sess-abc" },
-  { type: "text", delta: "I'll handle this." },
+  { type: "text", delta: "I'll handle this.", executionId: "run-1" },
   { type: "command", command: "pnpm test", cwd: "/repo" },
   { type: "tool_result", id: "i0", output: "ok", isError: false },
   {
@@ -457,18 +457,26 @@ const RUN: LogEvent[] = [
     kind: "edit",
     diff: "diff --git a/auth.ts b/auth.ts\n",
   },
-  { type: "text", delta: "Done — auth refactor complete." },
+  { type: "text", delta: "Done — auth refactor complete.", executionId: "run-1" },
   { type: "turn_done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
+  { type: "agent_output", executionId: "run-1", text: "I'll handle this.Done — auth refactor complete.", sourceSeqStart: 3, sourceSeqEnd: 7 },
 ];
 
 describe("ThreadStore — append + projection", () => {
-  it("projects a full run into the four panes", () => {
+  it("projects a full run into Chat, Thinking, Tasks, and Artifacts", () => {
     const { projectId, threadId } = seedThread();
     for (const ev of RUN) store.appendEvent(threadId, ev);
 
     const detail = store.getThreadDetail(threadId)!;
-    // Chat: user turn + 2 assistant texts (reasoning would NOT appear)
-    expect(detail.messages.map((m) => m.role)).toEqual(["user", "assistant", "assistant"]);
+    expect(detail.messages.map((m) => m.role)).toEqual(["user"]);
+    expect(detail.thinking).toEqual([expect.objectContaining({
+      executionId: "run-1",
+      kind: "response",
+      completed: true,
+      text: "I'll handle this.Done — auth refactor complete.",
+      sourceSeqStart: 3,
+      sourceSeqEnd: 7,
+    })]);
     // Tasks: one task, closed done by turn_done
     expect(detail.tasks).toHaveLength(1);
     expect(detail.tasks[0]!.status).toBe("done");
@@ -490,13 +498,34 @@ describe("ThreadStore — append + projection", () => {
     expect(store.resumeSessionId(threadId)).toBe("sess-abc");
   });
 
+  it("recovers legacy text into ordered execution-scoped Thinking entries after restart", () => {
+    const { threadId } = seedThread();
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-1" });
+    store.appendEvent(threadId, { type: "text", delta: "first legacy response" });
+    store.appendEvent(threadId, { type: "turn_done" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-1" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-2" });
+    store.appendEvent(threadId, { type: "text", delta: "second legacy response" });
+    store.appendEvent(threadId, { type: "turn_done" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-2" });
+
+    store.close();
+    store = new ThreadStore(dir);
+    const detail = store.getThreadDetail(threadId)!;
+    expect(detail.messages).toEqual([]);
+    expect(detail.thinking.map(({ executionId, text, completed }) => ({ executionId, text, completed }))).toEqual([
+      { executionId: "legacy-run-1", text: "first legacy response", completed: true },
+      { executionId: "legacy-run-2", text: "second legacy response", completed: true },
+    ]);
+  });
+
   it("assigns monotonic per-thread seq and is append-only (readSince works)", () => {
     const { threadId } = seedThread();
     const seqs = RUN.map((ev) => store.appendEvent(threadId, ev).seq);
-    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(store.readEvents(threadId)).toHaveLength(8);
+    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(store.readEvents(threadId)).toHaveLength(9);
     // SSE replay-from-seq
-    expect(store.readEventsSince(threadId, 5).map((e) => e.seq)).toEqual([6, 7, 8]);
+    expect(store.readEventsSince(threadId, 5).map((e) => e.seq)).toEqual([6, 7, 8, 9]);
     // The public surface has no update/delete of events (append-only by design).
     expect((store as unknown as Record<string, unknown>)["deleteEvent"]).toBeUndefined();
   });

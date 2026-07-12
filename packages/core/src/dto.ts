@@ -316,13 +316,39 @@ export interface ArtifactContentDto extends ArtifactDto {
   contentType: "markdown" | "diff" | "text";
 }
 
+export interface AgentOutputEvent {
+  type: "agent_output";
+  executionId: string;
+  text: string;
+  sourceSeqStart: number;
+  sourceSeqEnd: number;
+}
+
+export type AgentExecutionDeltaEvent =
+  | (Extract<AgentEvent, { type: "text" }> & { executionId?: string })
+  | (Extract<AgentEvent, { type: "reasoning" }> & { executionId?: string });
+
+export interface ThinkingEntryDto {
+  id: string;
+  threadId: string;
+  executionId: string;
+  kind: "response" | "reasoning";
+  text: string;
+  completed: boolean;
+  seq: number;
+  sourceSeqStart: number;
+  sourceSeqEnd: number;
+  createdAt: string;
+}
+
 /**
- * GET /api/threads/:id — the full thread view: thread + messages + tasks +
- * artifacts + state (SPEC §8). The UI hydrates all four panes from this.
+ * GET /api/threads/:id — the full thread view. Chat contains only explicit
+ * communications; Thinking contains execution-scoped ordinary output.
  */
 export interface ThreadDetailDto {
   thread: ThreadDto;
   messages: MessageDto[];
+  thinking: ThinkingEntryDto[];
   tasks: TaskDto[];
   artifacts: ArtifactDto[];
   state: ThreadState;
