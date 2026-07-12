@@ -927,6 +927,85 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("isolates three-agent collaboration context by canonical recipient audience", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationReadMode: "authoritative",
+    });
+    const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Three-agent room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const verifier = store.createThread(project.id, { title: "Verifier", engine: "codex", masterChatId: master.id });
+
+    // Organization-audience system guidance is explicitly shared with every
+    // project agent even when rendered on the Collaboration surface.
+    const sharedAt = "2026-07-12T00:00:00.000Z";
+    store.appendCommunicationEvent({
+      eventId: "shared-collaboration-guidance", schemaVersion: 1, projectId: project.id, masterChatId: master.id,
+      sender: { kind: "system", component: "collaboration-policy" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Shared system guidance for all project agents.", createdAt: sharedAt,
+    });
+    store.appendCommunicationProjection(project.id, {
+      eventId: "shared-collaboration-guidance", surface: "collaboration_chat", projectionKey: master.id,
+      projectedAt: sharedAt,
+      message: { messageId: "shared-guidance-message", role: "system", createdAt: sharedAt },
+    });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Coordinate reviews." } });
+    await waitForSeedCount(1);
+    const authorToken = adapter.seeds.find((turn) => turn.threadId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(authorToken).toBeTruthy();
+
+    const toReviewer = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: {
+        intent: "collaboration", recipientAgentIds: [reviewer.id],
+        text: "Reviewer-only launch credential: ALPHA.", idempotencyKey: "author-to-reviewer",
+      },
+    });
+    expect(toReviewer.statusCode).toBe(200);
+    await waitForSeedCount(2);
+
+    const crossAudienceReply = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: {
+        text: "Do not disclose the quoted credential.", recipientAgentIds: [verifier.id],
+        replyToMessageId: toReviewer.json<{ messageId: string }>().messageId,
+      },
+    });
+    expect(crossAudienceReply.statusCode).toBe(400);
+    expect(crossAudienceReply.json()).toMatchObject({
+      error: "reply target is not visible to every collaboration recipient",
+    });
+
+    const toVerifier = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: {
+        intent: "collaboration", recipientAgentIds: [verifier.id],
+        text: "Verifier-only release checklist.", idempotencyKey: "author-to-verifier",
+      },
+    });
+    expect(toVerifier.statusCode).toBe(200);
+    await waitForSeedCount(3);
+
+    const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
+    const verifierPrompt = adapter.seeds.find((turn) => turn.threadId === verifier.id)?.prompt ?? "";
+    expect(reviewerPrompt).toContain("Reviewer-only launch credential: ALPHA.");
+    expect(reviewerPrompt).toContain("Shared system guidance for all project agents.");
+    expect(verifierPrompt).toContain("Verifier-only release checklist.");
+    expect(verifierPrompt).toContain("Shared system guidance for all project agents.");
+    expect(verifierPrompt).not.toContain("Reviewer-only launch credential: ALPHA.");
+
+    await Promise.all([
+      cancelAndWait(app, author.id),
+      cancelAndWait(app, reviewer.id),
+      cancelAndWait(app, verifier.id),
+    ]);
+    await app.close();
+  });
+
   it("seeds only promoted summaries from local communication into future agent context", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

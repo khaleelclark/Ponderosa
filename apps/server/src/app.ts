@@ -79,6 +79,36 @@ interface ActiveRun {
   delegatedRunId?: string;
 }
 
+/**
+ * Collaboration room projections are a display timeline, not an authorization
+ * boundary. Runtime context must be selected from the canonical audience:
+ * stable-ID collaboration recipients see their deliveries, while organization
+ * broadcasts are deliberately shared project context. Missing/unrecognized
+ * canonical events fail closed instead of falling back to rendered mentions.
+ */
+function canonicalAudienceIncludes(
+  event: CommunicationEvent | undefined,
+  projectId: string,
+  recipientAgentId: string,
+): boolean {
+  if (!event) return false;
+  if (event.intent === "collaboration") return event.audience.agentIds.includes(recipientAgentId);
+  return event.intent === "broadcast" && event.audience.organizationId === projectId;
+}
+
+function recipientCollaborationMessages(
+  messages: MasterChatMessageDto[],
+  events: CommunicationEvent[],
+  projectId: string,
+  recipientAgentId: string,
+): MasterChatMessageDto[] {
+  const eventsById = new Map(events.map((event) => [event.eventId, event]));
+  return messages.filter((message) => {
+    if (!message.communicationEventId) return false;
+    return canonicalAudienceIncludes(eventsById.get(message.communicationEventId), projectId, recipientAgentId);
+  });
+}
+
 /** A deferred user or agent turn.  Queues are per-thread and FIFO. */
 interface PendingTurn {
   text: string;
@@ -2019,6 +2049,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
     }
     const master = store.getMasterChat(request.params.id)!;
+    if (request.body.replyToMessageId) {
+      const replyTarget = detail.messages.find((message) => message.id === request.body.replyToMessageId);
+      const replyEvent = replyTarget?.communicationEventId
+        ? store.getCommunicationEvent(master.projectId, replyTarget.communicationEventId)
+        : undefined;
+      if (!replyTarget || routing.intents.some((intent) =>
+        !canonicalAudienceIncludes(replyEvent, master.projectId, intent.targetThreadId))) {
+        return reply.code(400).send({ error: "reply target is not visible to every collaboration recipient" });
+      }
+    }
     const communication = recordCommunication({
       eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId: master.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
@@ -2566,7 +2606,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const sameEngineModelEpoch = !latestSessionCursor ||
         (latestSessionCursor.engine === thread.activeEngine && latestSessionCursor.model === cursorModel);
       const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
-      const allRoomMessages = collaboration?.messages ?? (masterChat && sourceChannel === "main" ? masterChat.messages : []);
+      const allRoomMessages = collaboration
+        ? recipientCollaborationMessages(
+            collaboration.messages,
+            store.readCommunicationEvents(project.id),
+            project.id,
+            thread.id,
+          )
+        : masterChat && sourceChannel === "main" ? masterChat.messages : [];
       const previousIndex = previousCursor?.lastMessageId
         ? allRoomMessages.findIndex((message) => message.id === previousCursor.lastMessageId)
         : -1;
