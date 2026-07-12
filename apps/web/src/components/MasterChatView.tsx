@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
+import type { CollaborationChatDetailDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDetailDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -185,6 +185,7 @@ export function MasterChatView({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
+  const [reactionError, setReactionError] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
   const [collaborationRecipientIds, setCollaborationRecipientIds] = useState<string[]>([]);
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
@@ -694,6 +695,7 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
+            {reactionError ? <Alert severity="error" onClose={() => setReactionError(undefined)}>Reaction not saved. {reactionError}</Alert> : null}
             {conversation === "collaboration" && showSubagents && subagentBinding ? (
               <SubagentTreePanel
                 store={subagentBinding.store}
@@ -728,9 +730,13 @@ export function MasterChatView({
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
                 }}
                 onReact={(selected, emoji, active) => {
-                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then(() => {
-                    void queryClient.invalidateQueries({ queryKey: conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId] });
-                  });
+                  setReactionError(undefined);
+                  const queryKey = conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId];
+                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then((response) => {
+                    queryClient.setQueryData<MasterChatDetailDto | CollaborationChatDetailDto>(queryKey, (current) => current
+                      ? { ...current, messages: current.messages.map((message) => message.id === selected.id ? { ...message, reactions: response.reactions } : message) }
+                      : current);
+                  }).catch((error: unknown) => setReactionError(error instanceof Error ? error.message : "Try again."));
                 }}
               />
             ))}
