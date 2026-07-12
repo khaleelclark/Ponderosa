@@ -242,6 +242,19 @@ Canonical collaboration messages store their resolved recipient intents in the
 same append. Startup recreates any missing inbox record from those intents,
 closing the crash window between message persistence and inbox persistence
 without replaying blocked mentions or pre-inbox chat history.
+
+The reserved, case-insensitive `@everyone` collaboration handle resolves once,
+at message creation, to every non-archived agent that is currently a member of
+that Master Chat. An agent-authored broadcast excludes its author; a manager
+broadcast includes every eligible member. Explicit mentions and `@everyone` are
+deduplicated by recipient. The resolved intent records whether it came from an
+individual mention or `@everyone`, and the delivery ledger's `(message, target)`
+key makes retries idempotent while retaining queued/delivered/acknowledged/failed
+audit transitions. Recipient selection and inbox identity are deduplicated;
+runtime execution remains at-least-once because an interrupted, unacknowledged
+delivery is safely requeued after restart. Reconciliation skips recipients that
+were deleted, archived, or removed from the room after the canonical message was
+recorded. `@everyone` has no routing authority in main or individual chat.
 Delegation depth is lineage metadata only; collaboration relay depth and its
 loop-detection fingerprints start fresh for each delegated runtime and advance
 only when that runtime emits an actual `@mention` handoff.

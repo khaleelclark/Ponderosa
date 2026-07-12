@@ -360,16 +360,18 @@ export const mockApi: PonderosaApi = {
   },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    const message = {
+      id: "collaboration-message-" + Date.now(),
+      masterChatId,
+      role: request.role ?? "user" as const,
+      text: request.text,
+      createdAt: new Date().toISOString(),
+    };
     collaborationMessages[masterChatId] = [
       ...(collaborationMessages[masterChatId] ?? []),
-      {
-        id: "collaboration-message-" + Date.now(),
-        masterChatId,
-        role: request.role ?? "user",
-        text: request.text,
-        createdAt: new Date().toISOString(),
-      },
+      message,
     ];
+    return { message, audience: "none", notifiedAgentIds: [] };
   },
   listSubagents() {
     return delay([]);

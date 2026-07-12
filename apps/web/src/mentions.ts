@@ -27,6 +27,11 @@ export function findMentionedHandles(text: string, handles: Iterable<string>): s
   return [...mentioned.values()];
 }
 
+/** Whether the reserved collaboration-only broadcast handle is present. */
+export function hasEveryoneMention(text: string): boolean {
+  return /(?:^|\s)@everyone(?=$|\s|[.,!?;:])/iu.test(text);
+}
+
 /** Resolve every distinct @mention against the agents currently in a master chat. */
 export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
   const byHandle = new Map(

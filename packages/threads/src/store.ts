@@ -127,6 +127,8 @@ export interface MasterChatDeliveryIntent {
   relayDepth: number;
   mentionTrail: string[];
   kind: "direct" | "tag" | "delegation_completion";
+  /** The selector that authorized this recipient when the message was recorded. */
+  audience?: "mention" | "everyone";
   delegatedRunId?: string;
 }
 

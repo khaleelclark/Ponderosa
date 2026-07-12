@@ -122,6 +122,13 @@ export interface CreateMasterChatMessageRequest {
   attachments?: ImageAttachmentDto[];
 }
 
+/** POST collaboration message response; recipients are the immutable resolved audience. */
+export interface CreateCollaborationMessageResponse {
+  message: MasterChatMessageDto;
+  audience: "mention" | "everyone" | "none";
+  notifiedAgentIds: string[];
+}
+
 /** POST /api/master-chats/:id/direct-replies body. */
 export interface CreateDirectReplyRequest {
   text: string;
