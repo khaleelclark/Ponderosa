@@ -98,13 +98,13 @@ describe("user message labels on chat surfaces", () => {
     const manager = renderMaster(masterMessage({
       attachments: [{ id: "attachment-1", threadId: "thread-1", name: "diagram.png", mediaType: "image/png", size: 12, width: 2, height: 2, url: "/attachment.png" }],
     }));
-    const agent = renderMaster(masterMessage({ role: "assistant", authorThreadId: "agent-1", text: "@everyone result" }));
+    const agent = renderMaster(masterMessage({ role: "assistant", authorThreadId: "agent-1", text: "#everyone result" }));
 
     expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
     expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf(">Reply</button>"));
     expect(manager.indexOf(">Reply</button>")).toBeLessThan(manager.indexOf("<time"));
-    expect(agent).toContain("@everyone result");
+    expect(agent).toContain("#everyone result");
     expect(agent.indexOf(">Reply</button>")).toBeLessThan(agent.indexOf("Reply Directly"));
     expect(agent.indexOf("Reply Directly")).toBeLessThan(agent.indexOf("<time"));
   });

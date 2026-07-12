@@ -736,24 +736,24 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     expect(adapter.seeds[0]?.prompt).toContain(
-      "never write routing @mentions into message text",
+      "never write routing #tags into message text",
     );
 
-    appendBroadcast(store, project.id, master.id, "@Aspen Is it tested?");
+    appendBroadcast(store, project.id, master.id, "#Aspen Is it tested?");
     await app.inject({
       method: "POST",
       url: `/api/threads/${thread.id}/messages`,
-      payload: { text: "@Aspen Is it tested?", sourceChannel: "main" },
+      payload: { text: "#Aspen Is it tested?", sourceChannel: "main" },
     });
     await waitForRun(thread.id, 2);
 
     expect(adapter.continues[0]?.prompt).not.toContain("Aspen: done");
-    expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).toContain("Manager: #Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).not.toContain("Communication scope is immutable");
     expect(adapter.continues[0]?.prompt).not.toContain("PONDEROSA_DELEGATION_URL");
     expect(adapter.continues[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=20");
-    expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
-    expect(adapter.continues[0]?.prompt).toContain("- tagged agents: @Aspen");
+    expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n#Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).toContain("- tagged agents: #Aspen");
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
     expect(store.getMasterChatMessages(master.id)).not.toEqual(
       expect.arrayContaining([
@@ -770,7 +770,7 @@ describe("server chunk F", () => {
     const aspen = store.createThread(project.id, { title: "Aspen", engine: "codex", masterChatId: master.id });
     const birch = store.createThread(project.id, { title: "Birch", engine: "codex", masterChatId: master.id });
     appendBroadcast(store, project.id, master.id, "Shared release context.");
-    appendBroadcast(store, project.id, master.id, "@Aspen private assignment marker");
+    appendBroadcast(store, project.id, master.id, "#Aspen private assignment marker");
 
     await app.inject({
       method: "POST",
@@ -791,7 +791,7 @@ describe("server chunk F", () => {
     await waitForRun(aspen.id);
 
     expect(adapter.seeds[1]?.prompt).toContain("Shared release context.");
-    expect(adapter.seeds[1]?.prompt).toContain("@Aspen private assignment marker");
+    expect(adapter.seeds[1]?.prompt).toContain("#Aspen private assignment marker");
     await app.close();
   });
 
@@ -952,17 +952,17 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(adapter.seeds[0]?.prompt).toContain("This is the only chat for agent-to-agent coordination.");
     expect(adapter.seeds[0]?.prompt).toContain("Do not move collaboration discussion to the main chat");
-    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
+    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n#Yosemite can you review this?");
     expect(store.getMessages(yosemite.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Yosemite can you review this?" })]),
+      expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Yosemite can you review this?" })]),
     );
     expect(store.getMasterChatMessages(master.id)).toEqual([
       expect.objectContaining({
-        authorThreadId: yosemite.id, text: "@User done", communicationEventId: expect.any(String),
+        authorThreadId: yosemite.id, text: "done", communicationEventId: expect.any(String),
       }),
     ]);
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: "@Yosemite can you review this?" })]),
+      expect.arrayContaining([expect.objectContaining({ text: "#Yosemite can you review this?" })]),
     );
     await app.close();
   });
@@ -1040,7 +1040,7 @@ describe("server chunk F", () => {
     await waitForRun(wrangell.id);
     expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(store.getMessages(wrangell.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Wrangell-St-Elias can you review this?" })]),
+      expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Wrangell-St-Elias can you review this?" })]),
     );
     await app.close();
   });
@@ -1106,7 +1106,7 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds[0]?.prompt ?? "";
     expect(prompt).not.toContain("Private review notes that should not reach an agent yet.");
-    expect(prompt).toContain("@Yosemite Please review the private notes.");
+    expect(prompt).toContain("#Yosemite Please review the private notes.");
     expect(prompt).not.toContain("Main-chat-only deployment plan.");
     expect(store.getMasterChatMessages(master.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Main-chat-only deployment plan." })]),
@@ -1222,9 +1222,9 @@ describe("server chunk F", () => {
     expect(directEvent).toMatchObject({ schemaVersion: 2, intent: "user_dm" });
     expect(collaborationEvent).toMatchObject({ schemaVersion: 2, intent: "collaboration" });
 
-    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ text: "private manager note", communicationEventId: directEvent?.eventId }),
-    ]));
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.communicationEventId === directEvent?.eventId)).toEqual([
+      expect.objectContaining({ text: "#Participant private manager note" }),
+    ]);
     await cancelAndWait(app, participant.id);
     await cancelAndWait(app, collaborator.id);
     adapter.mode = "normal";
@@ -1236,7 +1236,7 @@ describe("server chunk F", () => {
     await waitForRun(future.id);
     const prompt = adapter.seeds[0]?.prompt ?? "";
     expect(prompt).toContain("shared project finding");
-    expect(prompt).not.toContain("@User private manager note");
+    expect(prompt).not.toContain("private manager note");
     expect(prompt).not.toContain("participant-only review");
     await app.close();
   });
@@ -1245,24 +1245,24 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Conversational reply", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Team room" });
-    appendBroadcast(store, project.id, master.id, "@Greeter sounds good thanks!");
+    appendBroadcast(store, project.id, master.id, "#Greeter sounds good thanks!");
     const greeter = store.createThread(project.id, { title: "Greeter", engine: "codex", masterChatId: master.id });
     adapter.responseText = "You're welcome!";
 
     await app.inject({
       method: "POST", url: `/api/threads/${greeter.id}/messages`,
-      payload: { text: "@Greeter sounds good thanks!", sourceChannel: "main" },
+      payload: { text: "#Greeter sounds good thanks!", sourceChannel: "main" },
     });
     await waitForRun(greeter.id);
 
-    const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "@User You're welcome!");
+    const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "You're welcome!");
     const replyEvent = store.readCommunicationEvents(project.id).find((event) => event.eventId === replyMessage?.communicationEventId);
     expect(replyEvent).toMatchObject({
       schemaVersion: 2,
       intent: "user_dm",
       audience: { kind: "user_agent", userId: "local-operator", agentId: greeter.id },
     });
-    expect(replyMessage).toMatchObject({ text: "@User You're welcome!", communicationEventId: replyEvent?.eventId });
+    expect(replyMessage).toMatchObject({ text: "You're welcome!", communicationEventId: replyEvent?.eventId });
 
     const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
     await app.inject({
@@ -1270,7 +1270,7 @@ describe("server chunk F", () => {
       payload: { text: "What shared context is available?", sourceChannel: "main" },
     });
     await waitForRun(observer.id);
-    expect(adapter.seeds[1]?.prompt).not.toContain("@User You're welcome!");
+    expect(adapter.seeds[1]?.prompt).not.toContain("You're welcome!");
     await app.close();
   });
 
@@ -1301,7 +1301,7 @@ describe("server chunk F", () => {
       expect.objectContaining({ communicationEventId: main.json().communicationEventId, text: "Shared decision" }),
     ]));
     expect(collaborationDetail.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ communicationEventId: collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId, text: "@Reviewer Review this" }),
+      expect.objectContaining({ communicationEventId: collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId, text: "#Reviewer Review this" }),
     ]));
     const readiness = (await app.inject({ method: "GET", url: "/api/ready" })).json();
     expect(readiness, JSON.stringify({ readiness, reconciliation: store.reconcileCommunicationEvents(project.id) }))
@@ -1333,11 +1333,11 @@ describe("server chunk F", () => {
     await app.inject({
       method: "POST",
       url: `/api/threads/${author.id}/messages`,
-      payload: { text: "@Review-Agent is tagged, but this is in my individual chat." },
+      payload: { text: "#Review-Agent is tagged, but this is in my individual chat." },
     });
     await waitForSeedCount(1);
     expect(adapter.seeds[0]?.prompt).toContain("- channel: individual");
-    expect(adapter.seeds[0]?.prompt).toContain("- tagged agents: @Review-Agent");
+    expect(adapter.seeds[0]?.prompt).toContain("- tagged agents: #Review-Agent");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(token).toBeTruthy();
@@ -1374,14 +1374,14 @@ describe("server chunk F", () => {
       expect.arrayContaining([
         expect.objectContaining({
           authorThreadId: author.id,
-          text: "@Review-Agent @Verify-Agent Please review the API contract.",
+          text: "#Review-Agent #Verify-Agent Please review the API contract.",
         }),
       ]),
     );
     const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
     expect(reviewerPrompt).toContain("- channel: collaboration");
     expect(reviewerPrompt).toContain("- author: Author Agent");
-    expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent, @Verify-Agent");
+    expect(reviewerPrompt).toContain("- tagged agents: #Review-Agent, #Verify-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
     const communicationEvents = store.readCommunicationEvents(project.id);
     expect(communicationEvents).toHaveLength(4);
@@ -1460,7 +1460,7 @@ describe("server chunk F", () => {
     const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
 
     const manualMention = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Reviewer inspect this" },
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "#Reviewer inspect this" },
     });
     expect(manualMention.statusCode).toBe(400);
     expect(manualMention.json()).toMatchObject({ error: expect.stringContaining("explicit recipientAgentIds") });
@@ -1471,7 +1471,7 @@ describe("server chunk F", () => {
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     const legacy = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: { channel: "collaboration", text: "@Reviewer legacy route" },
+      payload: { channel: "collaboration", text: "#Reviewer legacy route" },
     });
     expect(legacy.statusCode).toBe(410);
     const explicit = await app.inject({
@@ -1587,7 +1587,7 @@ describe("server chunk F", () => {
     });
     expect(response.statusCode).toBe(401);
     expect(store.getMasterChatMessages(master.id)).toEqual([
-      expect.objectContaining({ text: "Finish.", communicationEventId: expect.any(String) }),
+      expect.objectContaining({ text: "#Agent Finish.", communicationEventId: expect.any(String) }),
     ]);
     expect(store.getMasterChatMessages(master.id)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Too late." })]),
@@ -1645,7 +1645,7 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
     await waitForRun(reviewer.id);
     expect(adapter.continues.at(-1)?.prompt).toContain(
-      "Latest message for you:\n@Pinnacles Please review this once you finish.",
+      "Latest message for you:\n#Pinnacles Please review this once you finish.",
     );
 
     await cancelAndWait(app, author.id);
@@ -1689,9 +1689,9 @@ describe("server chunk F", () => {
     await waitForRun(parent.id);
     const batchPrompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
     expect(batchPrompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
-    expect(batchPrompt.indexOf("@Parent first completed result")).toBeLessThan(batchPrompt.indexOf("@Parent second completed result"));
-    expect(batchPrompt.indexOf("@Parent second completed result")).toBeLessThan(batchPrompt.indexOf("@Parent third completed result"));
-    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text === "@Parent first completed result")).toHaveLength(1);
+    expect(batchPrompt.indexOf("#Parent first completed result")).toBeLessThan(batchPrompt.indexOf("#Parent second completed result"));
+    expect(batchPrompt.indexOf("#Parent second completed result")).toBeLessThan(batchPrompt.indexOf("#Parent third completed result"));
+    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text === "#Parent first completed result")).toHaveLength(1);
     await cancelAndWait(app, child.id);
     await app.close();
   });
@@ -1712,7 +1712,7 @@ describe("server chunk F", () => {
     await waitForRun(parent.id, 2);
     const prompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
     expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(prompt.indexOf("@Parent result one")).toBeLessThan(prompt.indexOf("@Parent result two"));
+    expect(prompt.indexOf("#Parent result one")).toBeLessThan(prompt.indexOf("#Parent result two"));
     await app.close();
   });
 
@@ -1808,7 +1808,7 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
     await waitForRun(parent.id);
     expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
-      "Latest message for you:\n@Cedar-Breaks Huntsville result is ready.",
+      "Latest message for you:\n#Cedar-Breaks Huntsville result is ready.",
     );
     expect(store.getCollaborationChatDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("delivery dispatch rejected (400)") })]),
@@ -1824,14 +1824,14 @@ describe("server chunk F", () => {
     const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
     const firstMessage = store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@Parent interrupted first result" },
+      { role: "user", text: "#Parent interrupted first result" },
       undefined,
       "collaboration",
       [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
     const secondMessage = store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@Parent queued second result" },
+      { role: "user", text: "#Parent queued second result" },
       undefined,
       "collaboration",
     )!;
@@ -1862,7 +1862,7 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
     expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(prompt.lastIndexOf("@Parent interrupted first result")).toBeLessThan(prompt.lastIndexOf("@Parent queued second result"));
+    expect(prompt.lastIndexOf("#Parent interrupted first result")).toBeLessThan(prompt.lastIndexOf("#Parent queued second result"));
     await app.close();
   });
 
@@ -1909,11 +1909,11 @@ describe("server chunk F", () => {
     ];
     expect(parentTurns).toHaveLength(2);
     expect(parentTurns[0]?.prompt).toContain(
-      `Author: Mesa Author (@Mesa-Author, thread ${author.id})\nUTC timestamp: ${firstAt}\nOriginal message (exact):\nfirst exact\nline two`,
+      `Author: Mesa Author (#Mesa-Author, thread ${author.id})\nUTC timestamp: ${firstAt}\nOriginal message (exact):\nfirst exact\nline two`,
     );
     expect(parentTurns[0]?.prompt).toContain(`UTC timestamp: ${secondAt}\nOriginal message (exact):\nsecond exact`);
     expect(parentTurns[0]?.prompt).not.toContain("arrived during active batch");
-    expect(parentTurns[1]?.prompt).toContain("@Parent arrived during active batch");
+    expect(parentTurns[1]?.prompt).toContain("#Parent arrived during active batch");
     expect(adapter.seeds.find((turn) => turn.threadId === other.id)?.prompt).toContain("other recipient only");
     expect(parentTurns.every((turn) => !turn.prompt.includes("other recipient only"))).toBe(true);
 
@@ -1961,7 +1961,7 @@ describe("server chunk F", () => {
     new CollaborationDeliveryStore(dataDir);
     store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@Parent result persisted before the inbox write" },
+      { role: "user", text: "#Parent result persisted before the inbox write" },
       undefined,
       "collaboration",
       [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
@@ -1971,12 +1971,12 @@ describe("server chunk F", () => {
     await app.ready();
     await waitForRun(parent.id);
     expect(adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
-      "Latest message for you:\n@Parent result persisted before the inbox write",
+      "Latest message for you:\n#Parent result persisted before the inbox write",
     );
     await app.close();
   });
 
-  it("reconciles an @everyone crash window once per still-eligible recipient with audit provenance", async () => {
+  it("reconciles an #everyone crash window once per still-eligible recipient with audit provenance", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Broadcast crash window" });
     const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
@@ -1993,7 +1993,7 @@ describe("server chunk F", () => {
     });
     const message = store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@everyone recover this broadcast" },
+      { role: "user", text: "#everyone recover this broadcast" },
       undefined,
       "collaboration",
       [intent(first.id), intent(second.id), intent(archived.id), intent(deleted.id)],
@@ -2037,14 +2037,14 @@ describe("server chunk F", () => {
     vi.setSystemTime(afterReconciliationBoundary);
     const older = store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@Parent older message missing its inbox write" },
+      { role: "user", text: "#Parent older message missing its inbox write" },
       undefined,
       "collaboration",
       [intent],
     )!;
     const newer = store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@Parent newer message already queued" },
+      { role: "user", text: "#Parent newer message already queued" },
       undefined,
       "collaboration",
       [intent],
@@ -2071,8 +2071,8 @@ describe("server chunk F", () => {
       ...adapter.continues.filter((turn) => turn.threadId === parent.id),
     ];
     expect(turns).toHaveLength(1);
-    expect(turns[0]?.prompt.indexOf("@Parent older message missing its inbox write")).toBeLessThan(
-      turns[0]?.prompt.indexOf("@Parent newer message already queued") ?? -1,
+    expect(turns[0]?.prompt.indexOf("#Parent older message missing its inbox write")).toBeLessThan(
+      turns[0]?.prompt.indexOf("#Parent newer message already queued") ?? -1,
     );
     await app.close();
   });
@@ -2087,7 +2087,7 @@ describe("server chunk F", () => {
     vi.setSystemTime(afterReconciliationBoundary);
     const older = store.appendMasterChatMessage(
       master.id,
-      { role: "user", text: "@Parent older collaboration message missing its inbox write" },
+      { role: "user", text: "#Parent older collaboration message missing its inbox write" },
       undefined,
       "collaboration",
       [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
@@ -2114,7 +2114,7 @@ describe("server chunk F", () => {
       ...adapter.continues.filter((turn) => turn.threadId === parent.id),
     ];
     expect(turns[0]?.prompt).toContain(
-      "Latest message for you:\n@Parent older collaboration message missing its inbox write",
+      "Latest message for you:\n#Parent older collaboration message missing its inbox write",
     );
     expect(turns[1]?.prompt).toContain("Latest message for you:\nNewer direct manager message already queued");
     await app.close();
@@ -2127,7 +2127,7 @@ describe("server chunk F", () => {
     new CollaborationDeliveryStore(dataDir);
     store.appendMasterChatMessage(
       master.id,
-      { role: "assistant", text: "@Parent blocked or historical mention" },
+      { role: "assistant", text: "#Parent blocked or historical mention" },
       undefined,
       "collaboration",
     );
@@ -2158,7 +2158,7 @@ describe("server chunk F", () => {
     delegations.declareDisposition(spawned.run.id, { outcome: "completed", idempotencyKey: "crash-outcome" });
     store.appendMasterChatMessage(
       master.id,
-      { role: "system", text: "✅ Delegated task “Crash completion” completed. @Parent, the result is ready." },
+      { role: "system", text: "✅ Delegated task “Crash completion” completed. #Parent, the result is ready." },
       child.id,
       "collaboration",
       [{
@@ -2627,7 +2627,7 @@ describe("server chunk F", () => {
     });
     expect(childCollaboration.statusCode).toBe(200);
     expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual([
-      expect.objectContaining({ authorThreadId: childId, text: "@Parent progress from child" }),
+      expect.objectContaining({ authorThreadId: childId, text: "#Parent progress from child" }),
     ]);
 
     const followUp = await app.inject({

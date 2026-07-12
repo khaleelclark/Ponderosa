@@ -20,6 +20,7 @@ import type {
   ImageAttachmentDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
+  FilesResponse,
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
@@ -98,6 +99,7 @@ export interface PonderosaApi {
   getThread(threadId: string): Promise<ThreadDetailDto>;
   listEngines(): Promise<EngineDto[]>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;
+  getFiles(projectId: string, path?: string): Promise<FilesResponse>;
   getArtifact(threadId: string, artifactId: string): Promise<ArtifactContentDto>;
   sendMessage(threadId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
   uploadAttachment(threadId: string, file: File): Promise<ImageAttachmentDto>;

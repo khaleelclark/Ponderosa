@@ -299,8 +299,13 @@ export function MasterChatView({
       });
       try {
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agent.id, file)));
-        await api.sendMasterChatMessage(masterChatId, { text, attachments, replyToMessageId: replyTo?.id });
-        await api.sendMessage(agent.id, { text, attachmentIds: attachments.map((item) => item.id), sourceChannel: "main" });
+        await api.sendMessage(agent.id, {
+          text,
+          attachmentIds: attachments.map((item) => item.id),
+          sourceChannel: "main",
+          sourceMasterChatId: masterChatId,
+          replyToMessageId: replyTo?.id,
+        });
       } catch (error) {
         await api.deleteThread(agent.id).catch(() => undefined);
         throw error;
@@ -321,12 +326,12 @@ export function MasterChatView({
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agentId, file)));
         return { agentId, attachments };
       }));
-      await api.sendMasterChatMessage(masterChatId, { text, attachments: perAgent[0]?.attachments, replyToMessageId });
       return Promise.all(perAgent.map(({ agentId, attachments }) => api.sendMessage(agentId, {
         text,
         attachmentIds: attachments.map((item) => item.id),
         sourceChannel: "main",
         sourceMasterChatId: masterChatId,
+        replyToMessageId,
       })));
     },
     onSuccess: (responses, variables) => {
@@ -684,7 +689,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies steer active agents when supported and otherwise wait durably.</>
+              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">#tag</Box> an agent to reply to it instead. Use <Box component="strong">@</Box> to reference a project file or folder.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (
@@ -827,7 +832,7 @@ export function MasterChatView({
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
-                Recipients are routed by stable identity. Names and @mentions in message text are display-only.
+                Recipients are routed by stable identity. Agent #tags in message text are display-only.
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
@@ -880,11 +885,12 @@ export function MasterChatView({
               ? collaborationRecipientIds.length > 0 ? "Message selected recipients" : "Select at least one active recipient"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
-                : "@mention an agent, or select a signed-in engine to spawn one"
+                : "#tag an agent, or select a signed-in engine to spawn one"
           }
           onSend={submit}
           replyTo={replyTo}
-          replyLabel={directReplyTargetId ? `Replying directly to @${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
+          replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
+          projectId={masterChat.projectId}
           onCancelReply={() => {
             clearReply();
           }}

@@ -148,7 +148,7 @@ function recipientCollaborationMessages(
  * Future room context contains only events created as organizational broadcasts.
  * A manager-authored broadcast with explicit agent mentions is scoped to those
  * agents for runtime context, even though the rendered message remains visible
- * in the room. Untagged broadcasts and @everyone remain shared context.
+ * in the room. Untagged broadcasts and #everyone remain shared context.
  */
 function organizationalMasterMessages(
   messages: MasterChatMessageDto[],
@@ -264,7 +264,7 @@ function mentionedAgentThreads(text: string, threads: ThreadDto[], authorThreadI
     threads.map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread]),
   );
   const mentioned = new Map<string, ThreadDto>();
-  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu)) {
+  for (const match of text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
     const thread = byHandle.get(match[1]!.toLocaleLowerCase());
     if (thread && thread.id !== authorThreadId) mentioned.set(thread.id, thread);
   }
@@ -272,7 +272,7 @@ function mentionedAgentThreads(text: string, threads: ThreadDto[], authorThreadI
 }
 
 function hasEveryoneMention(text: string): boolean {
-  return /(?:^|\s)@everyone(?=$|\s|[.,!?;:])/iu.test(text);
+  return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
 }
 
 function inboundContext(
@@ -286,7 +286,7 @@ function inboundContext(
   return {
     channel,
     author,
-    mentionedAgents: mentioned.map((thread) => `@${agentMentionHandle(thread.title)}`),
+    mentionedAgents: mentioned.map((thread) => `#${agentMentionHandle(thread.title)}`),
     addressedToCurrentAgent: mentioned.some((thread) => thread.id === currentThreadId),
   };
 }
@@ -342,7 +342,7 @@ function agentMessagingPrompt(replyScope: "direct_to_user" | "collaboration"): s
       : "Your ordinary final response is a Direct Message to the manager. It is visible as a DM but is not inherited by future agents.",
     "Use the messaging tool only when you need to create a Broadcast or send Collaboration:",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
-    'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders recipient names; never write routing @mentions into message text.',
+    'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders recipient names; never write routing #tags into message text.',
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     "Broadcast only durable organizational knowledge that future agents should inherit: decisions, verified findings, completed outcomes, or material blockers.",
     "Never Broadcast acknowledgments, thanks, conversational replies, routine progress, promises to act, or duplicate confirmations.",
@@ -498,7 +498,7 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
 /** Minimal turn prompt for a session that already received the full protocol. */
 function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
   const channelRule = context.channel === "collaboration"
-    ? "Reply in Collaboration; use a full @handle only when another agent must act."
+    ? "Reply in Collaboration; use a full #tag only when another agent must act."
     : context.channel === "main"
       ? "Your normal reply is a Direct Message. Broadcast durable organizational knowledge only through an explicit broadcast intent."
       : "Reply in your individual agent chat.";
@@ -847,7 +847,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const entries = batch.deliveries.map((delivery, index) => {
       const authorThread = delivery.authorThreadId ? store.getThread(delivery.authorThreadId) : undefined;
       const author = authorThread
-        ? `${authorThread.title} (@${agentMentionHandle(authorThread.title)}, thread ${authorThread.id})`
+        ? `${authorThread.title} (#${agentMentionHandle(authorThread.title)}, thread ${authorThread.id})`
         : "Manager";
       return [
         `--- Entry ${index + 1} ---`,
@@ -1037,7 +1037,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (failed?.masterChatId && target) {
           appendCollaborationSystemNotice(
             failed.masterChatId,
-            `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery exhausted bounded retries. The handoff is retained as failed; retry manually or contact the manager.`,
+            `⚠️ #${agentMentionHandle(target.title)} was not notified because their follow-up delivery exhausted bounded retries. The handoff is retained as failed; retry manually or contact the manager.`,
             `delivery-failure:${failed.id}`,
           );
         }
@@ -1050,7 +1050,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (delivery?.masterChatId && target) {
         appendCollaborationSystemNotice(
           delivery.masterChatId,
-          `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
+          `⚠️ #${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
           `delivery-failure:${delivery.id}`,
         );
       }
@@ -1280,7 +1280,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (targets.some((target) => !target || target.archived || target.id === authorThreadId)) {
       return { text, intents: [], error: "every collaboration recipient must be a different active agent in this master chat" };
     }
-    const renderedText = `${targets.map((target) => `@${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+    const renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
     const intents: MasterChatDeliveryIntent[] = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorThreadId, target!.id, renderedText);
@@ -1334,7 +1334,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const item of blocked) {
       appendCollaborationSystemNotice(
         masterChatId,
-        `⚠️ @${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
+        `⚠️ #${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
       );
     }
   }
@@ -1407,10 +1407,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return;
     }
     const completionText = run.status === "completed"
-      ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+      ? `✅ Delegated task “${run.delegationSummary}” completed. #${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
       : run.status === "blocked"
-        ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. @${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
-        : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. @${agentMentionHandle(parent.title)}, review the failure.`;
+        ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. #${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+        : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. #${agentMentionHandle(parent.title)}, review the failure.`;
     const master = store.getMasterChat(run.masterChatId);
     if (!master) return;
     const communication = recordCommunication({
@@ -1515,7 +1515,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (communication && capability.masterChatId) {
         store.appendMasterChatMessage(
           capability.masterChatId,
-          { text: `@User ${text}` },
+          { text },
           capability.threadId,
           "main",
           undefined,
@@ -1685,7 +1685,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           prompt: [
             context.prompt,
             "",
-            `You are a first-class delegated Ponderosa agent${parentThread ? ` created by @${agentMentionHandle(parentThread.title)}` : ""}.`,
+            `You are a first-class delegated Ponderosa agent${parentThread ? ` created by #${agentMentionHandle(parentThread.title)}` : ""}.`,
             "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
             ...agentMessagingPrompt("direct_to_user"),
             ...agentDelegationPrompt(),
@@ -2292,7 +2292,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (targets.some((target) => !target || target.archived)) {
         return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this master chat" });
       }
-      renderedText = `${targets.map((target) => `@${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+      renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
       routing = {
         intents: targets.map((target) => ({
           targetThreadId: target!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
@@ -2703,6 +2703,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return reply.code(400).send({ error: "archived master chats cannot route new turns" });
         }
       }
+      const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
+      const directReplyTarget = request.body.replyToMessageId
+        ? threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId)
+        : undefined;
+      const sourceMasterReply = request.body.replyToMessageId && directMessageMasterChatId
+        ? store.getMasterChatMessages(directMessageMasterChatId, "main")
+            .find((message) => message.id === request.body.replyToMessageId)
+        : undefined;
+      if (request.body.replyToMessageId && !directReplyTarget && !sourceMasterReply) {
+        return reply.code(400).send({ error: "reply target was not found in this conversation" });
+      }
       const collaborationDeliveryId = request.body.collaborationDeliveryId;
       const collaborationDeliveryIds = request.body.collaborationDeliveryIds;
       const requestedDeliveryIds = collaborationDeliveryIds ?? (collaborationDeliveryId ? [collaborationDeliveryId] : []);
@@ -2745,9 +2756,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           });
         }
       }
-      const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
-        store.appendMasterChatMessage(directMessageMasterChatId, { role: "user", text }, undefined, "main", undefined, undefined, communicationEventId);
+        store.appendMasterChatMessage(directMessageMasterChatId, {
+          role: "user",
+          text: `#${agentMentionHandle(thread.title)} ${text}`,
+          attachments: messageAttachments,
+          replyToMessageId: sourceMasterReply?.id,
+        }, undefined, "main", undefined, undefined, communicationEventId);
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (
@@ -2782,14 +2797,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         replyToMessageId: request.body.replyToMessageId,
         replyTo: request.body.replyToMessageId
           ? (() => {
-              const target = threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId);
-              return target ? { messageId: target.id, text: target.text, role: target.role } : undefined;
+              const replyTarget = directReplyTarget ?? sourceMasterReply;
+              return replyTarget ? { messageId: replyTarget.id, text: replyTarget.text, role: replyTarget.role } : undefined;
             })()
           : undefined,
       };
-      if (request.body.replyToMessageId && !pendingTurn.replyTo) {
-        return reply.code(400).send({ error: "reply target was not found in this conversation" });
-      }
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
@@ -3225,9 +3237,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
-              const renderedStatusText = reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm"
-                ? `@User ${statusText}`
-                : statusText;
+              const renderedStatusText = statusText;
               store.appendMasterChatMessage(
                 routingMasterChatId,
                 { role: "assistant", text: renderedStatusText },

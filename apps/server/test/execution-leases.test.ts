@@ -164,7 +164,7 @@ describe("enforced execution leases", () => {
     await clock.advance(1_000);
     await flush();
     await eventually(() => adapter.seeds.length === 2);
-    expect(adapter.seeds[1]!.prompt).toContain("@Agent queued follow-up");
+    expect(adapter.seeds[1]!.prompt).toContain("#Agent queued follow-up");
     expect(store.readEvents(thread.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
     adapter.releaseLateEvent();
     await flush();

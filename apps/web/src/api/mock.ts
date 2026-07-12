@@ -498,6 +498,9 @@ export const mockApi: PonderosaApi = {
       mcpServers: [],
     })));
   },
+  async getFiles(_projectId, path = "") {
+    return { kind: "dir" as const, path, entries: [] };
+  },
   getArtifact(_threadId, artifactId) {
     const content = artifactContent[artifactId];
     if (!content) {
