@@ -89,6 +89,11 @@ Project- and room-scoped health projections now expose every required lifecycle
 state. Scheduled active-session rollover supplies the bounded `compacting`
 interval; ordinary cancellation is a durable thread lifecycle event, and expected
 abort transport errors are suppressed rather than misclassified as failures.
+Canonical event, classification, projection, and promotion indexes are built once
+from repairable disk logs by the single authoritative daemon, then updated in O(1)
+on append. Restart still reconstructs them from canonical files. Tests exercise
+sustained indexed writes and a 1,000-agent health projection without per-agent
+polling.
 
 Initial values are tuning ranges, not schema constants. Phase 0 measurements set
 production values.

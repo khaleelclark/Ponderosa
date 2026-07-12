@@ -292,6 +292,17 @@ export class ThreadStore {
   private readonly states = new Map<string, ProjectionState>();
   private readonly deliverySequenceFile: string;
   private deliverySequence: number;
+  private readonly communicationEventCache = new Map<string, {
+    events: CommunicationEvent[];
+    byId: Map<string, CommunicationEvent>;
+    byIdempotency: Map<string, CommunicationEvent>;
+  }>();
+  private readonly contextClassificationCache = new Map<string, Map<string, CommunicationContextClassification>>();
+  private readonly communicationProjectionCache = new Map<string, {
+    projections: CommunicationProjection[];
+    byTuple: Map<string, CommunicationProjection>;
+  }>();
+  private readonly knowledgePromotionCache = new Map<string, KnowledgePromotion[]>();
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -313,6 +324,41 @@ export class ThreadStore {
     this.deliverySequence += 1;
     appendFileSync(this.deliverySequenceFile, `${JSON.stringify({ sequence: this.deliverySequence })}\n`, "utf8");
     return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
+  }
+
+  private communicationIndex(projectId: string) {
+    let cached = this.communicationEventCache.get(projectId);
+    if (cached) return cached;
+    const events = readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log", true);
+    const byId = new Map(events.map((event) => [event.eventId, event]));
+    const byIdempotency = new Map<string, CommunicationEvent>();
+    for (const event of events) {
+      if (event.idempotencyKey) byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
+    }
+    cached = { events, byId, byIdempotency };
+    this.communicationEventCache.set(projectId, cached);
+    return cached;
+  }
+
+  private contextIndex(projectId: string): Map<string, CommunicationContextClassification> {
+    let cached = this.contextClassificationCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log", true);
+    cached = new Map(records.map((record) => [record.eventId, record]));
+    this.contextClassificationCache.set(projectId, cached);
+    return cached;
+  }
+
+  private projectionIndex(projectId: string) {
+    let cached = this.communicationProjectionCache.get(projectId);
+    if (cached) return cached;
+    const projections = readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log", true);
+    const byTuple = new Map(projections.map((projection) => [
+      `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`, projection,
+    ]));
+    cached = { projections, byTuple };
+    this.communicationProjectionCache.set(projectId, cached);
+    return cached;
   }
 
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
@@ -339,10 +385,9 @@ export class ThreadStore {
       classifiedAt: event.createdAt,
       classifiedBy: { kind: "system", component: "communication-router" },
     };
-    const recorded = readRepairableJsonl<CommunicationEvent>(file, "communication log", true);
-    const idempotent = event.idempotencyKey ? recorded.find((candidate) =>
-      candidate.idempotencyKey === event.idempotencyKey &&
-      JSON.stringify(candidate.sender) === JSON.stringify(event.sender)) : undefined;
+    const index = this.communicationIndex(event.projectId);
+    const idempotent = event.idempotencyKey
+      ? index.byIdempotency.get(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`) : undefined;
     if (idempotent) {
       const equivalent = idempotent.projectId === event.projectId && idempotent.masterChatId === event.masterChatId &&
         idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
@@ -356,53 +401,59 @@ export class ThreadStore {
       });
       return { event: idempotent, replayed: true };
     }
-    const existing = recorded.find((candidate) => candidate.eventId === event.eventId);
+    const existing = index.byId.get(event.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
       this.appendContextClassification(event.projectId, classification);
       return { event: existing, replayed: true };
     }
     appendFsyncedJsonl(file, [event]);
+    index.events.push(event);
+    index.byId.set(event.eventId, event);
+    if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
     this.appendContextClassification(event.projectId, classification);
     return { event, replayed: false };
   }
 
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log");
+    return [...this.communicationIndex(projectId).events];
   }
 
   private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
     const file = communicationContextPath(this.dataDir, projectId);
-    const existing = readRepairableJsonl<CommunicationContextClassification>(file, "communication context log", true)
-      .find((candidate) => candidate.eventId === classification.eventId);
+    const index = this.contextIndex(projectId);
+    const existing = index.get(classification.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(classification)) throw new Error("communication context classification collision");
       return;
     }
     appendFsyncedJsonl(file, [classification]);
+    index.set(classification.eventId, classification);
   }
 
   readContextClassifications(projectId: string): CommunicationContextClassification[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log");
+    return [...this.contextIndex(projectId).values()];
   }
 
   appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
-    const eventExists = this.readCommunicationEvents(projectId).some((event) => event.eventId === projection.eventId);
+    const eventExists = this.communicationIndex(projectId).byId.has(projection.eventId);
     if (!eventExists) throw new Error("communication projection source event not found");
     const file = communicationProjectionsPath(this.dataDir, projectId);
-    const existing = readRepairableJsonl<CommunicationProjection>(file, "communication projection log", true)
-      .find((candidate) => candidate.eventId === projection.eventId && candidate.surface === projection.surface &&
-        candidate.projectionKey === projection.projectionKey);
+    const index = this.projectionIndex(projectId);
+    const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
+    const existing = index.byTuple.get(tuple);
     if (existing) return { projection: existing, replayed: true };
     appendFsyncedJsonl(file, [projection]);
+    index.projections.push(projection);
+    index.byTuple.set(tuple, projection);
     return { projection, replayed: false };
   }
 
   readCommunicationProjections(projectId: string): CommunicationProjection[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log");
+    return [...this.projectionIndex(projectId).projections];
   }
 
   private repairCommunicationProjectionLedger(projectId: string): void {
@@ -445,7 +496,11 @@ export class ThreadStore {
     if (classification?.policy !== "local_only") throw new Error("only local knowledge requires promotion");
     if (!promotion.summary.trim()) throw new Error("promotion summary is required");
     const file = knowledgePromotionsPath(this.dataDir, promotion.organizationId);
-    const existing = readRepairableJsonl<KnowledgePromotion>(file, "knowledge promotion log", true);
+    let existing = this.knowledgePromotionCache.get(promotion.organizationId);
+    if (!existing) {
+      existing = readRepairableJsonl<KnowledgePromotion>(file, "knowledge promotion log", true);
+      this.knowledgePromotionCache.set(promotion.organizationId, existing);
+    }
     const prior = promotion.idempotencyKey
       ? existing.find((candidate) => candidate.idempotencyKey === promotion.idempotencyKey)
       : existing.find((candidate) => candidate.promotionId === promotion.promotionId);
@@ -456,12 +511,18 @@ export class ThreadStore {
       return { promotion: prior, replayed: true };
     }
     appendFsyncedJsonl(file, [promotion]);
+    existing.push(promotion);
     return { promotion, replayed: false };
   }
 
   readKnowledgePromotions(projectId: string): KnowledgePromotion[] {
     if (!this.getProject(projectId)) throw new Error("promotion organization not found");
-    return readRepairableJsonl<KnowledgePromotion>(knowledgePromotionsPath(this.dataDir, projectId), "knowledge promotion log");
+    let cached = this.knowledgePromotionCache.get(projectId);
+    if (!cached) {
+      cached = readRepairableJsonl<KnowledgePromotion>(knowledgePromotionsPath(this.dataDir, projectId), "knowledge promotion log", true);
+      this.knowledgePromotionCache.set(projectId, cached);
+    }
+    return [...cached];
   }
 
   activeKnowledgePromotions(projectId: string, at = new Date().toISOString()): KnowledgePromotion[] {

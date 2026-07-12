@@ -85,4 +85,13 @@ describe("agent health projection", () => {
     expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled" })] } }).agents[0])
       .toMatchObject({ status: "cancelled", reason: "thread_cancelled" });
   });
+
+  it("projects a thousand-agent organization without per-agent polling", () => {
+    const threads = Array.from({ length: 1_000 }, (_, index) => thread(`agent-${String(index).padStart(4, "0")}`));
+    const result = project({ threads });
+    expect(result.agents).toHaveLength(1_000);
+    expect(result.agents.every((agent) => agent.status === "idle")).toBe(true);
+    expect(result.agents[0]?.agentId).toBe("agent-0000");
+    expect(result.agents.at(-1)?.agentId).toBe("agent-0999");
+  });
 });

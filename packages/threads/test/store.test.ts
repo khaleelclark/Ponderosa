@@ -105,12 +105,18 @@ describe("ThreadStore — canonical communication events", () => {
       text: "First", createdAt: "2026-07-12T00:00:00.000Z",
     };
     store.appendCommunicationEvent(event);
+    store.close();
     writeFileSync(file, `${readFileSync(file, "utf8")}{\"eventId\":\"torn`, "utf8");
+    store = new ThreadStore(dir);
     store.appendCommunicationEvent({ ...event, eventId: "event-2", text: "Second" });
     expect(store.readCommunicationEvents(project.id).map((item) => item.eventId)).toEqual(["event-1", "event-2"]);
 
+    const valid = readFileSync(file, "utf8");
+    store.close();
     writeFileSync(file, `{not-json}\n${JSON.stringify(event)}\n`, "utf8");
-    expect(() => store.readCommunicationEvents(project.id)).toThrow("non-tail corruption");
+    expect(() => new ThreadStore(dir)).toThrow("non-tail corruption");
+    writeFileSync(file, valid, "utf8");
+    store = new ThreadStore(dir);
   });
 
   it("reconciles and rebuilds a direct-agent projection by canonical event ID", () => {
@@ -174,6 +180,25 @@ describe("ThreadStore — canonical communication events", () => {
       canonicalEvents: 1, linkedProjections: 2, duplicateProjectionEventIds: [], ok: true,
     });
   });
+
+  it("indexes sustained canonical writes without rescanning prior history", () => {
+    const project = store.createProject({ label: "Scale", hostPath: "/repo" });
+    for (let index = 0; index < 500; index += 1) {
+      const event: CommunicationEvent = {
+        eventId: `scale-${index}`, schemaVersion: 1, projectId: project.id,
+        sender: { kind: "system", component: "scale-test" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id }, text: `Event ${index}`,
+        createdAt: new Date(1_700_000_000_000 + index).toISOString(),
+      };
+      store.appendCommunicationEvent(event);
+      store.appendCommunicationProjection(project.id, {
+        eventId: event.eventId, surface: "master_chat", projectionKey: "scale-room", projectedAt: event.createdAt,
+      });
+    }
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      canonicalEvents: 500, linkedProjections: 500, ok: true,
+    });
+  }, 20_000);
 });
 
 describe("ThreadStore — multi-master-chat membership", () => {
