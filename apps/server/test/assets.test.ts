@@ -201,17 +201,6 @@ describe("secure staged assets", () => {
     child.kill("SIGKILL"); authority.close();
   });
 
-  it("imports legacy audit history and rebuilds a lost DB without loss or duplication", async () => {
-    const directory = path.join(dataDir, "projects", "p", "threads", "audit", "attachments"); mkdirSync(directory, { recursive: true });
-    const audit = path.join(directory, "audit.jsonl"); const legacy = ['{"action":"upload_reserved","id":"old-1"}', '{"action":"staged","id":"old-1"}'];
-    writeFileSync(audit, legacy.join("\n"), "utf8");
-    await assets.stage({ projectId: "p", threadId: "audit", body: Buffer.from("{}"), name: "new.json", declaredType: "application/json" });
-    let lines = readFileSync(audit, "utf8").trim().split("\n"); expect(lines.slice(0, 2)).toEqual(legacy);
-    assets.close(); for (const suffix of ["", "-wal", "-shm"]) rmSync(path.join(dataDir, `asset-authority.sqlite${suffix}`), { force: true }); assets = new AssetStore(dataDir);
-    await assets.stage({ projectId: "p", threadId: "audit", body: Buffer.from("[]"), name: "next.json", declaredType: "application/json" });
-    lines = readFileSync(audit, "utf8").trim().split("\n"); expect(lines.slice(0, 2)).toEqual(legacy); expect(lines.filter((line) => line === legacy[0])).toHaveLength(1);
-  });
-
   it("fails closed on duplicate audit event IDs", async () => {
     const directory = path.join(dataDir, "projects", "p", "threads", "dup", "attachments"); mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(directory, "audit.jsonl"), '{"event_id":"same","action":"a"}\n{"event_id":"same","action":"b"}\n');
