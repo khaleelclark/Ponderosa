@@ -30,7 +30,7 @@ import {
 } from "@mui/material";
 import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -85,11 +85,15 @@ const COMPOSER_MAX_FILES = 4;
 const COMPOSER_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const COMPOSER_MAX_MESSAGE_BYTES = 24 * 1024 * 1024;
 
-export function filesFromClipboard(items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>): File[] {
-  return Array.from(items)
+export function filesFromClipboard(
+  items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>,
+  fallback: ArrayLike<File> = [],
+): File[] {
+  const extracted = Array.from(items)
     .filter((item) => item.kind === "file")
     .map((item) => item.getAsFile())
     .filter((file): file is File => file !== null);
+  return extracted.length > 0 ? extracted : Array.from(fallback);
 }
 
 export function selectComposerFiles(current: File[], candidates: File[]): { accepted: File[]; error?: string } {
@@ -113,6 +117,43 @@ export function selectComposerFiles(current: File[], candidates: File[]): { acce
       ? `${rejected} pasted or selected ${rejected === 1 ? "file was" : "files were"} not attached. Use up to 4 supported files, 8 MiB each and 24 MiB total.`
       : undefined,
   };
+}
+
+type ComposerAttachmentState = { files: File[]; error?: string };
+type ComposerAttachmentAction =
+  | { type: "add"; candidates: File[] }
+  | { type: "remove"; index: number }
+  | { type: "clear" };
+
+export function composerAttachmentReducer(
+  state: ComposerAttachmentState,
+  action: ComposerAttachmentAction,
+): ComposerAttachmentState {
+  if (action.type === "clear") return { files: [] };
+  if (action.type === "remove") return { files: state.files.filter((_, index) => index !== action.index) };
+  const selection = selectComposerFiles(state.files, action.candidates);
+  return {
+    files: selection.accepted.length > 0 ? [...state.files, ...selection.accepted] : state.files,
+    error: selection.error,
+  };
+}
+
+function ComposerAttachment({ file, onRemove }: { file: File; onRemove(): void }): JSX.Element {
+  const [preview, setPreview] = useState<string>();
+  useLayoutEffect(() => {
+    if (!file.type.startsWith("image/")) return undefined;
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return (
+    <Box sx={{ position: "relative", minWidth: 0, maxWidth: 180 }}>
+      {preview ? <Box component="a" href={preview} target="_blank" rel="noreferrer" aria-label={`Open ${file.name}`}>
+        <Box component="img" src={preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
+      </Box> : <Typography variant="caption" sx={{ display: "block", p: 1, pr: 5, overflowWrap: "anywhere" }}>{file.name}<br />{file.size} bytes</Typography>}
+      <IconButton size="small" aria-label={`Remove ${file.name}`} onClick={onRemove} sx={{ position: "absolute", right: 0, top: 0, bgcolor: "background.paper", minWidth: 44, minHeight: 44 }}><CloseIcon fontSize="small" /></IconButton>
+    </Box>
+  );
 }
 
 export function taskStatusColor(status: TaskDto["status"]): "success" | "warning" | "info" {
@@ -730,10 +771,10 @@ export function Composer({
   replyLabel?: string;
 }): JSX.Element {
   const [text, setText] = useState("");
-  const [files, setFiles] = useState<Array<{ file: File; preview: string }>>([]);
+  const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
+  const files = attachments.files;
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
-  const filesOnUnmount = useRef(files);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -759,21 +800,8 @@ export function Composer({
   };
 
   const addFiles = (candidates: File[]) => {
-    setFiles((current) => {
-      const selection = selectComposerFiles(current.map((item) => item.file), candidates);
-      setSendError(selection.error);
-      return selection.accepted.length > 0
-        ? [...current, ...selection.accepted.map((file) => ({ file, preview: URL.createObjectURL(file) }))]
-        : current;
-    });
+    dispatchAttachments({ type: "add", candidates });
   };
-
-  useLayoutEffect(() => {
-    filesOnUnmount.current = files;
-  }, [files]);
-  useLayoutEffect(() => () => {
-    filesOnUnmount.current.forEach((item) => URL.revokeObjectURL(item.preview));
-  }, []);
 
   // The `@partial` token immediately left of the caret, if any.
   const mentionMatch = /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
@@ -804,10 +832,9 @@ export function Composer({
 
   const send = () => {
     setSendError(undefined);
-    void Promise.resolve(onSend(text.trim(), files.map((item) => item.file))).then(() => {
+    void Promise.resolve(onSend(text.trim(), files)).then(() => {
       update("");
-      files.forEach((item) => URL.revokeObjectURL(item.preview));
-      setFiles([]);
+      dispatchAttachments({ type: "clear" });
       setCaret(0);
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."));
   };
@@ -837,14 +864,9 @@ export function Composer({
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-        {files.map((item, index) => <Box key={`${item.file.name}-${index}`} sx={{ position: "relative", minWidth: 0, maxWidth: 180 }}>
-          {item.file.type.startsWith("image/") ? <Box component="a" href={item.preview} target="_blank" rel="noreferrer" aria-label={`Open ${item.file.name}`}>
-            <Box component="img" src={item.preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
-          </Box> : <Typography variant="caption" sx={{ display: "block", p: 1, pr: 5, overflowWrap: "anywhere" }}>{item.file.name}<br />{item.file.size} bytes</Typography>}
-          <IconButton size="small" aria-label={`Remove ${item.file.name}`} onClick={() => { URL.revokeObjectURL(item.preview); setFiles((current) => current.filter((_, i) => i !== index)); }} sx={{ position: "absolute", right: 0, top: 0, bgcolor: "background.paper", minWidth: 44, minHeight: 44 }}><CloseIcon fontSize="small" /></IconButton>
-        </Box>)}
+        {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => dispatchAttachments({ type: "remove", index })} />)}
       </Stack> : null}
-      {sendError ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {sendError}</Alert> : null}
+      {(attachments.error ?? sendError) ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {attachments.error ?? sendError}</Alert> : null}
       <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} sx={{ alignItems: "flex-end" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
           addFiles(Array.from(event.target.files ?? []));
@@ -879,7 +901,7 @@ export function Composer({
             }}
             onPaste={(event) => {
               if (disabled || running) return;
-              const pasted = filesFromClipboard(event.clipboardData.items);
+              const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
               if (pasted.length === 0) return;
               event.preventDefault();
               addFiles(pasted);

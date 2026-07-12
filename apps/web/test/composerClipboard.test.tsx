@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { StrictMode } from "react";
 import { create, unstable_batchedUpdates } from "react-test-renderer";
 import { Composer, filesFromClipboard, selectComposerFiles } from "../src/components/panes";
 
@@ -22,6 +23,11 @@ describe("composer clipboard attachments", () => {
       { kind: "file", getAsFile: () => image },
       { kind: "file", getAsFile: () => document },
     ])).toEqual([image, document]);
+  });
+
+  it("falls back to clipboardData.files when item extraction is unavailable", () => {
+    const image = file("browser-fallback.png", "image/png");
+    expect(filesFromClipboard([{ kind: "file", getAsFile: () => null }], [image])).toEqual([image]);
   });
 
   it("accepts images and general files supported by the shared upload endpoint", () => {
@@ -95,29 +101,54 @@ describe("composer clipboard attachments", () => {
     URL.revokeObjectURL = originalRevoke;
   });
 
-  it("leaves plain text paste alone and ignores file paste while disabled", () => {
-    let prevented = false;
-    const view = create(<Composer disabled running={false} onSend={() => undefined} />);
-    const textarea = pasteTarget(view);
-    textarea.props.onPaste({ clipboardData: { items: [{ kind: "string", getAsFile: () => null }] }, preventDefault: () => { prevented = true; } });
-    textarea.props.onPaste({ ...clipboard([file("screen.png", "image/png")]), preventDefault: () => { prevented = true; } });
-    expect(prevented).toBe(false);
-    view.unmount();
+  it("leaves plain text paste alone and ignores file paste while disabled or running", () => {
+    for (const props of [{ disabled: true, running: false }, { disabled: false, running: true }]) {
+      let prevented = false;
+      const view = create(<Composer {...props} onSend={() => undefined} />);
+      const textarea = pasteTarget(view);
+      textarea.props.onPaste({ clipboardData: { items: [{ kind: "string", getAsFile: () => null }], files: [] }, preventDefault: () => { prevented = true; } });
+      textarea.props.onPaste({ ...clipboard([file("screen.png", "image/png")]), preventDefault: () => { prevented = true; } });
+      expect(prevented).toBe(false);
+      view.unmount();
+    }
   });
 
   it("revokes live object URLs only when the Composer unmounts", async () => {
     const originalCreate = URL.createObjectURL;
     const originalRevoke = URL.revokeObjectURL;
     const revoked: string[] = [];
+    URL.revokeObjectURL = (value) => { revoked.push(value); };
+    const created: string[] = [];
+    URL.createObjectURL = (value) => {
+      const url = `blob:${(value as File).name}:${created.length}`;
+      created.push(url);
+      return url;
+    };
+    const view = create(<StrictMode><Composer disabled={false} running={false} onSend={() => undefined} /></StrictMode>);
+    pasteTarget(view).props.onPaste(clipboard([file("screen.png", "image/png")]));
+    expect(revoked).toEqual([]);
+    view.update(<StrictMode><Composer disabled={false} running={false} onSend={() => undefined} placeholder="Updated" /></StrictMode>);
+    expect(revoked).toEqual([]);
+    view.unmount();
+    expect(revoked).toEqual(created);
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
+
+  it("revokes preview URLs on remove and after a successful send", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    const revoked: string[] = [];
     URL.createObjectURL = (value) => `blob:${(value as File).name}`;
     URL.revokeObjectURL = (value) => { revoked.push(value); };
     const view = create(<Composer disabled={false} running={false} onSend={() => undefined} />);
-    pasteTarget(view).props.onPaste(clipboard([file("screen.png", "image/png")]));
-    expect(revoked).toEqual([]);
-    view.update(<Composer disabled={false} running={false} onSend={() => undefined} placeholder="Updated" />);
-    expect(revoked).toEqual([]);
+    pasteTarget(view).props.onPaste(clipboard([file("remove.png", "image/png"), file("send.png", "image/png")]));
+    view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Remove remove.png")[0]!.props.onClick();
+    expect(revoked).toContain("blob:remove.png");
+    view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")[0]!.props.onClick();
+    await Promise.resolve();
+    expect(revoked).toEqual(expect.arrayContaining(["blob:remove.png", "blob:send.png"]));
     view.unmount();
-    expect(revoked).toEqual(["blob:screen.png"]);
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
   });
