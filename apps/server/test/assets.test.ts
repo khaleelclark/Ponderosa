@@ -219,7 +219,7 @@ describe("secure staged assets", () => {
 
   it("keeps audit repair bound to its opened inode across leaf replacement", () => {
     const directory = path.join(dataDir, "replacement"); mkdirSync(directory); const leaf = path.join(directory, "audit.jsonl"); const saved = path.join(directory, "opened.jsonl"); const outside = path.join(dataDir, "replacement-outside");
-    writeFileSync(leaf, '{"action":"legacy"}\n{"torn":', { mode: 0o600 }); writeFileSync(outside, "outside", { mode: 0o600 });
+    writeFileSync(leaf, '{"event_id":"existing","action":"recorded"}\n{"torn":', { mode: 0o600 }); writeFileSync(outside, "outside", { mode: 0o600 });
     const authority = new AssetAuthority(dataDir, { afterAuditOpen: () => { renameSync(leaf, saved); symlinkSync(outside, leaf); } });
     authority.recordAudit(leaf, "p", "t", { action: "new" });
     expect(readFileSync(outside, "utf8")).toBe("outside"); expect(readFileSync(saved, "utf8")).toContain('"action":"new"');
