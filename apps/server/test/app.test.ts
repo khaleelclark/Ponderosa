@@ -1030,6 +1030,16 @@ describe("server chunk F", () => {
       checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=drift") } },
     });
     expect(store.reconcileCommunicationEvents(project.id).unlinkedLegacyMessageIds).toEqual([legacy.id]);
+    const dryRun = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: true },
+    });
+    expect(dryRun.json()).toMatchObject({ dryRun: true, candidates: 1, migrated: 0, blocked: [] });
+    const applied = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: false },
+    });
+    expect(applied.json()).toMatchObject({ dryRun: false, candidates: 1, migrated: 1, blocked: [] });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+      .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
     await app.close();
   });
 

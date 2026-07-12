@@ -141,3 +141,23 @@ export interface CommunicationReconciliationReport {
   projectionReadMismatchMessageIds: string[];
   ok: boolean;
 }
+
+export interface LegacyCommunicationBackfillRequest {
+  dryRun?: boolean;
+  /** Required only for historical Collaboration rows without durable delivery intents. */
+  collaborationRecipientsByMessageId?: Record<string, string[]>;
+}
+
+export interface LegacyCommunicationBackfillBlockedItem {
+  source: "collaboration_chat";
+  sourceId: string;
+  reason: "explicit_recipients_required" | "recipient_not_room_member";
+}
+
+export interface LegacyCommunicationBackfillResponse {
+  dryRun: boolean;
+  candidates: number;
+  migrated: number;
+  alreadyLinked: number;
+  blocked: LegacyCommunicationBackfillBlockedItem[];
+}

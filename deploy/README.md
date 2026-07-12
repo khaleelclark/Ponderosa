@@ -90,6 +90,12 @@ controls are available:
 Capture and reads default to `shadow`; curated context defaults on. Verify the effective state
 in `/api/ready` before expanding a rollout cohort.
 
+Before selecting authoritative reads, call the project communication-backfill
+endpoint with `{ "dryRun": true }`. Apply only after every blocked historical
+Collaboration row has an operator-supplied `collaborationRecipientsByMessageId`
+mapping. Re-run reconciliation and require HTTP 200; HTTP 409 or not-ready status
+is a cutover stop. Backfill is deterministic and safe to retry after interruption.
+
 ## 4. Install the systemd service
 
 ```bash

@@ -117,9 +117,13 @@ Use expand-migrate-contract and organization-sized cohorts:
 1. Add versioned contracts and compatibility adapters.
 2. Shadow-write and reconcile canonical events.
 3. Shadow-route and rebuild projections.
-4. Enable new reads, then new writes, for internal organizations.
-5. Expand cohorts only while SLOs and reconciliation remain healthy.
-6. Freeze legacy writes, observe, disable, observe again, then remove.
+4. Dry-run `POST /api/projects/:id/communication-backfill`; supply explicit stable
+   recipient IDs for any ambiguous historical Collaboration rows, then apply it.
+   Backfill IDs are deterministic and retries are idempotent. No audience is guessed.
+5. Require a clean reconciliation/read-parity report, then enable new reads for
+   internal organizations with `PONDEROSA_COMMUNICATION_READ_MODE=authoritative`.
+6. Expand cohorts only while SLOs and reconciliation remain healthy.
+7. Freeze legacy writes, observe, disable, observe again, then remove.
 
 Write, routing, projection, context, supervision, and UI planes retain independent
 kill switches. Rollback never deletes new canonical events; forward reconciliation

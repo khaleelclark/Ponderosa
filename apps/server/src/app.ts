@@ -558,6 +558,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "collaboration") };
   }
 
+  function threadDetail(threadId: string): import("@ponderosa/core").ThreadDetailDto | undefined {
+    const detail = store.getThreadDetail(threadId);
+    if (!detail || communicationReadMode !== "authoritative") return detail;
+    return { ...detail, messages: store.getProjectedThreadMessages(threadId) };
+  }
+
+  const threadMessages = (threadId: string) => communicationReadMode === "authoritative"
+    ? store.getProjectedThreadMessages(threadId)
+    : store.getMessages(threadId);
+
   function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
     return projectAgentHealth({
       scope,
@@ -1524,6 +1534,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return report;
   });
 
+  app.post<{
+    Params: { id: string };
+    Body: import("@ponderosa/core").LegacyCommunicationBackfillRequest;
+  }>("/api/projects/:id/communication-backfill", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const body = request.body ?? {};
+    if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+      return reply.code(400).send({ error: "dryRun must be boolean" });
+    }
+    const overrides = body.collaborationRecipientsByMessageId;
+    if (overrides && (typeof overrides !== "object" || Array.isArray(overrides) || Object.keys(overrides).length > 10_000 ||
+      Object.values(overrides).some((ids) => !Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some((id) => typeof id !== "string")))) {
+      return reply.code(400).send({ error: "collaboration recipient overrides must contain 1 to 100 stable agent IDs per message" });
+    }
+    return store.backfillLegacyCommunications(request.params.id, body);
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/knowledge-promotions", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.readKnowledgePromotions(request.params.id);
@@ -2079,7 +2106,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   );
 
   app.get<{ Params: { id: string } }>("/api/threads/:id", async (request, reply) => {
-    const detail = store.getThreadDetail(request.params.id);
+    const detail = threadDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "thread not found" });
   });
 
@@ -2315,7 +2342,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         replyToMessageId: request.body.replyToMessageId,
         replyTo: request.body.replyToMessageId
           ? (() => {
-              const target = store.getMessages(thread.id).find((message) => message.id === request.body.replyToMessageId);
+              const target = threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId);
               return target ? { messageId: target.id, text: target.text, role: target.role } : undefined;
             })()
           : undefined,
@@ -2353,7 +2380,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(202).send({ queued: true, position, communicationEventId });
       }
 
-      const fullHistory: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
+      const fullHistory: ChatMessage[] = threadMessages(thread.id).map((message) => ({
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
