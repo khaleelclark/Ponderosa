@@ -74,14 +74,14 @@ describe("agent health projection", () => {
   it.each([
     ["blocked", "delegation_blocked"],
     ["cancelled", "delegation_cancelled"],
-    ["completed", "delegation_completed"],
     ["failed", "delegation_failed"],
   ] as const)("projects %s from the delegation ledger", (status, reason) => {
     expect(project({ runs: [delegation("agent", status)] }).agents[0]).toMatchObject({ status, reason, statusTimestamp: t1 });
   });
 
-  it("projects completed and failed from canonical runtime events", () => {
-    expect(project({ events: { agent: [event({ type: "turn_done" })] } }).agents[0]?.status).toBe("completed");
+  it("returns completed work to idle and preserves failures", () => {
+    expect(project({ runs: [delegation("agent", "completed")] }).agents[0]).toMatchObject({ status: "idle", reason: "delegation_completed" });
+    expect(project({ events: { agent: [event({ type: "turn_done" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
     expect(project({ events: { agent: [event({ type: "error", message: "boom" })] } }).agents[0]?.status).toBe("failed");
   });
 

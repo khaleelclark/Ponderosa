@@ -40,7 +40,7 @@ export function deriveAgentStatus(
     return "failed";
   }
   if (tasks.length > 0 && tasks.every((task) => task.status === "done")) {
-    return "completed";
+    return "idle";
   }
   return "idle";
 }

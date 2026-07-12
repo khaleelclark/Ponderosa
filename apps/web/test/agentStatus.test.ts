@@ -17,9 +17,9 @@ describe("visible agent status", () => {
     expect(deriveAgentStatus(detailWith(["done", "waiting_approval"]))).toBe("waiting");
   });
 
-  it("reports completion only when all projected tasks are done", () => {
+  it("returns to idle when all projected tasks are done", () => {
     const status = deriveAgentStatus(detailWith(["done", "done"]));
-    expect(status).toBe("completed");
-    expect(agentStatusLabel(status)).toBe("Completed");
+    expect(status).toBe("idle");
+    expect(agentStatusLabel(status)).toBe("Idle");
   });
 });

@@ -133,8 +133,9 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
     return [{ type: "error", message: String(params?.message ?? "Codex app-server stopped") }];
   }
   if (notification.method === "item/agentMessage/delta") {
-    const delta = typeof params?.delta === "string" ? params.delta : "";
-    return delta ? [{ type: "text", delta }] : [];
+    // Deltas are transport-only progress. Canonical chat records the completed
+    // item below so one engine answer never becomes dozens of message rows.
+    return [];
   }
   if (notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
     const delta = typeof params?.delta === "string" ? params.delta : "";
@@ -158,6 +159,11 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
       output: typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "",
       ...(typeof item.exitCode === "number" && item.exitCode !== 0 ? { isError: true } : {}),
     }];
+  }
+  if (notification.method === "item/completed" && item.type === "agentMessage") {
+    return typeof item.text === "string" && item.text.trim()
+      ? [{ type: "text", delta: item.text }]
+      : [];
   }
   if (notification.method === "item/completed" && item.type === "fileChange" && Array.isArray(item.changes)) {
     return item.changes.flatMap((change) => {

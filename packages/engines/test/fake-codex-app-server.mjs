@@ -17,7 +17,9 @@ lines.on("line", (line) => {
   }
   if (message.method === "turn/steer") {
     send({ id: message.id, result: { turnId: "turn-1" } });
-    send({ method: "item/agentMessage/delta", params: { threadId: "codex-thread-v1", turnId: "turn-1", itemId: "m1", delta: "steered response" } });
+    send({ method: "item/agentMessage/delta", params: { threadId: "codex-thread-v1", turnId: "turn-1", itemId: "m1", delta: "steered " } });
+    send({ method: "item/agentMessage/delta", params: { threadId: "codex-thread-v1", turnId: "turn-1", itemId: "m1", delta: "response" } });
+    send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "agentMessage", id: "m1", text: "steered response" } } });
     send({ method: "item/started", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "commandExecution", id: "c1", command: "git status", cwd: "/repo" } } });
     send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "commandExecution", id: "c1", command: "git status", cwd: "/repo", aggregatedOutput: "clean", exitCode: 0 } } });
     send({ method: "turn/completed", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "completed", error: null } } });
