@@ -5,6 +5,7 @@ import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutli
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert,
   Box,
@@ -19,7 +20,6 @@ import {
   FormControl,
   IconButton,
   InputLabel,
-  Link,
   List,
   ListItem,
   ListItemButton,
@@ -48,6 +48,7 @@ import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterCha
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
+import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
 
@@ -74,19 +75,12 @@ export function MasterChatMessage({
   return (
     <Box
       id={`master-message-${message.id}`}
+      component="article"
+      aria-label={`${fromManager ? "You" : agentTitle(message.authorThreadId)} message`}
       tabIndex={-1}
       sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
     >
-      {message.authorThreadId ? (
-        <Link
-          component="button"
-          variant="caption"
-          onClick={() => onOpenAgent(message.authorThreadId!)}
-          sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
-        >
-          {agentTitle(message.authorThreadId)}
-        </Link>
-      ) : showUserLabel ? <UserMessageLabel /> : null}
+      {showUserLabel ? <UserMessageLabel /> : null}
       <Box
         data-message-bubble="true"
         sx={{
@@ -99,6 +93,21 @@ export function MasterChatMessage({
           borderColor: "divider",
         }}
       >
+        <Stack direction="row" spacing={0.5} sx={{ alignItems: "flex-start", minWidth: 0 }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorThreadId)} />
+          </Box>
+          {message.authorThreadId ? (
+            <IconButton
+              size="small"
+              aria-label={`Open agent ${agentTitle(message.authorThreadId)}`}
+              onClick={() => onOpenAgent(message.authorThreadId!)}
+              sx={{ color: "inherit", minWidth: 44, minHeight: 44, mt: -1, mr: -1 }}
+            >
+              <OpenInNewIcon fontSize="inherit" />
+            </IconButton>
+          ) : null}
+        </Stack>
         {message.replyTo ? (
           <Box component="button" aria-label="Go to replied-to message" onClick={() => {
             const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
