@@ -160,16 +160,8 @@ export interface CreateCollaborationMessageRequest {
 /** POST collaboration message response; recipients are the immutable resolved audience. */
 export interface CreateCollaborationMessageResponse {
   message: MasterChatMessageDto;
-  /** `none` is retained only for pre-migration mock/client compatibility. */
-  audience: "mention" | "everyone" | "none";
+  audience: "mention" | "everyone";
   notifiedAgentIds: string[];
-}
-
-export interface CreateCollaborationMessageRequest {
-  text: string;
-  /** Stable agent IDs selected by the collaboration composer. Must be non-empty. */
-  recipientAgentIds: string[];
-  replyToMessageId?: string;
 }
 
 /** POST /api/master-chats/:id/direct-replies body. */
