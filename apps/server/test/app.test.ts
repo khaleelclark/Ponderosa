@@ -1349,6 +1349,57 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("continues the visible casual conversation for the next fresh responder only", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Casual conversation", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Trip planning" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "What dates work for you?";
+
+    const opening = await app.inject({
+      method: "POST", url: `/api/threads/${first.id}/messages`,
+      payload: {
+        text: "Help me plan a trip",
+        sourceChannel: "main",
+        sourceMasterChatId: master.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(opening.statusCode, opening.body).toBe(200);
+    await waitForRun(first.id);
+
+    const privateAgent = store.createThread(project.id, { title: "Private", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "Private implementation detail";
+    const privateTurn = await app.inject({
+      method: "POST", url: `/api/threads/${privateAgent.id}/messages`,
+      payload: { text: "Inspect a private issue", sourceChannel: "main", sourceMasterChatId: master.id },
+    });
+    expect(privateTurn.statusCode, privateTurn.body).toBe(200);
+    await waitForRun(privateAgent.id);
+
+    const next = store.createThread(project.id, { title: "Next", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "Let's continue";
+    const followUp = await app.inject({
+      method: "POST", url: `/api/threads/${next.id}/messages`,
+      payload: {
+        text: "I can leave Friday",
+        sourceChannel: "main",
+        sourceMasterChatId: master.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(followUp.statusCode, followUp.body).toBe(200);
+    await waitForRun(next.id);
+
+    const prompt = adapter.seeds.find((turn) => turn.threadId === next.id)?.prompt ?? "";
+    expect(prompt).toContain("Manager: Help me plan a trip");
+    expect(prompt).toContain("First: #user What dates work for you?");
+    expect(prompt).not.toContain("Inspect a private issue");
+    expect(prompt).not.toContain("Private implementation detail");
+    expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);
+    await app.close();
+  });
+
   it("serves every room timeline from canonical projections", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Cutover", hostPath: repoDir });

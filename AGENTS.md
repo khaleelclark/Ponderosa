@@ -65,6 +65,11 @@ pay-per-token provider API keys.
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
+   A fresh agent started by the next plain Master Chat turn receives prior
+   agent-to-user replies that were caused by earlier plain turns, solely as
+   recipient-specific conversation continuation. Those replies remain Direct
+   Messages and are not organizational knowledge available to arbitrary agents.
+
 6. **Master Chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
    calls, terminal output, file changes, or lifecycle noise into it. Different
@@ -132,7 +137,7 @@ deploy/          systemd unit
 
 No general transcript-as-memory layer: shared organizational knowledge comes from
 intentional Broadcasts, while project instructions and code remain in the managed
-repository.
+repository. The narrow Master Chat continuation view does not change DM scope.
 ```
 
 `packages/core` types (esp. `AgentEvent` and API DTOs) are imported by **both**

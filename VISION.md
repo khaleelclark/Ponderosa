@@ -113,6 +113,12 @@ Direct Agent Chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because
 they are visible there.
 
+For ordinary conversation, each fresh agent started by a plain Master Chat turn
+receives the earlier user messages and the agent-to-user replies caused by those
+plain turns. This is a recipient-specific continuation of the visible
+conversation, not organization-wide memory: the replies remain Direct Messages
+and unrelated agents do not inherit them.
+
 ## Shared knowledge and immutable scope
 
 Only Broadcasts become shared organizational knowledge.

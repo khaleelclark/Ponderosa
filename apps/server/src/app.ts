@@ -168,6 +168,48 @@ function organizationalMasterMessages(
   });
 }
 
+/**
+ * A fresh responder to an unscoped Master Chat turn receives the visible
+ * conversational replies caused by earlier unscoped turns. Those replies stay
+ * private user DMs: this is recipient-only continuation context, not shared
+ * organizational knowledge available to arbitrary agents.
+ */
+function casualMasterMessages(
+  messages: MasterChatMessageDto[],
+  events: CommunicationEvent[],
+  projectId: string,
+  recipientAgentId: string,
+  threads: ThreadDto[],
+): MasterChatMessageDto[] {
+  const shared = new Set(organizationalMasterMessages(messages, events, projectId, recipientAgentId, threads)
+    .map((message) => message.id));
+  const eventsById = new Map(events.map((event) => [event.eventId, event]));
+  const descendsFromSharedTurn = (event: CommunicationEvent): boolean => {
+    const visited = new Set<string>();
+    let causeId = event.causationId;
+    while (causeId && !visited.has(causeId)) {
+      visited.add(causeId);
+      const cause = eventsById.get(causeId);
+      if (!cause) return false;
+      if (cause.intent === "broadcast" && cause.audience.organizationId === projectId) return true;
+      causeId = cause.causationId;
+    }
+    return false;
+  };
+  return messages.filter((message) => {
+    if (shared.has(message.id)) return true;
+    if (!message.communicationEventId) return false;
+    const event = eventsById.get(message.communicationEventId);
+    return Boolean(
+      event?.schemaVersion === 2 &&
+      event.intent === "user_dm" &&
+      event.sender.kind === "agent" &&
+      event.audience.userId === "local-operator" &&
+      descendsFromSharedTurn(event),
+    );
+  });
+}
+
 /** A deferred user or agent turn.  Queues are per-thread and FIFO. */
 interface PendingTurn {
   text: string;
@@ -424,7 +466,7 @@ function masterChatPrompt(
   const staticInstructions = incremental ? [] : [
     "You are handling a manager request that originated in Master Chat.",
     "Respond to the latest request, but do not treat presence in Master Chat as permission to Broadcast.",
-    "Your normal response is a Direct Message to the manager. Other agents may see its DM rendering in Master Chat, but future agents never inherit it.",
+    "Your normal response is a Direct Message to the manager. It is not organizational knowledge; a future fresh Master Chat responder may receive it only to continue the user's visible conversation.",
     "Create a Broadcast explicitly only when the response contains durable organizational knowledge worth adding to future-agent context.",
     "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
@@ -3018,7 +3060,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             thread.id,
           )
         : masterChat && sourceChannel === "main"
-          ? organizationalMasterMessages(
+          ? (shareWithOrganization ? casualMasterMessages : organizationalMasterMessages)(
               masterChat.messages,
               store.readCommunicationEvents(project.id),
               project.id,
