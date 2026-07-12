@@ -58,6 +58,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
   if (legacyRoutingMode !== "accept" && legacyRoutingMode !== "reject") {
     throw new Error(`Invalid PONDEROSA_LEGACY_ROUTING: ${legacyRoutingMode}`);
   }
+  if (communicationMode === "off" && communicationReadMode === "authoritative") {
+    throw new Error("PONDEROSA_COMMUNICATION_READ_MODE=authoritative requires canonical communication capture");
+  }
 
   return {
     dataDir,

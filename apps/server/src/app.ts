@@ -1521,9 +1521,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? []
       : store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
     const communicationParity = communicationReports.every((report) => report.ok);
+    const authoritativeSourceAvailable = communicationMode !== "off";
     const communicationMigration = {
-      ok: communicationReadMode !== "authoritative" || communicationParity,
-      detail: `communication=${communicationMode}; reads=${communicationReadMode}; legacy_routing=${legacyRoutingMode}; curated_context=${curatedContextEnabled ? "on" : "off"}; parity=${communicationParity ? "ok" : "drift"}`,
+      ok: communicationReadMode !== "authoritative" || (authoritativeSourceAvailable && communicationParity),
+      detail: `communication=${communicationMode}; reads=${communicationReadMode}; legacy_routing=${legacyRoutingMode}; curated_context=${curatedContextEnabled ? "on" : "off"}; parity=${authoritativeSourceAvailable ? (communicationParity ? "ok" : "drift") : "disabled"}`,
     };
     const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok && communicationMigration.ok;
     const body: ReadinessDto = {

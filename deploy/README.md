@@ -93,6 +93,9 @@ controls are available:
 Capture and reads default to `shadow`, legacy routing defaults to rejected, and
 curated context defaults on. Verify the effective state
 in `/api/ready` before expanding a rollout cohort.
+Authoritative reads cannot be combined with `PONDEROSA_COMMUNICATION_MODE=off`;
+the configuration loader rejects that pairing and readiness also fails closed for
+programmatic embedders that bypass environment loading.
 
 Before selecting authoritative reads, call the project communication-backfill
 endpoint with `{ "dryRun": true }`. Apply only after every blocked historical

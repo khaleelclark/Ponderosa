@@ -979,7 +979,20 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).not.toContain("Must be disabled");
     expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
     expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; curated_context=off; parity=ok" } } });
+      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; curated_context=off; parity=disabled" } } });
+    await app.close();
+  });
+
+  it("fails readiness when authoritative reads are combined with disabled canonical capture", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationMode: "off", communicationReadMode: "authoritative",
+    });
+    const ready = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({
+      status: "not_ready",
+      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=disabled") } },
+    });
     await app.close();
   });
 
