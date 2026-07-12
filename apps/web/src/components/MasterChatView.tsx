@@ -120,7 +120,7 @@ export function MasterChatMessage({
         <ChatMarkdown>{message.text}</ChatMarkdown>
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
-            {attachment.previewUrl || attachment.mediaType.startsWith("image/")
+            {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
               ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
               : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
           </Box>)}

@@ -57,7 +57,7 @@ describe("individual chat sender identity", () => {
     expect(html).toContain('aria-label="Agent message"');
     expect(html).toContain(">Agent</div>");
     expect(html).toContain('aria-label="Go to replied-to message"');
-    expect(html).toContain('aria-label="Open result.png"');
+    expect(html).toContain('aria-label="Download result.png"');
     expect(html).toContain('aria-label="Reply to message"');
     expect(html).toContain("<time");
   });

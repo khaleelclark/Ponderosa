@@ -13,7 +13,7 @@ describe("general asset UI contract", () => {
   });
 
   it("renders safe previews separately from general download metadata", () => {
-    expect(panes).toContain("attachment.previewUrl || attachment.mediaType.startsWith");
+    expect(panes).toContain("attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith");
     expect(panes).toContain("attachment.downloadUrl ?? attachment.url");
     expect(panes).toContain('aria-label={`Download ${attachment.name}`}');
   });

@@ -800,6 +800,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     closed = true;
     if (assetSweep) clearInterval(assetSweep);
     for (const run of activeRuns.values()) run.controller.abort();
+    assets.close();
     store.close();
   });
 

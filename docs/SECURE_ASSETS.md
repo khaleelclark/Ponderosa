@@ -36,11 +36,14 @@ The server enforces 8 MiB per file/request, four assets and 24 MiB per message, 
 or associated storage per thread, two simultaneous uploads per thread, and twenty
 uploads per thread per minute. Audit JSONL records state transitions using IDs,
 ownership, type, size, and timestamps; it never records host paths, bearer tokens,
-file contents, or filenames. Upload slots and the accounting lock are durable files,
-rate reservations are reconstructed from the audit log after restart, and aggregate
-quota is calculated from canonical raw bytes (including metadata-less half-writes).
-The reconciler expires abandoned slots and aged raw/temp orphans without deleting
-associated assets.
+file contents, or filenames. SQLite `BEGIN IMMEDIATE` transactions serialize unique
+in-flight reservations and the one-minute rate window across processes; releases
+are conditional on the exact reservation ID. Aggregate quota combines those
+reserved bytes with canonical raw bytes (including metadata-less half-writes).
+Expired crashed reservations are reclaimed without giving an old process authority
+over a successor. The JSONL audit remains evidence only: a torn final record is
+repaired before append, while non-tail corruption fails visibly. The reconciler
+expires aged raw/temp orphans without deleting associated assets.
 
 The product remains single-operator bearer-authenticated. These controls provide
 object scoping; they are not a claim of user-level ACLs or multi-tenant isolation.
@@ -49,7 +52,9 @@ object scoping; they are not a claim of user-level ACLs or multi-tenant isolatio
 
 Back up each thread directory together with its canonical `events.jsonl`; the
 `attachments` directory contains originals, derivatives, metadata, and the audit
-log. Restore both before rebuilding SQLite projections. Thread deletion removes the
+log. The asset-authority SQLite database contains only rebuildable in-flight/rate
+control state and is not the message/association source of truth. Restore the
+thread data before rebuilding SQLite projections. Thread deletion removes the
 entire thread directory. A future user-level purge policy is intentionally outside
 this PR and must define canonical event tombstones before selective sent-asset
 deletion is introduced.

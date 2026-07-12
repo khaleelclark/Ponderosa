@@ -1,8 +1,9 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "../src/assets.js";
+import { ASSET_LIMITS, AssetAuthority, AssetError, AssetStore, contentDisposition } from "../src/assets.js";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
@@ -10,7 +11,7 @@ describe("secure staged assets", () => {
   let dataDir: string;
   let assets: AssetStore;
   beforeEach(() => { dataDir = mkdtempSync(path.join(tmpdir(), "pond-assets-")); assets = new AssetStore(dataDir); });
-  afterEach(() => rmSync(dataDir, { recursive: true, force: true }));
+  afterEach(() => { assets.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
   it("decodes and re-encodes one bounded raster while keeping immutable ownership and integrity", async () => {
     const staged = await assets.stage({ projectId: "project", threadId: "thread", body: PNG, name: "../safe.png", declaredType: "image/png" });
@@ -90,6 +91,15 @@ describe("secure staged assets", () => {
     rmSync(restored, { recursive: true, force: true });
   });
 
+  it("repairs only a torn audit tail and surfaces non-tail corruption", async () => {
+    await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "a.png", declaredType: "image/png" });
+    const audit = path.join(dataDir, "projects", "p", "threads", "t", "attachments", "audit.jsonl");
+    writeFileSync(audit, "{\"torn\":", { flag: "a" });
+    await expect(assets.stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "b.json", declaredType: "application/json" })).resolves.toMatchObject({ state: "staged" });
+    writeFileSync(audit, `${readFileSync(audit, "utf8")}not-json\n{\"tail\":`, "utf8");
+    await expect(assets.stage({ projectId: "p", threadId: "t", body: Buffer.from("[]"), name: "c.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
   it("persists rate limits across store restarts", async () => {
     for (let index = 0; index < 20; index++) await assets.stage({ projectId: "p", threadId: "t", body: Buffer.from(JSON.stringify({ index })), name: `${index}.json`, declaredType: "application/json" });
     await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "blocked.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 429 });
@@ -106,11 +116,39 @@ describe("secure staged assets", () => {
     await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "over.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 413 });
     for (const entry of readdirSync(directory)) if (entry.endsWith(".bin")) rmSync(path.join(directory, entry));
 
-    writeFileSync(path.join(directory, ".upload-0"), "live");
-    writeFileSync(path.join(directory, ".upload-1"), "live");
-    await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "busy.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 429 });
-    utimesSync(path.join(directory, ".upload-0"), new Date(0), new Date(0));
-    expect((await new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "recovered.json", declaredType: "application/json" })).state).toBe("staged");
+    const a = new AssetAuthority(dataDir); const b = new AssetAuthority(dataDir);
+    const firstReservation = a.reserve("p", "other", 1, 0, 1_000_000);
+    b.reserve("p", "other", 1, 0, 1_000_000);
+    expect(() => a.reserve("p", "other", 1, 0, 1_000_000)).toThrowError(AssetError);
+    const successor = b.reserve("p", "other", 1, 0, 1_000_000 + 5 * 60 * 1000 + 1);
+    expect(a.release(firstReservation)).toBe(false);
+    expect(() => b.assertOwned(successor)).not.toThrow();
+    a.close(); b.close();
+  });
+
+  it("recovers a real killed transaction and fences a stopped stale process from its successor", async () => {
+    const authority = new AssetAuthority(dataDir);
+    const db = path.join(dataDir, "asset-authority.sqlite");
+    const child = spawn(process.execPath, ["-e", `
+      const Database=require('better-sqlite3'); const db=new Database(process.argv[1]);
+      db.exec('BEGIN IMMEDIATE'); db.prepare('INSERT INTO asset_reservations VALUES (?,?,?,?,?)').run('child','p','race',1,1000000);
+      if(process.env.MODE==='crash') { console.log('ready'); setInterval(()=>{},1000); }
+      else { db.exec('COMMIT'); console.log('ready'); process.on('SIGCONT',()=>{db.prepare('DELETE FROM asset_reservations WHERE id=?').run('child');}); setInterval(()=>{},1000); }
+    `, db], { env: { ...process.env, MODE: "crash" }, stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+    child.kill("SIGKILL"); await new Promise((resolve) => child.once("exit", resolve));
+    expect(() => authority.reserve("p", "race", 1, 0, 1_000_000)).not.toThrow();
+
+    const stopped = spawn(process.execPath, ["-e", `
+      const Database=require('better-sqlite3'); const db=new Database(process.argv[1]);
+      db.prepare('INSERT OR REPLACE INTO asset_reservations VALUES (?,?,?,?,?)').run('stale-child','p','stale',1,1000000);
+      console.log('ready'); process.on('SIGCONT',()=>db.prepare('DELETE FROM asset_reservations WHERE id=?').run('stale-child')); setInterval(()=>{},1000);
+    `, db], { stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise<void>((resolve) => stopped.stdout!.once("data", () => resolve())); stopped.kill("SIGSTOP");
+    const successor = authority.reserve("p", "stale", 1, 0, 1_000_000 + 5 * 60 * 1000 + 1);
+    stopped.kill("SIGCONT"); await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(() => authority.assertOwned(successor)).not.toThrow();
+    stopped.kill("SIGKILL"); authority.close();
   });
 
   it("does not recreate asset storage after whole-thread deletion", async () => {
