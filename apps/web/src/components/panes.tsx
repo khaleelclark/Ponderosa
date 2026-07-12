@@ -276,7 +276,59 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   );
 }
 
-export function ChatMarkdown({ children }: { children: string }): JSX.Element {
+interface MarkdownAstNode {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownAstNode[];
+}
+
+const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
+const MESSAGE_TAG_PATTERN = /(^|[^\p{L}\p{N}_-])#([\p{L}\p{N}_-]+)/gu;
+
+/** Mark #tags in Markdown text nodes without touching code or existing links. */
+export function remarkMessageTags() {
+  return (tree: MarkdownAstNode): void => {
+    const visit = (node: MarkdownAstNode): void => {
+      if (!node.children || node.type === "link" || node.type === "code" || node.type === "inlineCode") return;
+      const next: MarkdownAstNode[] = [];
+      for (const child of node.children) {
+        if (child.type !== "text" || child.value === undefined) {
+          visit(child);
+          next.push(child);
+          continue;
+        }
+        let cursor = 0;
+        for (const match of child.value.matchAll(MESSAGE_TAG_PATTERN)) {
+          const boundary = match[1] ?? "";
+          const handle = match[2]!;
+          const tagStart = (match.index ?? 0) + boundary.length;
+          if (tagStart > cursor) next.push({ type: "text", value: child.value.slice(cursor, tagStart) });
+          next.push({
+            type: "link",
+            url: `${MESSAGE_TAG_PREFIX}${encodeURIComponent(handle)}`,
+            children: [{ type: "text", value: `#${handle}` }],
+          });
+          cursor = tagStart + handle.length + 1;
+        }
+        if (cursor === 0) next.push(child);
+        else if (cursor < child.value.length) next.push({ type: "text", value: child.value.slice(cursor) });
+      }
+      node.children = next;
+    };
+    visit(tree);
+  };
+}
+
+export function ChatMarkdown({
+  children,
+  agentIdForHandle,
+  onOpenAgent,
+}: {
+  children: string;
+  agentIdForHandle?(handle: string): string | undefined;
+  onOpenAgent?(agentId: string): void;
+}): JSX.Element {
   return (
     <Box
       sx={{
@@ -300,8 +352,19 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
       }}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{ pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock> }}
+        remarkPlugins={[remarkGfm, remarkMessageTags]}
+        components={{
+          pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
+          a: ({ href, children: label }) => {
+            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <a href={href}>{label}</a>;
+            const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
+            const agentId = agentIdForHandle?.(handle);
+            if (!agentId || !onOpenAgent) {
+              return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={{ fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 2 }}>{label}</Box>;
+            }
+            return <Box component="button" type="button" aria-label={`Open agent ${handle}`} onClick={() => onOpenAgent(agentId)} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
+          },
+        }}
       >
         {children}
       </ReactMarkdown>
@@ -324,10 +387,14 @@ export function UserMessageLabel(): JSX.Element {
 export function ChatPane({
   messages,
   agentName = "Agent",
+  agentIdForHandle,
+  onOpenAgent,
   onReply,
 }: {
   messages: MessageDto[];
   agentName?: string;
+  agentIdForHandle?(handle: string): string | undefined;
+  onOpenAgent?(agentId: string): void;
   onReply?(message: MessageDto): void;
 }): JSX.Element {
   const chatMessages = messages.filter(
@@ -402,7 +469,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMarkdown>{message.text}</ChatMarkdown>
+            <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{message.text}</ChatMarkdown>
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
                 {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")

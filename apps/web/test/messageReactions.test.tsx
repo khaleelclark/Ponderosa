@@ -10,6 +10,7 @@ describe("message reaction controls", () => {
       message={{ id: "m1", masterChatId: "room", role: "assistant", text: "Result", createdAt: "2026-07-12T00:00:00.000Z", authorThreadId: "agent", reactions: [{ emoji: "👍", count: 2, reactedByCurrentActor: true, reactors: [{ kind: "manager" }, { kind: "agent", threadId: "olympic", label: "Olympic" }] }] }}
       conversation="main"
       agentTitle={() => "Agent"}
+      agentIdForHandle={() => undefined}
       onOpenAgent={vi.fn()}
       onReply={vi.fn()}
       onDirectReply={vi.fn()}

@@ -43,6 +43,7 @@ import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus
 import { useThread } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
+import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane } from "./panes";
 
@@ -53,6 +54,7 @@ export function AgentDetail({
   engines,
   engineCapabilities,
   projectedStatus,
+  agents,
   masterChats,
   subagent,
   onBack,
@@ -64,6 +66,7 @@ export function AgentDetail({
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   projectedStatus?: AgentStatus;
+  agents: ThreadDto[];
   masterChats: MasterChatDto[];
   subagent?: SubagentRunDto;
   onBack(): void;
@@ -213,9 +216,10 @@ export function AgentDetail({
   const master = detail.thread.masterChatId
     ? masterChats.find((candidate) => candidate.id === detail.thread.masterChatId)
     : undefined;
+  const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} onReply={setReplyTo} />,
+    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReply={setReplyTo} />,
     log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,
