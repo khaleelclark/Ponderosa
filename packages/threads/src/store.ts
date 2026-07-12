@@ -1240,7 +1240,19 @@ export class ThreadStore {
     }
     return [...REACTION_EMOJIS].map((emoji) => {
       const active = [...state.values()].filter((event) => event.emoji === emoji && event.active);
-      return { emoji, count: active.length, reactedByCurrentActor: active.some((event) => reactionActorKey(event.actor) === reactionActorKey(currentActor)) };
+      const reactors = active.map((event) => event.actor.kind === "manager"
+        ? { kind: "manager" as const }
+        : {
+            kind: "agent" as const,
+            threadId: event.actor.threadId,
+            label: this.getThread(event.actor.threadId)?.title ?? "Agent",
+          });
+      return {
+        emoji,
+        count: reactors.length,
+        reactedByCurrentActor: active.some((event) => reactionActorKey(event.actor) === reactionActorKey(currentActor)),
+        reactors,
+      };
     }).filter((reaction) => reaction.count > 0 || reaction.reactedByCurrentActor);
   }
 

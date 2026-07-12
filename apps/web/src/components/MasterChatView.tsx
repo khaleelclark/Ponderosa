@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { CollaborationChatDetailDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDetailDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
+import type { CollaborationChatDetailDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDetailDto, MasterChatDto, MasterChatMessageDto, MessageReactionDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -53,6 +53,11 @@ import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
+
+export function reactionTooltipText(reaction: MessageReactionDto | undefined): string {
+  if (!reaction?.reactors.length) return "No reactions yet";
+  return `Reacted by ${reaction.reactors.map((reactor) => reactor.kind === "manager" ? "You" : reactor.label).join(", ")}`;
+}
 
 export function MasterChatMessage({
   message,
@@ -132,7 +137,8 @@ export function MasterChatMessage({
         <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
           {(["👍", "❤️", "🎉", "👀"] as ReactionEmoji[]).map((emoji) => {
             const reaction = message.reactions?.find((item) => item.emoji === emoji);
-            return <Button key={emoji} size="small" color="inherit" aria-pressed={reaction?.reactedByCurrentActor ?? false} aria-label={`${reaction?.reactedByCurrentActor ? "Remove" : "Add"} ${emoji} reaction`} onClick={() => onReact(message, emoji, !(reaction?.reactedByCurrentActor ?? false))}>{emoji}{reaction?.count ? ` ${reaction.count}` : ""}</Button>;
+            const tooltip = reactionTooltipText(reaction);
+            return <Tooltip key={emoji} title={tooltip} arrow><Button size="small" color="inherit" aria-pressed={reaction?.reactedByCurrentActor ?? false} aria-label={`${reaction?.reactedByCurrentActor ? "Remove" : "Add"} ${emoji} reaction. ${tooltip}`} onClick={() => onReact(message, emoji, !(reaction?.reactedByCurrentActor ?? false))}>{emoji}{reaction?.count ? ` ${reaction.count}` : ""}</Button></Tooltip>;
           })}
           <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
           {conversation === "main" && message.authorThreadId ? (

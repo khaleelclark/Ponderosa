@@ -476,10 +476,22 @@ describe("ThreadStore — canonical message reactions", () => {
     store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" });
     store.close();
     store = new ThreadStore(dir);
-    expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{ emoji: "🎉", count: 1, reactedByCurrentActor: true }]);
+    expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{ emoji: "🎉", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] }]);
     store.updateThread(author.id, { archived: true });
     expect(store.getReactionNotificationOutbox()).toEqual([]);
     expect(store.completeReactionNotification(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" }).event.occurrenceId, "delivered")).toBe("suppressed");
+  });
+
+  it("projects stable reactor identities with aggregate counts", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "manager-like" });
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👍", active: true, idempotencyKey: "agent-like" });
+    expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{
+      emoji: "👍",
+      count: 2,
+      reactedByCurrentActor: true,
+      reactors: [{ kind: "manager" }, { kind: "agent", threadId: reactor.id, label: "Reactor" }],
+    }]);
   });
 
   it("makes add/remove notification outcomes occurrence-correct and terminal retries idempotent", async () => {

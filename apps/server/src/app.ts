@@ -360,6 +360,10 @@ function agentMessagingPrompt(replyScope: "broadcast" | "direct_to_user" | "coll
       : "Use the messaging tool only when you need to create a Broadcast or send Collaboration:",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
+    "Reactions are lightweight social signals, not messages. When a visible Master Chat or Collaboration message includes a message ID, prefer a reaction for approval, acknowledgment, celebration, concern, or watching instead of sending redundant prose.",
+    'curl -sS -X POST "$PONDEROSA_AGENT_REACTION_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"masterChatId":"ROOM_ID","channel":"main","messageId":"MESSAGE_ID","emoji":"👍","active":true,"idempotencyKey":"stable-reaction-key"}\'',
+    "Reaction emoji: 👍 approval/acknowledgment, 👎 disagreement, ❤️ appreciation, 🎉 celebration, 👀 watching/attention, 🚀 strong support or launch readiness. Reacting never changes message scope and never wakes an agent. Do not add a prose message that merely repeats the reaction.",
+    "The server already adds your 👍 when you start a plain shared task; do not submit a duplicate start reaction.",
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     "Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
@@ -413,6 +417,7 @@ function masterChatPrompt(
   currentRequest: string,
   context: InboundMessageContext,
   replyScope: "broadcast" | "direct_to_user",
+  currentMessageId?: string,
   incremental = false,
   routingMetadata?: string,
 ): string {
@@ -425,7 +430,7 @@ function masterChatPrompt(
           ? "Manager"
           : "Team";
       const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
-      return `${speaker}${quoted}: ${message.text}`;
+      return `${speaker}${quoted}: ${message.text} [message id: ${message.id}]`;
     })
     .join("\n");
 
@@ -451,6 +456,7 @@ function masterChatPrompt(
     transcript || (incremental ? "(No new room messages.)" : "(No earlier messages.)"),
     `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
     "",
+    ...(currentMessageId ? [`Latest message id: ${currentMessageId}`] : []),
     "Latest message for you:",
     currentRequest,
   ].join("\n");
@@ -462,6 +468,7 @@ function collaborationChatPrompt(
   threads: ThreadDto[],
   currentRequest: string,
   context: InboundMessageContext,
+  currentMessageId?: string,
   incremental = false,
   routingMetadata?: string,
 ): string {
@@ -474,7 +481,7 @@ function collaborationChatPrompt(
           ? "Manager"
           : "Team";
       const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
-      return `${speaker}${quoted}: ${message.text}`;
+      return `${speaker}${quoted}: ${message.text} [message id: ${message.id}]`;
     })
     .join("\n");
   const staticInstructions = incremental ? [] : [
@@ -496,6 +503,7 @@ function collaborationChatPrompt(
     transcript || (incremental ? "(No new room messages.)" : "(No earlier collaboration messages.)"),
     `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
     "",
+    ...(currentMessageId ? [`Latest message id: ${currentMessageId}`] : []),
     "Latest message for you:",
     currentRequest,
   ].join("\n");
@@ -1761,6 +1769,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
+            PONDEROSA_AGENT_REACTION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-reactions`,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
             PONDEROSA_DELEGATION_OUTCOME_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegation-outcomes`,
@@ -3074,7 +3083,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? routingMetadata
         : undefined;
       const basePrompt = collaboration
-        ? collaborationChatPrompt(roomMessages, collaboration.threads, text, context, incremental, changedRoutingMetadata)
+        ? collaborationChatPrompt(roomMessages, collaboration.threads, text, context, inboxDelivery?.messageId, incremental, changedRoutingMetadata)
         : masterChat && sourceChannel === "main"
           ? masterChatPrompt(
               roomMessages,
@@ -3082,6 +3091,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               text,
               context,
               sharedTaskTurn ? "broadcast" : "direct_to_user",
+              sourceMasterMessage?.id,
               incremental,
               changedRoutingMetadata,
             )
@@ -3156,6 +3166,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+            PONDEROSA_AGENT_REACTION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-reactions`,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
             PONDEROSA_DELEGATION_OUTCOME_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegation-outcomes`,

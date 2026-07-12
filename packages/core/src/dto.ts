@@ -97,11 +97,15 @@ export interface MasterChatMessageDto {
 
 export type ReactionEmoji = "👍" | "👎" | "❤️" | "🎉" | "👀" | "🚀";
 export type ReactionActor = { kind: "manager" } | { kind: "agent"; threadId: string };
+export type MessageReactionActorDto =
+  | { kind: "manager" }
+  | { kind: "agent"; threadId: string; label: string };
 
 export interface MessageReactionDto {
   emoji: ReactionEmoji;
   count: number;
   reactedByCurrentActor: boolean;
+  reactors: MessageReactionActorDto[];
 }
 
 export interface SetMessageReactionRequest {

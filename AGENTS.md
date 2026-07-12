@@ -87,6 +87,11 @@ pay-per-token provider API keys.
    Agent Chat. Projection alone must never enqueue, steer, or start an agent;
    only explicit recipient delivery (including `#everyone`) may do that.
 
+   Reactions are canonical lightweight social signals. Preserve stable reactor
+   identity in projections so people can see who reacted. Agents should use
+   reactions for approval, acknowledgment, celebration, concern, or attention
+   when prose would be redundant. A reaction never changes scope or starts a run.
+
 8. **Routing uses stable identities.** Store structured recipient agent IDs and
    let the server own routing. Display names and rendered `#labels` are presentation,
    never routing keys; `@` is reserved for project file/folder references. Agents
