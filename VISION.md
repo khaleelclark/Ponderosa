@@ -113,6 +113,13 @@ Direct Agent Chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because
 they are visible there.
 
+For ordinary conversation, a plain Master Chat request creates shared work. The
+responsible agent reacts 👍 when it starts, can Direct Message the user with a
+question, private progress, or useful information, and Broadcasts its completed
+answer or task result. A Direct Message from the user receives a Direct Message
+reply. Completed Broadcasts give the next fresh responder coherent conversation
+context and tell other agents what has already been done.
+
 ## Shared knowledge and immutable scope
 
 Only Broadcasts become shared organizational knowledge.

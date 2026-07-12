@@ -65,6 +65,12 @@ pay-per-token provider API keys.
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
+   A plain Master Chat request starts shared work. The responsible agent reacts
+   👍 when it accepts the task and its ordinary completed answer or result is a
+   Broadcast. Questions, private progress, and informational notes to the user
+   are Direct Messages. A user DM receives a DM reply. This inherited response
+   scope is server-enforced; do not rely on rendered labels or model discretion.
+
 6. **Master Chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
    calls, terminal output, file changes, or lifecycle noise into it. Different

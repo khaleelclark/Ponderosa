@@ -30,6 +30,7 @@ class MockAdapter implements Adapter {
   abortedSeeds = 0;
   mode: "normal" | "hang" | "boundary" | "resume_compaction_fail" | "material_compaction_fail" = "normal";
   responseText = "done";
+  beforeResponse?: (opts: SeedOptions) => Promise<void>;
   failuresRemaining = 0;
   failNextTurn = false;
 
@@ -67,6 +68,9 @@ class MockAdapter implements Adapter {
       yield { type: "command", command: "long-running-tool", cwd: opts.cwd };
       await sleep(40);
     }
+    const beforeResponse = this.beforeResponse;
+    this.beforeResponse = undefined;
+    if (beforeResponse) await beforeResponse(opts);
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
     yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
@@ -528,8 +532,18 @@ describe("server chunk F", () => {
       text: "Fix the onboarding flow",
     });
     expect(store.getMasterChatMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
-      expect.objectContaining({ role: "user", text: "Fix the onboarding flow" }),
+      expect.objectContaining({
+        role: "user",
+        text: "Fix the onboarding flow",
+        reactions: [expect.objectContaining({ emoji: "👍", count: 1 })],
+      }),
     ]);
+    const completion = store.getMasterChatMessages(master.id)
+      .find((message) => message.authorThreadId === responsible.id && message.text === "#broadcast done");
+    expect(store.getCommunicationEvent(project.id, completion!.communicationEventId!)).toMatchObject({
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+    });
     expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
     ]));
@@ -562,8 +576,51 @@ describe("server chunk F", () => {
     });
     expect(futureViaApi.statusCode).toBe(200);
     const futureId = futureViaApi.json<{ id: string }>().id;
-    expect(store.getMessages(futureId).filter((message) => message.text.startsWith("#broadcast "))).toHaveLength(2);
+    expect(store.getMessages(futureId).filter((message) => message.text.startsWith("#broadcast "))).toHaveLength(3);
     expect(adapter.seeds.filter((turn) => turn.threadId === futureId)).toHaveLength(0);
+    await app.close();
+  });
+
+  it("lets a shared-task agent DM a question without publishing an accidental completion", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Question flow", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Planning" });
+    const agent = store.createThread(project.id, { title: "Planner", engine: "codex", masterChatId: master.id });
+    let dmStatus: number | undefined;
+    adapter.responseText = "This ordinary response must be suppressed";
+    adapter.beforeResponse = async (opts) => {
+      const dm = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: {
+          intent: "direct_to_user",
+          text: "Which dates should I use?",
+          idempotencyKey: "ask-dates",
+        },
+      });
+      dmStatus = dm.statusCode;
+    };
+
+    const task = await app.inject({
+      method: "POST", url: `/api/threads/${agent.id}/messages`,
+      payload: {
+        text: "Plan my trip",
+        sourceChannel: "main",
+        sourceMasterChatId: master.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(task.statusCode, task.body).toBe(200);
+    await waitForRun(agent.id);
+
+    expect(dmStatus).toBe(200);
+    const messages = store.getMasterChatMessages(master.id);
+    expect(messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "Plan my trip", reactions: [expect.objectContaining({ emoji: "👍", count: 1 })] }),
+      expect.objectContaining({ text: "#user Which dates should I use?", authorThreadId: agent.id }),
+    ]));
+    expect(messages.some((message) => message.text.includes("This ordinary response must be suppressed"))).toBe(false);
     await app.close();
   });
 
@@ -802,8 +859,8 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id);
 
-    expect(adapter.seeds[0]?.prompt).toContain("do not treat presence in Master Chat as permission to Broadcast");
-    expect(adapter.seeds[0]?.prompt).toContain("Never Broadcast acknowledgments, thanks, conversational replies, routine progress");
+    expect(adapter.seeds[0]?.prompt).toContain("The latest request is a Direct Message");
+    expect(adapter.seeds[0]?.prompt).toContain("Never Broadcast acknowledgments, questions, thanks, routine progress");
     expect(adapter.seeds[0]?.prompt).toContain("never use a canned acknowledgment");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
@@ -919,7 +976,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
     expect(adapter.continues[2]?.prompt).toContain("original context");
-    expect(adapter.continues[2]?.prompt).toContain("Your normal response is a Direct Message");
+    expect(adapter.continues[2]?.prompt).toContain("Your ordinary final response is a Direct Message");
     await app.close();
   });
 
@@ -938,7 +995,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
-    expect(adapter.continues[0]?.prompt).toContain("Your normal response is a Direct Message");
+    expect(adapter.continues[0]?.prompt).toContain("Your ordinary final response is a Direct Message");
     await app.close();
   });
 
@@ -1346,6 +1403,57 @@ describe("server chunk F", () => {
     });
     await waitForRun(observer.id);
     expect(adapter.seeds[1]?.prompt).not.toContain("#user You're welcome!");
+    await app.close();
+  });
+
+  it("continues casual conversation through completed broadcasts without inheriting private DMs", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Casual conversation", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Trip planning" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "Here are three trip options";
+
+    const opening = await app.inject({
+      method: "POST", url: `/api/threads/${first.id}/messages`,
+      payload: {
+        text: "Help me plan a trip",
+        sourceChannel: "main",
+        sourceMasterChatId: master.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(opening.statusCode, opening.body).toBe(200);
+    await waitForRun(first.id);
+
+    const privateAgent = store.createThread(project.id, { title: "Private", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "Private implementation detail";
+    const privateTurn = await app.inject({
+      method: "POST", url: `/api/threads/${privateAgent.id}/messages`,
+      payload: { text: "Inspect a private issue", sourceChannel: "main", sourceMasterChatId: master.id },
+    });
+    expect(privateTurn.statusCode, privateTurn.body).toBe(200);
+    await waitForRun(privateAgent.id);
+
+    const next = store.createThread(project.id, { title: "Next", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "Let's continue";
+    const followUp = await app.inject({
+      method: "POST", url: `/api/threads/${next.id}/messages`,
+      payload: {
+        text: "I can leave Friday",
+        sourceChannel: "main",
+        sourceMasterChatId: master.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(followUp.statusCode, followUp.body).toBe(200);
+    await waitForRun(next.id);
+
+    const prompt = adapter.seeds.find((turn) => turn.threadId === next.id)?.prompt ?? "";
+    expect(prompt).toContain("Manager: Help me plan a trip");
+    expect(prompt).toContain("First: #broadcast Here are three trip options");
+    expect(prompt).not.toContain("Inspect a private issue");
+    expect(prompt).not.toContain("Private implementation detail");
+    expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);
     await app.close();
   });
 
