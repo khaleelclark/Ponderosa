@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -49,8 +49,9 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 1 && version !== 2) throw new AssetError(409, "asset authority schema is incompatible");
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new AssetError(409, "asset authority schema is incompatible");
       if (version === 1) this.db.exec("DROP TABLE IF EXISTS asset_reservations; DROP TABLE IF EXISTS asset_rate_events;");
+      if (version === 2) this.db.exec("DROP TABLE IF EXISTS asset_audit;");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, thread_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
@@ -64,9 +65,9 @@ export class AssetAuthority {
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL
       ); CREATE INDEX IF NOT EXISTS asset_rate_thread ON asset_rate_events(project_id, thread_id, created_at);
       CREATE TABLE IF NOT EXISTS asset_audit (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, project_id TEXT NOT NULL, thread_id TEXT NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json))
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, thread_id TEXT NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json))
       );
-      PRAGMA user_version=2;`);
+      PRAGMA user_version=3;`);
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   }
   private now(): number { return (this.db.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) now").get() as { now: number }).now; }
@@ -136,14 +137,26 @@ export class AssetAuthority {
   recordAudit(file: string, projectId: string, threadId: string, record: Record<string, unknown>): void {
     try {
       this.db.exec("BEGIN IMMEDIATE");
-      if (existsSync(file)) {
-        const text = readFileSync(file, "utf8"); const lines = text.split("\n");
-        for (let i = 0; i < lines.length - 1; i++) if (lines[i]) { try { JSON.parse(lines[i]!); } catch { throw new AssetError(409, "asset audit log is corrupt"); } }
+      let text = existsSync(file) ? readFileSync(file, "utf8") : "";
+      const rawLines = text.split("\n"); const fileIds = new Map<string, string>(); let validBytes = 0;
+      for (let index = 0; index < rawLines.length; index++) {
+        const line = rawLines[index]!; if (!line) { if (index < rawLines.length - 1) validBytes++; continue; }
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(line) as Record<string, unknown>; }
+        catch { if (index !== rawLines.length - 1) throw new AssetError(409, "asset audit log is corrupt"); text = text.slice(0, validBytes); break; }
+        const eventId = typeof parsed.event_id === "string" ? parsed.event_id : `legacy-${createHash("sha256").update(`${projectId}\0${threadId}\0${index}\0${line}`).digest("hex")}`;
+        if (fileIds.has(eventId)) throw new AssetError(409, "asset audit contains a duplicate event ID");
+        fileIds.set(eventId, line); validBytes += Buffer.byteLength(line) + 1;
+        const existing = this.db.prepare("SELECT record_json json FROM asset_audit WHERE event_id=?").get(eventId) as { json: string } | undefined;
+        if (existing && existing.json !== line) throw new AssetError(409, "asset audit event ID conflicts");
+        if (!existing) this.db.prepare("INSERT INTO asset_audit(event_id,project_id,thread_id,record_json) VALUES (?,?,?,?)").run(eventId, projectId, threadId, line);
       }
-      this.db.prepare("INSERT INTO asset_audit(project_id,thread_id,record_json) VALUES (?,?,?)").run(projectId, threadId, JSON.stringify(record));
-      const rows = this.db.prepare("SELECT record_json json FROM asset_audit WHERE project_id=? AND thread_id=? ORDER BY seq").all(projectId, threadId) as Array<{ json: string }>;
-      const temporary = `${file}.${randomUUID()}.tmp`; writeFileSync(temporary, `${rows.map((row) => row.json).join("\n")}\n`, { mode: 0o600 });
-      const fd = openSync(temporary, fsConstants.O_RDONLY); fsyncSync(fd); closeSync(fd); renameSync(temporary, file);
+      if (existsSync(file) && readFileSync(file).length !== Buffer.byteLength(text)) { const fd = openSync(file, "r+"); ftruncateSync(fd, Buffer.byteLength(text)); fsyncSync(fd); closeSync(fd); }
+      const eventId = randomUUID(); const withId = JSON.stringify({ ...record, event_id: eventId });
+      this.db.prepare("INSERT INTO asset_audit(event_id,project_id,thread_id,record_json) VALUES (?,?,?,?)").run(eventId, projectId, threadId, withId);
+      const rows = this.db.prepare("SELECT event_id eventId,record_json json FROM asset_audit WHERE project_id=? AND thread_id=? ORDER BY seq").all(projectId, threadId) as Array<{ eventId: string; json: string }>;
+      const fd = openSync(file, fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+      try { if (text && !text.endsWith("\n")) writeFileSync(fd, "\n"); for (const row of rows) if (!fileIds.has(row.eventId)) { writeFileSync(fd, `${row.json}\n`); fileIds.set(row.eventId, row.json); } fsyncSync(fd); } finally { closeSync(fd); }
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }

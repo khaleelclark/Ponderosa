@@ -46,9 +46,12 @@ Active reservation identity prevents recovery from importing a write that is sti
 settling. Durable deletion tombstones are written before unlinking and retained so
 a stale filesystem scan cannot resurrect a deleted asset ID.
 Expired crashed reservations are reclaimed without giving an old process authority
-over a successor. The JSONL audit remains evidence only: a torn final record is
-repaired before projection, while non-tail corruption fails visibly. SQLite audit
-rows serialize evidence projection across processes. The reconciler
+over a successor. `audit.jsonl` remains canonical append-only evidence: a torn
+final record is repaired before append, while non-tail corruption fails visibly.
+SQLite imports and deduplicates that history and acts only as a serialized outbox,
+so rebuilding the DB cannot erase or duplicate restored evidence. New events carry
+UUID `event_id` values; legacy rows receive deterministic internal identities
+without being rewritten. The reconciler
 expires aged raw/temp orphans without deleting associated assets.
 
 The product remains single-operator bearer-authenticated. These controls provide
@@ -64,6 +67,11 @@ thread data before rebuilding SQLite projections. Thread deletion removes the
 entire thread directory. A future user-level purge policy is intentionally outside
 this PR and must define canonical event tombstones before selective sent-asset
 deletion is introduced.
+
+Authority deletion tombstones are retained for the life of the data directory so
+stale scans cannot resurrect an opaque asset ID. They contain no filenames or file
+contents. Bounded archival requires a future generation/checkpoint protocol and is
+not performed automatically.
 
 ## Manual evidence plan
 
