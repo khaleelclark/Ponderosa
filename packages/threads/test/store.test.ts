@@ -91,6 +91,29 @@ const RUN: LogEvent[] = [
 ];
 
 describe("ThreadStore — append + projection", () => {
+  it("derives one reliable agent lifecycle from canonical run boundaries", () => {
+    const { threadId } = seedThread();
+    expect(store.getThread(threadId)?.status).toBe("idle");
+
+    store.appendEvent(threadId, { type: "user_message", text: "go" });
+    expect(store.getThread(threadId)?.status).toBe("running");
+    store.appendEvent(threadId, { type: "task_update", taskId: "approval", status: "waiting_approval" });
+    expect(store.getThread(threadId)?.status).toBe("waiting");
+    store.appendEvent(threadId, { type: "task_update", taskId: "approval", status: "running" });
+    expect(store.getThread(threadId)?.status).toBe("running");
+    store.appendEvent(threadId, { type: "turn_done" });
+    expect(store.getThread(threadId)?.status).toBe("idle");
+
+    store.appendEvent(threadId, { type: "user_message", text: "again" });
+    store.appendEvent(threadId, { type: "error", message: "boom" });
+    store.appendEvent(threadId, { type: "turn_done" });
+    expect(store.getThread(threadId)?.status).toBe("error");
+    store.appendEvent(threadId, { type: "user_message", text: "retry" });
+    expect(store.getThread(threadId)?.status).toBe("running");
+    store.appendEvent(threadId, { type: "turn_cancelled", reason: "user" });
+    expect(store.getThread(threadId)?.status).toBe("idle");
+  });
+
   it("projects a full run into the four panes", () => {
     const { projectId, threadId } = seedThread();
     for (const ev of RUN) store.appendEvent(threadId, ev);

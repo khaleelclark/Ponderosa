@@ -23,8 +23,14 @@ export interface SessionResetEvent {
   reason: "explicit_compaction" | "resume_compaction_failed";
 }
 
+/** Server-owned terminal boundary for an aborted turn. */
+export interface TurnCancelledEvent {
+  type: "turn_cancelled";
+  reason: "user" | "thread_deleted" | "server_restart";
+}
+
 /** Anything that can be appended to a thread's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | AgentEvent;
+export type LogEvent = UserMessageEvent | SessionResetEvent | TurnCancelledEvent | AgentEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-thread seq + ts. */
 export interface StoredLogEvent {

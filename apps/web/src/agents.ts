@@ -2,47 +2,18 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains ThreadDto/ThreadDetailDto.
 
-import type { TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentStatus, TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 
 export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {
   return agent.masterChatIds.includes(masterChatId);
 }
 
-export type AgentStatus = "running" | "waiting" | "completed" | "error" | "idle";
+export type { AgentStatus } from "@ponderosa/core";
 
-export interface AgentLiveHints {
-  /** Live SSE run in progress for this agent. */
-  running?: boolean;
-  /** The last streamed event was an error. */
-  error?: boolean;
-}
-
-/**
- * Derive the coarse agent status shown in lists and filters from the thread's
- * tasks plus any live-stream hints. Live hints win over projected task state so
- * a running agent reads as running the instant the stream reports it.
- */
 export function deriveAgentStatus(
   detail: ThreadDetailDto | undefined,
-  hints: AgentLiveHints = {},
 ): AgentStatus {
-  if (hints.running) {
-    return "running";
-  }
-  const tasks = detail?.tasks ?? [];
-  if (tasks.some((task) => task.status === "running")) {
-    return "running";
-  }
-  if (tasks.some((task) => task.status === "waiting_approval")) {
-    return "waiting";
-  }
-  if (hints.error) {
-    return "error";
-  }
-  if (tasks.length > 0 && tasks.every((task) => task.status === "done")) {
-    return "completed";
-  }
-  return "idle";
+  return detail?.thread.status ?? "idle";
 }
 
 export function agentStatusLabel(status: AgentStatus): string {
@@ -51,8 +22,6 @@ export function agentStatusLabel(status: AgentStatus): string {
       return "Running";
     case "waiting":
       return "Waiting";
-    case "completed":
-      return "Completed";
     case "error":
       return "Error";
     default:
@@ -68,8 +37,6 @@ export function agentStatusColor(
       return "info";
     case "waiting":
       return "warning";
-    case "completed":
-      return "success";
     case "error":
       return "error";
     default:

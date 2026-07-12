@@ -37,7 +37,7 @@ import {
   type AgentStatus,
 } from "../agents";
 
-type StatusFilter = "all" | "running" | "waiting" | "completed" | "unassigned";
+type StatusFilter = "all" | "running" | "waiting" | "error" | "idle" | "unassigned";
 
 export function AgentsTab({
   agents,
@@ -122,7 +122,10 @@ export function AgentsTab({
     if (statusFilter === "waiting" && status !== "waiting") {
       return false;
     }
-    if (statusFilter === "completed" && status !== "completed") {
+    if (statusFilter === "error" && status !== "error") {
+      return false;
+    }
+    if (statusFilter === "idle" && status !== "idle") {
       return false;
     }
     if (masterFilter !== "all" && !agentBelongsToMasterChat(agent, masterFilter)) {
@@ -136,7 +139,7 @@ export function AgentsTab({
       counts[status] += 1;
       return counts;
     },
-    { running: 0, waiting: 0, completed: 0, error: 0, idle: 0 } satisfies Record<AgentStatus, number>,
+    { running: 0, waiting: 0, error: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
 
   return (
@@ -165,11 +168,12 @@ export function AgentsTab({
           useFlexGap
           flexWrap="wrap"
           role="status"
-          aria-label={`${statusCounts.running} running, ${statusCounts.waiting} waiting, ${statusCounts.completed} completed`}
+          aria-label={`${statusCounts.running} running, ${statusCounts.waiting} waiting, ${statusCounts.error} errors, ${statusCounts.idle} idle`}
         >
           <Chip size="small" color="info" label={`${statusCounts.running} running`} />
           <Chip size="small" color="warning" label={`${statusCounts.waiting} waiting`} />
-          <Chip size="small" color="success" label={`${statusCounts.completed} completed`} />
+          <Chip size="small" color="error" label={`${statusCounts.error} errors`} />
+          <Chip size="small" label={`${statusCounts.idle} idle`} />
         </Stack>
         <Box sx={{ maxWidth: "100%", overflowX: "auto", pb: 0.25 }}>
           <ToggleButtonGroup
@@ -183,7 +187,8 @@ export function AgentsTab({
             <ToggleButton value="all">All</ToggleButton>
             <ToggleButton value="running">Running</ToggleButton>
             <ToggleButton value="waiting">Waiting</ToggleButton>
-            <ToggleButton value="completed">Completed</ToggleButton>
+            <ToggleButton value="error">Error</ToggleButton>
+            <ToggleButton value="idle">Idle</ToggleButton>
             <ToggleButton value="unassigned">Unassigned</ToggleButton>
           </ToggleButtonGroup>
         </Box>

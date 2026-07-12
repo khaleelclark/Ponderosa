@@ -249,7 +249,8 @@ export function projectEvent(
       break;
     }
 
-    case "turn_done": {
+    case "turn_done":
+    case "turn_cancelled": {
       if (next.currentRunSeq !== undefined && next.taskCreated) {
         ops.push({
           kind: "update_task",

@@ -130,6 +130,9 @@ export interface ThreadState {
   commit?: string;
 }
 
+/** Current agent availability, derived from the thread's canonical run events. */
+export type AgentStatus = "idle" | "running" | "waiting" | "error";
+
 /** A feature-scoped unit of work (SPEC §2). Mirrors the `threads` projection. */
 export interface ThreadDto {
   id: string;
@@ -141,6 +144,8 @@ export interface ThreadDto {
   title: string;
   /** The engine currently bound to this thread. */
   activeEngine: EngineId;
+  /** Current lifecycle state. Task completion is intentionally not an agent state. */
+  status: AgentStatus;
   state: ThreadState;
   createdAt: string;
   updatedAt: string;

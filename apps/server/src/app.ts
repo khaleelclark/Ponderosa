@@ -780,6 +780,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     // Resume handoffs left queued or unacknowledged by a previous process after
     // Fastify has finished registering the internal dispatch route.
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged());
+    // No process-local run survives a restart. Close any canonical lifecycle
+    // left active so status cannot remain stale forever after a crash/redeploy.
+    for (const project of store.listProjects()) {
+      for (const thread of store.listThreads(project.id)) {
+        if (thread.status === "running" || thread.status === "waiting") {
+          store.appendEvent(thread.id, { type: "turn_cancelled", reason: "server_restart" });
+        }
+      }
+    }
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
     for (const threadId of recipients) {
       setImmediate(() => void dispatchNextTurn(threadId));
@@ -2020,6 +2029,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           publish(thread.id, stored);
           runError = message;
         } finally {
+          if (!closed && controller.signal.aborted && store.getThread(thread.id)) {
+            const cancelled = store.appendEvent(thread.id, { type: "turn_cancelled", reason: "user" });
+            publish(thread.id, cancelled);
+          }
           if (scheduledSessionRollovers.delete(thread.id)) {
             store.clearResumeSession(thread.id, "explicit_compaction");
           }

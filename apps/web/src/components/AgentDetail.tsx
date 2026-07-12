@@ -102,11 +102,7 @@ export function AgentDetail({
 
   const running = stream.running || sendMessage.isPending;
 
-  const errorHint = useMemo(
-    () => stream.timeline.at(-1)?.event.type === "error",
-    [stream.timeline],
-  );
-  const status = deriveAgentStatus(detail, { running: stream.running, error: errorHint });
+  const status = deriveAgentStatus(detail);
 
   const cancelRun = useMutation({
     mutationFn: () => api.cancelRun(agentId),

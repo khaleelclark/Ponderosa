@@ -17,6 +17,7 @@ import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
+  AgentStatus,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -1046,12 +1047,27 @@ export class ThreadStore {
         .orderBy(asc(threadMasterChatMemberships.position)).all().map((membership) => membership.masterChatId),
       title: row.title,
       activeEngine: row.activeEngine,
+      status: this.agentStatusOf(row.id),
       state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
+  }
+
+  /** Fold only lifecycle boundaries; task rows are historical and never authoritative. */
+  private agentStatusOf(threadId: string): AgentStatus {
+    let status: AgentStatus = "idle";
+    for (const { event } of this.logFor(threadId, this.projectIdOf(threadId)).readAll()) {
+      if (event.type === "user_message") status = "running";
+      else if (event.type === "task_update" && event.status === "waiting_approval" && status === "running") status = "waiting";
+      else if (event.type === "task_update" && event.status === "running" && status === "waiting") status = "running";
+      else if (event.type === "error") status = "error";
+      else if (event.type === "turn_done" && status !== "error") status = "idle";
+      else if (event.type === "turn_cancelled") status = "idle";
+    }
+    return status;
   }
 
 
