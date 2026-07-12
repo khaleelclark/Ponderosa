@@ -1,6 +1,8 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import Database from "better-sqlite3";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ASSET_LIMITS, AssetAuthority, AssetError, AssetStore, contentDisposition } from "../src/assets.js";
@@ -115,12 +117,14 @@ describe("secure staged assets", () => {
     }
     await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "over.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 413 });
     for (const entry of readdirSync(directory)) if (entry.endsWith(".bin")) rmSync(path.join(directory, entry));
+    const cleanupDb = new Database(path.join(dataDir, "asset-authority.sqlite")); cleanupDb.prepare("DELETE FROM asset_committed WHERE project_id='p' AND thread_id='t'").run(); cleanupDb.close();
 
     const a = new AssetAuthority(dataDir); const b = new AssetAuthority(dataDir);
-    const firstReservation = a.reserve("p", "other", 1, 0, 1_000_000);
-    b.reserve("p", "other", 1, 0, 1_000_000);
-    expect(() => a.reserve("p", "other", 1, 0, 1_000_000)).toThrowError(AssetError);
-    const successor = b.reserve("p", "other", 1, 0, 1_000_000 + 5 * 60 * 1000 + 1);
+    const firstReservation = a.reserve("p", "other", randomUUID(), 1);
+    b.reserve("p", "other", randomUUID(), 1);
+    expect(() => a.reserve("p", "other", randomUUID(), 1)).toThrowError(AssetError);
+    const clockDb = new Database(path.join(dataDir, "asset-authority.sqlite")); clockDb.prepare("UPDATE asset_reservations SET created_at=0 WHERE project_id='p' AND thread_id='other'").run(); clockDb.close();
+    const successor = b.reserve("p", "other", randomUUID(), 1);
     expect(a.release(firstReservation)).toBe(false);
     expect(() => b.assertOwned(successor)).not.toThrow();
     a.close(); b.close();
@@ -131,24 +135,48 @@ describe("secure staged assets", () => {
     const db = path.join(dataDir, "asset-authority.sqlite");
     const child = spawn(process.execPath, ["-e", `
       const Database=require('better-sqlite3'); const db=new Database(process.argv[1]);
-      db.exec('BEGIN IMMEDIATE'); db.prepare('INSERT INTO asset_reservations VALUES (?,?,?,?,?)').run('child','p','race',1,1000000);
+      db.exec('BEGIN IMMEDIATE'); db.prepare('INSERT INTO asset_reservations VALUES (?,?,?,?,?,?)').run('child','child-asset','p','race',1,1000000);
       if(process.env.MODE==='crash') { console.log('ready'); setInterval(()=>{},1000); }
       else { db.exec('COMMIT'); console.log('ready'); process.on('SIGCONT',()=>{db.prepare('DELETE FROM asset_reservations WHERE id=?').run('child');}); setInterval(()=>{},1000); }
     `, db], { env: { ...process.env, MODE: "crash" }, stdio: ["ignore", "pipe", "inherit"] });
     await new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
     child.kill("SIGKILL"); await new Promise((resolve) => child.once("exit", resolve));
-    expect(() => authority.reserve("p", "race", 1, 0, 1_000_000)).not.toThrow();
+    expect(() => authority.reserve("p", "race", randomUUID(), 1)).not.toThrow();
 
     const stopped = spawn(process.execPath, ["-e", `
       const Database=require('better-sqlite3'); const db=new Database(process.argv[1]);
-      db.prepare('INSERT OR REPLACE INTO asset_reservations VALUES (?,?,?,?,?)').run('stale-child','p','stale',1,1000000);
+      db.prepare('INSERT OR REPLACE INTO asset_reservations VALUES (?,?,?,?,?,?)').run('stale-child','stale-asset','p','stale',1,1000000);
       console.log('ready'); process.on('SIGCONT',()=>db.prepare('DELETE FROM asset_reservations WHERE id=?').run('stale-child')); setInterval(()=>{},1000);
     `, db], { stdio: ["ignore", "pipe", "inherit"] });
     await new Promise<void>((resolve) => stopped.stdout!.once("data", () => resolve())); stopped.kill("SIGSTOP");
-    const successor = authority.reserve("p", "stale", 1, 0, 1_000_000 + 5 * 60 * 1000 + 1);
+    const staleDb = new Database(db); staleDb.prepare("UPDATE asset_reservations SET created_at=0 WHERE id='stale-child'").run(); staleDb.close();
+    const successor = authority.reserve("p", "stale", randomUUID(), 1);
     stopped.kill("SIGCONT"); await new Promise((resolve) => setTimeout(resolve, 30));
     expect(() => authority.assertOwned(successor)).not.toThrow();
     stopped.kill("SIGKILL"); authority.close();
+  });
+
+  it("rejects expired ownership and stale quota snapshots at settlement boundaries", () => {
+    const authority = new AssetAuthority(dataDir);
+    const usage = new Map(Array.from({ length: 7 }, (_, index) => [`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, ASSET_LIMITS.maxFileBytes]));
+    authority.syncThread("p", "quota", usage);
+    const first = authority.reserve("p", "quota", randomUUID(), ASSET_LIMITS.maxFileBytes);
+    authority.settle(first);
+    expect(() => authority.reserve("p", "quota", randomUUID(), ASSET_LIMITS.maxFileBytes)).toThrowError(AssetError);
+    const expired = authority.reserve("p", "expiry", randomUUID(), 1);
+    const db = new Database(path.join(dataDir, "asset-authority.sqlite")); db.prepare("UPDATE asset_reservations SET created_at=0 WHERE id=?").run(expired); db.close();
+    expect(() => authority.assertOwned(expired)).toThrowError(AssetError);
+    authority.close();
+  });
+
+  it("fails stably on corrupt and incompatible authority databases", () => {
+    assets.close();
+    writeFileSync(path.join(dataDir, "asset-authority.sqlite"), "not a database");
+    expect(() => new AssetAuthority(dataDir)).toThrowError(AssetError);
+    rmSync(path.join(dataDir, "asset-authority.sqlite"), { force: true });
+    const db = new Database(path.join(dataDir, "asset-authority.sqlite")); db.pragma("user_version=999"); db.close();
+    expect(() => new AssetAuthority(dataDir)).toThrowError(AssetError);
+    dataDir = mkdtempSync(path.join(tmpdir(), "pond-assets-replacement-")); assets = new AssetStore(dataDir);
   });
 
   it("does not recreate asset storage after whole-thread deletion", async () => {

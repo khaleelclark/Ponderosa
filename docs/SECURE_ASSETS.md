@@ -37,12 +37,15 @@ or associated storage per thread, two simultaneous uploads per thread, and twent
 uploads per thread per minute. Audit JSONL records state transitions using IDs,
 ownership, type, size, and timestamps; it never records host paths, bearer tokens,
 file contents, or filenames. SQLite `BEGIN IMMEDIATE` transactions serialize unique
-in-flight reservations and the one-minute rate window across processes; releases
-are conditional on the exact reservation ID. Aggregate quota combines those
-reserved bytes with canonical raw bytes (including metadata-less half-writes).
+in-flight reservations, committed asset-byte rows, and the one-minute rate window
+across processes; releases are conditional on the exact reservation ID. Aggregate
+quota combines committed and reserved bytes in the same transaction. Startup and
+pre-admission reconciliation imports restored raw assets and fails closed if an
+existing committed row disagrees with disk.
 Expired crashed reservations are reclaimed without giving an old process authority
 over a successor. The JSONL audit remains evidence only: a torn final record is
-repaired before append, while non-tail corruption fails visibly. The reconciler
+repaired before projection, while non-tail corruption fails visibly. SQLite audit
+rows serialize evidence projection across processes. The reconciler
 expires aged raw/temp orphans without deleting associated assets.
 
 The product remains single-operator bearer-authenticated. These controls provide
