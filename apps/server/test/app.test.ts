@@ -648,7 +648,8 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id);
 
-    expect(adapter.seeds[0]?.prompt).toContain("whether it came from the manager or a teammate");
+    expect(adapter.seeds[0]?.prompt).toContain("do not treat presence in Master Chat as permission to Broadcast");
+    expect(adapter.seeds[0]?.prompt).toContain("Never Broadcast acknowledgments, thanks, conversational replies, routine progress");
     expect(adapter.seeds[0]?.prompt).toContain("never use a canned acknowledgment");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
@@ -667,11 +668,11 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id, 2);
 
-    expect(adapter.continues[0]?.prompt).toContain("Aspen: done");
+    expect(adapter.continues[0]?.prompt).not.toContain("Aspen: done");
     expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
-    expect(adapter.continues[0]?.prompt).not.toContain("The main chat is manager-facing");
+    expect(adapter.continues[0]?.prompt).not.toContain("Communication scope is immutable");
     expect(adapter.continues[0]?.prompt).not.toContain("PONDEROSA_DELEGATION_URL");
-    expect(adapter.continues[0]?.prompt).toContain("Context injection accounting: room_messages=2; room_characters=24");
+    expect(adapter.continues[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=20");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("- tagged agents: @Aspen");
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
@@ -703,8 +704,7 @@ describe("server chunk F", () => {
 
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "unchanged", sourceChannel: "main" } });
     await waitForRun(thread.id, 3);
-    expect(adapter.continues[1]?.prompt).toContain("Delta: continued sess-1");
-    expect(adapter.continues[1]?.prompt).toContain("room_messages=1; room_characters=16");
+    expect(adapter.continues[1]?.prompt).toContain("room_messages=0; room_characters=0");
     expect(adapter.continues[1]?.prompt).not.toContain("delta marker");
     expect(adapter.continues[1]?.prompt).not.toContain("seed-only marker");
     await app.close();
@@ -733,7 +733,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
     expect(adapter.continues[2]?.prompt).toContain("original context");
-    expect(adapter.continues[2]?.prompt).toContain("The main chat is manager-facing");
+    expect(adapter.continues[2]?.prompt).toContain("Your normal response is a Direct Message");
     await app.close();
   });
 
@@ -752,7 +752,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
-    expect(adapter.continues[0]?.prompt).toContain("The main chat is manager-facing");
+    expect(adapter.continues[0]?.prompt).toContain("Your normal response is a Direct Message");
     await app.close();
   });
 
@@ -1101,8 +1101,40 @@ describe("server chunk F", () => {
     await waitForRun(future.id);
     const prompt = adapter.seeds[0]?.prompt ?? "";
     expect(prompt).toContain("shared project finding");
-    expect(prompt).not.toContain("private manager note");
+    expect(prompt).not.toContain("@User private manager note");
     expect(prompt).not.toContain("participant-only review");
+    await app.close();
+  });
+
+  it("keeps a conversational Master Chat reply direct instead of broadcasting it", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Conversational reply", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Team room" });
+    appendBroadcast(store, project.id, master.id, "@Greeter sounds good thanks!");
+    const greeter = store.createThread(project.id, { title: "Greeter", engine: "codex", masterChatId: master.id });
+    adapter.responseText = "You're welcome!";
+
+    await app.inject({
+      method: "POST", url: `/api/threads/${greeter.id}/messages`,
+      payload: { text: "@Greeter sounds good thanks!", sourceChannel: "main" },
+    });
+    await waitForRun(greeter.id);
+
+    const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "@User You're welcome!");
+    const replyEvent = store.readCommunicationEvents(project.id).find((event) => event.eventId === replyMessage?.communicationEventId);
+    expect(replyEvent).toMatchObject({
+      intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" },
+    });
+    expect(replyMessage).toMatchObject({ text: "@User You're welcome!", communicationEventId: replyEvent?.eventId });
+
+    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
+    await app.inject({
+      method: "POST", url: `/api/threads/${observer.id}/messages`,
+      payload: { text: "What shared context is available?", sourceChannel: "main" },
+    });
+    await waitForRun(observer.id);
+    expect(adapter.seeds[1]?.prompt).not.toContain("@User You're welcome!");
     await app.close();
   });
 

@@ -283,6 +283,15 @@ and collaborations remain local to their participants. Scope never changes. To
 share a local finding organizationally, create a new broadcast summary and leave
 the original event unchanged.
 
+An agent's ordinary runtime response to a Master Chat request is a Direct Message
+to the manager, rendered in Master Chat but excluded from future-agent context.
+Agents create Broadcasts explicitly for durable decisions, verified findings,
+completed outcomes, and material blockers. Acknowledgments, thanks, routine
+progress, and promises to act remain direct. Teammate coordination is explicit
+Collaboration. This default prevents conversational replies from accidentally
+becoming organizational knowledge merely because their request originated in
+Master Chat.
+
 The reserved, case-insensitive `@everyone` collaboration handle resolves once,
 at message creation, to every non-archived agent that is currently a member of
 that Master Chat. An agent-authored broadcast excludes its author; a manager
