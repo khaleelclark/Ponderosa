@@ -519,7 +519,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
-  const scheduledSessionRollovers = new Set<string>();
+  const scheduledSessionRollovers = new Map<string, string>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
   const dispatchingTurns = new Set<string>();
   // Capability used only by this server's queue dispatcher. It prevents a client
@@ -539,6 +539,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       threads,
       delegations: scopedDelegations,
       activeRuns,
+      compactingAgents: scheduledSessionRollovers,
       queuedDeliveries: (threadId) => collaborationDeliveries.pending(threadId),
       events: (threadId) => store.readEvents(threadId),
     });
@@ -1202,7 +1203,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    scheduledSessionRollovers.add(capability.threadId);
+    scheduledSessionRollovers.set(capability.threadId, new Date().toISOString());
     return { scheduled: true, afterRunId: capability.runId };
   });
 
@@ -2490,7 +2491,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
             for await (const event of startStream(sessionId)) {
-              if (closed) break;
+              if (closed || controller.signal.aborted) break;
               // Codex can emit its session id immediately before a resume-time
               // compaction failure. Hold only those initial session events so a
               // failed resume does not restore the stale id after we clear it.
@@ -2547,7 +2548,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             if (!retryFresh) break;
           }
         } catch (err) {
-          if (closed) return;
+          if (closed || controller.signal.aborted) return;
           const message = err instanceof Error ? err.message : String(err);
           const stored = store.appendEvent(thread.id, { type: "error", message });
           publish(thread.id, stored);
@@ -2730,6 +2731,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = activeRuns.get(request.params.id);
     if (!run) return { cancelled: false };
     run.controller.abort();
+    const lifecycle = store.appendEvent(request.params.id, {
+      type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled",
+    });
+    publish(request.params.id, lifecycle);
     if (run.delegatedRunId) {
       delegations.cancel(run.delegatedRunId, `thread-cancel-${randomUUID()}`);
     }

@@ -85,6 +85,11 @@ repeat targeted work, or stop for architectural revision.
 - Collapse subtree incidents and suppress repeats by agent, execution generation, and incident class.
 - Do not wake idle managers for unchanged state.
 
+Project- and room-scoped health projections now expose every required lifecycle
+state. Scheduled active-session rollover supplies the bounded `compacting`
+interval; ordinary cancellation is a durable thread lifecycle event, and expected
+abort transport errors are suppressed rather than misclassified as failures.
+
 Initial values are tuning ranges, not schema constants. Phase 0 measurements set
 production values.
 

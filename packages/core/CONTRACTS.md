@@ -14,15 +14,12 @@ from stable thread IDs, active runs, delegation records, durable queued deliveri
 and canonical task/error events. It uses no client inference, per-agent polling,
 heartbeat messages, or communication-event persistence.
 
-Seven states are currently observable. `compacting` is intentionally unavailable:
-the compact endpoint performs a synchronous session-boundary reset and exposes no
-durable or asynchronous compaction interval. Projecting that transition would
-fabricate state. A future runtime event or bounded server operation lease can make
-it representable.
-
-Ordinary cancellation also has no durable lifecycle event today; `cancelled` is
-authoritative for delegated agents through the delegation ledger. The projection
-cannot preserve ordinary-thread cancellation across restart until that event exists.
+`compacting` is observable only while an active run has a scheduled rollover;
+the timestamped server operation is the authority and disappears when the run
+closes. Synchronous idle-thread reset does not fabricate a state interval.
+Ordinary cancellation appends an `agent_lifecycle` event, while delegated
+cancellation remains authoritative in the delegation ledger. Expected aborts do
+not become runtime failures.
 
 ## `events.ts` — the normalized event model (SPEC §5)
 

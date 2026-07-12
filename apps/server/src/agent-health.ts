@@ -8,6 +8,7 @@ export interface AgentHealthProjectionInput {
   threads: ThreadDto[];
   delegations: SubagentRunDto[];
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
+  compactingAgents?: ReadonlyMap<string, string>;
   queuedDeliveries: (threadId: string) => QueuedDeliveryObservation[];
   events: (threadId: string) => StoredLogEvent[];
   now?: string;
@@ -31,6 +32,9 @@ function eventObservation(events: StoredLogEvent[], after?: string): StatusObser
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     const item = candidates[index]!;
     if (item.event.type === "error") return { status: "failed", statusTimestamp: item.ts, reason: "runtime_error" };
+    if (item.event.type === "agent_lifecycle") return {
+      status: item.event.status, statusTimestamp: item.ts, reason: item.event.reason,
+    };
     if (item.event.type === "task_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "task_waiting_approval" };
     if (item.event.type === "turn_done") return { status: "completed", statusTimestamp: item.ts, reason: "turn_completed" };
     if (item.event.type === "task_update" && item.event.status === "done") return { status: "completed", statusTimestamp: item.ts, reason: "task_completed" };
@@ -55,12 +59,15 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
   const agents: AgentHealthDto[] = input.threads.map((thread) => {
     const run = [...(runsByChild.get(thread.id) ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
     const active = input.activeRuns.get(thread.id);
+    const compactingAt = input.compactingAgents?.get(thread.id);
     const queued = input.queuedDeliveries(thread.id)[0];
     const events = input.events(thread.id);
     const activeEvent = active ? eventObservation(events, active.startedAt) : undefined;
     const parentAgentId = run?.parentThreadId && threadIds.has(run.parentThreadId) ? run.parentThreadId : undefined;
     let observation: StatusObservation;
-    if (active) observation = activeEvent?.status === "waiting" ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
+    if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
+    else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
+      ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
     else if (queued) observation = { status: "waiting", statusTimestamp: queued.createdAt, reason: "queued_delivery" };
     else if (run) observation = delegationObservation(run);
     else observation = eventObservation(events) ?? { status: "idle", statusTimestamp: thread.updatedAt, reason: "no_active_work" };

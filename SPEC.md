@@ -220,9 +220,11 @@ Manager-facing supervision uses one shared lifecycle vocabulary: `idle`,
 active runs, delegation lineage, durable queued delivery, and canonical task/error
 events; clients do not infer status or emit heartbeat chat messages. Every result
 contains the stable thread/agent ID, direct parent/child IDs where recorded,
-status, observation timestamp, and reason. `compacting` remains reserved until a
-runtime event or bounded operation lease exposes an observable interval; the
-current synchronous session reset must not fabricate that transition.
+status, observation timestamp, and reason. `compacting` is exposed only during
+the bounded interval after an active agent schedules session rollover and before
+that run closes; synchronous idle-thread reset does not fabricate an interval.
+Ordinary cancellation appends a canonical lifecycle event so it remains visible
+after the process and its in-memory run record disappear.
 
 ### Asynchronous delegated results and collaboration delivery
 

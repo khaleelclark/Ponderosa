@@ -204,6 +204,27 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("reports observed compaction and preserves ordinary cancellation", async () => {
+    const project = store.createProject({ label: "Health transitions", hostPath: repoDir });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${agent.id}/messages`, payload: { text: "Work" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect((await app.inject({
+      method: "POST", url: "/api/agent-session/rollover",
+      headers: { authorization: `Bearer ${token}` },
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
+      .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "compacting", reason: "session_rollover_scheduled" })] });
+
+    await cancelAndWait(app, agent.id);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
+      .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "cancelled", reason: "thread_cancelled" })] });
+    await app.close();
+  });
+
   it("bounds fresh-session history by both characters and message count", () => {
     const history = Array.from({ length: 80 }, (_, index) => ({ role: "user" as const, text: `${index}:` + "x".repeat(1_000) }));
     const bounded = boundedSeedHistory(history, 5_000, 4);

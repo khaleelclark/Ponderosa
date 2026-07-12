@@ -567,7 +567,8 @@ export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
   | "delegation_queued" | "delegation_awaiting_disposition" | "delegation_blocked"
   | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
-  | "task_completed" | "turn_completed" | "runtime_error";
+  | "task_completed" | "turn_completed" | "runtime_error"
+  | "session_rollover_scheduled" | "thread_cancelled";
 
 export interface AgentHealthDto {
   /** Stable thread identity; titles and mention handles are presentation only. */

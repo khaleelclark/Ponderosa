@@ -24,6 +24,7 @@ function project(options: {
   threads?: ThreadDto[];
   runs?: SubagentRunDto[];
   active?: Map<string, { startedAt: string }>;
+  compacting?: Map<string, string>;
   queued?: Record<string, Array<{ createdAt: string }>>;
   events?: Record<string, StoredLogEvent[]>;
 } = {}) {
@@ -32,6 +33,7 @@ function project(options: {
     threads: options.threads ?? [thread("agent")],
     delegations: options.runs ?? [],
     activeRuns: options.active ?? new Map(),
+    compactingAgents: options.compacting ?? new Map(),
     queuedDeliveries: (id) => options.queued?.[id] ?? [],
     events: (id) => options.events?.[id] ?? [],
     now: t1,
@@ -73,7 +75,14 @@ describe("agent health projection", () => {
     expect(result.agents.find((agent) => agent.agentId === "child")?.parentAgentId).toBe("parent");
   });
 
-  it("does not fabricate compacting, which has no observable transition", () => {
+  it("projects compacting only during an observed scheduled rollover", () => {
+    expect(project({ active: new Map([["agent", { startedAt: t0 }]]), compacting: new Map([["agent", t1]]) }).agents[0])
+      .toMatchObject({ status: "compacting", statusTimestamp: t1, reason: "session_rollover_scheduled" });
     expect(project().agents.map((agent) => agent.status)).not.toContain("compacting");
+  });
+
+  it("preserves ordinary cancellation from a durable lifecycle event", () => {
+    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled" })] } }).agents[0])
+      .toMatchObject({ status: "cancelled", reason: "thread_cancelled" });
   });
 });
