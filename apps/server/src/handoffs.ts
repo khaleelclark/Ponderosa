@@ -174,12 +174,12 @@ export class CollaborationDeliveryStore {
 
   /**
    * Recover work after a process restart. A `delivered` record only means its
-   * follow-up turn started; without an acknowledgement the process may have
-   * stopped before the recipient handled it, so it is safe to retry.
+   * follow-up turn started. Callers exclude deliveries tied to an interrupted
+   * runtime claim because those prompts may already have caused side effects.
    */
-  recoverUnacknowledged(): string[] {
+  recoverUnacknowledged(excludeDeliveryIds: ReadonlySet<string> = new Set()): string[] {
     for (const delivery of [...this.deliveries.values()]) {
-      if (delivery.status === "delivered") this.requeue(delivery.id);
+      if (delivery.status === "delivered" && !excludeDeliveryIds.has(delivery.id)) this.requeue(delivery.id);
     }
     return [...new Set(
       [...this.deliveries.values()]

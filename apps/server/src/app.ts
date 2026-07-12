@@ -40,7 +40,8 @@ import { DelegationError, DelegationStore } from "./delegations.js";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
-import { projectAgentHealth } from "./agent-health.js";
+import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
+import { RunLedger, type RunFence, type RuntimeOwnershipState } from "./run-ledger.js";
 import {
   CollaborationDeliveryStore,
   type CollaborationDelivery,
@@ -82,6 +83,12 @@ export interface CreateServerOptions {
     setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimer?: (timer: NodeJS.Timeout) => void;
   };
+  /** Deterministic same-process event-consumer fault seam; never enabled in production configuration. */
+  runtimeEventFaults?: {
+    beforePersist?: (context: { threadId: string; runId: string; generation: number; event: AgentEvent }) => void | Promise<void>;
+    stallAfterMs?: number;
+    onOwnershipState?: (context: { threadId: string; runId: string; generation: number; state: RuntimeOwnershipState }) => void;
+  };
 }
 
 interface ActiveRun {
@@ -95,6 +102,10 @@ interface ActiveRun {
   delegatedRunId?: string;
   deliveryIds?: string[];
   leaseTimer?: NodeJS.Timeout;
+  generation: number;
+  ownershipState: RuntimeOwnershipState;
+  lastEventReceivedAt?: string;
+  lastEventPersistedAt?: string;
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -583,6 +594,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const activeRuns = new Map<string, ActiveRun>();
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
+  const runLedger = new RunLedger(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
@@ -619,9 +631,47 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const deliveryNow = opts.deliveryScheduling?.now ?? Date.now;
   const deliveryRandom = opts.deliveryScheduling?.random ?? Math.random;
   const setDeliveryTimer = opts.deliveryScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+  const runtimeStallAfterMs = opts.runtimeEventFaults?.stallAfterMs ?? 30_000;
+
+  const runFence = (threadId: string, run: ActiveRun): RunFence => ({ threadId, runId: run.runId, generation: run.generation });
 
   function ownsActiveRun(threadId: string, run: ActiveRun): boolean {
-    return activeRuns.get(threadId) === run;
+    return activeRuns.get(threadId) === run && runLedger.owns(runFence(threadId, run));
+  }
+
+  function transitionRun(threadId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
+    const claim = runLedger.transition(runFence(threadId, run), state);
+    if (!claim) return false;
+    run.ownershipState = state;
+    opts.runtimeEventFaults?.onOwnershipState?.({ threadId, runId: run.runId, generation: run.generation, state });
+    return true;
+  }
+
+  function receiveRuntimeEvent(threadId: string, run: ActiveRun): boolean {
+    if (!ownsActiveRun(threadId, run) || run.ownershipState === "cancelling") return false;
+    const at = new Date().toISOString();
+    run.lastEventReceivedAt = at;
+    return Boolean(runLedger.transition(runFence(threadId, run), run.ownershipState, { lastEventReceivedAt: at }));
+  }
+
+  async function waitBeforeRuntimePersist(threadId: string, run: ActiveRun, event: AgentEvent): Promise<boolean> {
+    await opts.runtimeEventFaults?.beforePersist?.({ threadId, runId: run.runId, generation: run.generation, event });
+    return ownsActiveRun(threadId, run) && run.ownershipState !== "cancelling";
+  }
+
+  function persistRuntimeEvent(threadId: string, run: ActiveRun, event: LogEvent): StoredLogEvent | undefined {
+    if (!ownsActiveRun(threadId, run) || run.ownershipState === "cancelling") return undefined;
+    const stored = store.appendEvent(threadId, event);
+    const at = new Date().toISOString();
+    run.lastEventPersistedAt = at;
+    const recovered = run.ownershipState === "stalled";
+    runLedger.transition(runFence(threadId, run), recovered ? "running" : run.ownershipState, { lastEventPersistedAt: at });
+    if (recovered) {
+      run.ownershipState = "running";
+      opts.runtimeEventFaults?.onOwnershipState?.({ threadId, runId: run.runId, generation: run.generation, state: "running" });
+    }
+    publish(threadId, stored);
+    return stored;
   }
 
   function clearRunLeaseTimer(run: ActiveRun): void {
@@ -646,6 +696,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     agentMessageCapabilities.delete(run.messageCapability);
     if (run.delegationCapability) delegationCapabilities.delete(run.delegationCapability);
     scheduledSessionRollovers.delete(threadId);
+    runLedger.transition(runFence(threadId, run), "failed");
     const lifecycle = store.appendEvent(threadId, {
       type: "agent_lifecycle", status: "failed", reason: "execution_lease_expired", executionId: run.executionId,
     });
@@ -678,10 +729,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     renewExecutionLease(threadId, run);
   }
 
-  function releaseActiveRun(threadId: string, run: ActiveRun): boolean {
+  function releaseActiveRun(threadId: string, run: ActiveRun, state: "completed" | "failed" | "cancelled"): boolean {
     if (!ownsActiveRun(threadId, run)) return false;
     activeRuns.delete(threadId);
     clearRunLeaseTimer(run);
+    runLedger.transition(runFence(threadId, run), state);
     return true;
   }
 
@@ -708,11 +760,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     : store.getMessages(threadId);
 
   function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
+    const now = Date.now();
+    for (const [threadId, run] of activeRuns) {
+      if (run.ownershipState !== "running" || !run.lastEventReceivedAt) continue;
+      const received = Date.parse(run.lastEventReceivedAt);
+      const persisted = run.lastEventPersistedAt ? Date.parse(run.lastEventPersistedAt) : 0;
+      if (received > persisted && now - received >= runtimeStallAfterMs) transitionRun(threadId, run, "stalled");
+    }
+    const ownership = new Map<string, ActiveRunObservation>(activeRuns);
+    for (const claim of runLedger.all()) {
+      if (claim.state === "interrupted" && !ownership.has(claim.threadId)) ownership.set(claim.threadId, {
+        startedAt: claim.createdAt, executionId: claim.runId, ownershipState: "interrupted",
+      });
+    }
     return projectAgentHealth({
       scope,
       threads,
       delegations: scopedDelegations,
-      activeRuns,
+      activeRuns: ownership,
       compactingAgents: scheduledSessionRollovers,
       queuedDeliveries: (threadId) => collaborationDeliveries.pending(threadId),
       events: (threadId) => store.readEvents(threadId),
@@ -1045,7 +1110,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.addHook("onReady", async () => {
     // Resume handoffs left queued or unacknowledged by a previous process after
     // Fastify has finished registering the internal dispatch route.
-    const recipients = new Set(collaborationDeliveries.recoverUnacknowledged());
+    const interruptedDeliveryIds = new Set(runLedger.all()
+      .filter((claim) => claim.state === "interrupted")
+      .flatMap((claim) => claim.deliveryIds ?? []));
+    const recipients = new Set(collaborationDeliveries.recoverUnacknowledged(interruptedDeliveryIds));
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
     for (const threadId of recipients) {
       scheduleDeliveryDispatch(threadId);
@@ -1082,8 +1150,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
     deliveryRetryTimers.clear();
     if (assetSweep) clearInterval(assetSweep);
-    for (const run of activeRuns.values()) {
+    for (const [threadId, run] of activeRuns) {
       clearRunLeaseTimer(run);
+      transitionRun(threadId, run, "interrupted");
       run.controller.abort();
     }
     activeRuns.clear();
@@ -1509,6 +1578,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const messageCapabilityToken = randomUUID();
     const delegationCapabilityToken = randomUUID();
     const run = delegations.claim(runId);
+    const durableClaim = runLedger.claim(childThread.id, run.id);
     const startedAt = new Date().toISOString();
     const lifecycle = store.appendEvent(childThread.id, {
       type: "agent_lifecycle", status: "running", reason: "active_run", executionId: run.id,
@@ -1523,6 +1593,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       messageCapability: messageCapabilityToken,
       delegationCapability: delegationCapabilityToken,
       delegatedRunId: run.id,
+      generation: durableClaim.generation,
+      ownershipState: "running",
     };
     claimActiveRun(childThread.id, activeRun);
     agentMessageCapabilities.set(messageCapabilityToken, {
@@ -1570,6 +1642,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
         for await (const event of stream) {
           if (closed || !renewExecutionLease(childThread.id, activeRun)) break;
+          if (!receiveRuntimeEvent(childThread.id, activeRun)) break;
+          if (opts.runtimeEventFaults?.beforePersist && !await waitBeforeRuntimePersist(childThread.id, activeRun, event)) break;
           let logEvent: LogEvent = event;
           if (event.type === "text" && event.delta.trim()) {
             const communication = recordCommunication({
@@ -1586,8 +1660,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               logEvent = { ...event, communicationEventId: communication.eventId };
             }
           }
-          const stored = store.appendEvent(childThread.id, logEvent);
-          publish(childThread.id, stored);
+          if (!persistRuntimeEvent(childThread.id, activeRun, logEvent)) break;
           if (event.type === "error") runtimeError = event.message;
         }
         if (closed) return;
@@ -1612,7 +1685,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           });
           publish(childThread.id, terminal);
         }
-        if (releaseActiveRun(childThread.id, activeRun)) {
+        if (releaseActiveRun(childThread.id, activeRun, controller.signal.aborted ? "cancelled" : runtimeError ? "failed" : "completed")) {
           agentMessageCapabilities.delete(messageCapabilityToken);
           delegationCapabilities.delete(delegationCapabilityToken);
           runDeliveryDispatch(childThread.id);
@@ -2463,7 +2536,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = activeRuns.get(id);
     if (run) {
       run.controller.abort();
-      activeRuns.delete(id);
+      releaseActiveRun(id, run, "cancelled");
     }
     const delegated = delegations.findByChildThread(id);
     if (delegated && (delegated.status === "queued" || delegated.status === "running" || delegated.status === "awaiting_disposition")) {
@@ -2819,11 +2892,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const prompt = `${promotedKnowledge}${guidedPrompt}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt().join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
+      let durableClaim: ReturnType<RunLedger["claim"]>;
+      try {
+        durableClaim = runLedger.claim(thread.id, runId, requestedDeliveryIds);
+      } catch {
+        return reply.code(409).send({ error: "thread run ownership changed; retry safely", retryable: true });
+      }
+
       const userStored = store.appendEvent(thread.id, {
         type: "user_message", text, communicationEventId: pendingTurn.communicationEventId,
         replyTo: pendingTurn.replyTo, attachments: messageAttachments,
       });
-      await assets.associate(thread.projectId, thread.id, attachmentIds);
+      try {
+        await assets.associate(thread.projectId, thread.id, attachmentIds);
+      } catch (error) {
+        runLedger.transition({ threadId: thread.id, runId, generation: durableClaim.generation }, "failed");
+        throw error;
+      }
       publish(thread.id, userStored);
 
       const startedAt = new Date().toISOString();
@@ -2836,6 +2921,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         delegationCapability,
         ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
         ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}),
+        generation: durableClaim.generation,
+        ownershipState: "running",
       };
       claimActiveRun(thread.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
@@ -2902,6 +2989,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             let retryFresh = false;
             for await (const event of startStream(sessionId)) {
               if (closed || controller.signal.aborted || !renewExecutionLease(thread.id, activeRun)) break;
+              if (!receiveRuntimeEvent(thread.id, activeRun)) break;
+              if (opts.runtimeEventFaults?.beforePersist && !await waitBeforeRuntimePersist(thread.id, activeRun, event)) break;
               // Codex can emit its session id immediately before a resume-time
               // compaction failure. Hold only those initial session events so a
               // failed resume does not restore the stale id after we clear it.
@@ -2924,8 +3013,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               }
 
               for (const buffered of bufferedSessionEvents.splice(0)) {
-                const stored = store.appendEvent(thread.id, buffered);
-                publish(thread.id, stored);
+                persistRuntimeEvent(thread.id, activeRun, buffered);
               }
               if (event.type !== "error") sawMaterialRuntimeEvent = true;
               let logEvent: LogEvent = event;
@@ -2949,8 +3037,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 lastCommunicationEventId = communication?.eventId;
                 if (communication) logEvent = { ...event, communicationEventId: communication.eventId };
               }
-              const stored = store.appendEvent(thread.id, logEvent);
-              publish(thread.id, stored);
+              if (!persistRuntimeEvent(thread.id, activeRun, logEvent)) break;
               if (event.type === "text") finalText += event.delta;
               if (event.type === "error") runError = event.message;
               if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
@@ -2960,8 +3047,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         } catch (err) {
           if (closed || controller.signal.aborted || !ownsActiveRun(thread.id, activeRun)) return;
           const message = err instanceof Error ? err.message : String(err);
-          const stored = store.appendEvent(thread.id, { type: "error", message });
-          publish(thread.id, stored);
+          persistRuntimeEvent(thread.id, activeRun, { type: "error", message });
           runError = message;
         } finally {
           const owned = ownsActiveRun(thread.id, activeRun);
@@ -2981,7 +3067,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             });
             publish(thread.id, terminal);
           }
-          const released = releaseActiveRun(thread.id, activeRun);
+          const released = releaseActiveRun(thread.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
           if (released) {
             agentMessageCapabilities.delete(messageCapability);
             delegationCapabilities.delete(delegationCapability);
@@ -3151,7 +3237,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{ Params: { id: string } }>("/api/threads/:id/cancel", async (request) => {
     const run = activeRuns.get(request.params.id);
-    if (!run) return { cancelled: false };
+    if (!run || !transitionRun(request.params.id, run, "cancelling")) return { cancelled: false };
     run.controller.abort();
     const lifecycle = store.appendEvent(request.params.id, {
       type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled",

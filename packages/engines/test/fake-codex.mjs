@@ -24,6 +24,14 @@ if (mode === "seed") {
   w({ type: "thread.started", thread_id: "sess-hang" });
   process.on("SIGTERM", () => process.exit(143));
   setInterval(() => {}, 1000);
+} else if (mode === "live_stream") {
+  w({ type: "thread.started", thread_id: "sess-live" });
+  let ordinal = 0;
+  setInterval(() => {
+    ordinal += 1;
+    w({ type: "item.completed", item: { id: `i${ordinal}`, type: "agent_message", text: `heartbeat-${ordinal}` } });
+  }, 10);
+  process.on("SIGTERM", () => process.exit(143));
 } else if (mode === "fail") {
   process.stderr.write("codex: not logged in\n");
   process.exit(1);

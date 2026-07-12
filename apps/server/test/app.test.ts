@@ -183,6 +183,55 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: str
 }
 
 describe("server chunk F", () => {
+  it("detects a received-but-unpersisted event as stalled without cancelling the owned run", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let received = false;
+    const transitions: string[] = [];
+    const app = createServer({ dataDir, store, engines, logger: false, runtimeEventFaults: {
+      stallAfterMs: 20,
+      beforePersist: async ({ event }) => { if (event.type === "command") { received = true; await gate; } },
+      onOwnershipState: ({ state }) => transitions.push(state),
+    } });
+    const project = store.createProject({ label: "Stall", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Stalled", engine: "codex" });
+    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "run" } })).statusCode).toBe(200);
+    await vi.waitFor(() => expect(received).toBe(true));
+    await sleep(25);
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    expect(health.json<{ agents: Array<{ status: string; reason: string; runtimeOwnership: string }> }>().agents[0])
+      .toMatchObject({ status: "stalled", reason: "runtime_event_consumer_stalled", runtimeOwnership: "stalled" });
+    expect(transitions.filter((state) => state === "stalled")).toHaveLength(1);
+    expect(store.readEvents(thread.id).some((item) => item.event.type === "command")).toBe(false);
+    release();
+    await waitForRun(thread.id);
+    expect(transitions).toContain("running");
+    await app.close();
+  });
+
+  it("fences a cancelled generation and executes its queued successor exactly once", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let blocked = false;
+    const app = createServer({ dataDir, store, engines, logger: false, runtimeEventFaults: {
+      beforePersist: async ({ event, generation }) => {
+        if (generation === 1 && event.type === "command") { blocked = true; await gate; }
+      },
+    } });
+    const project = store.createProject({ label: "Fence", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Fenced", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first prompt" } });
+    await vi.waitFor(() => expect(blocked).toBe(true));
+    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "queued prompt" } })).statusCode).toBe(202);
+    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` })).json()).toEqual({ cancelled: true });
+    release();
+    await vi.waitFor(() => expect(adapter.seeds.length + adapter.continues.length).toBe(2));
+    await waitForRun(thread.id);
+    expect(store.getMessages(thread.id).filter((message) => message.text === "queued prompt")).toHaveLength(1);
+    expect(store.readEvents(thread.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.status === "completed")).toHaveLength(1);
+    await app.close();
+  });
+
   it("serves server-owned agent health at project and master-chat scope", async () => {
     const project = store.createProject({ label: "Health", hostPath: repoDir });
     const room = store.createMasterChat(project.id, { title: "Room" });

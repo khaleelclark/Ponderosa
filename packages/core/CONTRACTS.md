@@ -8,8 +8,8 @@ subpath exports kept out of the browser bundle.
 ## Agent lifecycle health projection
 
 Manager-facing health uses the exhaustive `AgentLifecycleStatus` vocabulary:
-`idle`, `running`, `waiting`, `blocked`, `compacting`, `cancelled`, `completed`,
-and `failed`. The server projects it on demand at project and master-chat scope
+`idle`, `running`, `stalled`, `interrupted`, `waiting`, `blocked`, `compacting`,
+`cancelled`, `completed`, and `failed`. The server projects it on demand at project and master-chat scope
 from stable thread IDs, active runs, delegation records, durable queued deliveries,
 and canonical task/error events. It uses no client inference, per-agent polling,
 heartbeat messages, or communication-event persistence.
@@ -20,6 +20,12 @@ closes. Synchronous idle-thread reset does not fabricate a state interval.
 Ordinary cancellation appends an `agent_lifecycle` event, while delegated
 cancellation remains authoritative in the delegation ledger. Expected aborts do
 not become runtime failures.
+
+Runtime ownership is generation-fenced by the in-memory `ActiveRun` identity and
+mirrored into append-only durable evidence. `stalled` means a claimed live run
+received an event that did not cross the persistence boundary within the bound;
+`interrupted` means startup found unfinished ownership, not that an orphan was
+detected.
 
 ## `events.ts` — the normalized event model (SPEC §5)
 

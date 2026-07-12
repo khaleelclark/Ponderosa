@@ -561,7 +561,7 @@ export interface HealthDto {
 }
 
 /** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
-export type AgentLifecycleStatus = "idle" | "running" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
+export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
 
 export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
@@ -569,7 +569,7 @@ export type AgentLifecycleReason =
   | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
   | "task_completed" | "turn_completed" | "runtime_error"
   | "session_rollover_scheduled" | "thread_cancelled"
-  | "execution_lease_expired" | "execution_interrupted";
+  | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled";
 
 export interface AgentHealthDto {
   /** Stable thread identity; titles and mention handles are presentation only. */
@@ -583,6 +583,7 @@ export interface AgentHealthDto {
   /** Runtime generation and bounded liveness window, when work is active. */
   executionId?: string;
   leaseExpiresAt?: string;
+  runtimeOwnership?: "running" | "stalled" | "cancelling" | "interrupted";
 }
 
 export interface AgentHealthProjectionDto {

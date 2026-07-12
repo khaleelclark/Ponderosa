@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
 import { CodexAdapter, readCodexModels, renderSeedPrompt } from "../src/codex.js";
 
@@ -44,6 +44,34 @@ describe("renderSeedPrompt", () => {
 });
 
 describe("CodexAdapter.seed (fake codex)", () => {
+  it("halts after JSON decode while the live child and all stdio remain connected", async () => {
+    const controller = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let observed: import("../src/process.js").ProcessStreamSnapshot | undefined;
+    let decoded = 0;
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fakeCodex, "live_stream"], opts)) as unknown as typeof spawn;
+    const adapter = new CodexAdapter({ spawnFn, killGraceMs: 50, processFaults: {
+      keepStdinOpen: true,
+      afterDecodeBeforeYield: async (_raw, snapshot) => {
+        decoded += 1;
+        if (decoded === 2) { observed = snapshot; await gate; }
+      },
+    } });
+    const events: AgentEvent[] = [];
+    const consuming = (async () => {
+      for await (const event of adapter.seed({ threadId: "t-live", cwd, prompt: "live", history: [], signal: controller.signal })) events.push(event);
+    })();
+    await vi.waitFor(() => expect(observed).toBeDefined());
+    expect(observed).toMatchObject({ parentPid: process.pid, exitCode: null, stdinOpen: true, stdoutOpen: true, stderrOpen: true });
+    expect(observed?.pid).toBeTypeOf("number");
+    expect(events).toEqual([{ type: "session", sessionId: "sess-live" }]);
+    controller.abort();
+    release();
+    await consuming;
+  });
+
   it("streams mapped AgentEvents and captures the session id", async () => {
     const controller = new AbortController();
     const events = await collect(

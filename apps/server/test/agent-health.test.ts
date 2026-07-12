@@ -23,7 +23,7 @@ const event = (value: StoredLogEvent["event"], ts = t1): StoredLogEvent => ({ se
 function project(options: {
   threads?: ThreadDto[];
   runs?: SubagentRunDto[];
-  active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string }>;
+  active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "interrupted" }>;
   compacting?: Map<string, string>;
   queued?: Record<string, Array<{ createdAt: string }>>;
   events?: Record<string, StoredLogEvent[]>;
@@ -46,6 +46,13 @@ describe("agent health projection", () => {
   it("projects running from an active server run", () => {
     expect(project({ active: new Map([["agent", { startedAt: t1 }]]) }).agents[0])
       .toMatchObject({ status: "running", statusTimestamp: t1, reason: "active_run" });
+  });
+
+  it("projects stalled and interrupted runtime ownership without calling either orphaned", () => {
+    expect(project({ active: new Map([["agent", { startedAt: t1, ownershipState: "stalled" }]]) }).agents[0])
+      .toMatchObject({ status: "stalled", reason: "runtime_event_consumer_stalled", runtimeOwnership: "stalled" });
+    expect(project({ active: new Map([["agent", { startedAt: t1, ownershipState: "interrupted" }]]) }).agents[0])
+      .toMatchObject({ status: "interrupted", reason: "execution_interrupted", runtimeOwnership: "interrupted" });
   });
 
   it("surfaces execution identity and marks an expired lease blocked", () => {
