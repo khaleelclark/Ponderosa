@@ -84,6 +84,19 @@ export interface KnowledgePromotion {
   promotedAt: string;
   supersedesPromotionId?: string;
   expiresAt?: string;
+  idempotencyKey?: string;
+}
+
+export interface CreateKnowledgePromotionRequest {
+  sourceEventId: string;
+  summary: string;
+  idempotencyKey: string;
+  expiresAt?: string;
+}
+
+export interface CreateKnowledgePromotionResponse {
+  promotion: KnowledgePromotion;
+  replayed: boolean;
 }
 
 /** Shadow-migration parity report computed from canonical disk records. */
@@ -94,5 +107,6 @@ export interface CommunicationReconciliationReport {
   missingProjectionEventIds: string[];
   duplicateProjectionEventIds: string[];
   orphanProjectionEventIds: string[];
+  missingClassificationEventIds: string[];
   ok: boolean;
 }

@@ -6,7 +6,11 @@ export { ThreadStore } from "./store.js";
 export type { MasterChatDeliveryIntent } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { openDb } from "./db.js";
-export { artifactContentPath, artifactsDir, attachmentPath, attachmentsDir, reactionEventsPath, communicationEventsPath } from "./paths.js";
+export {
+  artifactContentPath, artifactsDir, attachmentPath, attachmentsDir,
+  reactionEventsPath, communicationEventsPath, communicationContextPath,
+  knowledgePromotionsPath,
+} from "./paths.js";
 export type { Db } from "./db.js";
 
 export {

@@ -955,6 +955,7 @@ describe("server chunk F", () => {
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
+      missingClassificationEventIds: [],
       ok: true,
     });
     const reconciliation = await app.inject({
@@ -963,6 +964,21 @@ describe("server chunk F", () => {
     });
     expect(reconciliation.statusCode).toBe(200);
     expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 3, linkedProjections: 3 });
+    const promotionPayload = {
+      sourceEventId: direct.json<{ eventId: string }>().eventId,
+      summary: "The private implementation note is now project-level guidance.",
+      idempotencyKey: "promote-private-note",
+    };
+    const promoted = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/knowledge-promotions`, payload: promotionPayload,
+    });
+    const promotionRetry = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/knowledge-promotions`, payload: promotionPayload,
+    });
+    expect(promoted.statusCode).toBe(201);
+    expect(promoted.json()).toMatchObject({ replayed: false, promotion: { sourceEventId: promotionPayload.sourceEventId } });
+    expect(promotionRetry.statusCode).toBe(200);
+    expect(promotionRetry.json()).toMatchObject({ replayed: true, promotion: { promotionId: promoted.json<{ promotion: { promotionId: string } }>().promotion.promotionId } });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });

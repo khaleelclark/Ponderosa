@@ -36,6 +36,10 @@ until reconciliation and projection rebuild gates are satisfied.
 New projection records carry `communicationEventId`. The store can reconcile each
 project for missing, duplicate, and orphan links entirely from canonical disk
 records, and linked Direct Agent audit projections survive a SQLite rebuild.
+Every new canonical event also receives an explicit context classification:
+broadcasts are organizational candidates, while collaboration and direct-user
+events are local-only. Local knowledge becomes organizational only through an
+idempotent, provenance-linked promotion record created by the operator endpoint.
 
 ## Delivery phases and gates
 

@@ -24,7 +24,9 @@ import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   CommunicationEvent,
+  CommunicationContextClassification,
   CommunicationReconciliationReport,
+  KnowledgePromotion,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -53,6 +55,7 @@ import type {
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
+import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
   initProjectionState,
@@ -82,6 +85,8 @@ import {
   masterChatDir,
   collaborationChatMessagesPath,
   communicationEventsPath,
+  communicationContextPath,
+  knowledgePromotionsPath,
   masterChatJsonPath,
   masterChatMessagesPath,
   masterChatsDir,
@@ -278,42 +283,6 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
-function readCommunicationLog(file: string, repair = false): CommunicationEvent[] {
-  if (!existsSync(file)) return [];
-  const fd = openSync(file, repair ? "r+" : "r");
-  try {
-    const bytes = readFileSync(fd);
-    if (bytes.length === 0) return [];
-    const text = bytes.toString("utf8");
-    const lines = text.split("\n");
-    const count = text.endsWith("\n") ? lines.length - 1 : lines.length;
-    const events: CommunicationEvent[] = [];
-    let validBytes = 0;
-    for (let index = 0; index < count; index += 1) {
-      const line = lines[index]!;
-      if (!line.trim()) { validBytes += Buffer.byteLength(line) + 1; continue; }
-      try {
-        events.push(JSON.parse(line) as CommunicationEvent);
-        validBytes += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
-        if (repair && index === count - 1 && !text.endsWith("\n")) {
-          writeSync(fd, "\n");
-          fsyncSync(fd);
-        }
-      } catch (error) {
-        const tornTail = index === count - 1 && !text.endsWith("\n");
-        if (!tornTail) throw new Error("communication log contains non-tail corruption", { cause: error });
-        if (repair) {
-          ftruncateSync(fd, validBytes);
-          fsyncSync(fd);
-        }
-      }
-    }
-    return events;
-  } finally {
-    closeSync(fd);
-  }
-}
-
 export class ThreadStore {
   private readonly db: Db;
   private readonly client: Database.Database;
@@ -361,31 +330,72 @@ export class ThreadStore {
       throw new Error("collaboration requires at least one recipient agent ID");
     }
     const file = communicationEventsPath(this.dataDir, event.projectId);
-    const existing = readCommunicationLog(file, true).find((candidate) => candidate.eventId === event.eventId);
+    const classification: CommunicationContextClassification = {
+      eventId: event.eventId,
+      policy: event.intent === "broadcast" ? "organizational_candidate" : "local_only",
+      classifiedAt: event.createdAt,
+      classifiedBy: { kind: "system", component: "communication-router" },
+    };
+    const existing = readRepairableJsonl<CommunicationEvent>(file, "communication log", true)
+      .find((candidate) => candidate.eventId === event.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
+      this.appendContextClassification(event.projectId, classification);
       return { event: existing, replayed: true };
     }
-    mkdirSync(dirname(file), { recursive: true });
-    const fd = openSync(file, "a");
-    try {
-      const bytes = Buffer.from(JSON.stringify(event) + "\n");
-      let written = 0;
-      while (written < bytes.length) {
-        const count = writeSync(fd, bytes, written, bytes.length - written);
-        if (count <= 0) throw new Error("communication log append made no progress");
-        written += count;
-      }
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+    appendFsyncedJsonl(file, [event]);
+    this.appendContextClassification(event.projectId, classification);
     return { event, replayed: false };
   }
 
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return readCommunicationLog(communicationEventsPath(this.dataDir, projectId));
+    return readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log");
+  }
+
+  private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
+    const file = communicationContextPath(this.dataDir, projectId);
+    const existing = readRepairableJsonl<CommunicationContextClassification>(file, "communication context log", true)
+      .find((candidate) => candidate.eventId === classification.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(classification)) throw new Error("communication context classification collision");
+      return;
+    }
+    appendFsyncedJsonl(file, [classification]);
+  }
+
+  readContextClassifications(projectId: string): CommunicationContextClassification[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log");
+  }
+
+  promoteKnowledge(promotion: KnowledgePromotion): { promotion: KnowledgePromotion; replayed: boolean } {
+    if (!this.getProject(promotion.organizationId)) throw new Error("promotion organization not found");
+    const source = this.readCommunicationEvents(promotion.organizationId)
+      .find((event) => event.eventId === promotion.sourceEventId);
+    if (!source) throw new Error("promotion source event not found");
+    const classification = this.readContextClassifications(promotion.organizationId)
+      .find((candidate) => candidate.eventId === promotion.sourceEventId);
+    if (classification?.policy !== "local_only") throw new Error("only local knowledge requires promotion");
+    if (!promotion.summary.trim()) throw new Error("promotion summary is required");
+    const file = knowledgePromotionsPath(this.dataDir, promotion.organizationId);
+    const existing = readRepairableJsonl<KnowledgePromotion>(file, "knowledge promotion log", true);
+    const prior = promotion.idempotencyKey
+      ? existing.find((candidate) => candidate.idempotencyKey === promotion.idempotencyKey)
+      : existing.find((candidate) => candidate.promotionId === promotion.promotionId);
+    if (prior) {
+      const equivalent = prior.sourceEventId === promotion.sourceEventId && prior.summary === promotion.summary &&
+        JSON.stringify(prior.promotedBy) === JSON.stringify(promotion.promotedBy);
+      if (!equivalent) throw new Error("knowledge promotion idempotency collision");
+      return { promotion: prior, replayed: true };
+    }
+    appendFsyncedJsonl(file, [promotion]);
+    return { promotion, replayed: false };
+  }
+
+  readKnowledgePromotions(projectId: string): KnowledgePromotion[] {
+    if (!this.getProject(projectId)) throw new Error("promotion organization not found");
+    return readRepairableJsonl<KnowledgePromotion>(knowledgePromotionsPath(this.dataDir, projectId), "knowledge promotion log");
   }
 
   /** Compare canonical events with legacy disk projections during shadow mode. */
@@ -417,6 +427,9 @@ export class ThreadStore {
     const duplicateProjectionEventIds = [...counts]
       .filter(([id, count]) => canonicalIds.has(id) && count > 1).map(([id]) => id);
     const orphanProjectionEventIds = [...counts.keys()].filter((id) => !canonicalIds.has(id));
+    const classifiedIds = new Set(this.readContextClassifications(projectId).map((item) => item.eventId));
+    const missingClassificationEventIds = canonical
+      .filter((event) => !classifiedIds.has(event.eventId)).map((event) => event.eventId);
     return {
       projectId,
       canonicalEvents: canonical.length,
@@ -424,7 +437,9 @@ export class ThreadStore {
       missingProjectionEventIds,
       duplicateProjectionEventIds,
       orphanProjectionEventIds,
-      ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 && orphanProjectionEventIds.length === 0,
+      missingClassificationEventIds,
+      ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
+        orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0,
     };
   }
 

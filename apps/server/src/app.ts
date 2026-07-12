@@ -1444,6 +1444,40 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return report;
   });
 
+  app.get<{ Params: { id: string } }>("/api/projects/:id/knowledge-promotions", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    return store.readKnowledgePromotions(request.params.id);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: import("@ponderosa/core").CreateKnowledgePromotionRequest;
+  }>("/api/projects/:id/knowledge-promotions", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const { sourceEventId, summary, idempotencyKey, expiresAt } = request.body ?? {};
+    if (!sourceEventId?.trim() || !summary?.trim() || !idempotencyKey?.trim()) {
+      return reply.code(400).send({ error: "sourceEventId, summary, and idempotencyKey are required" });
+    }
+    if (summary.length > 4000 || idempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "promotion fields exceed their limits" });
+    }
+    try {
+      const result = store.promoteKnowledge({
+        promotionId: randomUUID(),
+        sourceEventId,
+        organizationId: request.params.id,
+        summary: summary.trim(),
+        promotedBy: { kind: "user", userId: "local-operator" },
+        promotedAt: new Date().toISOString(),
+        idempotencyKey: idempotencyKey.trim(),
+        ...(expiresAt ? { expiresAt } : {}),
+      });
+      return reply.code(result.replayed ? 200 : 201).send(result);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "knowledge promotion failed" });
+    }
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/master-chats", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.listMasterChats(request.params.id);
