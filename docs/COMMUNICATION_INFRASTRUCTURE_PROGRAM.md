@@ -1,8 +1,13 @@
 # Communication and Organization Infrastructure Program
 
-Status: active program plan
+Status: completed historical program plan
 Owner: Program Director
 Strategy: gated strangler migration; no big-bang cutover
+
+> Historical note: promotion and share-later stages described below were removed.
+> Communication scope is now immutable. Only events created as broadcasts enter
+> future-agent context; sharing a direct or collaboration finding requires a new
+> broadcast, leaving the original event unchanged.
 
 ## Architectural invariants
 
@@ -11,7 +16,7 @@ Strategy: gated strangler migration; no big-bang cutover
 3. Collaboration always has one or more explicit stable agent-ID recipients.
 4. Display names and handles are mutable presentation attributes, never identity.
 5. Visibility in a chat or audit timeline does not imply future-context eligibility.
-6. Local and collaboration messages remain local unless an authorized promotion record makes selected knowledge organizational.
+6. Local and collaboration messages remain local permanently; organizational knowledge is created as a new broadcast.
 7. Canonical logs are append-only; SQLite and chat surfaces are rebuildable views.
 8. Delivery is at-least-once and presentation is idempotent.
 9. Supervision is event-driven; polling is bounded, jittered reconciliation only.

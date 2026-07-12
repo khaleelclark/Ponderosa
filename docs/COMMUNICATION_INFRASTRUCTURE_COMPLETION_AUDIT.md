@@ -20,13 +20,13 @@ Those operational gates must not be represented as completed by unit tests.
 |---|---|---|
 | Master Chat primary UI | Web Master Chat/Collaboration views, recipient picker, authoritative health consumer; web routing/responsive/identity tests | Implemented and verified |
 | Master Chat contains shared organizational knowledge | Main writes canonicalize as broadcasts; agent-to-agent delivery is confined to Collaboration; local/direct events classify `local_only` | Implemented and verified |
-| Local conversations excluded from shared context | Individual history remains thread-scoped; Collaboration context is delivered only to explicit recipients; golden promotion tests exclude raw local source | Implemented and verified |
+| Local conversations excluded from shared context | Individual history remains thread-scoped; Collaboration context is delivered only to explicit recipients; isolation tests exclude both from future agents | Implemented and verified |
 | Explicit Broadcast / Direct-to-user / Collaboration intents | `CommunicationIntent`, `/api/agent-messages`, runtime prompt, validation tests | Implemented and verified |
 | Server owns routing and mention rendering | Stable `recipientAgentIds`, explicit resolver, UI sends IDs, production rejects mention routing | Implemented and verified |
 | Direct Agent Chat is an audit timeline | Direct turns and output have canonical events plus `direct_agent_audit` projections; authoritative Direct reads use projection metadata | Implemented and verified |
 | One event, many projections, no duplicate records | Project event log plus tuple-unique projection ledger; multi-surface/idempotent retry tests | Implemented and verified |
 | Collaboration requires explicit recipients | Empty/stale/non-member validation; production-default legacy rejection; recipient-picker tests | Implemented and verified |
-| Curated shared history | Explicit classification and provenance-linked promotions; fresh-seed-only summary injection; cursor/compaction boundaries | Implemented and verified |
+| Immutable shared history | Broadcast intent is fixed at creation and is the only communication inherited by future agents | Implemented and verified |
 | Stable immutable IDs and hierarchy | UUID thread/agent IDs, server-bound delegation lineage, parent/child health projection and depth controls | Implemented and verified; effective-dated reassignment remains a pre-multi-tenant concern |
 | Eight lifecycle states and manager visibility | Health DTO/projector/UI, durable running/terminal/cancel transitions, compaction state, leases, aggregate project/room endpoints | Implemented and verified |
 | Bounded supervision without storms | Exception-oriented policy, one adaptive aggregate UI poll, no per-agent polling, 1,000-agent projection test | Implemented and verified |

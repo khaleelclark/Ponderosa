@@ -27,7 +27,6 @@ import type {
   CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
-  KnowledgePromotion,
   LegacyCommunicationBackfillRequest,
   LegacyCommunicationBackfillResponse,
   ProjectedCommunicationMessage,
@@ -92,7 +91,6 @@ import {
   communicationEventsPath,
   communicationContextPath,
   communicationProjectionsPath,
-  knowledgePromotionsPath,
   masterChatJsonPath,
   masterChatMessagesPath,
   masterChatsDir,
@@ -329,7 +327,6 @@ export class ThreadStore {
     projections: CommunicationProjection[];
     byTuple: Map<string, CommunicationProjection>;
   }>();
-  private readonly knowledgePromotionCache = new Map<string, KnowledgePromotion[]>();
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -408,7 +405,7 @@ export class ThreadStore {
     const file = communicationEventsPath(this.dataDir, event.projectId);
     const classification: CommunicationContextClassification = {
       eventId: event.eventId,
-      policy: event.intent === "broadcast" ? "organizational_candidate" : "local_only",
+      policy: event.intent === "broadcast" ? "organizational" : "local_only",
       classifiedAt: event.createdAt,
       classifiedBy: { kind: "system", component: "communication-router" },
     };
@@ -422,7 +419,7 @@ export class ThreadStore {
       if (!equivalent) throw new Error("communication idempotency collision");
       this.appendContextClassification(event.projectId, {
         eventId: idempotent.eventId,
-        policy: idempotent.intent === "broadcast" ? "organizational_candidate" : "local_only",
+        policy: idempotent.intent === "broadcast" ? "organizational" : "local_only",
         classifiedAt: idempotent.createdAt,
         classifiedBy: { kind: "system", component: "communication-router" },
       });
@@ -599,53 +596,6 @@ export class ThreadStore {
         }
       }
     }
-  }
-
-  promoteKnowledge(promotion: KnowledgePromotion): { promotion: KnowledgePromotion; replayed: boolean } {
-    if (!this.getProject(promotion.organizationId)) throw new Error("promotion organization not found");
-    const source = this.readCommunicationEvents(promotion.organizationId)
-      .find((event) => event.eventId === promotion.sourceEventId);
-    if (!source) throw new Error("promotion source event not found");
-    const classification = this.readContextClassifications(promotion.organizationId)
-      .find((candidate) => candidate.eventId === promotion.sourceEventId);
-    if (classification?.policy !== "local_only") throw new Error("only local knowledge requires promotion");
-    if (!promotion.summary.trim()) throw new Error("promotion summary is required");
-    const file = knowledgePromotionsPath(this.dataDir, promotion.organizationId);
-    let existing = this.knowledgePromotionCache.get(promotion.organizationId);
-    if (!existing) {
-      existing = readRepairableJsonl<KnowledgePromotion>(file, "knowledge promotion log", true);
-      this.knowledgePromotionCache.set(promotion.organizationId, existing);
-    }
-    const prior = promotion.idempotencyKey
-      ? existing.find((candidate) => candidate.idempotencyKey === promotion.idempotencyKey)
-      : existing.find((candidate) => candidate.promotionId === promotion.promotionId);
-    if (prior) {
-      const equivalent = prior.sourceEventId === promotion.sourceEventId && prior.summary === promotion.summary &&
-        JSON.stringify(prior.promotedBy) === JSON.stringify(promotion.promotedBy);
-      if (!equivalent) throw new Error("knowledge promotion idempotency collision");
-      return { promotion: prior, replayed: true };
-    }
-    appendFsyncedJsonl(file, [promotion]);
-    existing.push(promotion);
-    return { promotion, replayed: false };
-  }
-
-  readKnowledgePromotions(projectId: string): KnowledgePromotion[] {
-    if (!this.getProject(projectId)) throw new Error("promotion organization not found");
-    let cached = this.knowledgePromotionCache.get(projectId);
-    if (!cached) {
-      cached = readRepairableJsonl<KnowledgePromotion>(knowledgePromotionsPath(this.dataDir, projectId), "knowledge promotion log", true);
-      this.knowledgePromotionCache.set(projectId, cached);
-    }
-    return [...cached];
-  }
-
-  activeKnowledgePromotions(projectId: string, at = new Date().toISOString()): KnowledgePromotion[] {
-    const all = this.readKnowledgePromotions(projectId);
-    const superseded = new Set(all.flatMap((promotion) => promotion.supersedesPromotionId ? [promotion.supersedesPromotionId] : []));
-    const now = Date.parse(at);
-    return all.filter((promotion) => !superseded.has(promotion.promotionId) &&
-      (!promotion.expiresAt || Date.parse(promotion.expiresAt) > now));
   }
 
   /** Compare canonical events with legacy disk projections during shadow mode. */
