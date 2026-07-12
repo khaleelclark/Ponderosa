@@ -113,6 +113,11 @@ Direct Agent Chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because
 they are visible there.
 
+Reactions let users and agents communicate lightweight social signals without
+creating noisy prose messages. Reaction counts retain the identities of the user
+and agents who reacted, exposed on hover. Reacting never changes communication
+scope and never wakes an agent.
+
 For ordinary conversation, a plain Master Chat request creates shared work. The
 responsible agent reacts 👍 when it starts, can Direct Message the user with a
 question, private progress, or useful information, and Broadcasts its completed

@@ -236,7 +236,51 @@ describe("message reactions", () => {
     await waitForRun(author.id);
     expect(store.getReactionNotificationOutbox()).toEqual([]);
     const detail = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}` });
-    expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true }]);
+    expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] }]);
+    await app.close();
+  });
+
+  it("teaches an active agent to react and returns reactor identity", async () => {
+    const project = store.createProject({ label: "Agent reactions", hostPath: repoDir });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const reactor = store.createThread(project.id, { title: "Olympic", engine: "codex", masterChatId: room.id });
+    appendBroadcast(store, project.id, room.id, "Decision ready for review");
+    const target = store.getMasterChatMessages(room.id).find((message) => message.text === "Decision ready for review")!;
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const turn = await app.inject({
+      method: "POST", url: `/api/threads/${reactor.id}/messages`,
+      payload: { text: "#Olympic review the decision", sourceChannel: "main", sourceMasterChatId: room.id },
+    });
+    expect(turn.statusCode, turn.body).toBe(200);
+    await waitForSeedCount(1);
+    const seed = adapter.seeds[0]!;
+    expect(seed.environment?.PONDEROSA_AGENT_REACTION_URL).toBe("http://127.0.0.1:8787/api/agent-reactions");
+    expect(seed.prompt).toContain("Reactions are lightweight social signals, not messages");
+    expect(seed.prompt).toContain(`Decision ready for review [message id: ${target.id}]`);
+    const reaction = await app.inject({
+      method: "POST",
+      url: "/api/agent-reactions",
+      headers: { authorization: `Bearer ${seed.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+      payload: {
+        masterChatId: room.id,
+        channel: "main",
+        messageId: target.id,
+        emoji: "👀",
+        active: true,
+        idempotencyKey: "watch-decision",
+      },
+    });
+    expect(reaction.statusCode, reaction.body).toBe(200);
+    expect(reaction.json()).toMatchObject({ reactions: [{
+      emoji: "👀", count: 1, reactedByCurrentActor: true,
+      reactors: [{ kind: "agent", threadId: reactor.id, label: "Olympic" }],
+    }] });
+    expect(store.getMasterChatMessages(room.id).find((message) => message.id === target.id)?.reactions).toEqual([{
+      emoji: "👀", count: 1, reactedByCurrentActor: false,
+      reactors: [{ kind: "agent", threadId: reactor.id, label: "Olympic" }],
+    }]);
+    await cancelAndWait(app, reactor.id);
     await app.close();
   });
 });
@@ -535,7 +579,10 @@ describe("server chunk F", () => {
       expect.objectContaining({
         role: "user",
         text: "Fix the onboarding flow",
-        reactions: [expect.objectContaining({ emoji: "👍", count: 1 })],
+        reactions: [expect.objectContaining({
+          emoji: "👍", count: 1,
+          reactors: [expect.objectContaining({ kind: "agent", threadId: responsible.id, label: "Responsible" })],
+        })],
       }),
     ]);
     const completion = store.getMasterChatMessages(master.id)

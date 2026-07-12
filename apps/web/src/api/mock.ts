@@ -370,7 +370,10 @@ export const mockApi: PonderosaApi = {
     const target = (channel === "main" ? masterMessages[masterChatId] : collaborationMessages[masterChatId])?.find((item) => item.id === messageId);
     if (!target) throw new Error("message not found");
     const prior = target.reactions?.find((item) => item.emoji === emoji);
-    target.reactions = [...(target.reactions ?? []).filter((item) => item.emoji !== emoji), { emoji, count: Math.max(0, (prior?.count ?? 0) + (active ? 1 : -1)), reactedByCurrentActor: active }].filter((item) => item.count > 0);
+    const reactors = active
+      ? [...(prior?.reactors ?? []).filter((reactor) => reactor.kind !== "manager"), { kind: "manager" as const }]
+      : (prior?.reactors ?? []).filter((reactor) => reactor.kind !== "manager");
+    target.reactions = [...(target.reactions ?? []).filter((item) => item.emoji !== emoji), { emoji, count: reactors.length, reactedByCurrentActor: active, reactors }].filter((item) => item.count > 0);
     return { occurrenceId: crypto.randomUUID(), replayed: false, persistence: "recorded", notification: "not_applicable", reactions: target.reactions };
   },
   async sendDirectReply(masterChatId, request) {
