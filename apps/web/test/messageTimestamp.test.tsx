@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { createTheme, getContrastRatio } from "@mui/material/styles";
 import { describe, expect, it } from "vitest";
-import { formatMessageTimestamp, MessageTimestamp } from "../src/components/MessageTimestamp";
+import { formatMessageTimestamp, MessageActionsAndTimestamp, MessageTimestamp } from "../src/components/MessageTimestamp";
 
 describe("message timestamps", () => {
   it("shows an absolute local date and time while preserving the exact instant", () => {
@@ -40,5 +41,29 @@ describe("message timestamps", () => {
     expect(markup).toMatch(/>[^<]*2026[^<]*</);
     expect(markup).toContain("max-width:100%");
     expect(markup).toContain("overflow-wrap:anywhere");
+    expect(markup).toContain("color:inherit");
+    expect(markup).not.toContain("opacity:");
+  });
+
+  it.each(["light", "dark"] as const)(
+    "inherits timestamp colors with WCAG AA contrast in %s manager and agent bubbles",
+    (mode) => {
+      const theme = createTheme({ palette: { mode } });
+
+      expect(getContrastRatio(theme.palette.primary.contrastText, theme.palette.primary.main)).toBeGreaterThanOrEqual(4.5);
+      expect(getContrastRatio(theme.palette.text.primary, theme.palette.background.paper)).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
+  it("places the timestamp after the complete action region on every chat surface", () => {
+    const markup = renderToStaticMarkup(
+      <MessageActionsAndTimestamp
+        value="2026-07-11T14:05:06.789Z"
+        actions={<div><button>Reply</button><button>Reply Directly</button></div>}
+      />,
+    );
+
+    expect(markup.indexOf("Reply")).toBeLessThan(markup.indexOf("Reply Directly"));
+    expect(markup.indexOf("Reply Directly")).toBeLessThan(markup.indexOf("<time"));
   });
 });

@@ -1,6 +1,6 @@
 import type { ThreadDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedHandles } from "../src/mentions";
+import { agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedHandles, hasEveryoneMention } from "../src/mentions";
 
 const thread = (title: string): ThreadDto => ({
   id: title,
@@ -54,5 +54,15 @@ describe("agent mentions", () => {
   it("finds canonical handles without requiring a parent-chat update for every keystroke", () => {
     expect(findMentionedHandles("@bryce-canyon and @ACADIA @acadia", ["Bryce-Canyon", "Acadia"]))
       .toEqual(["Bryce-Canyon", "Acadia"]);
+  });
+
+  it("recognizes the reserved @everyone handle at a token boundary", () => {
+    expect(hasEveryoneMention("@EVERYONE, please check in")).toBe(true);
+    expect(hasEveryoneMention("email@everyone.example")).toBe(false);
+    expect(hasEveryoneMention("@everyoneElse")).toBe(false);
+  });
+
+  it("does not treat @everyone as a direct-agent mention outside collaboration", () => {
+    expect(findMentionedAgents("@everyone review", [thread("Bryce")])).toEqual([]);
   });
 });

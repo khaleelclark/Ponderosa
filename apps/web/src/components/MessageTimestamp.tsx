@@ -1,4 +1,5 @@
 import { Typography } from "@mui/material";
+import type { ReactNode } from "react";
 
 export interface FormattedTimestamp {
   dateTime: string;
@@ -54,14 +55,30 @@ export function MessageTimestamp({ value }: { value: string }): JSX.Element | nu
       variant="caption"
       sx={{
         display: "block",
+        color: "inherit",
         maxWidth: "100%",
         mt: 0.5,
-        opacity: 0.78,
         overflowWrap: "anywhere",
         textAlign: "end",
       }}
     >
       {timestamp.label}
     </Typography>
+  );
+}
+
+/** Keeps every chat surface's timestamp after its message actions. */
+export function MessageActionsAndTimestamp({
+  actions,
+  value,
+}: {
+  actions?: ReactNode;
+  value: string;
+}): JSX.Element {
+  return (
+    <>
+      {actions}
+      <MessageTimestamp value={value} />
+    </>
   );
 }

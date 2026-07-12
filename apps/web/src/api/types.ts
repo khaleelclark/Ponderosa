@@ -2,6 +2,8 @@ import type {
   ArtifactContentDto,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   CollaborationChatDetailDto,
+  CreateCollaborationMessageResponse,
+  CreateDirectReplyRequest,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
   CreateProjectRequest,
@@ -12,6 +14,7 @@ import type {
   UpdateThreadRequest,
   UpdateThreadMasterChatMembershipsRequest,
   EngineDto,
+  DirectReplyResponse,
   ImageAttachmentDto,
   ProjectDto,
   SendMessageRequest,
@@ -69,7 +72,8 @@ export interface PonderosaApi {
   updateMasterChat(masterChatId: string, patch: UpdateMasterChatRequest): Promise<MasterChatDto>;
   deleteMasterChat(masterChatId: string): Promise<void>;
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
-  sendCollaborationMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
+  sendCollaborationMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<CreateCollaborationMessageResponse>;
+  sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;
   cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;
   subscribeSubagents(masterChatId: string, lastSeenSeq: number | undefined, handlers: SubagentStreamHandlers): StreamSubscription;
