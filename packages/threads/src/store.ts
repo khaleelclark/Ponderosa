@@ -124,7 +124,7 @@ function reactionActorKey(actor: ReactionActor): string {
   return actor.kind === "manager" ? "manager" : `agent:${actor.threadId}`;
 }
 
-function readReactionLog(file: string): ReactionLogRecord[] {
+function readReactionLog(file: string, repair = false): ReactionLogRecord[] {
   if (!existsSync(file)) return [];
   const fd = openSync(file, "r+");
   try {
@@ -141,15 +141,17 @@ function readReactionLog(file: string): ReactionLogRecord[] {
       try {
         records.push(JSON.parse(line) as ReactionLogRecord);
         offset += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
-        if (index === completeCount - 1 && !text.endsWith("\n")) {
+        if (repair && index === completeCount - 1 && !text.endsWith("\n")) {
           writeSync(fd, "\n");
           fsyncSync(fd);
         }
       } catch (error) {
         const finalUnterminated = index === completeCount - 1 && !text.endsWith("\n");
         if (!finalUnterminated) throw new Error("reaction log contains non-tail corruption", { cause: error });
-        ftruncateSync(fd, offset);
-        fsyncSync(fd);
+        if (repair) {
+          ftruncateSync(fd, offset);
+          fsyncSync(fd);
+        }
       }
     }
     return records;
@@ -162,7 +164,13 @@ function appendReactionRecords(file: string, records: ReactionLogRecord[]): void
   if (!records.length) return;
   const fd = openSync(file, "a");
   try {
-    writeSync(fd, records.map((record) => JSON.stringify(record) + "\n").join(""));
+    const bytes = Buffer.from(records.map((record) => JSON.stringify(record) + "\n").join(""));
+    let written = 0;
+    while (written < bytes.length) {
+      const count = writeSync(fd, bytes, written, bytes.length - written);
+      if (count <= 0) throw new Error("reaction log append made no progress");
+      written += count;
+    }
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -673,7 +681,7 @@ export class ThreadStore {
       }
     }
     const file = reactionEventsPath(this.dataDir);
-    const records = readReactionLog(file);
+    const records = readReactionLog(file, true);
     const events = reactionOccurrences(records);
     const states = notificationStates(records);
     const actorKey = reactionActorKey(input.actor);
@@ -753,7 +761,7 @@ export class ThreadStore {
     this.client.exec("BEGIN IMMEDIATE");
     try {
       const file = reactionEventsPath(this.dataDir);
-      const records = readReactionLog(file);
+      const records = readReactionLog(file, true);
       const event = reactionOccurrences(records).find((candidate) => candidate.occurrenceId === occurrenceId);
       if (!event) throw new Error("reaction occurrence not found");
       const state = notificationStates(records).get(occurrenceId);

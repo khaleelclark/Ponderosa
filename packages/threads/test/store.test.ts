@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { LogEvent } from "../src/log-event.js";
@@ -149,6 +150,31 @@ describe("ThreadStore — canonical message reactions", () => {
     expect(readFileSync(file, "utf8")).not.toContain('{"kind":"occurrence"\n');
     writeFileSync(file, readFileSync(file, "utf8") + "not-json\n", "utf8");
     expect(() => store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toThrow("non-tail corruption");
+  });
+
+  it.each(["valid unterminated", "torn"])("keeps an unlocked %s reader non-mutating before a serialized writer", (shape) => {
+    const { room, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "first" });
+    const file = join(dir, "reaction-events.jsonl");
+    const original = readFileSync(file, "utf8");
+    writeFileSync(file, shape === "valid unterminated" ? original.trimEnd() : original + '{"kind":"occurrence"', "utf8");
+    const beforeRead = readFileSync(file);
+    expect(store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toHaveLength(1);
+    expect(readFileSync(file)).toEqual(beforeRead);
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "❤️", active: true, idempotencyKey: `second-${shape}` });
+    const lines = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { idempotencyKey?: string });
+    expect(lines.filter((line) => line.idempotencyKey).map((line) => line.idempotencyKey)).toEqual(["first", `second-${shape}`]);
+  });
+
+  it("recovers a real child SIGKILL torn append without losing or duplicating acknowledged records", () => {
+    const { room, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "🎉" as const, active: true, idempotencyKey: "acknowledged" };
+    const first = store.setMasterChatReaction(input);
+    const file = join(dir, "reaction-events.jsonl");
+    const child = spawnSync(process.execPath, ["-e", "const fs=require('fs');const f=process.argv[1];const fd=fs.openSync(f,'a');fs.writeSync(fd,'{\\\"kind\\\":\\\"occurrence\\\"');process.kill(process.pid,'SIGKILL')", file]);
+    expect(child.signal).toBe("SIGKILL");
+    expect(store.setMasterChatReaction(input).event.occurrenceId).toBe(first.event.occurrenceId);
+    expect(readFileSync(file, "utf8").trim().split("\n")).toHaveLength(1);
   });
 
   it("suppresses pending work when its room/message is deleted", () => {
