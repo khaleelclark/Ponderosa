@@ -957,6 +957,12 @@ describe("server chunk F", () => {
       orphanProjectionEventIds: [],
       ok: true,
     });
+    const reconciliation = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/communication-reconciliation`,
+    });
+    expect(reconciliation.statusCode).toBe(200);
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 3, linkedProjections: 3 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });

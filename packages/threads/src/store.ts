@@ -24,6 +24,7 @@ import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   CommunicationEvent,
+  CommunicationReconciliationReport,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -241,16 +242,6 @@ export interface MasterChatDeliveryIntent {
   /** The selector that authorized this recipient when the message was recorded. */
   audience?: "mention" | "everyone";
   delegatedRunId?: string;
-}
-
-export interface CommunicationReconciliationReport {
-  projectId: string;
-  canonicalEvents: number;
-  linkedProjections: number;
-  missingProjectionEventIds: string[];
-  duplicateProjectionEventIds: string[];
-  orphanProjectionEventIds: string[];
-  ok: boolean;
 }
 
 interface MasterChatMessageJson {

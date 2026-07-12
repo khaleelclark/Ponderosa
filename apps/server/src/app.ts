@@ -1437,6 +1437,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return project ?? reply.code(404).send({ error: "project not found" });
   });
 
+  app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const report = store.reconcileCommunicationEvents(request.params.id);
+    if (!report.ok) reply.code(409);
+    return report;
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/master-chats", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.listMasterChats(request.params.id);

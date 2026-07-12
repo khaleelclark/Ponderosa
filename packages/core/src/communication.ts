@@ -85,3 +85,14 @@ export interface KnowledgePromotion {
   supersedesPromotionId?: string;
   expiresAt?: string;
 }
+
+/** Shadow-migration parity report computed from canonical disk records. */
+export interface CommunicationReconciliationReport {
+  projectId: string;
+  canonicalEvents: number;
+  linkedProjections: number;
+  missingProjectionEventIds: string[];
+  duplicateProjectionEventIds: string[];
+  orphanProjectionEventIds: string[];
+  ok: boolean;
+}
