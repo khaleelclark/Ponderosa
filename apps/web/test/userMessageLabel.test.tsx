@@ -35,9 +35,11 @@ function renderMaster(message: MasterChatMessageDto, conversation: "main" | "col
       message={message}
       conversation={conversation}
       agentTitle={() => "Pinnacles"}
+      agentIdForHandle={() => undefined}
       onOpenAgent={vi.fn()}
       onReply={vi.fn()}
       onDirectReply={vi.fn()}
+      onReact={vi.fn()}
     />,
   );
 }
@@ -104,7 +106,8 @@ describe("user message labels on chat surfaces", () => {
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
     expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf(">Reply</button>"));
     expect(manager.indexOf(">Reply</button>")).toBeLessThan(manager.indexOf("<time"));
-    expect(agent).toContain("#everyone result");
+    expect(agent).toContain('data-message-tag="everyone"');
+    expect(agent).toContain("#everyone</span> result");
     expect(agent.indexOf(">Reply</button>")).toBeLessThan(agent.indexOf("Reply Directly"));
     expect(agent.indexOf("Reply Directly")).toBeLessThan(agent.indexOf("<time"));
   });

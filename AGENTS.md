@@ -98,6 +98,9 @@ pay-per-token provider API keys.
    let the server own routing. Display names and rendered `#labels` are presentation,
    never routing keys; `@` is reserved for project file/folder references. Agents
    choose recipients and content; they do not manually construct textual mentions.
+   In message history, recognized agent `#labels` navigate to that agent's Direct
+   Agent Chat. Reserved scope labels such as `#user`, `#broadcast`, and `#everyone`
+   remain visible presentation only and never become navigation targets.
 
 9. **Full host access is intentional and scoped by design.** Agents run as the
    host user with real fs/shell access (single-operator box). That is by design.

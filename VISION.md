@@ -69,6 +69,12 @@ audience and one delivery per addressed agent. Only an explicit `#everyone`
 action may wake every agent; passively projecting a Broadcast into audit
 timelines never starts a run.
 
+Agent `#names` in rendered message history are links to the corresponding Direct
+Agent Chat, making the visible recipient or referenced agent directly
+inspectable. Scope labels such as `#user`, `#broadcast`, and `#everyone` retain
+the same visual treatment but are not links because they identify an audience,
+not an agent.
+
 Important collaboration results do not automatically become Broadcasts. An agent
 must deliberately publish durable knowledge or deliberately tell the user. This
 keeps Master Chat useful and prevents coordination traffic from overwhelming the

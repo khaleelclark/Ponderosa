@@ -1,6 +1,6 @@
 import type { ThreadDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedHandles, hasEveryoneMention } from "../src/mentions";
+import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedHandles, hasEveryoneMention } from "../src/mentions";
 
 const thread = (title: string): ThreadDto => ({
   id: title,
@@ -70,5 +70,10 @@ describe("agent mentions", () => {
     expect(findMentionedAgents("#broadcast context #user note #everyone update", [
       thread("Broadcast"), thread("User"), thread("Everyone"),
     ])).toEqual([]);
+  });
+
+  it("resolves rendered agent tags to stable IDs without linking scope tags", () => {
+    expect(agentIdForMentionHandle([thread("Cabrillo")], "cAbRiLlO")).toBe("Cabrillo");
+    expect(agentIdForMentionHandle([thread("User")], "user")).toBeUndefined();
   });
 });

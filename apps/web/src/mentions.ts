@@ -1,5 +1,7 @@
 import type { ThreadDto } from "@ponderosa/core";
 
+const RESERVED_SCOPE_HANDLES = new Set(["broadcast", "user", "everyone"]);
+
 /** Stable, typeable handle derived from the agent's current display name. */
 export function agentMentionHandle(title: string): string {
   return title
@@ -32,13 +34,22 @@ export function hasEveryoneMention(text: string): boolean {
   return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
 }
 
+/** Resolve a displayed agent handle to its stable navigation identity. */
+export function agentIdForMentionHandle(
+  threads: readonly Pick<ThreadDto, "id" | "title">[],
+  handle: string,
+): string | undefined {
+  const normalized = handle.toLocaleLowerCase();
+  if (RESERVED_SCOPE_HANDLES.has(normalized)) return undefined;
+  return threads.find((thread) => agentMentionHandle(thread.title).toLocaleLowerCase() === normalized)?.id;
+}
+
 /** Resolve every distinct #tag against the agents currently in a master chat. */
 export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
-  const reserved = new Set(["broadcast", "user", "everyone"]);
   const byHandle = new Map(
     threads
       .map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread] as const)
-      .filter(([handle]) => !reserved.has(handle)),
+      .filter(([handle]) => !RESERVED_SCOPE_HANDLES.has(handle)),
   );
   return findMentionedHandles(text, byHandle.keys())
     .map((handle) => byHandle.get(handle.toLocaleLowerCase()))

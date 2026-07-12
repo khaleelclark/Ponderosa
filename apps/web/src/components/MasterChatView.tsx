@@ -44,7 +44,7 @@ import { activeCollaborationRecipients, allActiveRecipientIds, retainActiveRecip
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
-import { agentMentionHandle, findMentionedAgents } from "../mentions";
+import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
@@ -63,6 +63,7 @@ export function MasterChatMessage({
   message,
   conversation,
   agentTitle,
+  agentIdForHandle,
   compactViewport = false,
   onOpenAgent,
   onReply,
@@ -72,6 +73,7 @@ export function MasterChatMessage({
   message: MasterChatMessageDto;
   conversation: "main" | "collaboration";
   agentTitle(threadId: string | undefined): string;
+  agentIdForHandle(handle: string): string | undefined;
   compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
   onReply(message: MasterChatMessageDto): void;
@@ -126,7 +128,7 @@ export function MasterChatMessage({
             <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
           </Box>
         ) : null}
-        <ChatMarkdown>{message.text}</ChatMarkdown>
+        <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{message.text}</ChatMarkdown>
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
             {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
@@ -484,6 +486,7 @@ export function MasterChatView({
 
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
+  const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(threads, handle);
   const activeCollaborationAgents = activeCollaborationRecipients(threads);
   const mentionHandles = conversation === "collaboration"
     ? undefined
@@ -756,6 +759,7 @@ export function MasterChatView({
                 message={message}
                 conversation={conversation}
                 agentTitle={agentTitle}
+                agentIdForHandle={agentIdForHandle}
                 compactViewport={compactViewport}
                 onOpenAgent={onOpenAgent}
                 onReply={(selected) => {
