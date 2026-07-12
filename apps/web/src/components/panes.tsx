@@ -30,7 +30,7 @@ import {
 } from "@mui/material";
 import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -38,6 +38,8 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
+import { MessageSenderLabel } from "./MessageSenderLabel";
+import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -72,6 +74,85 @@ export function canSubmitComposerText(input: {
     !input.disabled &&
     !input.running &&
     (input.allowUnmentionedSend || input.mentionedHandles.length > 0)
+  );
+}
+
+const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
+  "image/png", "image/jpeg", "image/webp", "application/pdf",
+  "text/plain", "application/json", "application/zip",
+]);
+const COMPOSER_MAX_FILES = 4;
+const COMPOSER_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const COMPOSER_MAX_MESSAGE_BYTES = 24 * 1024 * 1024;
+
+export function filesFromClipboard(
+  items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>,
+  fallback: ArrayLike<File> = [],
+): File[] {
+  const extracted = Array.from(items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+  return extracted.length > 0 ? extracted : Array.from(fallback);
+}
+
+export function selectComposerFiles(current: File[], candidates: File[]): { accepted: File[]; error?: string } {
+  const accepted: File[] = [];
+  let bytes = current.reduce((total, file) => total + file.size, 0);
+  for (const file of candidates) {
+    if (
+      current.length + accepted.length < COMPOSER_MAX_FILES &&
+      COMPOSER_ACCEPTED_MEDIA_TYPES.has(file.type) &&
+      file.size <= COMPOSER_MAX_FILE_BYTES &&
+      bytes + file.size <= COMPOSER_MAX_MESSAGE_BYTES
+    ) {
+      accepted.push(file);
+      bytes += file.size;
+    }
+  }
+  const rejected = candidates.length - accepted.length;
+  return {
+    accepted,
+    error: rejected > 0
+      ? `${rejected} pasted or selected ${rejected === 1 ? "file was" : "files were"} not attached. Use up to 4 supported files, 8 MiB each and 24 MiB total.`
+      : undefined,
+  };
+}
+
+type ComposerAttachmentState = { files: File[]; error?: string };
+type ComposerAttachmentAction =
+  | { type: "add"; candidates: File[] }
+  | { type: "remove"; index: number }
+  | { type: "clear" };
+
+export function composerAttachmentReducer(
+  state: ComposerAttachmentState,
+  action: ComposerAttachmentAction,
+): ComposerAttachmentState {
+  if (action.type === "clear") return { files: [] };
+  if (action.type === "remove") return { files: state.files.filter((_, index) => index !== action.index) };
+  const selection = selectComposerFiles(state.files, action.candidates);
+  return {
+    files: selection.accepted.length > 0 ? [...state.files, ...selection.accepted] : state.files,
+    error: selection.error,
+  };
+}
+
+function ComposerAttachment({ file, onRemove }: { file: File; onRemove(): void }): JSX.Element {
+  const [preview, setPreview] = useState<string>();
+  useLayoutEffect(() => {
+    if (!file.type.startsWith("image/")) return undefined;
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  return (
+    <Box sx={{ position: "relative", minWidth: 0, maxWidth: 180 }}>
+      {preview ? <Box component="a" href={preview} target="_blank" rel="noreferrer" aria-label={`Open ${file.name}`}>
+        <Box component="img" src={preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
+      </Box> : <Typography variant="caption" sx={{ display: "block", p: 1, pr: 5, overflowWrap: "anywhere" }}>{file.name}<br />{file.size} bytes</Typography>}
+      <IconButton size="small" aria-label={`Remove ${file.name}`} onClick={onRemove} sx={{ position: "absolute", right: 0, top: 0, bgcolor: "background.paper", minWidth: 44, minHeight: 44 }}><CloseIcon fontSize="small" /></IconButton>
+    </Box>
   );
 }
 
@@ -120,6 +201,13 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
 
 export function replyFallbackText(text: string): string {
   return text.trim() || "Original message unavailable";
+}
+
+export function individualChatSenderLabel(
+  role: MessageDto["role"],
+  agentName: string,
+): string {
+  return role === "user" ? "You" : agentName.trim() || "Agent";
 }
 
 export function codeBlockText(children: ReactNode): string {
@@ -216,7 +304,27 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
-export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onReply?(message: MessageDto): void }): JSX.Element {
+export function UserMessageLabel(): JSX.Element {
+  return (
+    <Typography
+      variant="caption"
+      component="div"
+      sx={{ mb: 0.25, mr: 0.5, fontWeight: 700, color: "text.secondary", textAlign: "right" }}
+    >
+      User
+    </Typography>
+  );
+}
+
+export function ChatPane({
+  messages,
+  agentName = "Agent",
+  onReply,
+}: {
+  messages: MessageDto[];
+  agentName?: string;
+  onReply?(message: MessageDto): void;
+}): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
@@ -245,48 +353,66 @@ export function ChatPane({ messages, onReply }: { messages: MessageDto[]; onRepl
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
-      {chatMessages.map((message) => (
+      {chatMessages.map((message) => {
+        const senderLabel = individualChatSenderLabel(message.role, agentName);
+        return (
         <Box
           key={message.id}
           id={`message-${message.id}`}
+          component="article"
+          aria-label={`${senderLabel} message`}
           tabIndex={-1}
           sx={{
             alignSelf: message.role === "user" ? "flex-end" : "flex-start",
             maxWidth: "min(680px, 92%)",
-            px: 1.5,
-            py: 1,
-            borderRadius: 2,
-            bgcolor: message.role === "user" ? "primary.main" : "background.paper",
-            color: message.role === "user" ? "primary.contrastText" : "text.primary",
-            border: message.role === "assistant" ? 1 : 0,
-            borderColor: "divider",
-            boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+            minWidth: 0,
           }}
         >
-          {message.replyTo ? (
-            <Box
-              component="button"
-              onClick={() => {
-                const target = document.getElementById(`message-${message.replyTo!.messageId}`);
-                target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                target?.focus({ preventScroll: true });
-              }}
-              sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
-              aria-label="Go to replied-to message"
-            >
-              <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
-            </Box>
-          ) : null}
-          <ChatMarkdown>{message.text}</ChatMarkdown>
-          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
-          {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-            {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
-              <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-            </Box>)}
-          </Stack> : null}
-          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+          {message.role === "user" ? <UserMessageLabel /> : null}
+          <Box
+            data-message-bubble="true"
+            sx={{
+              px: 1.5,
+              py: 1,
+              borderRadius: 2,
+              bgcolor: message.role === "user" ? "primary.main" : "background.paper",
+              color: message.role === "user" ? "primary.contrastText" : "text.primary",
+              border: message.role === "assistant" ? 1 : 0,
+              borderColor: "divider",
+              boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+            }}
+          >
+            <MessageSenderLabel name={senderLabel} />
+            {message.replyTo ? (
+              <Box
+                component="button"
+                onClick={() => {
+                  const target = document.getElementById(`message-${message.replyTo!.messageId}`);
+                  target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  target?.focus({ preventScroll: true });
+                }}
+                sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
+                aria-label="Go to replied-to message"
+              >
+                <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
+              </Box>
+            ) : null}
+            <ChatMarkdown>{message.text}</ChatMarkdown>
+            {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+              {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
+                {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
+                  ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+                  : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
+              </Box>)}
+            </Stack> : null}
+            <MessageActionsAndTimestamp
+              value={message.createdAt}
+              actions={onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : undefined}
+            />
+          </Box>
         </Box>
-      ))}
+        );
+      })}
     </Stack>
   );
 }
@@ -627,6 +753,7 @@ export function Composer({
   onCancel,
   replyTo,
   onCancelReply,
+  replyLabel,
 }: {
   disabled: boolean;
   running: boolean;
@@ -641,9 +768,11 @@ export function Composer({
   onCancel?(): void;
   replyTo?: { text: string };
   onCancelReply?(): void;
+  replyLabel?: string;
 }): JSX.Element {
   const [text, setText] = useState("");
-  const [files, setFiles] = useState<Array<{ file: File; preview: string }>>([]);
+  const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
+  const files = attachments.files;
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [caret, setCaret] = useState(0);
@@ -668,6 +797,10 @@ export function Composer({
 
   const update = (next: string) => {
     setText(next);
+  };
+
+  const addFiles = (candidates: File[]) => {
+    dispatchAttachments({ type: "add", candidates });
   };
 
   // The `@partial` token immediately left of the caret, if any.
@@ -699,10 +832,9 @@ export function Composer({
 
   const send = () => {
     setSendError(undefined);
-    void Promise.resolve(onSend(text.trim(), files.map((item) => item.file))).then(() => {
+    void Promise.resolve(onSend(text.trim(), files)).then(() => {
       update("");
-      files.forEach((item) => URL.revokeObjectURL(item.preview));
-      setFiles([]);
+      dispatchAttachments({ type: "clear" });
       setCaret(0);
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."));
   };
@@ -725,29 +857,22 @@ export function Composer({
       {replyTo ? (
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5 }}>
           <Box sx={{ minWidth: 0, flex: 1, borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
-            <Typography variant="caption" color="text.secondary">Replying to</Typography>
+            <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
             <Typography variant="body2" noWrap>{replyTo.text}</Typography>
           </Box>
           <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-        {files.map((item, index) => <Box key={`${item.file.name}-${index}`} sx={{ position: "relative" }}>
-          <Box component="a" href={item.preview} target="_blank" rel="noreferrer" aria-label={`Open ${item.file.name}`}>
-            <Box component="img" src={item.preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
-          </Box>
-          <IconButton size="small" aria-label={`Remove ${item.file.name}`} onClick={() => { URL.revokeObjectURL(item.preview); setFiles((current) => current.filter((_, i) => i !== index)); }} sx={{ position: "absolute", right: -8, top: -8, bgcolor: "background.paper" }}><CloseIcon fontSize="small" /></IconButton>
-        </Box>)}
+        {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => dispatchAttachments({ type: "remove", index })} />)}
       </Stack> : null}
-      {sendError ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {sendError}</Alert> : null}
+      {(attachments.error ?? sendError) ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {attachments.error ?? sendError}</Alert> : null}
       <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} sx={{ alignItems: "flex-end" }}>
-        <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => {
-          const selected = Array.from(event.target.files ?? []).slice(0, 4 - files.length);
-          const valid = selected.filter((file) => file.size <= 8 * 1024 * 1024);
-          setFiles((current) => [...current, ...valid.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
+        <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
+          addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
         }} />
-        <Tooltip title="Attach images (PNG, JPEG, GIF, or WebP; 8 MiB each)"><span><IconButton aria-label="Attach images" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Attach or paste assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= COMPOSER_MAX_FILES} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
         <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
           <TextField
             fullWidth
@@ -773,6 +898,13 @@ export function Composer({
               setCaret(event.target.selectionStart ?? event.target.value.length);
               setHighlighted(0);
               setSuppressMenu(false);
+            }}
+            onPaste={(event) => {
+              if (disabled || running) return;
+              const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
+              if (pasted.length === 0) return;
+              event.preventDefault();
+              addFiles(pasted);
             }}
             onClick={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyUp={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
@@ -815,7 +947,9 @@ export function Composer({
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
               {mentionedBusyHandles.length > 0
                 ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — your message will be queued.`
-                : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
+                : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
+                  ? "Notifying every eligible agent in this collaboration room"
+                  : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
             </Typography>
           ) : null}
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>

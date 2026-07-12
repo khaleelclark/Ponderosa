@@ -6,6 +6,9 @@
 //     projects/
 //       <project-id>/
 //         project.json                 ← label, host path, createdAt
+//         communication-events.jsonl   ← canonical cross-surface communication
+//         communication-context.jsonl  ← explicit context eligibility
+//         communication-projections.jsonl ← rebuildable cross-surface placements
 //         master-chats/
 //           <master-chat-id>/
 //             master-chat.json         ← title, defaults, timestamps
@@ -28,6 +31,10 @@ export function projectsDir(dataDir: string): string {
   return path.join(dataDir, "projects");
 }
 
+export function reactionEventsPath(dataDir: string): string {
+  return path.join(dataDir, "reaction-events.jsonl");
+}
+
 export function projectDir(dataDir: string, projectId: string): string {
   return path.join(projectsDir(dataDir), projectId);
 }
@@ -35,6 +42,20 @@ export function projectDir(dataDir: string, projectId: string): string {
 export function projectJsonPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "project.json");
 }
+
+/** Canonical project-level communication log; chat surfaces are projections. */
+export function communicationEventsPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "communication-events.jsonl");
+}
+
+export function communicationContextPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "communication-context.jsonl");
+}
+
+export function communicationProjectionsPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "communication-projections.jsonl");
+}
+
 export function agentPresetsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "agent-presets.jsonl");
 }

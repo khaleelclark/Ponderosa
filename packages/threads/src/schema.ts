@@ -56,6 +56,7 @@ export const threadMasterChatMemberships = sqliteTable("thread_master_chat_membe
 
 export const masterChatMessages = sqliteTable("master_chat_messages", {
   id: text("id").primaryKey(),
+  communicationEventId: text("communication_event_id"),
   masterChatId: text("master_chat_id").notNull(),
   role: text("role").notNull(), // "user" | "assistant" | "system"
   text: text("text").notNull(),
@@ -70,6 +71,7 @@ export const masterChatMessages = sqliteTable("master_chat_messages", {
 
 export const messages = sqliteTable("messages", {
   id: text("id").primaryKey(),
+  communicationEventId: text("communication_event_id"),
   threadId: text("thread_id").notNull(),
   seq: integer("seq").notNull(),
   role: text("role").notNull(), // "user" | "assistant"

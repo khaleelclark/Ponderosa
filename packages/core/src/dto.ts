@@ -4,6 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TaskStatus } from "./events.js";
+import type { CommunicationIntent } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,8 @@ export interface UpdateMasterChatRequest {
 /** A message in the project-level master chat (a team group chat). */
 export interface MasterChatMessageDto {
   id: string;
+  /** Canonical cross-surface event identity, absent only on pre-migration history. */
+  communicationEventId?: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -89,6 +92,30 @@ export interface MasterChatMessageDto {
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
+  reactions?: MessageReactionDto[];
+}
+
+export type ReactionEmoji = "👍" | "👎" | "❤️" | "🎉" | "👀" | "🚀";
+export type ReactionActor = { kind: "manager" } | { kind: "agent"; threadId: string };
+
+export interface MessageReactionDto {
+  emoji: ReactionEmoji;
+  count: number;
+  reactedByCurrentActor: boolean;
+}
+
+export interface SetMessageReactionRequest {
+  emoji: ReactionEmoji;
+  active: boolean;
+  idempotencyKey: string;
+}
+
+export interface SetMessageReactionResponse {
+  occurrenceId: string;
+  replayed: boolean;
+  persistence: "recorded";
+  notification: "queued" | "delivered" | "suppressed" | "not_applicable";
+  reactions: MessageReactionDto[];
 }
 
 export interface MessageReferenceDto {
@@ -122,6 +149,38 @@ export interface CreateMasterChatMessageRequest {
   attachments?: ImageAttachmentDto[];
 }
 
+/** POST /api/master-chats/:id/collaboration/messages body. */
+export interface CreateCollaborationMessageRequest {
+  text: string;
+  /** Stable IDs resolved by the client; display handles are never routing input. */
+  recipientAgentIds: string[];
+  replyToMessageId?: string;
+}
+
+/** POST collaboration message response; recipients are the immutable resolved audience. */
+export interface CreateCollaborationMessageResponse {
+  message: MasterChatMessageDto;
+  audience: "mention" | "everyone";
+  notifiedAgentIds: string[];
+}
+
+/** POST /api/master-chats/:id/direct-replies body. */
+export interface CreateDirectReplyRequest {
+  text: string;
+  replyToMessageId: string;
+  targetAuthorThreadId: string;
+  attachmentIds?: string[];
+  /** Stable across retries; the server applies both durable effects once. */
+  idempotencyKey: string;
+}
+
+export interface DirectReplyResponse {
+  messageId: string;
+  targetAuthorThreadId: string;
+  replayed: boolean;
+  queued: boolean;
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────────
 
 /** Derived thread state (current branch/commit), from `state` events (SPEC §2). */
@@ -129,9 +188,6 @@ export interface ThreadState {
   branch?: string;
   commit?: string;
 }
-
-/** Current agent availability, derived from the thread's canonical run events. */
-export type AgentStatus = "idle" | "running" | "waiting" | "error";
 
 /** A feature-scoped unit of work (SPEC §2). Mirrors the `threads` projection. */
 export interface ThreadDto {
@@ -144,8 +200,6 @@ export interface ThreadDto {
   title: string;
   /** The engine currently bound to this thread. */
   activeEngine: EngineId;
-  /** Current lifecycle state. Task completion is intentionally not an agent state. */
-  status: AgentStatus;
   state: ThreadState;
   createdAt: string;
   updatedAt: string;
@@ -186,6 +240,8 @@ export interface UpdateThreadMasterChatMembershipsRequest {
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
   id: string;
+  /** Canonical cross-surface event identity, absent only on pre-migration history. */
+  communicationEventId?: string;
   threadId: string;
   seq: number;
   role: "user" | "assistant";
@@ -195,24 +251,45 @@ export interface MessageDto {
   attachments?: ImageAttachmentDto[];
 }
 
-/** A validated raster image stored beneath one thread's attachments directory. */
-export interface ImageAttachmentDto {
+export type AssetMediaType =
+  | "image/png" | "image/jpeg" | "image/webp"
+  | "application/pdf" | "text/plain" | "application/json" | "application/zip";
+
+/** A content-validated, thread-owned asset staged for or associated with a message. */
+export interface AssetDto {
   id: string;
   threadId: string;
   name: string;
-  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  mediaType: AssetMediaType;
   size: number;
-  width: number;
-  height: number;
-  /** Opaque API URL; never a host filesystem path. */
+  width?: number;
+  height?: number;
+  sha256?: string;
+  state?: "staged" | "associated";
+  createdAt?: string;
+  /** Opaque preview-or-download URL; never a host filesystem path. */
   url: string;
+  downloadUrl?: string;
+  previewUrl?: string;
+}
+
+/** Backward-compatible name retained while clients migrate to AssetDto. */
+export type ImageAttachmentDto = AssetDto;
+
+export interface AssetLimitsDto {
+  maxFileBytes: number;
+  maxRequestBytes: number;
+  maxAssetsPerMessage: number;
+  maxMessageBytes: number;
+  maxThreadBytes: number;
+  acceptedMediaTypes: AssetMediaType[];
 }
 
 export interface ImageAttachmentLimitsDto {
   maxFileBytes: number;
   maxRequestBytes: number;
   maxAttachmentsPerMessage: number;
-  acceptedMediaTypes: ImageAttachmentDto["mediaType"][];
+  acceptedMediaTypes: AssetMediaType[];
 }
 
 /** A Tasks-pane execution unit (SPEC §7 `tasks`). */
@@ -282,6 +359,7 @@ export interface StartedMessageResponse {
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
   mode: "seed" | "continue";
+  communicationEventId?: string;
 }
 
 /** POST /api/threads/:id/messages response when another turn is still active. */
@@ -289,21 +367,33 @@ export interface QueuedMessageResponse {
   queued: true;
   /** One-based position among follow-ups waiting for this agent. */
   position: number;
+  communicationEventId?: string;
 }
 
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
 export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
 
-/** Destinations available to an agent through its short-lived run capability. */
+/** Semantic communication requested by an agent. Routing is server-owned. */
+export type AgentCommunicationIntent = CommunicationIntent;
+/** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
-/** POST /api/agent-messages body. The server derives the author from the capability. */
-export interface SendAgentMessageRequest {
-  channel: AgentMessageChannel;
+interface AgentMessageRequestBase {
   text: string;
-  /** Stable across a transport retry so a collaboration tag is delivered once. */
+  /** Stable across a transport retry so every durable effect occurs once. */
   idempotencyKey?: string;
 }
+
+/** POST /api/agent-messages body. The server derives the author from the capability. */
+export type SendAgentMessageRequest = AgentMessageRequestBase & (
+  | { intent: "broadcast"; recipientAgentIds?: never }
+  | { intent: "direct_to_user"; recipientAgentIds?: never }
+  | {
+      intent: "collaboration";
+      /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
+      recipientAgentIds: string[];
+    }
+);
 
 /** POST /api/threads/:id/cancel response. */
 export interface CancelResponse {
@@ -470,6 +560,38 @@ export interface HealthDto {
   version: string;
 }
 
+/** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
+export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
+
+export type AgentLifecycleReason =
+  | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
+  | "delegation_queued" | "delegation_awaiting_disposition" | "delegation_blocked"
+  | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
+  | "task_completed" | "turn_completed" | "runtime_error"
+  | "session_rollover_scheduled" | "thread_cancelled"
+  | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled";
+
+export interface AgentHealthDto {
+  /** Stable thread identity; titles and mention handles are presentation only. */
+  agentId: string;
+  parentAgentId?: string;
+  childAgentIds: string[];
+  status: AgentLifecycleStatus;
+  /** Timestamp of the authoritative observation that selected `status`. */
+  statusTimestamp: string;
+  reason: AgentLifecycleReason;
+  /** Runtime generation and bounded liveness window, when work is active. */
+  executionId?: string;
+  leaseExpiresAt?: string;
+  runtimeOwnership?: "running" | "stalled" | "cancelling" | "interrupted";
+}
+
+export interface AgentHealthProjectionDto {
+  scope: { type: "project" | "master_chat"; id: string };
+  generatedAt: string;
+  agents: AgentHealthDto[];
+}
+
 export interface ReadinessCheckDto {
   ok: boolean;
   detail: string;
@@ -486,6 +608,7 @@ export interface ReadinessDto {
     dataDirectory: ReadinessCheckDto;
     projections: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
+    communicationMigration: ReadinessCheckDto;
   };
   runtimes: Array<{ id: string; authenticated: boolean; detail?: string }>;
 }

@@ -37,7 +37,7 @@ import {
   type AgentStatus,
 } from "../agents";
 
-type StatusFilter = "all" | "running" | "waiting" | "error" | "idle" | "unassigned";
+type StatusFilter = "all" | "running" | "waiting" | "completed" | "unassigned";
 
 export function AgentsTab({
   agents,
@@ -122,10 +122,7 @@ export function AgentsTab({
     if (statusFilter === "waiting" && status !== "waiting") {
       return false;
     }
-    if (statusFilter === "error" && status !== "error") {
-      return false;
-    }
-    if (statusFilter === "idle" && status !== "idle") {
+    if (statusFilter === "completed" && status !== "completed") {
       return false;
     }
     if (masterFilter !== "all" && !agentBelongsToMasterChat(agent, masterFilter)) {
@@ -139,7 +136,7 @@ export function AgentsTab({
       counts[status] += 1;
       return counts;
     },
-    { running: 0, waiting: 0, error: 0, idle: 0 } satisfies Record<AgentStatus, number>,
+    { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
 
   return (
@@ -168,12 +165,16 @@ export function AgentsTab({
           useFlexGap
           flexWrap="wrap"
           role="status"
-          aria-label={`${statusCounts.running} running, ${statusCounts.waiting} waiting, ${statusCounts.error} errors, ${statusCounts.idle} idle`}
+          aria-label={`${statusCounts.running} running, ${statusCounts.stalled} stalled, ${statusCounts.interrupted} interrupted, ${statusCounts.waiting} waiting, ${statusCounts.compacting} compacting, ${statusCounts.blocked} blocked, ${statusCounts.failed} failed, ${statusCounts.cancelled} cancelled, ${statusCounts.completed} completed`}
         >
           <Chip size="small" color="info" label={`${statusCounts.running} running`} />
+          {statusCounts.stalled ? <Chip size="small" color="error" label={`${statusCounts.stalled} stalled`} /> : null}
+          {statusCounts.interrupted ? <Chip size="small" color="error" label={`${statusCounts.interrupted} interrupted`} /> : null}
           <Chip size="small" color="warning" label={`${statusCounts.waiting} waiting`} />
-          <Chip size="small" color="error" label={`${statusCounts.error} errors`} />
-          <Chip size="small" label={`${statusCounts.idle} idle`} />
+          {statusCounts.compacting ? <Chip size="small" color="info" label={`${statusCounts.compacting} compacting`} /> : null}
+          {statusCounts.blocked ? <Chip size="small" color="error" label={`${statusCounts.blocked} blocked`} /> : null}
+          {statusCounts.failed ? <Chip size="small" color="error" label={`${statusCounts.failed} failed`} /> : null}
+          <Chip size="small" color="success" label={`${statusCounts.completed} completed`} />
         </Stack>
         <Box sx={{ maxWidth: "100%", overflowX: "auto", pb: 0.25 }}>
           <ToggleButtonGroup
@@ -187,8 +188,7 @@ export function AgentsTab({
             <ToggleButton value="all">All</ToggleButton>
             <ToggleButton value="running">Running</ToggleButton>
             <ToggleButton value="waiting">Waiting</ToggleButton>
-            <ToggleButton value="error">Error</ToggleButton>
-            <ToggleButton value="idle">Idle</ToggleButton>
+            <ToggleButton value="completed">Completed</ToggleButton>
             <ToggleButton value="unassigned">Unassigned</ToggleButton>
           </ToggleButtonGroup>
         </Box>

@@ -2,28 +2,69 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains ThreadDto/ThreadDetailDto.
 
-import type { AgentStatus, TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentLifecycleStatus, TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 
 export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {
   return agent.masterChatIds.includes(masterChatId);
 }
 
-export type { AgentStatus } from "@ponderosa/core";
+export type AgentStatus = AgentLifecycleStatus;
 
+export interface AgentLiveHints {
+  /** Live SSE run in progress for this agent. */
+  running?: boolean;
+  /** The last streamed event was an error. */
+  error?: boolean;
+}
+
+/**
+ * Derive the coarse agent status shown in lists and filters from the thread's
+ * tasks plus any live-stream hints. Live hints win over projected task state so
+ * a running agent reads as running the instant the stream reports it.
+ */
 export function deriveAgentStatus(
   detail: ThreadDetailDto | undefined,
+  hints: AgentLiveHints = {},
 ): AgentStatus {
-  return detail?.thread.status ?? "idle";
+  if (hints.running) {
+    return "running";
+  }
+  const tasks = detail?.tasks ?? [];
+  if (tasks.some((task) => task.status === "running")) {
+    return "running";
+  }
+  if (tasks.some((task) => task.status === "waiting_approval")) {
+    return "waiting";
+  }
+  if (hints.error) {
+    return "failed";
+  }
+  if (tasks.length > 0 && tasks.every((task) => task.status === "done")) {
+    return "completed";
+  }
+  return "idle";
 }
 
 export function agentStatusLabel(status: AgentStatus): string {
   switch (status) {
     case "running":
       return "Running";
+    case "stalled":
+      return "Stalled";
+    case "interrupted":
+      return "Interrupted";
     case "waiting":
       return "Waiting";
-    case "error":
-      return "Error";
+    case "completed":
+      return "Completed";
+    case "blocked":
+      return "Blocked";
+    case "compacting":
+      return "Compacting";
+    case "cancelled":
+      return "Cancelled";
+    case "failed":
+      return "Failed";
     default:
       return "Idle";
   }
@@ -34,10 +75,16 @@ export function agentStatusColor(
 ): "success" | "warning" | "info" | "error" | "default" {
   switch (status) {
     case "running":
+    case "compacting":
       return "info";
     case "waiting":
       return "warning";
-    case "error":
+    case "completed":
+      return "success";
+    case "blocked":
+    case "failed":
+    case "stalled":
+    case "interrupted":
       return "error";
     default:
       return "default";

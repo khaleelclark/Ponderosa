@@ -3,21 +3,33 @@
 // Exposes NO HTTP (SPEC §7). SQLite is never a source of truth: everything here is
 // derivable from the logs + the *.json files, and `rebuildProjections()` proves it.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fstatSync,
+  fsyncSync,
+  ftruncateSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
-  AgentStatus,
+  CommunicationEvent,
+  CommunicationContextClassification,
+  CommunicationProjection,
+  CommunicationReconciliationReport,
+  LegacyCommunicationBackfillRequest,
+  LegacyCommunicationBackfillResponse,
+  ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -29,6 +41,9 @@ import type {
   MasterChatChannel,
   MasterChatDto,
   MasterChatMessageDto,
+  MessageReactionDto,
+  ReactionActor,
+  ReactionEmoji,
   MessageDto,
   ProjectDto,
   TaskDto,
@@ -43,6 +58,8 @@ import type {
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
+import { messageId as projectedMessageId } from "./ids.js";
+import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
   initProjectionState,
@@ -71,16 +88,119 @@ import {
   eventsPath,
   masterChatDir,
   collaborationChatMessagesPath,
+  communicationEventsPath,
+  communicationContextPath,
+  communicationProjectionsPath,
   masterChatJsonPath,
   masterChatMessagesPath,
   masterChatsDir,
   projectJsonPath,
   agentPresetsPath,
   projectsDir,
+  reactionEventsPath,
   threadDir,
   threadJsonPath,
   threadsDir,
 } from "./paths.js";
+
+interface ReactionEventJson {
+  kind?: "occurrence";
+  occurrenceId: string;
+  idempotencyKey: string;
+  actor: ReactionActor;
+  masterChatId: string;
+  channel: MasterChatChannel;
+  messageId: string;
+  emoji: ReactionEmoji;
+  active: boolean;
+  createdAt: string;
+  notifyAuthorThreadId?: string;
+  notificationInitial: "pending" | "suppressed" | "not_applicable";
+}
+
+interface ReactionNotificationOutcomeJson {
+  kind: "notification_outcome";
+  occurrenceId: string;
+  outcome: "delivered" | "suppressed";
+  reason: string;
+  createdAt: string;
+}
+
+type ReactionLogRecord = ReactionEventJson | ReactionNotificationOutcomeJson;
+
+const REACTION_COOLDOWN_MS = 500;
+const MAX_REACTION_EVENTS = 100_000;
+const REACTION_EMOJIS = new Set<ReactionEmoji>(["👍", "👎", "❤️", "🎉", "👀", "🚀"]);
+
+function reactionActorKey(actor: ReactionActor): string {
+  return actor.kind === "manager" ? "manager" : `agent:${actor.threadId}`;
+}
+
+function readReactionLog(file: string, repair = false): ReactionLogRecord[] {
+  if (!existsSync(file)) return [];
+  const fd = openSync(file, "r+");
+  try {
+    const bytes = readFileSync(fd);
+    if (bytes.length === 0) return [];
+    const text = bytes.toString("utf8");
+    const lines = text.split("\n");
+    const completeCount = text.endsWith("\n") ? lines.length - 1 : lines.length;
+    const records: ReactionLogRecord[] = [];
+    let offset = 0;
+    for (let index = 0; index < completeCount; index += 1) {
+      const line = lines[index]!;
+      if (!line.trim()) { offset += Buffer.byteLength(line) + 1; continue; }
+      try {
+        records.push(JSON.parse(line) as ReactionLogRecord);
+        offset += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
+        if (repair && index === completeCount - 1 && !text.endsWith("\n")) {
+          writeSync(fd, "\n");
+          fsyncSync(fd);
+        }
+      } catch (error) {
+        const finalUnterminated = index === completeCount - 1 && !text.endsWith("\n");
+        if (!finalUnterminated) throw new Error("reaction log contains non-tail corruption", { cause: error });
+        if (repair) {
+          ftruncateSync(fd, offset);
+          fsyncSync(fd);
+        }
+      }
+    }
+    return records;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function appendReactionRecords(file: string, records: ReactionLogRecord[]): void {
+  if (!records.length) return;
+  const fd = openSync(file, "a");
+  try {
+    const bytes = Buffer.from(records.map((record) => JSON.stringify(record) + "\n").join(""));
+    let written = 0;
+    while (written < bytes.length) {
+      const count = writeSync(fd, bytes, written, bytes.length - written);
+      if (count <= 0) throw new Error("reaction log append made no progress");
+      written += count;
+    }
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function reactionOccurrences(records: ReactionLogRecord[]): ReactionEventJson[] {
+  return records.filter((record): record is ReactionEventJson => record.kind !== "notification_outcome");
+}
+
+function notificationStates(records: ReactionLogRecord[]): Map<string, "pending" | "delivered" | "suppressed" | "not_applicable"> {
+  const states = new Map<string, "pending" | "delivered" | "suppressed" | "not_applicable">();
+  for (const record of records) {
+    if (record.kind === "notification_outcome") states.set(record.occurrenceId, record.outcome);
+    else states.set(record.occurrenceId, record.notificationInitial);
+  }
+  return states;
+}
 
 interface ProjectJson {
   id: string;
@@ -127,12 +247,15 @@ export interface MasterChatDeliveryIntent {
   targetThreadId: string;
   relayDepth: number;
   mentionTrail: string[];
-  kind: "tag" | "delegation_completion";
+  kind: "direct" | "tag" | "delegation_completion";
+  /** The selector that authorized this recipient when the message was recorded. */
+  audience?: "mention" | "everyone";
   delegatedRunId?: string;
 }
 
 interface MasterChatMessageJson {
   id: string;
+  communicationEventId?: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -143,6 +266,7 @@ interface MasterChatMessageJson {
   messageReceiptKey?: string;
   deliveryOrderKey?: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
+  directReplyToAuthorThreadId?: string;
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
@@ -163,6 +287,29 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
+function communicationMessageProjection(threadId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
+  const event = stored.event;
+  if (event.type === "user_message") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+    ...(event.replyTo ? { replyToLegacyMessageId: event.replyTo.messageId } : {}),
+    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
+    ...(event.replyTo ? { replyTo: event.replyTo } : {}),
+    ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+  };
+  if (event.type === "text") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts, sequence: stored.seq,
+  };
+  if (event.type === "communication_projection") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+  };
+  return undefined;
+}
+
+function legacyCommunicationEventId(projectId: string, source: string, sourceId: string): string {
+  const hex = createHash("sha256").update(`ponderosa-legacy-communication\0${projectId}\0${source}\0${sourceId}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
 export class ThreadStore {
   private readonly db: Db;
   private readonly client: Database.Database;
@@ -170,6 +317,16 @@ export class ThreadStore {
   private readonly states = new Map<string, ProjectionState>();
   private readonly deliverySequenceFile: string;
   private deliverySequence: number;
+  private readonly communicationEventCache = new Map<string, {
+    events: CommunicationEvent[];
+    byId: Map<string, CommunicationEvent>;
+    byIdempotency: Map<string, CommunicationEvent>;
+  }>();
+  private readonly contextClassificationCache = new Map<string, Map<string, CommunicationContextClassification>>();
+  private readonly communicationProjectionCache = new Map<string, {
+    projections: CommunicationProjection[];
+    byTuple: Map<string, CommunicationProjection>;
+  }>();
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -184,6 +341,7 @@ export class ThreadStore {
     // on startup closes the crash window where a durable append succeeded but
     // the projection write did not, and keeps every read path deterministic.
     this.rebuildProjections();
+    for (const project of this.listProjects()) this.repairCommunicationProjectionLedger(project.id);
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -192,9 +350,491 @@ export class ThreadStore {
     return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
   }
 
+  private communicationIndex(projectId: string) {
+    let cached = this.communicationEventCache.get(projectId);
+    if (cached) return cached;
+    const events = readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log", true);
+    const byId = new Map(events.map((event) => [event.eventId, event]));
+    const byIdempotency = new Map<string, CommunicationEvent>();
+    for (const event of events) {
+      if (event.idempotencyKey) byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
+    }
+    cached = { events, byId, byIdempotency };
+    this.communicationEventCache.set(projectId, cached);
+    return cached;
+  }
+
+  private contextIndex(projectId: string): Map<string, CommunicationContextClassification> {
+    let cached = this.contextClassificationCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log", true);
+    cached = new Map(records.map((record) => [record.eventId, record]));
+    this.contextClassificationCache.set(projectId, cached);
+    return cached;
+  }
+
+  private projectionIndex(projectId: string) {
+    let cached = this.communicationProjectionCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log", true);
+    const byTuple = new Map(records.map((projection) => [
+      `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`, projection,
+    ]));
+    cached = { projections: [...byTuple.values()], byTuple };
+    this.communicationProjectionCache.set(projectId, cached);
+    return cached;
+  }
+
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
   get database(): Db {
     return this.db;
+  }
+
+  /**
+   * Append one canonical communication before creating any projections.
+   * Duplicate IDs are accepted only when the complete event is byte-equivalent,
+   * making transport retries idempotent while detecting identity collisions.
+   */
+  appendCommunicationEvent(event: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
+    if (!this.getProject(event.projectId)) throw new Error("communication project not found");
+    if (event.schemaVersion !== 1) throw new Error("unsupported communication schema version");
+    if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
+    if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
+      throw new Error("collaboration requires at least one recipient agent ID");
+    }
+    const file = communicationEventsPath(this.dataDir, event.projectId);
+    const classification: CommunicationContextClassification = {
+      eventId: event.eventId,
+      policy: event.intent === "broadcast" ? "organizational" : "local_only",
+      classifiedAt: event.createdAt,
+      classifiedBy: { kind: "system", component: "communication-router" },
+    };
+    const index = this.communicationIndex(event.projectId);
+    const idempotent = event.idempotencyKey
+      ? index.byIdempotency.get(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`) : undefined;
+    if (idempotent) {
+      const equivalent = idempotent.projectId === event.projectId && idempotent.masterChatId === event.masterChatId &&
+        idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
+        idempotent.text === event.text;
+      if (!equivalent) throw new Error("communication idempotency collision");
+      this.appendContextClassification(event.projectId, {
+        eventId: idempotent.eventId,
+        policy: idempotent.intent === "broadcast" ? "organizational" : "local_only",
+        classifiedAt: idempotent.createdAt,
+        classifiedBy: { kind: "system", component: "communication-router" },
+      });
+      return { event: idempotent, replayed: true };
+    }
+    const existing = index.byId.get(event.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
+      this.appendContextClassification(event.projectId, classification);
+      return { event: existing, replayed: true };
+    }
+    appendFsyncedJsonl(file, [event]);
+    index.events.push(event);
+    index.byId.set(event.eventId, event);
+    if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
+    this.appendContextClassification(event.projectId, classification);
+    return { event, replayed: false };
+  }
+
+  readCommunicationEvents(projectId: string): CommunicationEvent[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.communicationIndex(projectId).events];
+  }
+
+  getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return this.communicationIndex(projectId).byId.get(eventId);
+  }
+
+  private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
+    const file = communicationContextPath(this.dataDir, projectId);
+    const index = this.contextIndex(projectId);
+    const existing = index.get(classification.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(classification)) throw new Error("communication context classification collision");
+      return;
+    }
+    appendFsyncedJsonl(file, [classification]);
+    index.set(classification.eventId, classification);
+  }
+
+  readContextClassifications(projectId: string): CommunicationContextClassification[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.contextIndex(projectId).values()];
+  }
+
+  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    const eventExists = this.communicationIndex(projectId).byId.has(projection.eventId);
+    if (!eventExists) throw new Error("communication projection source event not found");
+    const file = communicationProjectionsPath(this.dataDir, projectId);
+    const index = this.projectionIndex(projectId);
+    const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
+    const existing = index.byTuple.get(tuple);
+    if (existing) {
+      if (!existing.message && projection.message) {
+        const enriched = { ...projection, revision: (existing.revision ?? 1) + 1 };
+        appendFsyncedJsonl(file, [enriched]);
+        const position = index.projections.findIndex((candidate) => candidate === existing);
+        if (position >= 0) index.projections[position] = enriched;
+        index.byTuple.set(tuple, enriched);
+        return { projection: enriched, replayed: false };
+      }
+      if (existing.message && projection.message) {
+        const enrichedMessage = {
+          ...existing.message,
+          ...(existing.message.sequence === undefined && projection.message.sequence !== undefined
+            ? { sequence: projection.message.sequence }
+            : {}),
+          ...(!existing.message.authorAgentId && projection.message.authorAgentId
+            ? { authorAgentId: projection.message.authorAgentId }
+            : {}),
+          ...(!existing.message.replyToLegacyMessageId && projection.message.replyToLegacyMessageId
+            ? { replyToLegacyMessageId: projection.message.replyToLegacyMessageId }
+            : {}),
+          ...(!existing.message.attachmentIds?.length && projection.message.attachmentIds?.length
+            ? { attachmentIds: projection.message.attachmentIds }
+            : {}),
+          ...(!existing.message.replyTo && projection.message.replyTo ? { replyTo: projection.message.replyTo } : {}),
+          ...(!existing.message.attachments?.length && projection.message.attachments?.length
+            ? { attachments: projection.message.attachments }
+            : {}),
+        };
+        if (JSON.stringify(enrichedMessage) !== JSON.stringify(existing.message)) {
+          const enriched = { ...existing, revision: (existing.revision ?? 1) + 1, message: enrichedMessage };
+          appendFsyncedJsonl(file, [enriched]);
+          const position = index.projections.findIndex((candidate) => candidate === existing);
+          if (position >= 0) index.projections[position] = enriched;
+          index.byTuple.set(tuple, enriched);
+          return { projection: enriched, replayed: false };
+        }
+      }
+      const sameMaterialization = existing.message && projection.message
+        && existing.message.role === projection.message.role
+        && (existing.message.renderedText ?? "") === (projection.message.renderedText ?? "");
+      if (projection.message && JSON.stringify(existing.message) !== JSON.stringify(projection.message) && !sameMaterialization) {
+        throw new Error("communication projection metadata collision");
+      }
+      // Delivery retries may create new runtime-local IDs and timestamps. Keep
+      // the first placement when the visible role and text are identical.
+      return { projection: existing, replayed: true };
+    }
+    appendFsyncedJsonl(file, [projection]);
+    index.projections.push(projection);
+    index.byTuple.set(tuple, projection);
+    return { projection, replayed: false };
+  }
+
+  readCommunicationProjections(projectId: string): CommunicationProjection[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.projectionIndex(projectId).projections];
+  }
+
+  readProjectedCommunicationMessages(
+    projectId: string,
+    surface: CommunicationProjection["surface"],
+    projectionKey: string,
+  ): ProjectedCommunicationMessage[] {
+    const events = this.communicationIndex(projectId).byId;
+    return this.projectionIndex(projectId).projections
+      .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey && projection.message)
+      .flatMap((projection) => {
+        const event = events.get(projection.eventId);
+        const message = projection.message;
+        if (!event || !message) return [];
+        return [{
+          eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
+          role: message.role, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
+          ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
+          ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
+          ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        }];
+      })
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
+  }
+
+  private repairCommunicationProjectionLedger(projectId: string): void {
+    const canonicalIds = new Set(this.readCommunicationEvents(projectId).map((event) => event.eventId));
+    if (canonicalIds.size === 0) return;
+    for (const master of this.listMasterChats(projectId)) {
+      for (const [surface, file] of [
+        ["master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
+        ["collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
+      ] as const) {
+        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+          if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
+            this.appendCommunicationProjection(projectId, {
+              eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
+              message: {
+                messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+                ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
+                ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+                ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+                ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+                ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+              },
+            });
+          }
+        }
+      }
+    }
+    for (const thread of this.listThreads(projectId)) {
+      for (const stored of this.readEvents(thread.id)) {
+        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message" || stored.event.type === "text"
+          ? stored.event.communicationEventId : undefined;
+        const message = communicationMessageProjection(thread.id, stored);
+        if (eventId && message && canonicalIds.has(eventId)) {
+          this.appendCommunicationProjection(projectId, {
+            eventId, surface: "direct_agent_audit", projectionKey: thread.id, projectedAt: stored.ts,
+            message,
+          });
+        }
+      }
+    }
+  }
+
+  /** Compare canonical events with legacy disk projections during shadow mode. */
+  reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
+    const canonical = this.readCommunicationEvents(projectId);
+    const canonicalIds = new Set(canonical.map((event) => event.eventId));
+    const projections = this.readCommunicationProjections(projectId);
+    const counts = new Map<string, number>();
+    for (const projection of projections) counts.set(projection.eventId, (counts.get(projection.eventId) ?? 0) + 1);
+    const tupleCounts = new Map<string, number>();
+    for (const projection of projections) {
+      const key = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
+      tupleCounts.set(key, (tupleCounts.get(key) ?? 0) + 1);
+    }
+    const missingProjectionEventIds = canonical
+      .filter((event) => !counts.has(event.eventId)).map((event) => event.eventId);
+    const duplicateProjectionEventIds = [...new Set(projections
+      .filter((projection) => (tupleCounts.get(`${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`) ?? 0) > 1)
+      .map((projection) => projection.eventId))];
+    const orphanProjectionEventIds = [...counts.keys()].filter((id) => !canonicalIds.has(id));
+    const classifiedIds = new Set(this.readContextClassifications(projectId).map((item) => item.eventId));
+    const missingClassificationEventIds = canonical
+      .filter((event) => !classifiedIds.has(event.eventId)).map((event) => event.eventId);
+    const missingProjectionMetadataEventIds = [...new Set(projections
+      .filter((projection) => (projection.surface === "master_chat" || projection.surface === "collaboration_chat" || projection.surface === "direct_agent_audit") && !projection.message)
+      .map((projection) => projection.eventId))];
+    const unlinkedLegacyMessageIds: string[] = [];
+    const projectionReadMismatchMessageIds: string[] = [];
+    for (const master of this.listMasterChats(projectId)) {
+      for (const channel of ["main", "collaboration"] as const) {
+        const legacy = this.getMasterChatMessages(master.id, channel);
+        const projected = new Map(this.getProjectedMasterChatMessages(master.id, channel).map((message) => [message.id, message]));
+        for (const message of legacy) {
+          if (!message.communicationEventId) {
+            unlinkedLegacyMessageIds.push(message.id);
+            continue;
+          }
+          const candidate = projected.get(message.id);
+          const parityKey = (item: MasterChatMessageDto) => JSON.stringify([
+            item.id, item.communicationEventId, item.masterChatId, item.role, item.text, item.createdAt,
+            item.authorThreadId, item.replyTo, item.attachments ?? [], item.reactions ?? [],
+          ]);
+          if (!candidate || parityKey(candidate) !== parityKey(message)) {
+            projectionReadMismatchMessageIds.push(message.id);
+          }
+        }
+      }
+    }
+    for (const thread of this.listThreads(projectId)) {
+      const projected = new Map(this.getProjectedThreadMessages(thread.id).map((message) => [message.id, message]));
+      for (const message of this.getMessages(thread.id)) {
+        if (!message.communicationEventId) {
+          unlinkedLegacyMessageIds.push(message.id);
+          continue;
+        }
+        const candidate = projected.get(message.id);
+        const parityKey = (item: MessageDto) => JSON.stringify([
+          item.id, item.communicationEventId, item.threadId, item.seq, item.role, item.text,
+          item.createdAt, item.replyTo, item.attachments ?? [],
+        ]);
+        if (!candidate || parityKey(candidate) !== parityKey(message)) {
+          projectionReadMismatchMessageIds.push(message.id);
+        }
+      }
+    }
+    return {
+      projectId,
+      canonicalEvents: canonical.length,
+      linkedProjections: projections.length,
+      missingProjectionEventIds,
+      duplicateProjectionEventIds,
+      orphanProjectionEventIds,
+      missingClassificationEventIds,
+      missingProjectionMetadataEventIds,
+      unlinkedLegacyMessageIds,
+      projectionReadMismatchMessageIds,
+      ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
+        orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
+        missingProjectionMetadataEventIds.length === 0 && unlinkedLegacyMessageIds.length === 0 &&
+        projectionReadMismatchMessageIds.length === 0,
+    };
+  }
+
+  /**
+   * Expand-only migration from legacy room/thread logs into canonical events.
+   * IDs are content-location deterministic, so a crash or repeated operator
+   * request resumes safely. Ambiguous Collaboration audiences are never guessed.
+   */
+  backfillLegacyCommunications(
+    projectId: string,
+    request: LegacyCommunicationBackfillRequest = {},
+  ): LegacyCommunicationBackfillResponse {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    const dryRun = request.dryRun ?? true;
+    const blocked: LegacyCommunicationBackfillResponse["blocked"] = [];
+    let candidates = 0;
+    let migrated = 0;
+    let alreadyLinked = 0;
+    const projectionByMessage = new Map<string, CommunicationProjection>(
+      this.readCommunicationProjections(projectId).flatMap((projection) => projection.message
+        ? [[`${projection.surface}\0${projection.projectionKey}\0${projection.message.messageId}`, projection] as const]
+        : []),
+    );
+    const senderFor = (role: MasterChatMessageJson["role"], authorThreadId?: string | null): CommunicationEvent["sender"] =>
+      authorThreadId ? { kind: "agent", agentId: authorThreadId }
+        : role === "user" ? { kind: "user", userId: "local-operator" }
+          : { kind: "system", component: "legacy-communication-backfill" };
+
+    for (const master of this.listMasterChats(projectId)) {
+      const memberIds = new Set(this.listThreads(projectId)
+        .filter((thread) => thread.masterChatIds.includes(master.id))
+        .map((thread) => thread.id));
+      for (const [channel, surface, file] of [
+        ["main", "master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
+        ["collaboration", "collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
+      ] as const) {
+        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+          const placementKey = `${surface}\0${master.id}\0${message.id}`;
+          if (message.communicationEventId || projectionByMessage.has(placementKey)) {
+            alreadyLinked += 1;
+            continue;
+          }
+          candidates += 1;
+          const inferred = channel === "collaboration"
+            ? [...new Set((message.deliveryIntents ?? []).map((intent) => intent.targetThreadId))]
+            : [];
+          const override = request.collaborationRecipientsByMessageId?.[message.id];
+          const recipients = [...new Set(override ?? inferred)];
+          if (channel === "collaboration" && recipients.length === 0) {
+            blocked.push({ source: "collaboration_chat", sourceId: message.id, reason: "explicit_recipients_required" });
+            continue;
+          }
+          if (channel === "collaboration" && recipients.some((id) => !memberIds.has(id))) {
+            blocked.push({ source: "collaboration_chat", sourceId: message.id, reason: "recipient_not_room_member" });
+            continue;
+          }
+          if (dryRun) continue;
+          const eventId = legacyCommunicationEventId(projectId, surface, message.id);
+          const event: CommunicationEvent = channel === "collaboration"
+            ? {
+                eventId, schemaVersion: 1, projectId, masterChatId: master.id,
+                sender: senderFor(message.role, message.authorThreadId), intent: "collaboration",
+                audience: { kind: "agents", agentIds: recipients as [string, ...string[]] },
+                text: message.text, createdAt: message.createdAt,
+                idempotencyKey: `legacy:${surface}:${message.id}`,
+              }
+            : {
+                eventId, schemaVersion: 1, projectId, masterChatId: master.id,
+                sender: senderFor(message.role, message.authorThreadId), intent: "broadcast",
+                audience: { kind: "organization", organizationId: projectId },
+                text: message.text, createdAt: message.createdAt,
+                idempotencyKey: `legacy:${surface}:${message.id}`,
+              };
+          this.appendCommunicationEvent(event);
+          const projection: CommunicationProjection = {
+            eventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
+            message: {
+              messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+              ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
+              ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+              ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+              ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+              ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+            },
+          };
+          this.appendCommunicationProjection(projectId, projection);
+          projectionByMessage.set(placementKey, projection);
+          migrated += 1;
+        }
+      }
+    }
+
+    for (const thread of this.listThreads(projectId)) {
+      for (const stored of this.readEvents(thread.id)) {
+        const message = communicationMessageProjection(thread.id, stored);
+        if (!message || (stored.event.type !== "user_message" && stored.event.type !== "text")) continue;
+        const placementKey = `direct_agent_audit\0${thread.id}\0${message.messageId}`;
+        if (stored.event.communicationEventId || projectionByMessage.has(placementKey)) {
+          alreadyLinked += 1;
+          continue;
+        }
+        candidates += 1;
+        if (dryRun) continue;
+        const eventId = legacyCommunicationEventId(projectId, "direct_agent_audit", message.messageId);
+        const event: CommunicationEvent = stored.event.type === "user_message"
+          ? {
+              eventId, schemaVersion: 1, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
+              sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+              audience: { kind: "agents", agentIds: [thread.id] }, text: stored.event.text,
+              createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
+            }
+          : {
+              eventId, schemaVersion: 1, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
+              sender: { kind: "agent", agentId: thread.id }, intent: "direct_to_user",
+              audience: { kind: "user", userId: "local-operator" }, text: stored.event.delta,
+              createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
+            };
+        this.appendCommunicationEvent(event);
+        const projection = {
+          eventId, surface: "direct_agent_audit" as const, projectionKey: thread.id,
+          projectedAt: stored.ts, message,
+        };
+        this.appendCommunicationProjection(projectId, projection);
+        projectionByMessage.set(placementKey, projection);
+        migrated += 1;
+      }
+    }
+    return { dryRun, candidates, migrated, alreadyLinked, blocked };
+  }
+
+  /** Mark executions whose durable start survived a daemon crash without a terminal record. */
+  recoverInterruptedExecutions(): string[] {
+    const recovered: string[] = [];
+    for (const project of this.listProjects()) {
+      for (const thread of this.listThreads(project.id)) {
+        const events = this.readEvents(thread.id);
+        let startedIndex = -1;
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index]!.event;
+          if (event.type === "agent_lifecycle" && event.status === "running") {
+            startedIndex = index;
+            break;
+          }
+        }
+        if (startedIndex < 0) continue;
+        const start = events[startedIndex]!;
+        const terminal = events.slice(startedIndex + 1).some((stored) =>
+          stored.event.type === "turn_done" || stored.event.type === "error" ||
+          (stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed"].includes(stored.event.status)));
+        if (terminal) continue;
+        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : undefined;
+        this.appendEvent(thread.id, {
+          type: "agent_lifecycle", status: "failed", reason: "execution_interrupted",
+          ...(executionId ? { executionId } : {}),
+        });
+        recovered.push(thread.id);
+      }
+    }
+    return recovered;
   }
 
   /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
@@ -404,11 +1044,12 @@ export class ThreadStore {
 
   appendMasterChatMessage(
     masterChatId: string,
-    input: CreateMasterChatMessageRequest,
+    input: CreateMasterChatMessageRequest & { directReplyToAuthorThreadId?: string },
     authorThreadId?: string,
     channel: MasterChatChannel = "main",
     deliveryIntents?: MasterChatDeliveryIntent[],
     messageReceiptKey?: string,
+    communicationEventId?: string,
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
@@ -416,17 +1057,29 @@ export class ThreadStore {
     const messagePath = channel === "collaboration"
       ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
       : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId);
+    const replyTo = input.replyToMessageId
+      ? this.masterChatReference(masterChatId, channel, input.replyToMessageId)
+      : undefined;
+    if (input.directReplyToAuthorThreadId) {
+      if (channel !== "main" || !replyTo || replyTo.authorThreadId !== input.directReplyToAuthorThreadId) {
+        throw new Error("direct reply target must be the author of the referenced main-chat message");
+      }
+      const target = this.getThread(input.directReplyToAuthorThreadId);
+      if (!target || target.archived || !target.masterChatIds.includes(masterChatId)) {
+        throw new Error("direct reply target is not an active agent in this master chat");
+      }
+    }
     const message: MasterChatMessageJson = {
       id: randomUUID(),
+      ...(communicationEventId ? { communicationEventId } : {}),
       masterChatId,
       role: input.role ?? "user",
       text: input.text,
       createdAt: now,
       authorThreadId: authorThreadId ?? null,
       channel,
-      ...(input.replyToMessageId
-        ? { replyTo: this.masterChatReference(masterChatId, channel, input.replyToMessageId) }
-        : {}),
+      ...(replyTo ? { replyTo } : {}),
+      ...(input.directReplyToAuthorThreadId ? { directReplyToAuthorThreadId: input.directReplyToAuthorThreadId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
@@ -442,6 +1095,7 @@ export class ThreadStore {
     );
     this.db.insert(masterChatMessages).values({
       id: message.id,
+      communicationEventId: message.communicationEventId ?? null,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -459,8 +1113,25 @@ export class ThreadStore {
     const jsonPath = masterChatJsonPath(this.dataDir, masterChat.projectId, masterChatId);
     const json = readJson<MasterChatJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
+    if (message.communicationEventId) {
+      this.appendCommunicationProjection(masterChat.projectId, {
+        eventId: message.communicationEventId,
+        surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
+        projectionKey: masterChatId,
+        projectedAt: now,
+        message: {
+          messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+          ...(authorThreadId ? { authorAgentId: authorThreadId } : {}),
+          ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+          ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        },
+      });
+    }
     return {
       id: message.id,
+      communicationEventId: message.communicationEventId,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -479,21 +1150,45 @@ export class ThreadStore {
   }> {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return [];
-    return readJsonLines<MasterChatMessageJson>(
-      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
-    ).flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
+    const messages = [
+      ...readJsonLines<MasterChatMessageJson>(masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)),
+      ...readJsonLines<MasterChatMessageJson>(collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)),
+    ];
+    return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
       message: {
         id: message.id,
+        communicationEventId: message.communicationEventId,
         masterChatId: message.masterChatId,
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
         authorThreadId: message.authorThreadId ?? undefined,
+        replyTo: message.replyTo,
+        attachments: message.attachments,
       },
       intent,
       messageReceiptKey: message.messageReceiptKey,
       deliveryOrderKey: message.deliveryOrderKey ?? `${message.createdAt}:${String(0).padStart(12, "0")}`,
     })));
+  }
+
+  getMasterChatMessageByReceiptKey(masterChatId: string, receiptKey: string): MasterChatMessageDto | undefined {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return undefined;
+    const message = readJsonLines<MasterChatMessageJson>(
+      masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+    ).find((candidate) => candidate.messageReceiptKey === receiptKey);
+    return message ? {
+      id: message.id,
+      communicationEventId: message.communicationEventId,
+      masterChatId: message.masterChatId,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      authorThreadId: message.authorThreadId ?? undefined,
+      replyTo: message.replyTo,
+      attachments: message.attachments,
+    } : undefined;
   }
 
   getMasterChatMessageDeliveryOrderKey(masterChatId: string, messageId: string): string | undefined {
@@ -504,7 +1199,149 @@ export class ThreadStore {
     ).find((message) => message.id === messageId)?.deliveryOrderKey;
   }
 
-  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
+  setMasterChatReaction(input: {
+    masterChatId: string; channel: MasterChatChannel; messageId: string; actor: ReactionActor;
+    emoji: ReactionEmoji; active: boolean; idempotencyKey: string;
+  }): { event: ReactionEventJson; replayed: boolean; notification: "pending" | "delivered" | "suppressed" | "not_applicable"; reactions: MessageReactionDto[] } {
+    this.client.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.setMasterChatReactionLocked(input);
+      this.client.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try { this.client.exec("ROLLBACK"); } catch { /* transaction did not begin */ }
+      throw error;
+    }
+  }
+
+  private setMasterChatReactionLocked(input: {
+    masterChatId: string; channel: MasterChatChannel; messageId: string; actor: ReactionActor;
+    emoji: ReactionEmoji; active: boolean; idempotencyKey: string;
+  }): { event: ReactionEventJson; replayed: boolean; notification: "pending" | "delivered" | "suppressed" | "not_applicable"; reactions: MessageReactionDto[] } {
+    if (!REACTION_EMOJIS.has(input.emoji)) throw new Error("unsupported reaction");
+    if (!input.idempotencyKey || input.idempotencyKey.length > 200) throw new Error("invalid idempotency key");
+    const master = this.getMasterChat(input.masterChatId);
+    if (!master || master.archived) throw new Error("master chat not found");
+    const message = this.getMasterChatMessages(input.masterChatId, input.channel)
+      .find((candidate) => candidate.id === input.messageId);
+    if (!message) throw new Error("message not found in this conversation");
+    if (input.actor.kind === "agent") {
+      const actor = this.getThread(input.actor.threadId);
+      if (!actor || actor.archived || !actor.masterChatIds.includes(input.masterChatId)) {
+        throw new Error("reaction actor is not an active member");
+      }
+    }
+    const file = reactionEventsPath(this.dataDir);
+    const records = readReactionLog(file, true);
+    const events = reactionOccurrences(records);
+    const states = notificationStates(records);
+    const actorKey = reactionActorKey(input.actor);
+    const prior = events.find((candidate) =>
+      reactionActorKey(candidate.actor) === actorKey && candidate.idempotencyKey === input.idempotencyKey,
+    );
+    if (prior) {
+      const same = prior.masterChatId === input.masterChatId && prior.channel === input.channel &&
+        prior.messageId === input.messageId && prior.emoji === input.emoji && prior.active === input.active;
+      if (!same) throw new Error("idempotency key was used for another reaction");
+      return { event: prior, replayed: true, notification: states.get(prior.occurrenceId) ?? prior.notificationInitial, reactions: this.getMessageReactions(input.masterChatId, input.channel, input.messageId, input.actor) };
+    }
+    if (events.length >= MAX_REACTION_EVENTS) throw new Error("reaction history bound reached");
+    const latest = [...events].reverse().find((candidate) => reactionActorKey(candidate.actor) === actorKey &&
+      candidate.masterChatId === input.masterChatId && candidate.channel === input.channel &&
+      candidate.messageId === input.messageId && candidate.emoji === input.emoji);
+    const now = new Date();
+    if (latest && now.getTime() - Date.parse(latest.createdAt) < REACTION_COOLDOWN_MS) {
+      throw new Error("reaction cooldown active");
+    }
+    const notifyTarget = message.authorThreadId && message.authorThreadId !== (input.actor.kind === "agent" ? input.actor.threadId : undefined)
+      ? this.getThread(message.authorThreadId) : undefined;
+    const canNotify = Boolean(notifyTarget && !notifyTarget.archived && notifyTarget.masterChatIds.includes(input.masterChatId));
+    const event: ReactionEventJson = {
+      kind: "occurrence",
+      occurrenceId: randomUUID(), idempotencyKey: input.idempotencyKey, actor: input.actor,
+      masterChatId: input.masterChatId, channel: input.channel, messageId: input.messageId,
+      emoji: input.emoji, active: input.active, createdAt: now.toISOString(),
+      ...(canNotify ? { notifyAuthorThreadId: message.authorThreadId } : {}),
+      notificationInitial: canNotify ? "pending" : message.authorThreadId ? "suppressed" : "not_applicable",
+    };
+    const superseded = [...events].reverse().find((candidate) =>
+      reactionActorKey(candidate.actor) === actorKey && candidate.masterChatId === input.masterChatId &&
+      candidate.channel === input.channel && candidate.messageId === input.messageId && candidate.emoji === input.emoji &&
+      states.get(candidate.occurrenceId) === "pending");
+    const writes: ReactionLogRecord[] = [];
+    if (superseded) writes.push({ kind: "notification_outcome", occurrenceId: superseded.occurrenceId, outcome: "suppressed", reason: "superseded", createdAt: now.toISOString() });
+    writes.push(event);
+    appendReactionRecords(file, writes);
+    return { event, replayed: false, notification: event.notificationInitial, reactions: this.getMessageReactions(input.masterChatId, input.channel, input.messageId, input.actor) };
+  }
+
+  getMessageReactions(masterChatId: string, channel: MasterChatChannel, messageId: string, currentActor: ReactionActor): MessageReactionDto[] {
+    const state = new Map<string, ReactionEventJson>();
+    for (const event of reactionOccurrences(readReactionLog(reactionEventsPath(this.dataDir)))) {
+      if (event.masterChatId === masterChatId && event.channel === channel && event.messageId === messageId) {
+        state.set(`${reactionActorKey(event.actor)}:${event.emoji}`, event);
+      }
+    }
+    return [...REACTION_EMOJIS].map((emoji) => {
+      const active = [...state.values()].filter((event) => event.emoji === emoji && event.active);
+      return { emoji, count: active.length, reactedByCurrentActor: active.some((event) => reactionActorKey(event.actor) === reactionActorKey(currentActor)) };
+    }).filter((reaction) => reaction.count > 0 || reaction.reactedByCurrentActor);
+  }
+
+  /** Rebuildable notification outbox. Reading revalidates current membership. */
+  getReactionNotificationOutbox(): Array<{ occurrenceId: string; targetThreadId: string; messageId: string; emoji: ReactionEmoji }> {
+    const records = readReactionLog(reactionEventsPath(this.dataDir));
+    const states = notificationStates(records);
+    const invalid: string[] = [];
+    const pending = reactionOccurrences(records).flatMap((event) => {
+      if (states.get(event.occurrenceId) !== "pending" || !event.notifyAuthorThreadId) return [];
+      const target = this.getThread(event.notifyAuthorThreadId);
+      const master = this.getMasterChat(event.masterChatId);
+      const messageExists = master && this.getMasterChatMessages(event.masterChatId, event.channel).some((message) => message.id === event.messageId);
+      if (!target || target.archived || !target.masterChatIds.includes(event.masterChatId) || !master || master.archived || !messageExists) {
+        invalid.push(event.occurrenceId);
+        return [];
+      }
+      return [{ occurrenceId: event.occurrenceId, targetThreadId: target.id, messageId: event.messageId, emoji: event.emoji }];
+    });
+    for (const occurrenceId of invalid) this.completeReactionNotification(occurrenceId, "suppressed", "membership_or_message_unavailable");
+    return pending;
+  }
+
+  completeReactionNotification(occurrenceId: string, outcome: "delivered" | "suppressed", reason: string = outcome): "delivered" | "suppressed" {
+    this.client.exec("BEGIN IMMEDIATE");
+    try {
+      const file = reactionEventsPath(this.dataDir);
+      const records = readReactionLog(file, true);
+      const event = reactionOccurrences(records).find((candidate) => candidate.occurrenceId === occurrenceId);
+      if (!event) throw new Error("reaction occurrence not found");
+      const state = notificationStates(records).get(occurrenceId);
+      if (state === "delivered" || state === "suppressed") { this.client.exec("COMMIT"); return state; }
+      let final = outcome;
+      const target = event.notifyAuthorThreadId ? this.getThread(event.notifyAuthorThreadId) : undefined;
+      const master = this.getMasterChat(event.masterChatId);
+      const messageExists = master && this.getMasterChatMessages(event.masterChatId, event.channel).some((message) => message.id === event.messageId);
+      if (!target || target.archived || !target.masterChatIds.includes(event.masterChatId) || !master || master.archived || !messageExists) final = "suppressed";
+      appendReactionRecords(file, [{ kind: "notification_outcome", occurrenceId, outcome: final, reason, createdAt: new Date().toISOString() }]);
+      this.client.exec("COMMIT");
+      return final;
+    } catch (error) {
+      try { this.client.exec("ROLLBACK"); } catch { /* no transaction */ }
+      throw error;
+    }
+  }
+
+  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main", currentActor: ReactionActor = { kind: "manager" }): MasterChatMessageDto[] {
+    const master = this.getMasterChat(masterChatId);
+    const backfillLinks = new Map<string, string>();
+    if (master) {
+      const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
+      for (const projection of this.projectionIndex(master.projectId).projections) {
+        if (projection.surface === surface && projection.projectionKey === masterChatId && projection.message) {
+          backfillLinks.set(projection.message.messageId, projection.eventId);
+        }
+      }
+    }
     return this.db
       .select()
       .from(masterChatMessages)
@@ -514,6 +1351,7 @@ export class ThreadStore {
       .filter((row) => row.channel === channel)
       .map((row) => ({
         id: row.id,
+        communicationEventId: row.communicationEventId ?? backfillLinks.get(row.id),
         masterChatId: row.masterChatId,
         role:
           row.role === "assistant" || row.role === "system"
@@ -524,7 +1362,38 @@ export class ThreadStore {
         authorThreadId: row.authorThreadId ?? undefined,
         replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
+        reactions: this.getMessageReactions(masterChatId, channel, row.id, currentActor),
       }));
+  }
+
+  /**
+   * Materialize a room timeline from canonical communication events and their
+   * projection ledger. Legacy rows are consulted only for ancillary snapshots
+   * (attachments and quoted replies) until those immutable payloads move into
+   * the canonical envelope; they do not select membership, ordering, or text.
+   */
+  getProjectedMasterChatMessages(
+    masterChatId: string,
+    channel: MasterChatChannel = "main",
+    currentActor: ReactionActor = { kind: "manager" },
+  ): MasterChatMessageDto[] {
+    const master = this.getMasterChat(masterChatId);
+    if (!master) return [];
+    const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
+    return this.readProjectedCommunicationMessages(master.projectId, surface, masterChatId).map((message) => {
+      return {
+        id: message.messageId,
+        communicationEventId: message.eventId,
+        masterChatId,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
+        ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        reactions: this.getMessageReactions(masterChatId, channel, message.messageId, currentActor),
+      };
+    });
   }
 
   private masterChatReference(masterChatId: string, channel: MasterChatChannel, messageId: string) {
@@ -681,6 +1550,15 @@ export class ThreadStore {
   }
 
   getMessages(threadId: string): MessageDto[] {
+    const thread = this.getThread(threadId);
+    const backfillLinks = new Map<string, string>();
+    if (thread) {
+      for (const projection of this.projectionIndex(thread.projectId).projections) {
+        if (projection.surface === "direct_agent_audit" && projection.projectionKey === threadId && projection.message) {
+          backfillLinks.set(projection.message.messageId, projection.eventId);
+        }
+      }
+    }
     return this.db
       .select()
       .from(messages)
@@ -689,6 +1567,7 @@ export class ThreadStore {
       .all()
       .map((r) => ({
         id: r.id,
+        communicationEventId: r.communicationEventId ?? backfillLinks.get(r.id),
         threadId: r.threadId,
         seq: r.seq,
         role: r.role === "user" ? "user" : "assistant",
@@ -697,6 +1576,26 @@ export class ThreadStore {
         replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
         attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
       }));
+  }
+
+  getProjectedThreadMessages(threadId: string): MessageDto[] {
+    const thread = this.getThread(threadId);
+    if (!thread) return [];
+    return this.readProjectedCommunicationMessages(thread.projectId, "direct_agent_audit", threadId)
+      .flatMap((message) => {
+        if (message.sequence === undefined || message.role === "system") return [];
+        return [{
+          id: message.messageId,
+          communicationEventId: message.eventId,
+          threadId,
+          seq: message.sequence,
+          role: message.role,
+          text: message.text,
+          createdAt: message.createdAt,
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        } satisfies MessageDto];
+      });
   }
 
   getTasks(threadId: string): TaskDto[] {
@@ -770,6 +1669,18 @@ export class ThreadStore {
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
     this.applyOps(threadId, projectId, ops);
+    const communicationEventId = event.type === "communication_projection" || event.type === "user_message" || event.type === "text"
+      ? event.communicationEventId : undefined;
+    const message = communicationMessageProjection(threadId, stored);
+    if (communicationEventId && message) {
+      this.appendCommunicationProjection(projectId, {
+        eventId: communicationEventId,
+        surface: "direct_agent_audit",
+        projectionKey: threadId,
+        projectedAt: stored.ts,
+        message,
+      });
+    }
     return stored;
   }
 
@@ -855,6 +1766,7 @@ export class ThreadStore {
             for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
               this.db.insert(masterChatMessages).values({
                 id: message.id,
+                communicationEventId: message.communicationEventId ?? null,
                 masterChatId: message.masterChatId,
                 role: message.role,
                 text: message.text,
@@ -1047,27 +1959,12 @@ export class ThreadStore {
         .orderBy(asc(threadMasterChatMemberships.position)).all().map((membership) => membership.masterChatId),
       title: row.title,
       activeEngine: row.activeEngine,
-      status: this.agentStatusOf(row.id),
       state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
-  }
-
-  /** Fold only lifecycle boundaries; task rows are historical and never authoritative. */
-  private agentStatusOf(threadId: string): AgentStatus {
-    let status: AgentStatus = "idle";
-    for (const { event } of this.logFor(threadId, this.projectIdOf(threadId)).readAll()) {
-      if (event.type === "user_message") status = "running";
-      else if (event.type === "task_update" && event.status === "waiting_approval" && status === "running") status = "waiting";
-      else if (event.type === "task_update" && event.status === "running" && status === "waiting") status = "running";
-      else if (event.type === "error") status = "error";
-      else if (event.type === "turn_done" && status !== "error") status = "idle";
-      else if (event.type === "turn_cancelled") status = "idle";
-    }
-    return status;
   }
 
 

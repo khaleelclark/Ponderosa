@@ -1,10 +1,12 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
+import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath } from "../src/paths.js";
+import { artifactContentPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -49,6 +51,255 @@ function seedThread(): { projectId: string; threadId: string } {
   return { projectId: project.id, threadId: thread.id };
 }
 
+describe("ThreadStore — canonical communication events", () => {
+  it("persists one fsynced project event and makes exact retries idempotent", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const event: CommunicationEvent = {
+      eventId: "018f5f17-7c22-7b00-8000-000000000001",
+      schemaVersion: 1,
+      projectId: project.id,
+      sender: { kind: "agent", agentId: "agent-a", executionId: "run-a" },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: ["agent-b"] },
+      text: "Review the routing contract.",
+      createdAt: "2026-07-12T00:00:00.000Z",
+      idempotencyKey: "review-routing",
+    };
+
+    expect(store.appendCommunicationEvent(event).replayed).toBe(false);
+    expect(store.appendCommunicationEvent(event)).toEqual({ event, replayed: true });
+    expect(store.appendCommunicationEvent({ ...event, eventId: "transport-retry", createdAt: "2026-07-12T00:00:01.000Z" }))
+      .toEqual({ event, replayed: true });
+    expect(store.readCommunicationEvents(project.id)).toEqual([event]);
+    expect(store.readContextClassifications(project.id)).toEqual([expect.objectContaining({
+      eventId: event.eventId, policy: "local_only",
+    })]);
+    expect(readFileSync(communicationEventsPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
+    expect(() => store.appendCommunicationEvent({ ...event, text: "Collision" })).toThrow("collision");
+  });
+
+  it("rejects unknown projects and runtime-empty collaboration audiences", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const base = {
+      eventId: "event-1", schemaVersion: 1 as const, projectId: project.id,
+      sender: { kind: "system" as const, component: "test" }, text: "Message",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    expect(() => store.appendCommunicationEvent({
+      ...base, projectId: "missing", intent: "broadcast",
+      audience: { kind: "organization", organizationId: "missing" },
+    })).toThrow("project not found");
+    expect(() => store.appendCommunicationEvent({
+      ...base, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [] },
+    } as unknown as CommunicationEvent)).toThrow("at least one recipient");
+  });
+
+  it("repairs a torn tail before appending and rejects interior corruption", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const file = communicationEventsPath(dir, project.id);
+    const event: CommunicationEvent = {
+      eventId: "event-1", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "system", component: "test" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "First", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.close();
+    writeFileSync(file, `${readFileSync(file, "utf8")}{\"eventId\":\"torn`, "utf8");
+    store = new ThreadStore(dir);
+    store.appendCommunicationEvent({ ...event, eventId: "event-2", text: "Second" });
+    expect(store.readCommunicationEvents(project.id).map((item) => item.eventId)).toEqual(["event-1", "event-2"]);
+
+    const valid = readFileSync(file, "utf8");
+    store.close();
+    writeFileSync(file, `{not-json}\n${JSON.stringify(event)}\n`, "utf8");
+    expect(() => new ThreadStore(dir)).toThrow("non-tail corruption");
+    writeFileSync(file, valid, "utf8");
+    store = new ThreadStore(dir);
+  });
+
+  it("reconciles and rebuilds a direct-agent projection by canonical event ID", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const event: CommunicationEvent = {
+      eventId: "event-direct", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "agent", agentId: thread.id }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" }, text: "Audit note",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendEvent(thread.id, { type: "communication_projection", communicationEventId: event.eventId, text: event.text });
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 1, linkedProjections: 1 });
+    expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
+
+    store.rebuildProjections();
+    expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
+  });
+
+  it("keeps a communication event's scope immutable", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const event: CommunicationEvent = {
+      eventId: "event-local", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "agent", agentId: "agent-a" }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" }, text: "Local finding",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    expect(() => store.appendCommunicationEvent({
+      ...event,
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+    })).toThrow("communication event ID collision");
+    expect(store.readCommunicationEvents(project.id)).toEqual([event]);
+    expect(store.readContextClassifications(project.id)).toEqual([
+      expect.objectContaining({ eventId: event.eventId, policy: "local_only" }),
+    ]);
+  });
+
+  it("accepts one event on multiple surfaces while deduplicating each projection tuple", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const event: CommunicationEvent = {
+      eventId: "event-multi", schemaVersion: 1, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [thread.id] }, text: "Review",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendMasterChatMessage(room.id, { text: event.text }, undefined, "collaboration", undefined, undefined, event.eventId);
+    store.appendEvent(thread.id, { type: "user_message", text: event.text, communicationEventId: event.eventId });
+    expect(store.appendCommunicationProjection(project.id, {
+      eventId: event.eventId, surface: "direct_agent_audit", projectionKey: thread.id,
+      projectedAt: "later retry timestamp",
+    }).replayed).toBe(true);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      canonicalEvents: 1, linkedProjections: 2, duplicateProjectionEventIds: [], ok: true,
+    });
+    expect(store.readProjectedCommunicationMessages(project.id, "collaboration_chat", room.id))
+      .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", thread.id))
+      .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
+  });
+
+  it("append-only enriches placement-only migration records for authoritative reads", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const event: CommunicationEvent = {
+      eventId: "event-enrich", schemaVersion: 1, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Canonical",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendCommunicationProjection(project.id, {
+      eventId: event.eventId, surface: "master_chat", projectionKey: room.id, projectedAt: event.createdAt,
+    });
+    store.appendMasterChatMessage(room.id, { text: event.text }, undefined, "main", undefined, undefined, event.eventId);
+    expect(store.readCommunicationProjections(project.id)).toEqual([
+      expect.objectContaining({ eventId: event.eventId, revision: 2, message: expect.objectContaining({ renderedText: event.text }) }),
+    ]);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      linkedProjections: 1, duplicateProjectionEventIds: [], missingProjectionMetadataEventIds: [], ok: true,
+    });
+  });
+
+  it("serves authoritative reply and attachment snapshots without reading the legacy room log", () => {
+    const project = store.createProject({ label: "Snapshots", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const firstEvent: CommunicationEvent = {
+      eventId: "snapshot-first", schemaVersion: 1, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "First", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(firstEvent);
+    const first = store.appendMasterChatMessage(room.id, { text: "First" }, undefined, "main", undefined, undefined, firstEvent.eventId)!;
+    const secondEvent = { ...firstEvent, eventId: "snapshot-second", text: "Reply", createdAt: "2026-07-12T00:01:00.000Z" };
+    store.appendCommunicationEvent(secondEvent);
+    store.appendMasterChatMessage(room.id, {
+      text: "Reply", replyToMessageId: first.id,
+      attachments: [{ id: "asset-1", threadId: "manager", name: "diagram.png", mediaType: "image/png", size: 42, url: "/api/assets/asset-1" }],
+    }, undefined, "main", undefined, undefined, secondEvent.eventId);
+    const expected = store.getMasterChatMessages(room.id);
+    writeFileSync(masterChatMessagesPath(dir, project.id, room.id), "", "utf8");
+    expect(store.getProjectedMasterChatMessages(room.id)).toEqual(expected);
+  });
+
+  it("backfills legacy timelines deterministically and blocks ambiguous collaboration", () => {
+    const project = store.createProject({ label: "Legacy", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const main = store.appendMasterChatMessage(room.id, { text: "Historical decision" })!;
+    const collaboration = store.appendMasterChatMessage(room.id, { text: "Historical local note" }, undefined, "collaboration")!;
+    store.appendEvent(thread.id, { type: "user_message", text: "Historical direct request" });
+    store.appendEvent(thread.id, { type: "text", delta: "Historical direct response" });
+
+    expect(store.backfillLegacyCommunications(project.id, { dryRun: true })).toMatchObject({
+      dryRun: true, candidates: 4, migrated: 0,
+      blocked: [{ source: "collaboration_chat", sourceId: collaboration.id, reason: "explicit_recipients_required" }],
+    });
+    const migrated = store.backfillLegacyCommunications(project.id, {
+      dryRun: false,
+      collaborationRecipientsByMessageId: { [collaboration.id]: [thread.id] },
+    });
+    expect(migrated).toMatchObject({ dryRun: false, candidates: 4, migrated: 4, blocked: [] });
+    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId)
+      .toEqual(expect.any(String));
+    expect(store.getMasterChatMessages(room.id, "collaboration").find((message) => message.id === collaboration.id)?.communicationEventId)
+      .toEqual(expect.any(String));
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", thread.id)).toHaveLength(2);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 4 });
+    store.close();
+    store = new ThreadStore(dir);
+    store.rebuildProjections();
+    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId)
+      .toEqual(expect.any(String));
+    expect(store.getProjectedThreadMessages(thread.id)).toHaveLength(2);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 4 });
+    expect(store.backfillLegacyCommunications(project.id, { dryRun: false })).toMatchObject({
+      candidates: 0, migrated: 0, alreadyLinked: 4, blocked: [],
+    });
+  });
+
+  it("recovers a durable execution start that has no terminal event after restart", () => {
+    const project = store.createProject({ label: "Recovery", hostPath: "/repo" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    store.appendEvent(thread.id, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "execution-before-crash",
+    });
+    store.close();
+    store = new ThreadStore(dir);
+
+    expect(store.recoverInterruptedExecutions()).toEqual([thread.id]);
+    expect(store.readEvents(thread.id).at(-1)?.event).toEqual({
+      type: "agent_lifecycle", status: "failed", reason: "execution_interrupted", executionId: "execution-before-crash",
+    });
+    expect(store.recoverInterruptedExecutions()).toEqual([]);
+  });
+
+  it("indexes sustained canonical writes without rescanning prior history", () => {
+    const project = store.createProject({ label: "Scale", hostPath: "/repo" });
+    for (let index = 0; index < 500; index += 1) {
+      const event: CommunicationEvent = {
+        eventId: `scale-${index}`, schemaVersion: 1, projectId: project.id,
+        sender: { kind: "system", component: "scale-test" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id }, text: `Event ${index}`,
+        createdAt: new Date(1_700_000_000_000 + index).toISOString(),
+      };
+      store.appendCommunicationEvent(event);
+      store.appendCommunicationProjection(project.id, {
+        eventId: event.eventId, surface: "master_chat", projectionKey: "scale-room", projectedAt: event.createdAt,
+        message: { messageId: `message-${index}`, role: "system", createdAt: event.createdAt },
+      });
+    }
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      canonicalEvents: 500, linkedProjections: 500, ok: true,
+    });
+  }, 20_000);
+});
+
 describe("ThreadStore — multi-master-chat membership", () => {
   it("rebuilds membership and removes only a deleted room", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
@@ -74,6 +325,125 @@ describe("ThreadStore — multi-master-chat membership", () => {
   });
 });
 
+describe("ThreadStore — canonical message reactions", () => {
+  function seedReactionRoom() {
+    const project = store.createProject({ label: "Reactions", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
+    const reactor = store.createThread(project.id, { title: "Reactor", engine: "codex", masterChatId: room.id });
+    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Done" }, author.id)!;
+    return { room, author, reactor, message };
+  }
+
+  it("replays actor-global idempotency without duplicate persistence or notification", () => {
+    const { room, author, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "👍" as const, active: true, idempotencyKey: "global-1" };
+    const first = store.setMasterChatReaction(input);
+    const replay = store.setMasterChatReaction(input);
+    expect(replay).toMatchObject({ replayed: true, event: { occurrenceId: first.event.occurrenceId } });
+    expect(store.getReactionNotificationOutbox()).toEqual([{ occurrenceId: first.event.occurrenceId, targetThreadId: author.id, messageId: message.id, emoji: "👍" }]);
+    expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("serializes pre-opened store instances on one durable idempotency occurrence", () => {
+    const { room, message } = seedReactionRoom();
+    const peer = new ThreadStore(dir);
+    try {
+      const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "❤️" as const, active: true, idempotencyKey: "cross-process-shape" };
+      const first = store.setMasterChatReaction(input);
+      const second = peer.setMasterChatReaction(input);
+      expect(second.event.occurrenceId).toBe(first.event.occurrenceId);
+      expect(second.replayed).toBe(true);
+      expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+    } finally {
+      peer.close();
+    }
+  });
+
+  it("rejects actor-global key reuse and cooldown by the exact occurrence tuple", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👀", active: true, idempotencyKey: "same" });
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "❤️", active: true, idempotencyKey: "same" })).toThrow("another reaction");
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👀", active: false, idempotencyKey: "next" })).toThrow("cooldown");
+  });
+
+  it("rebuilds aggregate and outbox from the canonical log and revalidates membership", () => {
+    const { room, author, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" });
+    store.close();
+    store = new ThreadStore(dir);
+    expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{ emoji: "🎉", count: 1, reactedByCurrentActor: true }]);
+    store.updateThread(author.id, { archived: true });
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+    expect(store.completeReactionNotification(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" }).event.occurrenceId, "delivered")).toBe("suppressed");
+  });
+
+  it("makes add/remove notification outcomes occurrence-correct and terminal retries idempotent", async () => {
+    const { room, message } = seedReactionRoom();
+    const add = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "add" });
+    await new Promise((resolve) => setTimeout(resolve, 510));
+    const remove = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: false, idempotencyKey: "remove" });
+    expect(store.getReactionNotificationOutbox().map((item) => item.occurrenceId)).toEqual([remove.event.occurrenceId]);
+    expect(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "add" }).notification).toBe("suppressed");
+    expect(store.completeReactionNotification(remove.event.occurrenceId, "delivered")).toBe("delivered");
+    expect(store.completeReactionNotification(remove.event.occurrenceId, "suppressed")).toBe("delivered");
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+  });
+
+  it("repairs only a torn final record and fails closed on non-tail corruption", () => {
+    const { room, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "👀" as const, active: true, idempotencyKey: "durable" };
+    const first = store.setMasterChatReaction(input);
+    const file = join(dir, "reaction-events.jsonl");
+    writeFileSync(file, readFileSync(file, "utf8") + '{"kind":"occurrence"', "utf8");
+    expect(store.setMasterChatReaction(input).event.occurrenceId).toBe(first.event.occurrenceId);
+    expect(readFileSync(file, "utf8")).not.toContain('{"kind":"occurrence"\n');
+    writeFileSync(file, readFileSync(file, "utf8") + "not-json\n", "utf8");
+    expect(() => store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toThrow("non-tail corruption");
+  });
+
+  it.each(["valid unterminated", "torn"])("keeps an unlocked %s reader non-mutating before a serialized writer", (shape) => {
+    const { room, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "first" });
+    const file = join(dir, "reaction-events.jsonl");
+    const original = readFileSync(file, "utf8");
+    writeFileSync(file, shape === "valid unterminated" ? original.trimEnd() : original + '{"kind":"occurrence"', "utf8");
+    const beforeRead = readFileSync(file);
+    expect(store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toHaveLength(1);
+    expect(readFileSync(file)).toEqual(beforeRead);
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "❤️", active: true, idempotencyKey: `second-${shape}` });
+    const lines = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { idempotencyKey?: string });
+    expect(lines.filter((line) => line.idempotencyKey).map((line) => line.idempotencyKey)).toEqual(["first", `second-${shape}`]);
+  });
+
+  it("recovers a real child SIGKILL torn append without losing or duplicating acknowledged records", () => {
+    const { room, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "🎉" as const, active: true, idempotencyKey: "acknowledged" };
+    const first = store.setMasterChatReaction(input);
+    const file = join(dir, "reaction-events.jsonl");
+    const child = spawnSync(process.execPath, ["-e", "const fs=require('fs');const f=process.argv[1];const fd=fs.openSync(f,'a');fs.writeSync(fd,'{\\\"kind\\\":\\\"occurrence\\\"');process.kill(process.pid,'SIGKILL')", file]);
+    expect(child.signal).toBe("SIGKILL");
+    expect(store.setMasterChatReaction(input).event.occurrenceId).toBe(first.event.occurrenceId);
+    expect(readFileSync(file, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("suppresses pending work when its room/message is deleted", () => {
+    const { room, message } = seedReactionRoom();
+    const occurrence = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "❤️", active: true, idempotencyKey: "deleted" }).event;
+    store.deleteMasterChat(room.id);
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+    expect(store.completeReactionNotification(occurrence.occurrenceId, "delivered")).toBe("suppressed");
+  });
+
+  it("rejects archived/non-member actors before writing and has zero thread events", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.updateThreadMasterChatMemberships(reactor.id, { masterChatIds: [] });
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "🚀", active: true, idempotencyKey: "denied" })).toThrow("active member");
+    expect(existsSync(join(dir, "reaction-events.jsonl"))).toBe(false);
+    expect((store.sqlite.prepare("SELECT count(*) AS count FROM events WHERE thread_id = ?").get(reactor.id) as { count: number }).count).toBe(0);
+  });
+});
+
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
   { type: "session", sessionId: "sess-abc" },
@@ -91,29 +461,6 @@ const RUN: LogEvent[] = [
 ];
 
 describe("ThreadStore — append + projection", () => {
-  it("derives one reliable agent lifecycle from canonical run boundaries", () => {
-    const { threadId } = seedThread();
-    expect(store.getThread(threadId)?.status).toBe("idle");
-
-    store.appendEvent(threadId, { type: "user_message", text: "go" });
-    expect(store.getThread(threadId)?.status).toBe("running");
-    store.appendEvent(threadId, { type: "task_update", taskId: "approval", status: "waiting_approval" });
-    expect(store.getThread(threadId)?.status).toBe("waiting");
-    store.appendEvent(threadId, { type: "task_update", taskId: "approval", status: "running" });
-    expect(store.getThread(threadId)?.status).toBe("running");
-    store.appendEvent(threadId, { type: "turn_done" });
-    expect(store.getThread(threadId)?.status).toBe("idle");
-
-    store.appendEvent(threadId, { type: "user_message", text: "again" });
-    store.appendEvent(threadId, { type: "error", message: "boom" });
-    store.appendEvent(threadId, { type: "turn_done" });
-    expect(store.getThread(threadId)?.status).toBe("error");
-    store.appendEvent(threadId, { type: "user_message", text: "retry" });
-    expect(store.getThread(threadId)?.status).toBe("running");
-    store.appendEvent(threadId, { type: "turn_cancelled", reason: "user" });
-    expect(store.getThread(threadId)?.status).toBe("idle");
-  });
-
   it("projects a full run into the four panes", () => {
     const { projectId, threadId } = seedThread();
     for (const ev of RUN) store.appendEvent(threadId, ev);
@@ -298,6 +645,43 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
     expect(store.getMasterChatMessages(master.id)[1]?.replyTo).toMatchObject({ messageId: first.id, text: "Original context" });
     expect(store.getMessages(thread.id)[1]?.replyTo).toMatchObject({ text: "Thread original" });
     expect(() => store.appendMasterChatMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
+  });
+
+  it("records direct replies only for the referenced active agent author", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Done" }, author.id)!;
+    const managerMessage = store.appendMasterChatMessage(master.id, { text: "Manager note" })!;
+
+    const direct = store.appendMasterChatMessage(master.id, {
+      text: "Please revise",
+      replyToMessageId: report.id,
+      directReplyToAuthorThreadId: author.id,
+    }, undefined, "main", [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }], "direct-receipt")!;
+    expect(direct.replyTo?.authorThreadId).toBe(author.id);
+    expect(store.getMasterChatMessageByReceiptKey(master.id, "direct-receipt")?.id).toBe(direct.id);
+    expect(store.getMasterChatDeliveryIntents(master.id)).toMatchObject([{ message: { id: direct.id }, intent: { kind: "direct", targetThreadId: author.id }, messageReceiptKey: "direct-receipt" }]);
+    expect(readFileSync(masterChatMessagesPath(dir, project.id, master.id), "utf8"))
+      .toContain(`"directReplyToAuthorThreadId":"${author.id}"`);
+    expect(() => store.appendMasterChatMessage(master.id, {
+      text: "Spoofed",
+      replyToMessageId: report.id,
+      directReplyToAuthorThreadId: other.id,
+    })).toThrow(/must be the author/);
+    expect(() => store.appendMasterChatMessage(master.id, {
+      text: "No agent author",
+      replyToMessageId: managerMessage.id,
+      directReplyToAuthorThreadId: author.id,
+    })).toThrow(/must be the author/);
+
+    store.updateThread(author.id, { archived: true });
+    expect(() => store.appendMasterChatMessage(master.id, {
+      text: "Archived",
+      replyToMessageId: report.id,
+      directReplyToAuthorThreadId: author.id,
+    })).toThrow(/not an active agent/);
   });
 });
 

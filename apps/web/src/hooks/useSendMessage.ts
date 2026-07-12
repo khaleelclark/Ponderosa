@@ -27,7 +27,7 @@ export function useSendMessage(threadId: string | undefined) {
         createdAt: new Date().toISOString(),
       };
       queryClient.setQueryData<ThreadDetailDto>(["thread", threadId], (detail) =>
-        detail ? { ...detail, thread: { ...detail.thread, status: "running" }, messages: [...detail.messages, optimistic] } : detail,
+        detail ? { ...detail, messages: [...detail.messages, optimistic] } : detail,
       );
       return { previous };
     },

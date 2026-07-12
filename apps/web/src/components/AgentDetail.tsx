@@ -102,7 +102,11 @@ export function AgentDetail({
 
   const running = stream.running || sendMessage.isPending;
 
-  const status = deriveAgentStatus(detail);
+  const errorHint = useMemo(
+    () => stream.timeline.at(-1)?.event.type === "error",
+    [stream.timeline],
+  );
+  const status = deriveAgentStatus(detail, { running: stream.running, error: errorHint });
 
   const cancelRun = useMutation({
     mutationFn: () => api.cancelRun(agentId),
@@ -198,7 +202,7 @@ export function AgentDetail({
     : undefined;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} onReply={setReplyTo} />,
+    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} onReply={setReplyTo} />,
     log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,

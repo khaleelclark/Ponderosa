@@ -56,7 +56,6 @@ const threads: ThreadDto[] = [
     masterChatIds: ["master-release"],
     title: "Chunk G web PWA",
     activeEngine: "codex",
-    status: "running",
     state: { branch: "feature/web-pwa", commit: "local" },
     createdAt: now,
     updatedAt: now,
@@ -68,7 +67,6 @@ const threads: ThreadDto[] = [
     masterChatIds: [],
     title: "SSE reconnect audit",
     activeEngine: "codex",
-    status: "waiting",
     state: { branch: "main", commit: "b7f4c2a" },
     createdAt: now,
     updatedAt: now,
@@ -80,7 +78,6 @@ const threads: ThreadDto[] = [
     masterChatIds: [],
     title: "Phone login regression",
     activeEngine: "codex",
-    status: "idle",
     state: { branch: "fix/login" },
     createdAt: now,
     updatedAt: now,
@@ -306,6 +303,20 @@ export const mockApi: PonderosaApi = {
     projects.push(project);
     return delay(project);
   },
+  getAgentHealth(projectId) {
+    const generatedAt = new Date().toISOString();
+    return delay({
+      scope: { type: "project" as const, id: projectId },
+      generatedAt,
+      agents: threads.filter((thread) => thread.projectId === projectId).map((thread) => {
+        const agentTasks = tasks[thread.id] ?? [];
+        const status = agentTasks.some((task) => task.status === "running") ? "running" as const
+          : agentTasks.some((task) => task.status === "waiting_approval") ? "waiting" as const
+            : agentTasks.length && agentTasks.every((task) => task.status === "done") ? "completed" as const : "idle" as const;
+        return { agentId: thread.id, childAgentIds: [], status, statusTimestamp: thread.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "task_waiting_approval" as const : status === "completed" ? "task_completed" as const : "no_active_work" as const };
+      }),
+    });
+  },
   listAgentPresets(projectId) { return delay(agentPresets.filter((preset) => preset.projectId === projectId)); },
   createAgentPreset(projectId, request) { const now = new Date().toISOString(); const preset: AgentPresetDto = { id: `preset-${Date.now()}`, projectId, ...request, enabled: request.enabled ?? true, createdAt: now, updatedAt: now }; agentPresets.push(preset); return delay(preset); },
   updateAgentPreset(id, patch) { const preset = agentPresets.find((item) => item.id === id); if (!preset) return Promise.reject(new Error("Preset not found")); Object.assign(preset, patch, { updatedAt: new Date().toISOString() }); return delay(preset); },
@@ -354,18 +365,35 @@ export const mockApi: PonderosaApi = {
     masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: request.text, createdAt: new Date().toISOString() }];
     await delay(undefined, 80);
   },
+  async setMessageReaction(masterChatId, channel, messageId, emoji, active) {
+    const target = (channel === "main" ? masterMessages[masterChatId] : collaborationMessages[masterChatId])?.find((item) => item.id === messageId);
+    if (!target) throw new Error("message not found");
+    const prior = target.reactions?.find((item) => item.emoji === emoji);
+    target.reactions = [...(target.reactions ?? []).filter((item) => item.emoji !== emoji), { emoji, count: Math.max(0, (prior?.count ?? 0) + (active ? 1 : -1)), reactedByCurrentActor: active }].filter((item) => item.count > 0);
+    return { occurrenceId: crypto.randomUUID(), replayed: false, persistence: "recorded", notification: "not_applicable", reactions: target.reactions };
+  },
+  async sendDirectReply(masterChatId, request) {
+    await this.sendMasterChatMessage(masterChatId, {
+      text: request.text,
+      replyToMessageId: request.replyToMessageId,
+    });
+    return { messageId: request.idempotencyKey, targetAuthorThreadId: request.targetAuthorThreadId, replayed: false, queued: false };
+  },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");
+    const message = {
+      id: "collaboration-message-" + Date.now(),
+      masterChatId,
+      role: "user" as const,
+      text: request.text,
+      createdAt: new Date().toISOString(),
+    };
     collaborationMessages[masterChatId] = [
       ...(collaborationMessages[masterChatId] ?? []),
-      {
-        id: "collaboration-message-" + Date.now(),
-        masterChatId,
-        role: request.role ?? "user",
-        text: request.text,
-        createdAt: new Date().toISOString(),
-      },
+      message,
     ];
+    return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
   },
   listSubagents() {
     return delay([]);
@@ -388,7 +416,6 @@ export const mockApi: PonderosaApi = {
       masterChatIds: request.masterChatId ? [request.masterChatId] : [],
       title: request.title,
       activeEngine: request.engine,
-      status: "idle",
       state: {},
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

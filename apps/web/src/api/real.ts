@@ -1,6 +1,9 @@
 import type {
   ArtifactContentDto,
+  AgentHealthProjectionDto,
   CollaborationChatDetailDto,
+  CreateCollaborationMessageRequest,
+  CreateCollaborationMessageResponse,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
   CreateProjectRequest,
@@ -66,6 +69,9 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
   },
+  getAgentHealth(projectId) {
+    return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
+  },
   listMasterChats(projectId) {
     return requestJson<MasterChatDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/master-chats");
   },
@@ -98,10 +104,21 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
     });
   },
-  async sendCollaborationMessage(masterChatId, request) {
-    await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
+  sendDirectReply(masterChatId, request) {
+    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/direct-replies`, {
       method: "POST",
-      body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
+      body: JSON.stringify(request),
+    });
+  },
+  setMessageReaction(masterChatId, channel, messageId, emoji, active, idempotencyKey) {
+    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/${channel}/messages/${encodeURIComponent(messageId)}/reaction`, {
+      method: "PUT", body: JSON.stringify({ emoji, active, idempotencyKey }),
+    });
+  },
+  async sendCollaborationMessage(masterChatId, request) {
+    return requestJson<CreateCollaborationMessageResponse>("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
+      method: "POST",
+      body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
   },
   listSubagents(masterChatId) {
@@ -184,7 +201,11 @@ export const realApi: PonderosaApi = {
   uploadAttachment(threadId, file) {
     return requestJson<ImageAttachmentDto>(`/api/threads/${encodeURIComponent(threadId)}/attachments`, {
       method: "POST",
-      headers: { "content-type": file.type || "application/octet-stream", "x-ponderosa-filename": file.name },
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-media-type": file.type || "application/octet-stream",
+        "x-ponderosa-filename": file.name,
+      },
       body: file,
     });
   },

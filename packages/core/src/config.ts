@@ -15,6 +15,9 @@ export interface PonderosaConfig {
   host: string;
   /** NODE_ENV passthrough. */
   nodeEnv: string;
+  communicationMode: "off" | "shadow";
+  communicationReadMode: "legacy" | "shadow" | "authoritative";
+  legacyRoutingMode: "accept" | "reject";
 }
 
 /**
@@ -42,11 +45,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`Invalid PONDEROSA_PORT: ${env.PONDEROSA_PORT}`);
   }
+  const communicationMode = env.PONDEROSA_COMMUNICATION_MODE ?? "shadow";
+  if (communicationMode !== "off" && communicationMode !== "shadow") {
+    throw new Error(`Invalid PONDEROSA_COMMUNICATION_MODE: ${communicationMode}`);
+  }
+  const communicationReadMode = env.PONDEROSA_COMMUNICATION_READ_MODE ?? "shadow";
+  if (communicationReadMode !== "legacy" && communicationReadMode !== "shadow" && communicationReadMode !== "authoritative") {
+    throw new Error(`Invalid PONDEROSA_COMMUNICATION_READ_MODE: ${communicationReadMode}`);
+  }
+  const legacyRoutingMode = env.PONDEROSA_LEGACY_ROUTING ?? "reject";
+  if (legacyRoutingMode !== "accept" && legacyRoutingMode !== "reject") {
+    throw new Error(`Invalid PONDEROSA_LEGACY_ROUTING: ${legacyRoutingMode}`);
+  }
+  if (communicationMode === "off" && communicationReadMode === "authoritative") {
+    throw new Error("PONDEROSA_COMMUNICATION_READ_MODE=authoritative requires canonical communication capture");
+  }
 
   return {
     dataDir,
     port,
     host: env.PONDEROSA_HOST ?? "0.0.0.0",
     nodeEnv: env.NODE_ENV ?? "development",
+    communicationMode,
+    communicationReadMode,
+    legacyRoutingMode,
   };
 }

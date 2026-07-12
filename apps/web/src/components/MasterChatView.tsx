@@ -5,10 +5,12 @@ import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutli
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -19,7 +21,6 @@ import {
   FormControl,
   IconButton,
   InputLabel,
-  Link,
   List,
   ListItem,
   ListItemButton,
@@ -34,20 +35,122 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDto, MasterChatMessageDto, ThreadDto } from "@ponderosa/core";
+import type { EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
+import { activeCollaborationRecipients, allActiveRecipientIds, retainActiveRecipientIds } from "../collaborationRecipients";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
+import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
-import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
+import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
+import { MessageSenderLabel } from "./MessageSenderLabel";
+import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
+
+export function MasterChatMessage({
+  message,
+  conversation,
+  agentTitle,
+  compactViewport = false,
+  onOpenAgent,
+  onReply,
+  onDirectReply,
+  onReact,
+}: {
+  message: MasterChatMessageDto;
+  conversation: "main" | "collaboration";
+  agentTitle(threadId: string | undefined): string;
+  compactViewport?: boolean;
+  onOpenAgent(agentId: string): void;
+  onReply(message: MasterChatMessageDto): void;
+  onDirectReply(message: MasterChatMessageDto): void;
+  onReact(message: MasterChatMessageDto, emoji: ReactionEmoji, active: boolean): void;
+}): JSX.Element {
+  const fromManager = !message.authorThreadId;
+  const showUserLabel = fromManager && message.role === "user";
+
+  return (
+    <Box
+      id={`master-message-${message.id}`}
+      component="article"
+      aria-label={`${fromManager ? "You" : agentTitle(message.authorThreadId)} message`}
+      tabIndex={-1}
+      sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
+    >
+      {showUserLabel ? <UserMessageLabel /> : null}
+      <Box
+        data-message-bubble="true"
+        sx={{
+          px: 1.5,
+          py: 1,
+          borderRadius: 2,
+          bgcolor: fromManager ? "primary.main" : "background.paper",
+          color: fromManager ? "primary.contrastText" : "text.primary",
+          border: fromManager ? 0 : 1,
+          borderColor: "divider",
+        }}
+      >
+        <Stack direction="row" spacing={0.5} sx={{ alignItems: "flex-start", minWidth: 0 }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorThreadId)} />
+          </Box>
+          {message.authorThreadId ? (
+            <IconButton
+              size="small"
+              aria-label={`Open agent ${agentTitle(message.authorThreadId)}`}
+              onClick={() => onOpenAgent(message.authorThreadId!)}
+              sx={{ color: "inherit", minWidth: 44, minHeight: 44, mt: -1, mr: -1 }}
+            >
+              <OpenInNewIcon fontSize="inherit" />
+            </IconButton>
+          ) : null}
+        </Stack>
+        {message.replyTo ? (
+          <Box component="button" aria-label="Go to replied-to message" onClick={() => {
+            const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
+            target?.scrollIntoView({ behavior: "smooth", block: "center" });
+            target?.focus({ preventScroll: true });
+          }} sx={{ display: "block", width: "100%", mb: .75, p: .75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}>
+            <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
+          </Box>
+        ) : null}
+        <ChatMarkdown>{message.text}</ChatMarkdown>
+        {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+          {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
+            {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
+              ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+              : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
+          </Box>)}
+        </Stack> : null}
+        <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
+          {(["👍", "❤️", "🎉", "👀"] as ReactionEmoji[]).map((emoji) => {
+            const reaction = message.reactions?.find((item) => item.emoji === emoji);
+            return <Button key={emoji} size="small" color="inherit" aria-pressed={reaction?.reactedByCurrentActor ?? false} aria-label={`${reaction?.reactedByCurrentActor ? "Remove" : "Add"} ${emoji} reaction`} onClick={() => onReact(message, emoji, !(reaction?.reactedByCurrentActor ?? false))}>{emoji}{reaction?.count ? ` ${reaction.count}` : ""}</Button>;
+          })}
+          <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
+          {conversation === "main" && message.authorThreadId ? (
+            <Button
+              size="small"
+              color="inherit"
+              aria-label={`Reply directly to ${agentTitle(message.authorThreadId)}`}
+              onClick={() => onDirectReply(message)}
+              sx={{ minHeight: compactViewport ? 44 : undefined }}
+            >
+              Reply Directly
+            </Button>
+          ) : null}
+        </Stack>} />
+      </Box>
+    </Box>
+  );
+}
 
 export function MasterChatView({
   masterChatId,
@@ -81,7 +184,21 @@ export function MasterChatView({
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
+  const [collaborationRecipientIds, setCollaborationRecipientIds] = useState<string[]>([]);
+  const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
+  const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
+  const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
   const [runSetupOpen, setRunSetupOpen] = useState(false);
+  const clearReply = () => {
+    if (directReplyRequestId && directReplyTargetId) {
+      const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
+      directReplyUploads.current.delete(directReplyRequestId);
+      void Promise.allSettled(uploaded.map((item) => api.deleteAttachment(directReplyTargetId, item.id)));
+    }
+    setReplyTo(undefined);
+    setDirectReplyTargetId(undefined);
+    setDirectReplyRequestId(undefined);
+  };
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -108,6 +225,10 @@ export function MasterChatView({
   const messages = compactDefined(detailQuery.data?.messages ?? []);
   const threads = compactDefined(detailQuery.data?.threads ?? []);
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
+  const activeRecipientKey = threads.filter((thread) => !thread.archived).map((thread) => thread.id).join("\0");
+  useEffect(() => {
+    setCollaborationRecipientIds((selected) => retainActiveRecipientIds(selected, threads));
+  }, [activeRecipientKey]);
   useLayoutEffect(() => {
     if (
       displayedMasterChatId.current !== masterChatId ||
@@ -184,7 +305,7 @@ export function MasterChatView({
       return agent;
     },
     onSuccess: () => {
-      setReplyTo(undefined);
+      clearReply();
       invalidate();
     },
   });
@@ -206,7 +327,7 @@ export function MasterChatView({
       })));
     },
     onSuccess: (responses, variables) => {
-      setReplyTo(undefined);
+      clearReply();
       invalidate();
       const queuedTitles = variables.agentIds
         .filter((_, index) => responses[index]?.queued)
@@ -222,10 +343,39 @@ export function MasterChatView({
     },
   });
 
+  const directReply = useMutation({
+    mutationFn: async ({ targetId, text, files, replyToMessageId, requestId }: { targetId: string; text: string; files: File[]; replyToMessageId: string; requestId: string }) => {
+      let attachments = directReplyUploads.current.get(requestId);
+      if (!attachments) {
+        attachments = await uploadDirectReplyFiles(
+          files,
+          (file) => api.uploadAttachment(targetId, file),
+          (item) => api.deleteAttachment(targetId, item.id),
+        );
+        directReplyUploads.current.set(requestId, attachments);
+      }
+      return api.sendDirectReply(masterChatId, {
+        text,
+        replyToMessageId,
+        targetAuthorThreadId: targetId,
+        attachmentIds: attachments.map((item) => item.id),
+        idempotencyKey: requestId,
+      });
+    },
+    onSuccess: (response, variables) => {
+      directReplyUploads.current.delete(variables.requestId);
+      clearReply();
+      invalidate();
+      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["thread", response.targetAuthorThreadId] });
+    },
+  });
+
   const collaborate = useMutation({
-    mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) => api.sendCollaborationMessage(masterChatId, { text, replyToMessageId }),
+    mutationFn: ({ text, recipientAgentIds, replyToMessageId }: { text: string; recipientAgentIds: string[]; replyToMessageId?: string }) =>
+      api.sendCollaborationMessage(masterChatId, { text, recipientAgentIds, replyToMessageId }),
     onSuccess: () => {
-      setReplyTo(undefined);
+      clearReply();
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
       if (masterChat) void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
     },
@@ -308,23 +458,41 @@ export function MasterChatView({
 
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
-  const mentionHandles = threads.map((thread) => agentMentionHandle(thread.title));
+  const activeCollaborationAgents = activeCollaborationRecipients(threads);
+  const mentionHandles = conversation === "collaboration"
+    ? undefined
+    : threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title));
   const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
   const busyMentionHandles = threads
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
     .map((agent) => agentMentionHandle(agent.title));
-  const busy = spawn.isPending || reply.isPending || collaborate.isPending;
+  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending;
 
   const submit = async (text: string, files: File[]) => {
     if (conversation === "collaboration") {
       if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
-      await collaborate.mutateAsync({ text, replyToMessageId: replyTo?.id });
+      const recipientAgentIds = retainActiveRecipientIds(collaborationRecipientIds, threads);
+      if (recipientAgentIds.length === 0) throw new Error("Select at least one active recipient.");
+      await collaborate.mutateAsync({ text, recipientAgentIds: [...recipientAgentIds], replyToMessageId: replyTo?.id });
       return;
     }
     const targets = findMentioned(text);
-    if (targets.length > 0) {
-      await reply.mutateAsync({ agentIds: targets.map((target) => target.id), text, files, replyToMessageId: replyTo?.id });
+    const route = resolveMasterChatSendRoute(directReplyTargetId, targets.map((target) => target.id));
+    if (route.kind === "direct-reply") {
+      if (!replyTo) throw new Error("The direct reply target is no longer available. Cancel the reply and try again.");
+      if (!directReplyRequestId) throw new Error("The direct reply receipt is no longer available. Cancel the reply and try again.");
+      await directReply.mutateAsync({
+        targetId: route.agentIds[0],
+        text,
+        files,
+        replyToMessageId: replyTo.id,
+        requestId: directReplyRequestId,
+      });
+      return;
+    }
+    if (route.kind === "mentioned-reply") {
+      await reply.mutateAsync({ agentIds: route.agentIds, text, files, replyToMessageId: replyTo?.id });
     } else {
       await spawn.mutateAsync({ text, files });
     }
@@ -386,7 +554,7 @@ export function MasterChatView({
             size="small"
             startIcon={<ForumOutlinedIcon />}
             onClick={() => {
-              setReplyTo(undefined);
+              clearReply();
               setConversation((current) => current === "main" ? "collaboration" : "main");
             }}
             aria-pressed={conversation === "collaboration"}
@@ -508,7 +676,7 @@ export function MasterChatView({
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {conversation === "collaboration" ? (
-              <>This is a separate, opt-in agent collaboration chat. Only agents with a valid <Box component="strong">@mention</Box> receive this chat's context; untagged messages stay here.</>
+              <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
               <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies to busy agents queue automatically.</>
             )}
@@ -532,60 +700,35 @@ export function MasterChatView({
             {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {conversation === "collaboration"
-                  ? "No collaboration messages yet. @mention an agent to give it this chat's context."
+                  ? "No collaboration messages yet. Select recipients to give them this chat's context."
                   : "No messages yet. Send a task to spawn your first agent — it reports back here when it finishes or gets stuck."}
               </Typography>
             ) : null}
-            {(conversation === "collaboration" ? collaborationMessages : messages).map((message) => {
-              const fromManager = !message.authorThreadId;
-              return (
-                <Box
-                  key={message.id}
-                  id={`master-message-${message.id}`}
-                  tabIndex={-1}
-                  sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
-                >
-                  {message.authorThreadId ? (
-                    <Link
-                      component="button"
-                      variant="caption"
-                      onClick={() => onOpenAgent(message.authorThreadId!)}
-                      sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
-                    >
-                      {agentTitle(message.authorThreadId)}
-                    </Link>
-                  ) : null}
-                  <Box
-                    sx={{
-                      px: 1.5,
-                      py: 1,
-                      borderRadius: 2,
-                      bgcolor: fromManager ? "primary.main" : "background.paper",
-                      color: fromManager ? "primary.contrastText" : "text.primary",
-                      border: fromManager ? 0 : 1,
-                      borderColor: "divider",
-                    }}
-                  >
-                    {message.replyTo ? (
-                      <Box component="button" aria-label="Go to replied-to message" onClick={() => {
-                        const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
-                        target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                        target?.focus({ preventScroll: true });
-                      }} sx={{ display: "block", width: "100%", mb: .75, p: .75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}>
-                        <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
-                      </Box>
-                    ) : null}
-                    <ChatMarkdown>{message.text}</ChatMarkdown>
-                    {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-                      {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
-                        <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-                      </Box>)}
-                    </Stack> : null}
-                    <Button size="small" color="inherit" onClick={() => setReplyTo(message)} sx={{ mt: .5 }}>Reply</Button>
-                  </Box>
-                </Box>
-              );
-            })}
+            {(conversation === "collaboration" ? collaborationMessages : messages).map((message) => (
+              <MasterChatMessage
+                key={message.id}
+                message={message}
+                conversation={conversation}
+                agentTitle={agentTitle}
+                compactViewport={compactViewport}
+                onOpenAgent={onOpenAgent}
+                onReply={(selected) => {
+                  clearReply();
+                  setReplyTo(selected);
+                }}
+                onDirectReply={(selected) => {
+                  clearReply();
+                  setReplyTo(selected);
+                  setDirectReplyTargetId(selected.authorThreadId);
+                  setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+                }}
+                onReact={(selected, emoji, active) => {
+                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then(() => {
+                    void queryClient.invalidateQueries({ queryKey: conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId] });
+                  });
+                }}
+              />
+            ))}
           </Stack>
 
         </Box>
@@ -664,16 +807,16 @@ export function MasterChatView({
 
       <Box>
         {queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
-        {spawn.isError || reply.isError || collaborate.isError ? (
+        {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String((spawn.error ?? reply.error ?? collaborate.error) as Error)}
+            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
         {threads.length > 0 ? (
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
-                Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context.
+                Recipients are routed by stable identity. Names and @mentions in message text are display-only.
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
@@ -682,22 +825,57 @@ export function MasterChatView({
             )}
           </Box>
         ) : null}
+        {conversation === "collaboration" ? (
+          <FormControl fullWidth size="small" sx={{ px: { xs: 1, sm: 1.5 }, pt: 1 }}>
+            <InputLabel id="collaboration-recipients-label" sx={{ ml: { xs: 1, sm: 1.5 } }}>Recipients</InputLabel>
+            <Select
+              multiple
+              labelId="collaboration-recipients-label"
+              label="Recipients"
+              value={collaborationRecipientIds}
+              onChange={(event) => {
+                const selected = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
+                setCollaborationRecipientIds(selected.includes("__everyone__") ? allActiveRecipientIds(threads) : selected);
+              }}
+              renderValue={(selected) => selected.length === activeCollaborationAgents.length && selected.length > 0
+                ? `Everyone (${selected.length})`
+                : selected.map((id) => agentTitle(id)).join(", ")}
+            >
+              <MenuItem
+                value="__everyone__"
+                disabled={activeCollaborationAgents.length === 0}
+              >
+                <Checkbox checked={collaborationRecipientIds.length === activeCollaborationAgents.length && activeCollaborationAgents.length > 0} />
+                Everyone ({activeCollaborationAgents.length} active)
+              </MenuItem>
+              {activeCollaborationAgents.map((agent) => (
+                <MenuItem key={agent.id} value={agent.id}>
+                  <Checkbox checked={collaborationRecipientIds.includes(agent.id)} />
+                  {agent.title}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        ) : null}
         <Composer
           disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={conversation === "collaboration" || engineReady}
+          allowUnmentionedSend={conversation === "collaboration" ? collaborationRecipientIds.length > 0 : engineReady}
           placeholder={
             conversation === "collaboration"
-              ? "@mention agents to collaborate — untagged messages stay private to this chat"
+              ? collaborationRecipientIds.length > 0 ? "Message selected recipients" : "Select at least one active recipient"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
                 : "@mention an agent, or select a signed-in engine to spawn one"
           }
           onSend={submit}
           replyTo={replyTo}
-          onCancelReply={() => setReplyTo(undefined)}
+          replyLabel={directReplyTargetId ? `Replying directly to @${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
+          onCancelReply={() => {
+            clearReply();
+          }}
         />
       </Box>
 

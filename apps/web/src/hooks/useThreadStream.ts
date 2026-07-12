@@ -46,19 +46,6 @@ function projectedTaskUpdateId(threadId: string, taskId: string): string {
 export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope, detail: ThreadDetailDto): ThreadDetailDto {
   const { event, seq, ts } = envelope;
 
-  const status = event.type === "task_update" && event.status === "waiting_approval"
-    ? "waiting"
-    : event.type === "task_update" && event.status === "running" && detail.thread.status === "waiting"
-      ? "running"
-    : event.type === "error"
-      ? "error"
-      : event.type === "turn_done"
-        ? (detail.thread.status === "error" ? "error" : "idle")
-        : detail.thread.status === "idle" || detail.thread.status === "error"
-          ? "running"
-          : detail.thread.status;
-  if (status !== detail.thread.status) detail = { ...detail, thread: { ...detail.thread, status } };
-
   if (event.type === "text") {
     // Query-cache updates and live SSE events can interleave. Normalize a
     // transient sparse/invalid cache entry before reading message properties so
