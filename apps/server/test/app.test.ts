@@ -979,7 +979,57 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).not.toContain("Must be disabled");
     expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
     expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; curated_context=off" } } });
+      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; curated_context=off; parity=ok" } } });
+    await app.close();
+  });
+
+  it("serves room timelines from canonical projections in authoritative read mode", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+    const project = store.createProject({ label: "Cutover", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Canonical room" });
+    const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+
+    const main = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Shared decision" },
+    });
+    const collaboration = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "Review this", recipientAgentIds: [agent.id] },
+    });
+    expect(main.statusCode).toBe(200);
+    expect(collaboration.statusCode, collaboration.body).toBe(200);
+    await waitForRun(agent.id);
+
+    const mainDetail = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}` })).json<{
+      messages: MasterChatMessageDto[];
+    }>();
+    const collaborationDetail = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/collaboration` })).json<{
+      messages: MasterChatMessageDto[];
+    }>();
+    expect(mainDetail.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: main.json().communicationEventId, text: "Shared decision" }),
+    ]));
+    expect(collaborationDetail.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId, text: "@Reviewer Review this" }),
+    ]));
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+      .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
+    await app.close();
+  });
+
+  it("fails authoritative readiness when legacy room history is not canonical", async () => {
+    const project = store.createProject({ label: "Drift", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Pre-cutover room" });
+    const legacy = store.appendMasterChatMessage(master.id, { text: "Unmigrated history" })!;
+    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+
+    const ready = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({
+      status: "not_ready",
+      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=drift") } },
+    });
+    expect(store.reconcileCommunicationEvents(project.id).unlinkedLegacyMessageIds).toEqual([legacy.id]);
     await app.close();
   });
 
@@ -1079,6 +1129,8 @@ describe("server chunk F", () => {
       orphanProjectionEventIds: [],
       missingClassificationEventIds: [],
       missingProjectionMetadataEventIds: [],
+      unlinkedLegacyMessageIds: [],
+      projectionReadMismatchMessageIds: [],
       ok: true,
     });
     const reconciliation = await app.inject({

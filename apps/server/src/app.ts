@@ -19,6 +19,8 @@ import type {
   HealthDto,
   ReadinessDto,
   MasterChatMessageDto,
+  MasterChatDetailDto,
+  CollaborationChatDetailDto,
   AssetDto,
   ImageAttachmentDto,
   CreateDirectReplyRequest,
@@ -61,6 +63,7 @@ export interface CreateServerOptions {
   logger?: boolean;
   /** Emergency rollback: `off` preserves legacy logs/projections only. */
   communicationMode?: "off" | "shadow";
+  communicationReadMode?: "legacy" | "shadow" | "authoritative";
   /** Independent context-plane rollback switch. */
   curatedContextEnabled?: boolean;
 }
@@ -538,9 +541,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
   const communicationMode = opts.communicationMode ?? "shadow";
+  const communicationReadMode = opts.communicationReadMode ?? "shadow";
   const curatedContextEnabled = opts.curatedContextEnabled ?? true;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent | undefined =>
     communicationMode === "off" ? undefined : store.appendCommunicationEvent(event).event;
+
+  function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
+    const detail = store.getMasterChatDetail(masterChatId);
+    if (!detail || communicationReadMode !== "authoritative") return detail;
+    return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "main") };
+  }
+
+  function collaborationChatDetail(masterChatId: string): CollaborationChatDetailDto | undefined {
+    const detail = store.getCollaborationChatDetail(masterChatId);
+    if (!detail || communicationReadMode !== "authoritative") return detail;
+    return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "collaboration") };
+  }
 
   function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
     return projectAgentHealth({
@@ -878,7 +894,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     relayDepth: number,
     mentionTrail: string[],
   ): { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
-    const detail = store.getCollaborationChatDetail(masterChatId);
+    const detail = collaborationChatDetail(masterChatId);
     const eligible = detail?.threads.filter((thread) => !thread.archived && thread.id !== authorThreadId) ?? [];
     const targetsById = new Map(
       mentionedAgentThreads(text, eligible, authorThreadId).map((thread) => [thread.id, thread]),
@@ -1349,7 +1365,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: { code: "forbidden", message: "delegation fields exceed their size limits", retryable: false } });
       }
       try {
-        const context = store.getCollaborationChatDetail(capability.masterChatId);
+        const context = collaborationChatDetail(capability.masterChatId);
         if (!context) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
         const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({ id, role, text, ...(authorThreadId ? { authorThreadId } : {}) }));
         let spawned = delegations.spawn(capability.masterChatId, {
@@ -1458,7 +1474,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? "no runtimes are configured"
         : `${available} of ${engines.size} configured runtimes available`,
     };
-    const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok;
+    const communicationReports = communicationMode === "off"
+      ? []
+      : store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
+    const communicationParity = communicationReports.every((report) => report.ok);
+    const communicationMigration = {
+      ok: communicationReadMode !== "authoritative" || communicationParity,
+      detail: `communication=${communicationMode}; reads=${communicationReadMode}; curated_context=${curatedContextEnabled ? "on" : "off"}; parity=${communicationParity ? "ok" : "drift"}`,
+    };
+    const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok && communicationMigration.ok;
     const body: ReadinessDto = {
       status: canAcceptWork ? "ready" : "not_ready",
       service: "ponderosa",
@@ -1469,10 +1493,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         dataDirectory,
         projections,
         runtimes,
-        communicationMigration: {
-          ok: true,
-          detail: `communication=${communicationMode}; curated_context=${curatedContextEnabled ? "on" : "off"}`,
-        },
+        communicationMigration,
       },
       runtimes: runtimeStatuses,
     };
@@ -1565,7 +1586,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
-    const detail = store.getMasterChatDetail(request.params.id);
+    const detail = masterChatDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "master chat not found" });
   });
 
@@ -1837,7 +1858,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   );
 
   app.get<{ Params: { id: string } }>("/api/master-chats/:id/collaboration", async (request, reply) => {
-    const detail = store.getCollaborationChatDetail(request.params.id);
+    const detail = collaborationChatDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "master chat not found" });
   });
 
@@ -1849,7 +1870,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     if (request.body.directReplyToAuthorThreadId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
-    const detail = store.getCollaborationChatDetail(request.params.id);
+    const detail = collaborationChatDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
     let renderedText = text;
@@ -2358,10 +2379,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // particular linked agent.
       const routingMasterChatId = sourceMasterChatId ?? thread.masterChatId;
       const masterChat = routingMasterChatId
-        ? store.getMasterChatDetail(routingMasterChatId)
+        ? masterChatDetail(routingMasterChatId)
         : undefined;
       const collaboration = collaborationMasterChatId
-        ? store.getCollaborationChatDetail(collaborationMasterChatId)
+        ? collaborationChatDetail(collaborationMasterChatId)
         : undefined;
       const sourceChannel: AgentMessageChannel = collaboration
         ? "collaboration"

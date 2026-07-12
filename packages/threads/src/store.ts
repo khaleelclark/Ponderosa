@@ -624,6 +624,28 @@ export class ThreadStore {
     const missingProjectionMetadataEventIds = [...new Set(projections
       .filter((projection) => (projection.surface === "master_chat" || projection.surface === "collaboration_chat" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
+    const unlinkedLegacyMessageIds: string[] = [];
+    const projectionReadMismatchMessageIds: string[] = [];
+    for (const master of this.listMasterChats(projectId)) {
+      for (const channel of ["main", "collaboration"] as const) {
+        const legacy = this.getMasterChatMessages(master.id, channel);
+        const projected = new Map(this.getProjectedMasterChatMessages(master.id, channel).map((message) => [message.id, message]));
+        for (const message of legacy) {
+          if (!message.communicationEventId) {
+            unlinkedLegacyMessageIds.push(message.id);
+            continue;
+          }
+          const candidate = projected.get(message.id);
+          const parityKey = (item: MasterChatMessageDto) => JSON.stringify([
+            item.id, item.communicationEventId, item.masterChatId, item.role, item.text, item.createdAt,
+            item.authorThreadId, item.replyTo, item.attachments ?? [], item.reactions ?? [],
+          ]);
+          if (!candidate || parityKey(candidate) !== parityKey(message)) {
+            projectionReadMismatchMessageIds.push(message.id);
+          }
+        }
+      }
+    }
     return {
       projectId,
       canonicalEvents: canonical.length,
@@ -633,9 +655,12 @@ export class ThreadStore {
       orphanProjectionEventIds,
       missingClassificationEventIds,
       missingProjectionMetadataEventIds,
+      unlinkedLegacyMessageIds,
+      projectionReadMismatchMessageIds,
       ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
         orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
-        missingProjectionMetadataEventIds.length === 0,
+        missingProjectionMetadataEventIds.length === 0 && unlinkedLegacyMessageIds.length === 0 &&
+        projectionReadMismatchMessageIds.length === 0,
     };
   }
 
@@ -1154,6 +1179,38 @@ export class ThreadStore {
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
         reactions: this.getMessageReactions(masterChatId, channel, row.id, currentActor),
       }));
+  }
+
+  /**
+   * Materialize a room timeline from canonical communication events and their
+   * projection ledger. Legacy rows are consulted only for ancillary snapshots
+   * (attachments and quoted replies) until those immutable payloads move into
+   * the canonical envelope; they do not select membership, ordering, or text.
+   */
+  getProjectedMasterChatMessages(
+    masterChatId: string,
+    channel: MasterChatChannel = "main",
+    currentActor: ReactionActor = { kind: "manager" },
+  ): MasterChatMessageDto[] {
+    const master = this.getMasterChat(masterChatId);
+    if (!master) return [];
+    const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
+    const legacy = new Map(this.getMasterChatMessages(masterChatId, channel, currentActor).map((message) => [message.id, message]));
+    return this.readProjectedCommunicationMessages(master.projectId, surface, masterChatId).map((message) => {
+      const ancillary = legacy.get(message.messageId);
+      return {
+        id: message.messageId,
+        communicationEventId: message.eventId,
+        masterChatId,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
+        ...(ancillary?.replyTo ? { replyTo: ancillary.replyTo } : {}),
+        ...(ancillary?.attachments?.length ? { attachments: ancillary.attachments } : {}),
+        reactions: this.getMessageReactions(masterChatId, channel, message.messageId, currentActor),
+      };
+    });
   }
 
   private masterChatReference(masterChatId: string, channel: MasterChatChannel, messageId: string) {

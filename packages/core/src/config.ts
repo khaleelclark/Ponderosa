@@ -16,6 +16,7 @@ export interface PonderosaConfig {
   /** NODE_ENV passthrough. */
   nodeEnv: string;
   communicationMode: "off" | "shadow";
+  communicationReadMode: "legacy" | "shadow" | "authoritative";
   curatedContextEnabled: boolean;
 }
 
@@ -48,6 +49,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
   if (communicationMode !== "off" && communicationMode !== "shadow") {
     throw new Error(`Invalid PONDEROSA_COMMUNICATION_MODE: ${communicationMode}`);
   }
+  const communicationReadMode = env.PONDEROSA_COMMUNICATION_READ_MODE ?? "shadow";
+  if (communicationReadMode !== "legacy" && communicationReadMode !== "shadow" && communicationReadMode !== "authoritative") {
+    throw new Error(`Invalid PONDEROSA_COMMUNICATION_READ_MODE: ${communicationReadMode}`);
+  }
 
   return {
     dataDir,
@@ -55,6 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
     host: env.PONDEROSA_HOST ?? "0.0.0.0",
     nodeEnv: env.NODE_ENV ?? "development",
     communicationMode,
+    communicationReadMode,
     curatedContextEnabled: env.PONDEROSA_CURATED_CONTEXT !== "off",
   };
 }

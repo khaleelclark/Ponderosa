@@ -75,15 +75,19 @@ sudo chown -R khaleel:khaleel /home/khaleel/.ponderosa
 chmod 700 /home/khaleel/.ponderosa
 ```
 
-During the communication-infrastructure migration, two restart-scoped rollback
+During the communication-infrastructure migration, three restart-scoped rollout
 controls are available:
 
 - `PONDEROSA_COMMUNICATION_MODE=off` keeps legacy chat/audit writes active and
   disables canonical communication shadow writes.
+- `PONDEROSA_COMMUNICATION_READ_MODE=legacy|shadow|authoritative` controls room
+  timeline reads independently. `authoritative` makes readiness fail closed if
+  reconciliation finds an unlinked legacy row, incomplete projection metadata,
+  or DTO parity drift; revert to `shadow` for an immediate read rollback.
 - `PONDEROSA_CURATED_CONTEXT=off` disables promoted-summary injection while
   leaving communication capture unchanged.
 
-Both default on (`shadow` and enabled respectively). Verify the effective state
+Capture and reads default to `shadow`; curated context defaults on. Verify the effective state
 in `/api/ready` before expanding a rollout cohort.
 
 ## 4. Install the systemd service

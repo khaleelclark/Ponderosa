@@ -135,5 +135,9 @@ export interface CommunicationReconciliationReport {
   orphanProjectionEventIds: string[];
   missingClassificationEventIds: string[];
   missingProjectionMetadataEventIds: string[];
+  /** Legacy room rows that cannot yet be served from a canonical event. */
+  unlinkedLegacyMessageIds: string[];
+  /** Linked room rows whose authoritative materialization is not DTO-equivalent. */
+  projectionReadMismatchMessageIds: string[];
   ok: boolean;
 }
