@@ -1464,11 +1464,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (intent === "direct_to_user") {
       const communication = recordCommunication({
         eventId: randomUUID(),
-        schemaVersion: 1,
+        schemaVersion: 2,
         projectId: currentAuthor.projectId,
+        ...(capability.masterChatId ? { masterChatId: capability.masterChatId } : {}),
         sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
-        intent,
-        audience: { kind: "user", userId: "local-operator" },
+        intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: capability.threadId },
         text,
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -1548,7 +1549,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const communication = recordCommunication(intent === "broadcast" ? {
       eventId: randomUUID(),
-      schemaVersion: 1,
+      schemaVersion: 2,
       projectId: currentAuthor.projectId,
       masterChatId: capability.masterChatId,
       sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
@@ -1559,7 +1560,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
       eventId: randomUUID(),
-      schemaVersion: 1,
+      schemaVersion: 2,
       projectId: currentAuthor.projectId,
       masterChatId: capability.masterChatId,
       sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
@@ -1692,9 +1693,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           let logEvent: LogEvent = event;
           if (event.type === "text" && event.delta.trim()) {
             const communication = recordCommunication({
-              eventId: randomUUID(), schemaVersion: 1, projectId: project.id, masterChatId: run.masterChatId,
+              eventId: randomUUID(), schemaVersion: 2, projectId: project.id, masterChatId: run.masterChatId,
               sender: { kind: "agent", agentId: childThread.id, executionId: run.id },
-              intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+              intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: childThread.id },
               text: event.delta, createdAt: new Date().toISOString(),
             });
             if (communication) {
@@ -2208,12 +2209,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       };
       const communication = recordCommunication({
         eventId: randomUUID(),
-        schemaVersion: 1,
+        schemaVersion: 2,
         projectId: master.projectId,
         masterChatId: master.id,
         sender: { kind: "user", userId: "local-operator" },
-        intent: "collaboration",
-        audience: { kind: "agents", agentIds: [target.id] },
+        intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
         text,
         createdAt: new Date().toISOString(),
         idempotencyKey: receiptKey,
@@ -2320,7 +2321,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
     }
     const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId: master.id,
+      eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, masterChatId: master.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
       text, createdAt: new Date().toISOString(),
@@ -2476,12 +2477,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let initialCommunicationEventId: string | undefined;
         if (thread.masterChatId) {
           const communication = recordCommunication({
-            eventId: randomUUID(), schemaVersion: 1, projectId: thread.projectId, masterChatId: thread.masterChatId,
-            sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
-            audience: { kind: "organization", organizationId: thread.projectId }, text: initialMessage,
+            eventId: randomUUID(), schemaVersion: 2, projectId: thread.projectId, masterChatId: thread.masterChatId,
+            sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+            audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id }, text: initialMessage,
             createdAt: new Date().toISOString(),
           });
           initialCommunicationEventId = communication?.eventId;
+          if (communication) store.appendCommunicationProjection(thread.projectId, {
+            eventId: communication.eventId,
+            surface: "user_inbox",
+            projectionKey: communication.audience.userId,
+            projectedAt: communication.createdAt,
+          });
           store.appendMasterChatMessage(
             thread.masterChatId,
             { text: initialMessage, replyToMessageId: request.body.replyToMessageId },
@@ -2719,13 +2726,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const communicationEventId = serverCommunicationEventId ?? (requestedDeliveryIds.length === 0
         ? recordCommunication({
-            eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
-            ...(sourceMasterChatId ? { masterChatId: sourceMasterChatId } : {}),
-            sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
-            audience: { kind: "agents", agentIds: [thread.id] }, text,
+            eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
+            ...((sourceMasterChatId ?? thread.masterChatId) ? { masterChatId: sourceMasterChatId ?? thread.masterChatId } : {}),
+            sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+            audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id }, text,
             createdAt: new Date().toISOString(),
           })?.eventId
         : inheritedCommunicationEventId);
+      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
+        const communication = store.getCommunicationEvent(project.id, communicationEventId);
+        if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
+          store.appendCommunicationProjection(project.id, {
+            eventId: communicationEventId,
+            surface: "user_inbox",
+            projectionKey: communication.audience.userId,
+            projectedAt: communication.createdAt,
+          });
+        }
+      }
+      const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
+      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
+        store.appendMasterChatMessage(directMessageMasterChatId, { role: "user", text }, undefined, "main", undefined, undefined, communicationEventId);
+      }
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&
@@ -3033,11 +3055,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               let logEvent: LogEvent = event;
               if (event.type === "text" && event.delta.trim()) {
                 const communication = recordCommunication({
-                  eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                  eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
                   ...(routingMasterChatId ? { masterChatId: routingMasterChatId } : {}),
                   sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                  intent: "direct_to_user",
-                  audience: { kind: "user", userId: "local-operator" },
+                  intent: "user_dm",
+                  audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
                   text: event.delta,
                   createdAt: new Date().toISOString(),
                   ...(pendingTurn.communicationEventId ? { causationId: pendingTurn.communicationEventId } : {}),
@@ -3105,16 +3127,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 : { intents: [], blocked: [] };
               const reportCommunication = sourceChannel === "main"
                 ? recordCommunication({
-                    eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                    eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
                     masterChatId: routingMasterChatId,
                     sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                    intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+                    intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
                     text: statusText, createdAt: new Date().toISOString(),
                     ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
                   })
                 : routing.intents.length
                   ? recordCommunication({
-                      eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                      eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
                       masterChatId: routingMasterChatId,
                       sender: { kind: "agent", agentId: thread.id, executionId: runId },
                       intent: "collaboration",
@@ -3123,28 +3145,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                       ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
                     })
                   : recordCommunication({
-                      eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                      eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
                       masterChatId: routingMasterChatId,
                       sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+                      intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
                       text: statusText, createdAt: new Date().toISOString(),
                       ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
                     });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
-              const renderedStatusText = reportCommunication?.intent === "direct_to_user"
+              const renderedStatusText = reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm"
                 ? `@User ${statusText}`
                 : statusText;
+              const reportChannel = reportCommunication?.intent === "user_dm" || reportCommunication?.intent === "direct_to_user"
+                ? "main"
+                : sourceChannel;
               const report = store.appendMasterChatMessage(
                 routingMasterChatId,
                 { role: "assistant", text: renderedStatusText },
                 thread.id,
-                sourceChannel,
+                reportChannel,
                 routing.intents,
                 undefined,
                 reportCommunication?.eventId,
               );
-              if (reportCommunication?.intent === "direct_to_user") {
+              if (reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm") {
                 store.appendCommunicationProjection(project.id, {
                   eventId: reportCommunication.eventId,
                   surface: "user_inbox",

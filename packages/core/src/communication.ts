@@ -2,7 +2,7 @@
 
 import type { ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
 
-export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration";
+export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration" | "user_dm";
 
 export type CommunicationActor =
   | { kind: "user"; userId: string }
@@ -21,6 +21,11 @@ interface CommunicationEventBase {
   correlationId?: string;
   causationId?: string;
   idempotencyKey?: string;
+  /** Durable send-time labels are display fallback only; IDs remain authoritative. */
+  identity?: {
+    senderLabel: string;
+    recipientLabels?: Record<string, string>;
+  };
 }
 
 /** Runtime validation must additionally reject empty collaboration audiences. */
@@ -30,7 +35,20 @@ export type CommunicationEventV1 = CommunicationEventBase & (
   | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
 );
 
-export type CommunicationEvent = CommunicationEventV1;
+/**
+ * V2 makes a user DM genuinely bidirectional. It always joins the local user
+ * and exactly one stable agent ID, regardless of which participant sent it.
+ */
+export type CommunicationEventV2 = Omit<CommunicationEventBase, "schemaVersion"> & {
+  schemaVersion: 2;
+} & (
+  | { intent: "broadcast"; audience: { kind: "organization"; organizationId: string } }
+  | { intent: "user_dm"; audience: { kind: "user_agent"; userId: string; agentId: string } }
+  | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
+);
+
+/** V1 is retained for append-only replay; all new communication uses V2. */
+export type CommunicationEvent = CommunicationEventV1 | CommunicationEventV2;
 
 export type CommunicationProjectionSurface =
   | "master_chat"
@@ -134,9 +152,9 @@ export interface LegacyCommunicationBackfillRequest {
 }
 
 export interface LegacyCommunicationBackfillBlockedItem {
-  source: "collaboration_chat";
+  source: "master_chat" | "collaboration_chat";
   sourceId: string;
-  reason: "explicit_recipients_required" | "recipient_not_room_member";
+  reason: "ambiguous_scope" | "explicit_recipients_required" | "recipient_not_room_member";
 }
 
 export interface LegacyCommunicationBackfillResponse {

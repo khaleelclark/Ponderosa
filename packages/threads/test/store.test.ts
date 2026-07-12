@@ -95,6 +95,127 @@ describe("ThreadStore — canonical communication events", () => {
     } as unknown as CommunicationEvent)).toThrow("at least one recipient");
   });
 
+  it("normalizes V2 collaboration recipients before persistence and idempotency comparison", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const sender = store.createThread(project.id, { title: "Sender", engine: "codex", masterChatId: room.id });
+    const a = store.createThread(project.id, { title: "A", engine: "codex", masterChatId: room.id });
+    const b = store.createThread(project.id, { title: "B", engine: "codex", masterChatId: room.id });
+    const event: CommunicationEvent = {
+      eventId: "normalized", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "agent", agentId: sender.id }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [b.id, a.id, b.id] }, text: "Review",
+      createdAt: "2026-07-12T00:00:00.000Z", idempotencyKey: "same-audience",
+    };
+    const first = store.appendCommunicationEvent(event).event;
+    expect(first.intent === "collaboration" && first.audience.agentIds).toEqual([a.id, b.id].sort());
+    expect(store.appendCommunicationEvent({ ...event, eventId: "retry", audience: { kind: "agents", agentIds: [a.id, b.id] } }).event.eventId)
+      .toBe(first.eventId);
+  });
+
+  it("validates V2 audiences and enforces scope-to-surface placement", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const otherRoom = store.createMasterChat(project.id, { title: "Other room" });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
+    const dm: CommunicationEvent = {
+      eventId: "dm", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Private", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(dm);
+    expect(() => store.appendCommunicationProjection(project.id, {
+      eventId: dm.eventId, surface: "collaboration_chat", projectionKey: room.id, projectedAt: dm.createdAt,
+    })).toThrow("scope cannot project");
+    expect(() => store.appendCommunicationProjection(project.id, {
+      eventId: dm.eventId, surface: "master_chat", projectionKey: otherRoom.id, projectedAt: dm.createdAt,
+    })).toThrow("scope cannot project");
+    expect(() => store.appendCommunicationProjection(project.id, {
+      eventId: dm.eventId, surface: "user_inbox", projectionKey: "another-user", projectedAt: dm.createdAt,
+    })).toThrow("scope cannot project");
+    expect(() => store.appendCommunicationEvent({ ...dm, eventId: "unknown", audience: { ...dm.audience, agentId: "missing" } })).toThrow("active agent");
+    expect(() => store.appendCommunicationEvent({ ...dm, eventId: "foreign", audience: { ...dm.audience, agentId: foreign.id } })).toThrow("active agent");
+    expect(() => store.appendCommunicationEvent({ ...dm, eventId: "wrong-room", masterChatId: otherRoom.id })).toThrow("belong to its master chat");
+    store.updateThread(agent.id, { archived: true });
+    expect(() => store.appendCommunicationEvent({ ...dm, eventId: "archived" })).toThrow("active agent");
+  });
+
+  it("projects one bidirectional User DM identity into Main and Direct Agent timelines", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const userDm: CommunicationEvent = {
+      eventId: "user-to-agent", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Please investigate", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(userDm);
+    store.appendMasterChatMessage(room.id, { role: "user", text: userDm.text }, undefined, "main", undefined, undefined, userDm.eventId);
+    store.appendEvent(agent.id, { type: "user_message", text: userDm.text, communicationEventId: userDm.eventId });
+
+    const agentDm: CommunicationEvent = {
+      ...userDm, eventId: "agent-to-user", sender: { kind: "agent", agentId: agent.id },
+      text: "Investigation complete", createdAt: "2026-07-12T00:01:00.000Z",
+    };
+    store.appendCommunicationEvent(agentDm);
+    store.appendMasterChatMessage(room.id, { role: "assistant", text: agentDm.text }, agent.id, "main", undefined, undefined, agentDm.eventId);
+    store.appendEvent(agent.id, { type: "communication_projection", text: agentDm.text, communicationEventId: agentDm.eventId });
+
+    expect(store.readProjectedCommunicationMessages(project.id, "master_chat", room.id).map((message) => message.eventId))
+      .toEqual([userDm.eventId, agentDm.eventId]);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id).map((message) => message.eventId))
+      .toEqual([userDm.eventId, agentDm.eventId]);
+    expect(store.readContextClassifications(project.id)).toEqual([
+      expect.objectContaining({ eventId: userDm.eventId, policy: "local_only" }),
+      expect.objectContaining({ eventId: agentDm.eventId, policy: "local_only" }),
+    ]);
+  });
+
+  it("rejects self-recipient collaboration before writing the canonical ledger", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const sender = store.createThread(project.id, { title: "Sender", engine: "codex", masterChatId: room.id });
+    expect(() => store.appendCommunicationEvent({
+      eventId: "self", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "agent", agentId: sender.id }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [sender.id] }, text: "Loopback",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    })).toThrow("cannot target its sender");
+    expect(store.readCommunicationEvents(project.id)).toEqual([]);
+  });
+
+  it("rejects invalid V2 agent collaboration senders without writing canonical state", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const otherRoom = store.createMasterChat(project.id, { title: "Other room" });
+    const recipient = store.createThread(project.id, { title: "Recipient", engine: "codex", masterChatId: room.id });
+    const wrongRoom = store.createThread(project.id, { title: "Wrong room", engine: "codex", masterChatId: otherRoom.id });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", masterChatId: room.id });
+    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
+    store.updateThread(archived.id, { archived: true });
+    const before = () => ({
+      events: store.readCommunicationEvents(project.id),
+      context: store.readContextClassifications(project.id),
+      projections: store.readCommunicationProjections(project.id),
+    });
+    const initial = before();
+    const send = (sender: CommunicationEvent["sender"], eventId: string) => () => store.appendCommunicationEvent({
+      eventId, schemaVersion: 2, projectId: project.id, masterChatId: room.id, sender,
+      intent: "collaboration", audience: { kind: "agents", agentIds: [recipient.id] },
+      text: "Review", createdAt: "2026-07-12T00:00:00.000Z",
+    });
+    expect(send({ kind: "agent", agentId: "missing" }, "missing")).toThrow("active agent");
+    expect(send({ kind: "agent", agentId: archived.id }, "archived")).toThrow("active agent");
+    expect(send({ kind: "agent", agentId: foreign.id }, "foreign")).toThrow("active agent");
+    expect(send({ kind: "agent", agentId: wrongRoom.id }, "wrong-room")).toThrow("belong to its master chat");
+    expect(before()).toEqual(initial);
+  });
+
   it("repairs a torn tail before appending and rejects interior corruption", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const file = communicationEventsPath(dir, project.id);
@@ -238,28 +359,35 @@ describe("ThreadStore — canonical communication events", () => {
 
     expect(store.backfillLegacyCommunications(project.id, { dryRun: true })).toMatchObject({
       dryRun: true, candidates: 4, migrated: 0,
-      blocked: [{ source: "collaboration_chat", sourceId: collaboration.id, reason: "explicit_recipients_required" }],
+      blocked: [
+        { source: "master_chat", sourceId: main.id, reason: "ambiguous_scope" },
+        { source: "collaboration_chat", sourceId: collaboration.id, reason: "explicit_recipients_required" },
+      ],
     });
     const migrated = store.backfillLegacyCommunications(project.id, {
       dryRun: false,
       collaborationRecipientsByMessageId: { [collaboration.id]: [thread.id] },
     });
-    expect(migrated).toMatchObject({ dryRun: false, candidates: 4, migrated: 4, blocked: [] });
-    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId)
-      .toEqual(expect.any(String));
+    expect(migrated).toMatchObject({
+      dryRun: false, candidates: 4, migrated: 3,
+      blocked: [{ source: "master_chat", sourceId: main.id, reason: "ambiguous_scope" }],
+    });
+    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId).toBeUndefined();
     expect(store.getMasterChatMessages(room.id, "collaboration").find((message) => message.id === collaboration.id)?.communicationEventId)
       .toEqual(expect.any(String));
     expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", thread.id)).toHaveLength(2);
-    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 4 });
+    expect(store.readCommunicationEvents(project.id).every((event) => event.intent !== "broadcast")).toBe(true);
+    expect(store.readContextClassifications(project.id).every((item) => item.policy === "local_only")).toBe(true);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: false, canonicalEvents: 3 });
     store.close();
     store = new ThreadStore(dir);
     store.rebuildProjections();
-    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId)
-      .toEqual(expect.any(String));
+    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId).toBeUndefined();
     expect(store.getProjectedThreadMessages(thread.id)).toHaveLength(2);
-    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 4 });
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: false, canonicalEvents: 3 });
     expect(store.backfillLegacyCommunications(project.id, { dryRun: false })).toMatchObject({
-      candidates: 0, migrated: 0, alreadyLinked: 4, blocked: [],
+      candidates: 1, migrated: 0, alreadyLinked: 3,
+      blocked: [{ source: "master_chat", sourceId: main.id, reason: "ambiguous_scope" }],
     });
   });
 
@@ -281,16 +409,17 @@ describe("ThreadStore — canonical communication events", () => {
 
   it("indexes sustained canonical writes without rescanning prior history", () => {
     const project = store.createProject({ label: "Scale", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Scale room" });
     for (let index = 0; index < 500; index += 1) {
       const event: CommunicationEvent = {
-        eventId: `scale-${index}`, schemaVersion: 1, projectId: project.id,
+        eventId: `scale-${index}`, schemaVersion: 1, projectId: project.id, masterChatId: room.id,
         sender: { kind: "system", component: "scale-test" }, intent: "broadcast",
         audience: { kind: "organization", organizationId: project.id }, text: `Event ${index}`,
         createdAt: new Date(1_700_000_000_000 + index).toISOString(),
       };
       store.appendCommunicationEvent(event);
       store.appendCommunicationProjection(project.id, {
-        eventId: event.eventId, surface: "master_chat", projectionKey: "scale-room", projectedAt: event.createdAt,
+        eventId: event.eventId, surface: "master_chat", projectionKey: room.id, projectedAt: event.createdAt,
         message: { messageId: `message-${index}`, role: "system", createdAt: event.createdAt },
       });
     }
