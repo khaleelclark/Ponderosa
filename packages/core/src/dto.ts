@@ -4,6 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TaskStatus } from "./events.js";
+import type { CommunicationIntent } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -359,7 +360,7 @@ export interface QueuedMessageResponse {
 export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
 
 /** Semantic communication requested by an agent. Routing is server-owned. */
-export type AgentCommunicationIntent = "broadcast" | "direct_to_user" | "collaboration";
+export type AgentCommunicationIntent = CommunicationIntent;
 /** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
 

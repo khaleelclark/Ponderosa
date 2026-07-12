@@ -251,6 +251,14 @@ the collaboration projection. A temporary compatibility path accepts the former
 channel-and-mention request from runtime sessions seeded before this contract was
 deployed; it is not advertised and is removed after the session migration window.
 
+The target persistence contract is one versioned, immutable, project-level
+`CommunicationEvent`. Master Chat, Collaboration Chat, Direct Agent audit,
+agent inbox, and user inbox entries are rebuildable projections referencing its
+globally unique event ID. Delivery attempts and receipts are mutable operational
+records outside that event. Context classification and knowledge promotion are
+append-only records referencing the same ID, so being visible in a projection
+never implicitly makes local conversation shared organizational context.
+
 The reserved, case-insensitive `@everyone` collaboration handle resolves once,
 at message creation, to every non-archived agent that is currently a member of
 that Master Chat. An agent-authored broadcast excludes its author; a manager

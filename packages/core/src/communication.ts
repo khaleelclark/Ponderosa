@@ -1,0 +1,87 @@
+/** Canonical communication contracts shared by persistence, routing, and UI. */
+
+export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration";
+
+export type CommunicationActor =
+  | { kind: "user"; userId: string }
+  | { kind: "agent"; agentId: string; executionId?: string }
+  | { kind: "system"; component: string };
+
+interface CommunicationEventBase {
+  eventId: string;
+  schemaVersion: 1;
+  projectId: string;
+  /** Workstream of origin; event identity remains project-global. */
+  masterChatId?: string;
+  sender: CommunicationActor;
+  text: string;
+  createdAt: string;
+  correlationId?: string;
+  causationId?: string;
+  idempotencyKey?: string;
+}
+
+/** Runtime validation must additionally reject empty collaboration audiences. */
+export type CommunicationEventV1 = CommunicationEventBase & (
+  | { intent: "broadcast"; audience: { kind: "organization"; organizationId: string } }
+  | { intent: "direct_to_user"; audience: { kind: "user"; userId: string } }
+  | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
+);
+
+export type CommunicationEvent = CommunicationEventV1;
+
+export type CommunicationProjectionSurface =
+  | "master_chat"
+  | "collaboration_chat"
+  | "direct_agent_audit"
+  | "agent_inbox"
+  | "user_inbox";
+
+/** Rebuildable placement; unique by (eventId, surface, projectionKey). */
+export interface CommunicationProjection {
+  eventId: string;
+  surface: CommunicationProjectionSurface;
+  projectionKey: string;
+  projectedAt: string;
+}
+
+export type CommunicationDeliveryStatus =
+  | "accepted"
+  | "routed"
+  | "available"
+  | "claimed"
+  | "acknowledged"
+  | "processed"
+  | "failed";
+
+/** Mutable operational state, deliberately outside the immutable event. */
+export interface CommunicationDelivery {
+  eventId: string;
+  recipient: { kind: "agent"; agentId: string } | { kind: "user"; userId: string };
+  status: CommunicationDeliveryStatus;
+  attempt: number;
+  updatedAt: string;
+  failure?: { code: string; message: string; retryable: boolean };
+}
+
+export type CommunicationContextPolicy = "local_only" | "organizational_candidate";
+
+/** Context eligibility is explicit and independent of projection visibility. */
+export interface CommunicationContextClassification {
+  eventId: string;
+  policy: CommunicationContextPolicy;
+  classifiedAt: string;
+  classifiedBy: CommunicationActor;
+}
+
+/** Append-only authorization to expose selected local knowledge organizationally. */
+export interface KnowledgePromotion {
+  promotionId: string;
+  sourceEventId: string;
+  organizationId: string;
+  summary: string;
+  promotedBy: CommunicationActor;
+  promotedAt: string;
+  supersedesPromotionId?: string;
+  expiresAt?: string;
+}
