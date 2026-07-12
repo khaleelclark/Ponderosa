@@ -77,6 +77,44 @@ export function canSubmitComposerText(input: {
   );
 }
 
+const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
+  "image/png", "image/jpeg", "image/webp", "application/pdf",
+  "text/plain", "application/json", "application/zip",
+]);
+const COMPOSER_MAX_FILES = 4;
+const COMPOSER_MAX_FILE_BYTES = 8 * 1024 * 1024;
+const COMPOSER_MAX_MESSAGE_BYTES = 24 * 1024 * 1024;
+
+export function filesFromClipboard(items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>): File[] {
+  return Array.from(items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null);
+}
+
+export function selectComposerFiles(current: File[], candidates: File[]): { accepted: File[]; error?: string } {
+  const accepted: File[] = [];
+  let bytes = current.reduce((total, file) => total + file.size, 0);
+  for (const file of candidates) {
+    if (
+      current.length + accepted.length < COMPOSER_MAX_FILES &&
+      COMPOSER_ACCEPTED_MEDIA_TYPES.has(file.type) &&
+      file.size <= COMPOSER_MAX_FILE_BYTES &&
+      bytes + file.size <= COMPOSER_MAX_MESSAGE_BYTES
+    ) {
+      accepted.push(file);
+      bytes += file.size;
+    }
+  }
+  const rejected = candidates.length - accepted.length;
+  return {
+    accepted,
+    error: rejected > 0
+      ? `${rejected} pasted or selected ${rejected === 1 ? "file was" : "files were"} not attached. Use up to 4 supported files, 8 MiB each and 24 MiB total.`
+      : undefined,
+  };
+}
+
 export function taskStatusColor(status: TaskDto["status"]): "success" | "warning" | "info" {
   if (status === "done") {
     return "success";
@@ -719,6 +757,14 @@ export function Composer({
     setText(next);
   };
 
+  const addFiles = (candidates: File[]) => {
+    const selection = selectComposerFiles(files.map((item) => item.file), candidates);
+    setSendError(selection.error);
+    if (selection.accepted.length > 0) {
+      setFiles((current) => [...current, ...selection.accepted.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
+    }
+  };
+
   // The `@partial` token immediately left of the caret, if any.
   const mentionMatch = /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
   const suggestions =
@@ -791,12 +837,10 @@ export function Composer({
       {sendError ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {sendError}</Alert> : null}
       <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} sx={{ alignItems: "flex-end" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
-          const selected = Array.from(event.target.files ?? []).slice(0, 4 - files.length);
-          const valid = selected.filter((file) => file.size <= 8 * 1024 * 1024);
-          setFiles((current) => [...current, ...valid.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
+          addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
         }} />
-        <Tooltip title="Attach assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Attach or paste assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= COMPOSER_MAX_FILES} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
         <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
           <TextField
             fullWidth
@@ -822,6 +866,13 @@ export function Composer({
               setCaret(event.target.selectionStart ?? event.target.value.length);
               setHighlighted(0);
               setSuppressMenu(false);
+            }}
+            onPaste={(event) => {
+              if (disabled || running) return;
+              const pasted = filesFromClipboard(event.clipboardData.items);
+              if (pasted.length === 0) return;
+              event.preventDefault();
+              addFiles(pasted);
             }}
             onClick={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyUp={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
