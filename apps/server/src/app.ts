@@ -743,14 +743,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const delivery = collaborationDeliveries.get(deliveryIds[0]!);
       const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
       if (delivery?.masterChatId && target) {
-        store.appendMasterChatMessage(
+        appendCollaborationSystemNotice(
           delivery.masterChatId,
-          {
-            role: "system",
-            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
-          },
-          undefined,
-          "collaboration",
+          `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
+          `delivery-failure:${delivery.id}`,
         );
       }
     }
@@ -1017,16 +1013,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     blocked: Array<{ title: string; reason: string }>,
   ): void {
     for (const item of blocked) {
-      store.appendMasterChatMessage(
+      appendCollaborationSystemNotice(
         masterChatId,
-        {
-          role: "system",
-          text: `⚠️ @${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
-        },
-        undefined,
-        "collaboration",
+        `⚠️ @${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
       );
     }
+  }
+
+  function appendCollaborationSystemNotice(
+    masterChatId: string,
+    text: string,
+    idempotencyKey?: string,
+  ): MasterChatMessageDto | undefined {
+    const master = store.getMasterChat(masterChatId);
+    if (!master) return undefined;
+    const communication = recordCommunication({
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId,
+      sender: { kind: "system", component: "collaboration-supervision" },
+      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+      text, createdAt: new Date().toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    const existing = communication
+      ? store.getMasterChatMessages(masterChatId, "collaboration").find((message) => message.communicationEventId === communication.eventId)
+      : undefined;
+    if (existing) return existing;
+    return store.appendMasterChatMessage(
+      masterChatId, { role: "system", text }, undefined, "collaboration", undefined, undefined, communication?.eventId,
+    );
   }
 
   function syncDelegatedCompletion(deliveryId: string): void {
@@ -1059,16 +1072,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
       return;
     }
-    const message = store.appendMasterChatMessage(
+    const completionText = run.status === "completed"
+      ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+      : run.status === "blocked"
+        ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. @${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+        : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. @${agentMentionHandle(parent.title)}, review the failure.`;
+    const master = store.getMasterChat(run.masterChatId);
+    if (!master) return;
+    const communication = recordCommunication({
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId: master.id,
+      sender: run.childThreadId
+        ? { kind: "agent", agentId: run.childThreadId, executionId: run.id }
+        : { kind: "system", component: "delegation-supervision" },
+      intent: "collaboration", audience: { kind: "agents", agentIds: [parent.id] },
+      text: completionText, createdAt: new Date().toISOString(), idempotencyKey: `delegation-completion:${run.id}`,
+    });
+    const existing = communication
+      ? store.getMasterChatMessages(run.masterChatId, "collaboration").find((message) => message.communicationEventId === communication.eventId)
+      : undefined;
+    const message = existing ?? store.appendMasterChatMessage(
       run.masterChatId,
-      {
-        role: "system",
-        text: run.status === "completed"
-          ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
-          : run.status === "blocked"
-            ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. @${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
-            : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. @${agentMentionHandle(parent.title)}, review the failure.`,
-      },
+      { role: "system", text: completionText },
       run.childThreadId,
       "collaboration",
       [{
@@ -1078,6 +1102,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         kind: "delegation_completion",
         delegatedRunId: run.id,
       }],
+      undefined,
+      communication?.eventId,
     );
     if (!message) return;
     const delivery = queueCollaborationDelivery({
@@ -1340,7 +1366,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         for await (const event of stream) {
           if (closed) break;
           renewExecutionLease(childThread.id);
-          const stored = store.appendEvent(childThread.id, event);
+          let logEvent: LogEvent = event;
+          if (event.type === "text" && event.delta.trim()) {
+            const communication = recordCommunication({
+              eventId: randomUUID(), schemaVersion: 1, projectId: project.id, masterChatId: run.masterChatId,
+              sender: { kind: "agent", agentId: childThread.id, executionId: run.id },
+              intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+              text: event.delta, createdAt: new Date().toISOString(),
+            });
+            if (communication) {
+              store.appendCommunicationProjection(project.id, {
+                eventId: communication.eventId, surface: "user_inbox", projectionKey: "local-operator",
+                projectedAt: communication.createdAt,
+              });
+              logEvent = { ...event, communicationEventId: communication.eventId };
+            }
+          }
+          const stored = store.appendEvent(childThread.id, logEvent);
           publish(childThread.id, stored);
           if (event.type === "error") runtimeError = event.message;
         }
@@ -1431,9 +1473,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             effort,
             presetId: preset?.id,
           });
+          const initialText = `Delegated task: ${spawned.run.delegationSummary}`;
+          const communication = recordCommunication({
+            eventId: randomUUID(), schemaVersion: 1, projectId: masterChat.projectId, masterChatId: masterChat.id,
+            sender: { kind: "agent", agentId: capability.threadId, executionId: capability.parentRunId },
+            intent: "collaboration", audience: { kind: "agents", agentIds: [child.id] },
+            text: initialText, createdAt: new Date().toISOString(), idempotencyKey: `delegation-objective:${spawned.run.id}`,
+          });
+          if (communication) store.appendCommunicationProjection(masterChat.projectId, {
+            eventId: communication.eventId, surface: "agent_inbox", projectionKey: child.id,
+            projectedAt: communication.createdAt,
+          });
           const initial = store.appendEvent(child.id, {
             type: "user_message",
-            text: `Delegated task: ${spawned.run.delegationSummary}`,
+            text: initialText,
+            ...(communication ? { communicationEventId: communication.eventId } : {}),
           });
           publish(child.id, initial);
           const run = delegations.bindChildThread(spawned.run.id, child.id);
@@ -2119,18 +2173,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const initialMessage = request.body.initialMessage?.trim();
       let thread; try { thread = store.createThread(request.params.id, request.body); } catch { return reply.code(400).send({ error: "preset is unavailable for this project" }); }
       if (initialMessage) {
+        let initialCommunicationEventId: string | undefined;
         if (thread.masterChatId) {
-          store.appendMasterChatMessage(thread.masterChatId, { text: initialMessage, replyToMessageId: request.body.replyToMessageId });
+          const communication = recordCommunication({
+            eventId: randomUUID(), schemaVersion: 1, projectId: thread.projectId, masterChatId: thread.masterChatId,
+            sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+            audience: { kind: "organization", organizationId: thread.projectId }, text: initialMessage,
+            createdAt: new Date().toISOString(),
+          });
+          initialCommunicationEventId = communication?.eventId;
+          store.appendMasterChatMessage(
+            thread.masterChatId,
+            { text: initialMessage, replyToMessageId: request.body.replyToMessageId },
+            undefined, "main", undefined, undefined, initialCommunicationEventId,
+          );
         }
         const turn = await app.inject({
           method: "POST",
           url: `/api/threads/${thread.id}/messages`,
-          headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
+          headers: {
+            ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
+            ...(initialCommunicationEventId ? { "x-ponderosa-turn-dispatch": turnDispatchKey } : {}),
+          },
           payload: {
             text: initialMessage,
             model: request.body.model,
             effort: request.body.effort,
             sourceChannel: "main",
+            ...(thread.masterChatId ? { sourceMasterChatId: thread.masterChatId } : {}),
+            ...(initialCommunicationEventId ? { communicationEventId: initialCommunicationEventId } : {}),
           },
         });
         if (turn.statusCode >= 400) {
@@ -2283,6 +2354,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
       attachmentIds?: string[];
+      /** Server-only link used when one action projects into room and audit timelines. */
+      communicationEventId?: string;
     };
   }>(
     "/api/threads/:id/messages",
@@ -2337,7 +2410,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const inheritedCommunicationEventId = requestedDeliveryIds.length === 1
         ? inboxDelivery?.communicationEventId : undefined;
-      const communicationEventId = requestedDeliveryIds.length === 0
+      const serverCommunicationEventId = request.body.communicationEventId;
+      if (serverCommunicationEventId && request.headers["x-ponderosa-turn-dispatch"] !== turnDispatchKey) {
+        return reply.code(403).send({ error: "communication event identity is server-controlled" });
+      }
+      if (serverCommunicationEventId && !store.getCommunicationEvent(project.id, serverCommunicationEventId)) {
+        return reply.code(400).send({ error: "communication event was not found in this project" });
+      }
+      const communicationEventId = serverCommunicationEventId ?? (requestedDeliveryIds.length === 0
         ? recordCommunication({
             eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
             ...(sourceMasterChatId ? { masterChatId: sourceMasterChatId } : {}),
@@ -2345,7 +2425,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             audience: { kind: "agents", agentIds: [thread.id] }, text,
             createdAt: new Date().toISOString(),
           })?.eventId
-        : inheritedCommunicationEventId;
+        : inheritedCommunicationEventId);
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&

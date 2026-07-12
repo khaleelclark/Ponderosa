@@ -737,9 +737,11 @@ describe("server chunk F", () => {
     await waitForRun(thread.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
-    expect(store.getMasterChatMessages(master.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "user", text: "Check the first-run path." })]),
-    );
+    const shared = store.getMasterChatMessages(master.id).find((message) => message.text === "Check the first-run path.");
+    const audit = store.getMessages(thread.id).find((message) => message.text === "Check the first-run path.");
+    expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
+    expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 
@@ -1543,6 +1545,7 @@ describe("server chunk F", () => {
     );
     expect(completionMessage).toBeUndefined();
     expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(0);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 
@@ -1565,7 +1568,11 @@ describe("server chunk F", () => {
     expect(first.statusCode).toBe(200);
     expect(duplicate.statusCode).toBe(200);
     expect(first.json().run).toEqual(expect.objectContaining({ status: "completed", disposition: expect.objectContaining({ outcome: "completed" }) }));
-    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text.includes("Delegated task “Research” completed"))).toHaveLength(1);
+    const completionMessages = store.getCollaborationChatDetail(master.id)?.messages
+      .filter((message) => message.text.includes("Delegated task “Research” completed")) ?? [];
+    expect(completionMessages).toHaveLength(1);
+    expect(completionMessages[0]?.communicationEventId).toEqual(expect.any(String));
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 

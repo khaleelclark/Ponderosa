@@ -447,6 +447,11 @@ export class ThreadStore {
     return [...this.communicationIndex(projectId).events];
   }
 
+  getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return this.communicationIndex(projectId).byId.get(eventId);
+  }
+
   private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
     const file = communicationContextPath(this.dataDir, projectId);
     const index = this.contextIndex(projectId);
