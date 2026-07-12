@@ -6,6 +6,7 @@ import type {
   CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
   CreateDirectReplyRequest,
+  CreateMultiAgentDirectMessageRequest,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
   CreateProjectRequest,
@@ -17,6 +18,7 @@ import type {
   UpdateThreadMasterChatMembershipsRequest,
   EngineDto,
   DirectReplyResponse,
+  MultiAgentDirectMessageResponse,
   ImageAttachmentDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
@@ -81,6 +83,7 @@ export interface PonderosaApi {
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
   sendCollaborationMessage(masterChatId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
   sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
+  sendMultiAgentDirectMessage(masterChatId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
   setMessageReaction(masterChatId: string, channel: "main" | "collaboration", messageId: string, emoji: ReactionEmoji, active: boolean, idempotencyKey: string): Promise<SetMessageReactionResponse>;
   listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;
   cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;

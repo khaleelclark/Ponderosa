@@ -25,7 +25,9 @@ import type {
   AssetDto,
   ImageAttachmentDto,
   CreateDirectReplyRequest,
+  CreateMultiAgentDirectMessageRequest,
   DirectReplyResponse,
+  MultiAgentDirectMessageResponse,
   SseEventEnvelope,
   SendAgentMessageRequest,
   SubagentRunDto,
@@ -2194,6 +2196,145 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(
+    "/api/master-chats/:id/direct-messages",
+    async (request, reply) => {
+      const text = request.body?.text?.trim() ?? "";
+      const recipients = request.body?.recipients ?? [];
+      const replyToMessageId = request.body?.replyToMessageId?.trim() || undefined;
+      const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+      if (!text) return reply.code(400).send({ error: "text is required" });
+      if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+      if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+      if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100) {
+        return reply.code(400).send({ error: "1 to 100 recipients are required" });
+      }
+      const agentIds = recipients.map((recipient) => recipient.agentId?.trim());
+      if (agentIds.some((id) => !id) || new Set(agentIds).size !== agentIds.length) {
+        return reply.code(400).send({ error: "recipient agent IDs must be unique" });
+      }
+      for (const recipient of recipients) {
+        const attachmentIds = recipient.attachmentIds ?? [];
+        if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
+          return reply.code(400).send({ error: "each recipient supports at most 4 unique attachments" });
+        }
+      }
+      const master = store.getMasterChat(request.params.id);
+      if (!master || master.archived) return reply.code(404).send({ error: "master chat not found" });
+      const targets = agentIds.map((agentId) => store.getThread(agentId));
+      if (targets.some((target) => !target || target.archived || !target.masterChatIds.includes(master.id))) {
+        return reply.code(404).send({ error: "direct message recipient not found" });
+      }
+      const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
+      const persistedIntents = () => store.getMasterChatDeliveryIntents(master.id)
+        .filter((item) => item.messageReceiptKey === receiptKey && item.intent.kind === "direct");
+      const queueMissingDeliveries = (message: MasterChatMessageDto): MultiAgentDirectMessageResponse["recipients"] => {
+        return persistedIntents().map(({ intent, deliveryOrderKey }) => {
+          const existingDelivery = collaborationDeliveries.getForMessageTarget(message.id, intent.targetThreadId);
+          const wasBusy = activeRuns.has(intent.targetThreadId);
+          const delivery = existingDelivery ?? queueCollaborationDelivery({
+            masterChatId: master.id,
+            messageId: message.id,
+            communicationEventId: message.communicationEventId,
+            targetThreadId: intent.targetThreadId,
+            text,
+            relayDepth: intent.relayDepth,
+            mentionTrail: intent.mentionTrail,
+            kind: "direct",
+            createdAt: message.createdAt,
+            orderKey: deliveryOrderKey,
+            sourceChannel: "main",
+            replyToMessageId,
+            attachmentIds: intent.attachmentIds,
+          });
+          if (!delivery) throw new Error("direct message delivery could not be persisted");
+          return { agentId: intent.targetThreadId, queued: existingDelivery ? existingDelivery.status === "queued" : wasBusy };
+        });
+      };
+      const existingMessageId = collaborationDeliveries.messageReceipt(receiptKey);
+      const existing = existingMessageId
+        ? store.getMasterChatMessages(master.id).find((message) => message.id === existingMessageId)
+        : store.getMasterChatMessageByReceiptKey(master.id, receiptKey);
+      if (existing) {
+        const intents = persistedIntents();
+        const persistedRecipients = intents.map(({ intent }) => ({
+          agentId: intent.targetThreadId,
+          attachmentIds: intent.attachmentIds ?? [],
+        }));
+        const requestedRecipients = recipients.map((recipient) => ({ agentId: recipient.agentId, attachmentIds: recipient.attachmentIds ?? [] }));
+        const sameRequest = existing.text === text && existing.replyTo?.messageId === replyToMessageId &&
+          JSON.stringify(persistedRecipients) === JSON.stringify(requestedRecipients);
+        if (!sameRequest) return reply.code(409).send({ error: "idempotency key was used with another direct message" });
+        collaborationDeliveries.rememberMessageReceipt(receiptKey, existing.id);
+        return {
+          messageId: existing.id,
+          replayed: true,
+          recipients: queueMissingDeliveries(existing),
+        } satisfies MultiAgentDirectMessageResponse;
+      }
+      if (directReplyClaims.has(receiptKey)) {
+        return reply.code(409).send({ error: "direct message with this idempotency key is in progress", retryable: true });
+      }
+      directReplyClaims.add(receiptKey);
+      try {
+        const attachmentsByAgent = await Promise.all(recipients.map(async (recipient) => {
+          const attached = await Promise.all((recipient.attachmentIds ?? []).map((id) => assetMetadata(recipient.agentId, id)));
+          if (attached.some((item) => !item || item.threadId !== recipient.agentId)) throw new AssetError(404, "direct message attachment not found");
+          if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) {
+            throw new AssetError(413, "message asset quota exceeded");
+          }
+          return attached as ImageAttachmentDto[];
+        }));
+        const intents: MasterChatDeliveryIntent[] = recipients.map((recipient) => ({
+          targetThreadId: recipient.agentId,
+          relayDepth: 0,
+          mentionTrail: [],
+          kind: "direct",
+          ...(recipient.attachmentIds?.length ? { attachmentIds: recipient.attachmentIds } : {}),
+        }));
+        const communication = recordCommunication({
+          eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, masterChatId: master.id,
+          sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+          audience: { kind: "user_agents", userId: "local-operator", agentIds: agentIds as [string, ...string[]] },
+          text, createdAt: new Date().toISOString(), idempotencyKey: receiptKey,
+        });
+        if (!communication) return reply.code(503).send({ error: "direct message could not be recorded" });
+        store.appendCommunicationProjection(master.projectId, {
+          eventId: communication.eventId,
+          surface: "user_inbox",
+          projectionKey: "local-operator",
+          projectedAt: communication.createdAt,
+        });
+        let message: MasterChatMessageDto | undefined;
+        try {
+          message = store.appendMasterChatMessage(
+            master.id,
+            { text, replyToMessageId, attachments: attachmentsByAgent[0] },
+            undefined,
+            "main",
+            intents,
+            receiptKey,
+            communication.eventId,
+          );
+        } catch (error) {
+          return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct message" });
+        }
+        if (!message) return reply.code(404).send({ error: "master chat not found" });
+        collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
+        return {
+          messageId: message.id,
+          replayed: false,
+          recipients: queueMissingDeliveries(message),
+        } satisfies MultiAgentDirectMessageResponse;
+      } catch (error) {
+        if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
+        throw error;
+      } finally {
+        directReplyClaims.delete(receiptKey);
+      }
+    },
+  );
+
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
     "/api/master-chats/:id/direct-replies",
     async (request, reply) => {
@@ -2864,9 +3005,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }, undefined, "main", undefined, undefined, communicationEventId);
         if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [thread.id], messageAttachments);
       }
-      if (!sourceMasterMessage && sharedCommunication && directMessageMasterChatId) {
+      if (!sourceMasterMessage && communication && directMessageMasterChatId) {
         sourceMasterMessage = store.getMasterChatMessages(directMessageMasterChatId, "main")
-          .find((message) => message.communicationEventId === sharedCommunication.eventId);
+          .find((message) => message.communicationEventId === communication.eventId);
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (

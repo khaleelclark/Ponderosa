@@ -112,6 +112,12 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request),
     });
   },
+  sendMultiAgentDirectMessage(masterChatId, request) {
+    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/direct-messages`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
   setMessageReaction(masterChatId, channel, messageId, emoji, active, idempotencyKey) {
     return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/${channel}/messages/${encodeURIComponent(messageId)}/reaction`, {
       method: "PUT", body: JSON.stringify({ emoji, active, idempotencyKey }),

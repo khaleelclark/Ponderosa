@@ -36,14 +36,17 @@ export type CommunicationEventV1 = CommunicationEventBase & (
 );
 
 /**
- * V2 makes a user DM genuinely bidirectional. It always joins the local user
- * and exactly one stable agent ID, regardless of which participant sent it.
+ * V2 makes a user DM genuinely bidirectional. A user-authored DM may address
+ * one or more explicit stable agents; an agent-authored DM remains between that
+ * agent and the local user.
  */
 export type CommunicationEventV2 = Omit<CommunicationEventBase, "schemaVersion"> & {
   schemaVersion: 2;
 } & (
   | { intent: "broadcast"; audience: { kind: "organization"; organizationId: string } }
-  | { intent: "user_dm"; audience: { kind: "user_agent"; userId: string; agentId: string } }
+  | { intent: "user_dm"; audience:
+      | { kind: "user_agent"; userId: string; agentId: string }
+      | { kind: "user_agents"; userId: string; agentIds: [string, ...string[]] } }
   | { intent: "collaboration"; audience: { kind: "agents"; agentIds: [string, ...string[]] } }
 );
 

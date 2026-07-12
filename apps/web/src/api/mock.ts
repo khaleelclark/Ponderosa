@@ -389,6 +389,22 @@ export const mockApi: PonderosaApi = {
     }];
     return { messageId: request.idempotencyKey, targetAuthorThreadId: request.targetAuthorThreadId, replayed: false, queued: false };
   },
+  async sendMultiAgentDirectMessage(masterChatId, request) {
+    if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), {
+      id: request.idempotencyKey,
+      masterChatId,
+      role: "user",
+      text: request.text,
+      createdAt: new Date().toISOString(),
+    }];
+    for (const recipient of request.recipients) await this.sendMessage(recipient.agentId, { text: request.text, attachmentIds: recipient.attachmentIds });
+    return {
+      messageId: request.idempotencyKey,
+      replayed: false,
+      recipients: request.recipients.map((recipient) => ({ agentId: recipient.agentId, queued: false })),
+    };
+  },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
     if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");

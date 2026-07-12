@@ -325,28 +325,27 @@ export function MasterChatView({
     },
   });
 
-  // Route a message to an existing agent (a follow-up turn) instead of spawning.
-  // Recorded in the shared pool so it stays as context for future agents.
+  // Persist one canonical user message, then let the server fan it out to the
+  // explicitly tagged agents as stable-ID direct deliveries.
   const reply = useMutation({
-    mutationFn: async ({ agentIds, text, files, replyToMessageId }: { agentIds: string[]; text: string; files: File[]; replyToMessageId?: string }) => {
-      const perAgent = await Promise.all(agentIds.map(async (agentId) => {
+    mutationFn: async ({ agentIds, text, files, replyToMessageId, requestId }: { agentIds: string[]; text: string; files: File[]; replyToMessageId?: string; requestId: string }) => {
+      const recipients = await Promise.all(agentIds.map(async (agentId) => {
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agentId, file)));
-        return { agentId, attachments };
+        return { agentId, attachmentIds: attachments.map((item) => item.id) };
       }));
-      return Promise.all(perAgent.map(({ agentId, attachments }) => api.sendMessage(agentId, {
+      return api.sendMultiAgentDirectMessage(masterChatId, {
         text,
-        attachmentIds: attachments.map((item) => item.id),
-        sourceChannel: "main",
-        sourceMasterChatId: masterChatId,
+        recipients,
         replyToMessageId,
-      })));
+        idempotencyKey: requestId,
+      });
     },
-    onSuccess: (responses, variables) => {
+    onSuccess: (response, variables) => {
       clearReply();
       invalidate();
-      const queuedTitles = variables.agentIds
-        .filter((_, index) => responses[index]?.queued)
-        .map((agentId) => detailQuery.data?.threads.find((thread) => thread.id === agentId)?.title ?? "Agent");
+      const queuedTitles = response.recipients
+        .filter((recipient) => recipient.queued)
+        .map((recipient) => detailQuery.data?.threads.find((thread) => thread.id === recipient.agentId)?.title ?? "Agent");
       setQueuedReplyNotice(
         queuedTitles.length > 0
           ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
@@ -532,7 +531,13 @@ export function MasterChatView({
       return;
     }
     if (route.kind === "mentioned-reply") {
-      await reply.mutateAsync({ agentIds: route.agentIds, text, files, replyToMessageId: replyTo?.id });
+      await reply.mutateAsync({
+        agentIds: route.agentIds,
+        text,
+        files,
+        replyToMessageId: replyTo?.id,
+        requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      });
     } else {
       await spawn.mutateAsync({ text, files });
     }
