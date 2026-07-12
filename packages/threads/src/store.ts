@@ -28,6 +28,9 @@ import type {
   MasterChatChannel,
   MasterChatDto,
   MasterChatMessageDto,
+  MessageReactionDto,
+  ReactionActor,
+  ReactionEmoji,
   MessageDto,
   ProjectDto,
   TaskDto,
@@ -76,10 +79,32 @@ import {
   projectJsonPath,
   agentPresetsPath,
   projectsDir,
+  reactionEventsPath,
   threadDir,
   threadJsonPath,
   threadsDir,
 } from "./paths.js";
+
+interface ReactionEventJson {
+  occurrenceId: string;
+  idempotencyKey: string;
+  actor: ReactionActor;
+  masterChatId: string;
+  channel: MasterChatChannel;
+  messageId: string;
+  emoji: ReactionEmoji;
+  active: boolean;
+  createdAt: string;
+  notifyAuthorThreadId?: string;
+}
+
+const REACTION_COOLDOWN_MS = 500;
+const MAX_REACTION_EVENTS = 100_000;
+const REACTION_EMOJIS = new Set<ReactionEmoji>(["👍", "👎", "❤️", "🎉", "👀", "🚀"]);
+
+function reactionActorKey(actor: ReactionActor): string {
+  return actor.kind === "manager" ? "manager" : `agent:${actor.threadId}`;
+}
 
 interface ProjectJson {
   id: string;
@@ -539,7 +564,93 @@ export class ThreadStore {
     ).find((message) => message.id === messageId)?.deliveryOrderKey;
   }
 
-  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
+  setMasterChatReaction(input: {
+    masterChatId: string; channel: MasterChatChannel; messageId: string; actor: ReactionActor;
+    emoji: ReactionEmoji; active: boolean; idempotencyKey: string;
+  }): { event: ReactionEventJson; replayed: boolean; reactions: MessageReactionDto[] } {
+    this.client.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.setMasterChatReactionLocked(input);
+      this.client.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try { this.client.exec("ROLLBACK"); } catch { /* transaction did not begin */ }
+      throw error;
+    }
+  }
+
+  private setMasterChatReactionLocked(input: {
+    masterChatId: string; channel: MasterChatChannel; messageId: string; actor: ReactionActor;
+    emoji: ReactionEmoji; active: boolean; idempotencyKey: string;
+  }): { event: ReactionEventJson; replayed: boolean; reactions: MessageReactionDto[] } {
+    if (!REACTION_EMOJIS.has(input.emoji)) throw new Error("unsupported reaction");
+    if (!input.idempotencyKey || input.idempotencyKey.length > 200) throw new Error("invalid idempotency key");
+    const master = this.getMasterChat(input.masterChatId);
+    if (!master || master.archived) throw new Error("master chat not found");
+    const message = this.getMasterChatMessages(input.masterChatId, input.channel)
+      .find((candidate) => candidate.id === input.messageId);
+    if (!message) throw new Error("message not found in this conversation");
+    if (input.actor.kind === "agent") {
+      const actor = this.getThread(input.actor.threadId);
+      if (!actor || actor.archived || !actor.masterChatIds.includes(input.masterChatId)) {
+        throw new Error("reaction actor is not an active member");
+      }
+    }
+    const file = reactionEventsPath(this.dataDir);
+    const events = readJsonLines<ReactionEventJson>(file);
+    const actorKey = reactionActorKey(input.actor);
+    const prior = events.find((candidate) =>
+      reactionActorKey(candidate.actor) === actorKey && candidate.idempotencyKey === input.idempotencyKey,
+    );
+    if (prior) {
+      const same = prior.masterChatId === input.masterChatId && prior.channel === input.channel &&
+        prior.messageId === input.messageId && prior.emoji === input.emoji && prior.active === input.active;
+      if (!same) throw new Error("idempotency key was used for another reaction");
+      return { event: prior, replayed: true, reactions: this.getMessageReactions(input.masterChatId, input.channel, input.messageId, input.actor) };
+    }
+    if (events.length >= MAX_REACTION_EVENTS) throw new Error("reaction history bound reached");
+    const latest = [...events].reverse().find((candidate) => reactionActorKey(candidate.actor) === actorKey &&
+      candidate.masterChatId === input.masterChatId && candidate.channel === input.channel &&
+      candidate.messageId === input.messageId && candidate.emoji === input.emoji);
+    const now = new Date();
+    if (latest && now.getTime() - Date.parse(latest.createdAt) < REACTION_COOLDOWN_MS) {
+      throw new Error("reaction cooldown active");
+    }
+    const event: ReactionEventJson = {
+      occurrenceId: randomUUID(), idempotencyKey: input.idempotencyKey, actor: input.actor,
+      masterChatId: input.masterChatId, channel: input.channel, messageId: input.messageId,
+      emoji: input.emoji, active: input.active, createdAt: now.toISOString(),
+      ...(message.authorThreadId && message.authorThreadId !== (input.actor.kind === "agent" ? input.actor.threadId : undefined)
+        ? { notifyAuthorThreadId: message.authorThreadId } : {}),
+    };
+    appendFileSync(file, JSON.stringify(event) + "\n", "utf8");
+    return { event, replayed: false, reactions: this.getMessageReactions(input.masterChatId, input.channel, input.messageId, input.actor) };
+  }
+
+  getMessageReactions(masterChatId: string, channel: MasterChatChannel, messageId: string, currentActor: ReactionActor): MessageReactionDto[] {
+    const state = new Map<string, ReactionEventJson>();
+    for (const event of readJsonLines<ReactionEventJson>(reactionEventsPath(this.dataDir))) {
+      if (event.masterChatId === masterChatId && event.channel === channel && event.messageId === messageId) {
+        state.set(`${reactionActorKey(event.actor)}:${event.emoji}`, event);
+      }
+    }
+    return [...REACTION_EMOJIS].map((emoji) => {
+      const active = [...state.values()].filter((event) => event.emoji === emoji && event.active);
+      return { emoji, count: active.length, reactedByCurrentActor: active.some((event) => reactionActorKey(event.actor) === reactionActorKey(currentActor)) };
+    }).filter((reaction) => reaction.count > 0 || reaction.reactedByCurrentActor);
+  }
+
+  /** Rebuildable notification outbox. Reading revalidates current membership. */
+  getReactionNotificationOutbox(): Array<{ occurrenceId: string; targetThreadId: string; messageId: string; emoji: ReactionEmoji }> {
+    return readJsonLines<ReactionEventJson>(reactionEventsPath(this.dataDir)).flatMap((event) => {
+      if (!event.active || !event.notifyAuthorThreadId) return [];
+      const target = this.getThread(event.notifyAuthorThreadId);
+      if (!target || target.archived || !target.masterChatIds.includes(event.masterChatId)) return [];
+      return [{ occurrenceId: event.occurrenceId, targetThreadId: target.id, messageId: event.messageId, emoji: event.emoji }];
+    });
+  }
+
+  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main", currentActor: ReactionActor = { kind: "manager" }): MasterChatMessageDto[] {
     return this.db
       .select()
       .from(masterChatMessages)
@@ -559,6 +670,7 @@ export class ThreadStore {
         authorThreadId: row.authorThreadId ?? undefined,
         replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
+        reactions: this.getMessageReactions(masterChatId, channel, row.id, currentActor),
       }));
   }
 

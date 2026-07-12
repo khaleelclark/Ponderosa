@@ -74,6 +74,67 @@ describe("ThreadStore — multi-master-chat membership", () => {
   });
 });
 
+describe("ThreadStore — canonical message reactions", () => {
+  function seedReactionRoom() {
+    const project = store.createProject({ label: "Reactions", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
+    const reactor = store.createThread(project.id, { title: "Reactor", engine: "codex", masterChatId: room.id });
+    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Done" }, author.id)!;
+    return { room, author, reactor, message };
+  }
+
+  it("replays actor-global idempotency without duplicate persistence or notification", () => {
+    const { room, author, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "👍" as const, active: true, idempotencyKey: "global-1" };
+    const first = store.setMasterChatReaction(input);
+    const replay = store.setMasterChatReaction(input);
+    expect(replay).toMatchObject({ replayed: true, event: { occurrenceId: first.event.occurrenceId } });
+    expect(store.getReactionNotificationOutbox()).toEqual([{ occurrenceId: first.event.occurrenceId, targetThreadId: author.id, messageId: message.id, emoji: "👍" }]);
+    expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("serializes pre-opened store instances on one durable idempotency occurrence", () => {
+    const { room, message } = seedReactionRoom();
+    const peer = new ThreadStore(dir);
+    try {
+      const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "❤️" as const, active: true, idempotencyKey: "cross-process-shape" };
+      const first = store.setMasterChatReaction(input);
+      const second = peer.setMasterChatReaction(input);
+      expect(second.event.occurrenceId).toBe(first.event.occurrenceId);
+      expect(second.replayed).toBe(true);
+      expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+    } finally {
+      peer.close();
+    }
+  });
+
+  it("rejects actor-global key reuse and cooldown by the exact occurrence tuple", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👀", active: true, idempotencyKey: "same" });
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "❤️", active: true, idempotencyKey: "same" })).toThrow("another reaction");
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👀", active: false, idempotencyKey: "next" })).toThrow("cooldown");
+  });
+
+  it("rebuilds aggregate and outbox from the canonical log and revalidates membership", () => {
+    const { room, author, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" });
+    store.close();
+    store = new ThreadStore(dir);
+    expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{ emoji: "🎉", count: 1, reactedByCurrentActor: true }]);
+    store.updateThread(author.id, { archived: true });
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+  });
+
+  it("rejects archived/non-member actors before writing and has zero thread events", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.updateThreadMasterChatMemberships(reactor.id, { masterChatIds: [] });
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "🚀", active: true, idempotencyKey: "denied" })).toThrow("active member");
+    expect(existsSync(join(dir, "reaction-events.jsonl"))).toBe(false);
+    expect((store.sqlite.prepare("SELECT count(*) AS count FROM events WHERE thread_id = ?").get(reactor.id) as { count: number }).count).toBe(0);
+  });
+});
+
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
   { type: "session", sessionId: "sess-abc" },

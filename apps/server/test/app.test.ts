@@ -150,6 +150,28 @@ async function waitForSeedCount(expected: number): Promise<void> {
   throw new Error(`timed out waiting for ${expected} seeded runs`);
 }
 
+describe("message reactions", () => {
+  it("persists/replays separately from notification and causes zero runtime side effects", async () => {
+    const project = store.createProject({ label: "Reaction room", hostPath: repoDir });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
+    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Result" }, author.id)!;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const request = { emoji: "👍", active: true, idempotencyKey: "manager-global" };
+    const first = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ replayed: false, persistence: "recorded", notification: "queued", reactions: [{ emoji: "👍", count: 1, reactedByCurrentActor: true }] });
+    const replay = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
+    expect(replay.json()).toMatchObject({ occurrenceId: first.json<{ occurrenceId: string }>().occurrenceId, replayed: true });
+    expect(adapter.seeds).toHaveLength(0);
+    expect(adapter.continues).toHaveLength(0);
+    expect(store.readEvents(author.id)).toHaveLength(0);
+    const detail = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}` });
+    expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true }]);
+    await app.close();
+  });
+});
+
 async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: string): Promise<void> {
   await app.inject({ method: "POST", url: `/api/threads/${threadId}/cancel` });
   for (let i = 0; i < 80; i += 1) {

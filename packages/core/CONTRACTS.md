@@ -83,3 +83,12 @@ v2 (501-stubbed) `SwitchEngineRequest`, `SearchResultDto`, `SearchResponse`.
    member retained for routing and backward compatibility. The PUT membership DTO
    replaces both atomically and the server rejects a primary outside the set or any
    cross-project room. One thread/session/event log serves every membership.
+
+9. **Reactions are inert durable occurrences.** A reaction records one canonical
+   actor (`manager` or an active member thread), message/channel identity, emoji,
+   desired active state, actor-global idempotency key, and immutable occurrence
+   ID. Reaction persistence and author-notification outcomes are separate. The
+   notification outbox is rebuilt from the canonical reaction log and membership
+   is revalidated when it is read. Recording a reaction must never start or
+   continue a runtime, expand a mention, assemble a prompt, or create delegation
+   work.
