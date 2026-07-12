@@ -75,6 +75,13 @@ export interface CreateServerOptions {
     /** Test-only internal claim response override. */
     claimStatus?: () => number | undefined;
   };
+  /** Deterministic execution-lease supervision seams; production uses one host timer per active run. */
+  executionLeaseScheduling?: {
+    leaseMs?: number;
+    now?: () => number;
+    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+    clearTimer?: (timer: NodeJS.Timeout) => void;
+  };
 }
 
 interface ActiveRun {
@@ -84,7 +91,10 @@ interface ActiveRun {
   leaseExpiresAt: string;
   controller: AbortController;
   messageCapability: string;
+  delegationCapability?: string;
   delegatedRunId?: string;
+  deliveryIds?: string[];
+  leaseTimer?: NodeJS.Timeout;
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -601,15 +611,77 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const curatedContextEnabled = opts.curatedContextEnabled ?? true;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent | undefined =>
     communicationMode === "off" ? undefined : store.appendCommunicationEvent(event).event;
-  const executionLeaseMs = 6 * 60 * 1000;
-  const leaseExpiry = () => new Date(Date.now() + executionLeaseMs).toISOString();
-  const renewExecutionLease = (threadId: string) => {
-    const active = activeRuns.get(threadId);
-    if (active) active.leaseExpiresAt = leaseExpiry();
-  };
+  const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
+  const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
+  const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+  const clearExecutionLeaseTimer = opts.executionLeaseScheduling?.clearTimer ?? clearTimeout;
+  const leaseExpiry = () => new Date(executionLeaseNow() + executionLeaseMs).toISOString();
   const deliveryNow = opts.deliveryScheduling?.now ?? Date.now;
   const deliveryRandom = opts.deliveryScheduling?.random ?? Math.random;
   const setDeliveryTimer = opts.deliveryScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+
+  function ownsActiveRun(threadId: string, run: ActiveRun): boolean {
+    return activeRuns.get(threadId) === run;
+  }
+
+  function clearRunLeaseTimer(run: ActiveRun): void {
+    if (!run.leaseTimer) return;
+    clearExecutionLeaseTimer(run.leaseTimer);
+    run.leaseTimer = undefined;
+  }
+
+  function expireExecutionLease(threadId: string, run: ActiveRun): void {
+    if (closed || !ownsActiveRun(threadId, run)) return;
+    const remaining = Date.parse(run.leaseExpiresAt) - executionLeaseNow();
+    if (remaining > 0) {
+      run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(threadId, run), remaining);
+      run.leaseTimer.unref?.();
+      return;
+    }
+
+    // Delete the claim and revoke capabilities before aborting. Any synchronous
+    // or late async continuation from this generation therefore fails its CAS.
+    activeRuns.delete(threadId);
+    clearRunLeaseTimer(run);
+    agentMessageCapabilities.delete(run.messageCapability);
+    if (run.delegationCapability) delegationCapabilities.delete(run.delegationCapability);
+    scheduledSessionRollovers.delete(threadId);
+    const lifecycle = store.appendEvent(threadId, {
+      type: "agent_lifecycle", status: "failed", reason: "execution_lease_expired", executionId: run.executionId,
+    });
+    publish(threadId, lifecycle);
+    if (run.delegatedRunId) {
+      const settled = delegations.finishRuntime(run.delegatedRunId, "execution lease expired");
+      if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
+    }
+    if (run.deliveryIds?.length) {
+      collaborationDeliveries.requeueBatch(run.deliveryIds);
+      for (const id of run.deliveryIds) syncDelegatedCompletion(id);
+    }
+    run.controller.abort();
+    runDeliveryDispatch(threadId);
+  }
+
+  function renewExecutionLease(threadId: string, run: ActiveRun): boolean {
+    if (!ownsActiveRun(threadId, run)) return false;
+    clearRunLeaseTimer(run);
+    run.leaseExpiresAt = leaseExpiry();
+    run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(threadId, run), executionLeaseMs);
+    run.leaseTimer.unref?.();
+    return true;
+  }
+
+  function claimActiveRun(threadId: string, run: ActiveRun): void {
+    activeRuns.set(threadId, run);
+    renewExecutionLease(threadId, run);
+  }
+
+  function releaseActiveRun(threadId: string, run: ActiveRun): boolean {
+    if (!ownsActiveRun(threadId, run)) return false;
+    activeRuns.delete(threadId);
+    clearRunLeaseTimer(run);
+    return true;
+  }
 
   function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
     const detail = store.getMasterChatDetail(masterChatId);
@@ -1008,7 +1080,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
     deliveryRetryTimers.clear();
     if (assetSweep) clearInterval(assetSweep);
-    for (const run of activeRuns.values()) run.controller.abort();
+    for (const run of activeRuns.values()) {
+      clearRunLeaseTimer(run);
+      run.controller.abort();
+    }
+    activeRuns.clear();
     await Promise.allSettled([...deliveryDispatches]);
     assets.close();
     store.close();
@@ -1436,15 +1512,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       type: "agent_lifecycle", status: "running", reason: "active_run", executionId: run.id,
     });
     publish(childThread.id, lifecycle);
-    activeRuns.set(childThread.id, {
+    const activeRun: ActiveRun = {
       runId: run.id,
       startedAt,
       executionId: run.id,
       leaseExpiresAt: leaseExpiry(),
       controller,
       messageCapability: messageCapabilityToken,
+      delegationCapability: delegationCapabilityToken,
       delegatedRunId: run.id,
-    });
+    };
+    claimActiveRun(childThread.id, activeRun);
     agentMessageCapabilities.set(messageCapabilityToken, {
       threadId: childThread.id,
       masterChatId: run.masterChatId,
@@ -1489,8 +1567,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           signal: controller.signal,
         });
         for await (const event of stream) {
-          if (closed) break;
-          renewExecutionLease(childThread.id);
+          if (closed || !renewExecutionLease(childThread.id, activeRun)) break;
           let logEvent: LogEvent = event;
           if (event.type === "text" && event.delta.trim()) {
             const communication = recordCommunication({
@@ -1516,14 +1593,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (runtimeError) notifyParentOfDelegatedCompletion(delegations.finishRuntime(runId, runtimeError));
         else delegations.finishRuntime(runId);
       } catch (error) {
-        if (closed) return;
+        if (closed || !ownsActiveRun(childThread.id, activeRun)) return;
         runtimeError = error instanceof Error ? error.message : String(error);
         notifyParentOfDelegatedCompletion(delegations.finishRuntime(runId, runtimeError));
       } finally {
-        if (scheduledSessionRollovers.delete(childThread.id)) {
+        const owned = ownsActiveRun(childThread.id, activeRun);
+        if (owned && scheduledSessionRollovers.delete(childThread.id)) {
           store.clearResumeSession(childThread.id, "explicit_compaction");
         }
-        if (!closed && !controller.signal.aborted) {
+        if (owned && !closed && !controller.signal.aborted) {
           const terminal = store.appendEvent(childThread.id, {
             type: "agent_lifecycle",
             status: runtimeError ? "failed" : "completed",
@@ -1532,10 +1610,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           });
           publish(childThread.id, terminal);
         }
-        if (activeRuns.get(childThread.id)?.controller === controller) activeRuns.delete(childThread.id);
-        agentMessageCapabilities.delete(messageCapabilityToken);
-        delegationCapabilities.delete(delegationCapabilityToken);
-        runDeliveryDispatch(childThread.id);
+        if (releaseActiveRun(childThread.id, activeRun)) {
+          agentMessageCapabilities.delete(messageCapabilityToken);
+          delegationCapabilities.delete(delegationCapabilityToken);
+          runDeliveryDispatch(childThread.id);
+        }
       }
     })();
 
@@ -2750,10 +2829,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
       });
       publish(thread.id, runningLifecycle);
-      activeRuns.set(thread.id, {
+      const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        delegationCapability,
+        ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
         ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}),
-      });
+      };
+      claimActiveRun(thread.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: thread.masterChatId,
@@ -2817,8 +2899,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
             for await (const event of startStream(sessionId)) {
-              if (closed || controller.signal.aborted) break;
-              renewExecutionLease(thread.id);
+              if (closed || controller.signal.aborted || !renewExecutionLease(thread.id, activeRun)) break;
               // Codex can emit its session id immediately before a resume-time
               // compaction failure. Hold only those initial session events so a
               // failed resume does not restore the stale id after we clear it.
@@ -2875,20 +2956,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             if (!retryFresh) break;
           }
         } catch (err) {
-          if (closed || controller.signal.aborted) return;
+          if (closed || controller.signal.aborted || !ownsActiveRun(thread.id, activeRun)) return;
           const message = err instanceof Error ? err.message : String(err);
           const stored = store.appendEvent(thread.id, { type: "error", message });
           publish(thread.id, stored);
           runError = message;
         } finally {
-          if (scheduledSessionRollovers.delete(thread.id)) {
+          const owned = ownsActiveRun(thread.id, activeRun);
+          if (owned && scheduledSessionRollovers.delete(thread.id)) {
             store.clearResumeSession(thread.id, "explicit_compaction");
           }
-          if (delegatedObjective && !controller.signal.aborted) {
+          if (owned && delegatedObjective && !controller.signal.aborted) {
             const settled = delegations.finishRuntime(delegatedObjective.id, runError);
             if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
           }
-          if (!closed && !controller.signal.aborted) {
+          if (owned && !closed && !controller.signal.aborted) {
             const terminal = store.appendEvent(thread.id, {
               type: "agent_lifecycle",
               status: runError ? "failed" : "completed",
@@ -2897,12 +2979,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             });
             publish(thread.id, terminal);
           }
-          if (activeRuns.get(thread.id)?.controller === controller) activeRuns.delete(thread.id);
-          agentMessageCapabilities.delete(messageCapability);
-          delegationCapabilities.delete(delegationCapability);
+          const released = releaseActiveRun(thread.id, activeRun);
+          if (released) {
+            agentMessageCapabilities.delete(messageCapability);
+            delegationCapabilities.delete(delegationCapability);
+          }
           // Post a group-chat status unless the run was cancelled/aborted (cancel or
           // thread deletion), in which case a report-back would be misleading.
-          if (routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
+          if (released && routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
             const statusText = runError
               ? `⚠️ Stuck — ${runError.slice(0, 200)}`
               : summarizeFinalMessage(finalText) ??
@@ -2974,7 +3058,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // Master chat may have been deleted mid-run; ignore.
             }
           }
-          if (!closed && requestedDeliveryIds.length) {
+          if (released && !closed && requestedDeliveryIds.length) {
             // A cancelled delivery turn is not an acknowledgement. Put it back
             // into the durable queue; ordinary pending deliveries remain queued.
             if (controller.signal.aborted) collaborationDeliveries.requeueBatch(requestedDeliveryIds);
@@ -2984,7 +3068,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
             for (const id of requestedDeliveryIds) syncDelegatedCompletion(id);
           }
-          if (!closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
+          if (released && !closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
             const acceptedSessionId = store.resumeSessionId(thread.id);
             if (acceptedSessionId) {
               contextCursors.commit({
@@ -3001,7 +3085,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           // Mentions received while this agent was working are never dropped.
           // Start the oldest queued follow-up as soon as its current turn closes.
-          runDeliveryDispatch(thread.id);
+          if (released) runDeliveryDispatch(thread.id);
         }
       })();
 
