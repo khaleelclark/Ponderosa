@@ -8,6 +8,7 @@
 //         project.json                 ← label, host path, createdAt
 //         communication-events.jsonl   ← canonical cross-surface communication
 //         communication-context.jsonl  ← explicit context eligibility
+//         communication-projections.jsonl ← rebuildable cross-surface placements
 //         knowledge-promotions.jsonl   ← provenance-linked shared knowledge
 //         master-chats/
 //           <master-chat-id>/
@@ -50,6 +51,10 @@ export function communicationEventsPath(dataDir: string, projectId: string): str
 
 export function communicationContextPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "communication-context.jsonl");
+}
+
+export function communicationProjectionsPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "communication-projections.jsonl");
 }
 
 export function knowledgePromotionsPath(dataDir: string, projectId: string): string {

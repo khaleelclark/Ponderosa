@@ -152,6 +152,28 @@ describe("ThreadStore — canonical communication events", () => {
     expect(() => store.promoteKnowledge({ ...promotion, promotionId: "bad", summary: "Different" }))
       .toThrow("idempotency collision");
   });
+
+  it("accepts one event on multiple surfaces while deduplicating each projection tuple", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const event: CommunicationEvent = {
+      eventId: "event-multi", schemaVersion: 1, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [thread.id] }, text: "Review",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendMasterChatMessage(room.id, { text: event.text }, undefined, "collaboration", undefined, undefined, event.eventId);
+    store.appendEvent(thread.id, { type: "user_message", text: event.text, communicationEventId: event.eventId });
+    expect(store.appendCommunicationProjection(project.id, {
+      eventId: event.eventId, surface: "direct_agent_audit", projectionKey: thread.id,
+      projectedAt: "later retry timestamp",
+    }).replayed).toBe(true);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      canonicalEvents: 1, linkedProjections: 2, duplicateProjectionEventIds: [], ok: true,
+    });
+  });
 });
 
 describe("ThreadStore — multi-master-chat membership", () => {

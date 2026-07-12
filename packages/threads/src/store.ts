@@ -25,6 +25,7 @@ import type {
   ArtifactDto,
   CommunicationEvent,
   CommunicationContextClassification,
+  CommunicationProjection,
   CommunicationReconciliationReport,
   KnowledgePromotion,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
@@ -86,6 +87,7 @@ import {
   collaborationChatMessagesPath,
   communicationEventsPath,
   communicationContextPath,
+  communicationProjectionsPath,
   knowledgePromotionsPath,
   masterChatJsonPath,
   masterChatMessagesPath,
@@ -304,6 +306,7 @@ export class ThreadStore {
     // on startup closes the crash window where a durable append succeeded but
     // the projection write did not, and keeps every read path deterministic.
     this.rebuildProjections();
+    for (const project of this.listProjects()) this.repairCommunicationProjectionLedger(project.id);
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -385,6 +388,53 @@ export class ThreadStore {
     return readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log");
   }
 
+  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    const eventExists = this.readCommunicationEvents(projectId).some((event) => event.eventId === projection.eventId);
+    if (!eventExists) throw new Error("communication projection source event not found");
+    const file = communicationProjectionsPath(this.dataDir, projectId);
+    const existing = readRepairableJsonl<CommunicationProjection>(file, "communication projection log", true)
+      .find((candidate) => candidate.eventId === projection.eventId && candidate.surface === projection.surface &&
+        candidate.projectionKey === projection.projectionKey);
+    if (existing) return { projection: existing, replayed: true };
+    appendFsyncedJsonl(file, [projection]);
+    return { projection, replayed: false };
+  }
+
+  readCommunicationProjections(projectId: string): CommunicationProjection[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log");
+  }
+
+  private repairCommunicationProjectionLedger(projectId: string): void {
+    const canonicalIds = new Set(this.readCommunicationEvents(projectId).map((event) => event.eventId));
+    if (canonicalIds.size === 0) return;
+    for (const master of this.listMasterChats(projectId)) {
+      for (const [surface, file] of [
+        ["master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
+        ["collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
+      ] as const) {
+        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+          if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
+            this.appendCommunicationProjection(projectId, {
+              eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
+            });
+          }
+        }
+      }
+    }
+    for (const thread of this.listThreads(projectId)) {
+      for (const stored of this.readEvents(thread.id)) {
+        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
+          ? stored.event.communicationEventId : undefined;
+        if (eventId && canonicalIds.has(eventId)) {
+          this.appendCommunicationProjection(projectId, {
+            eventId, surface: "direct_agent_audit", projectionKey: thread.id, projectedAt: stored.ts,
+          });
+        }
+      }
+    }
+  }
+
   promoteKnowledge(promotion: KnowledgePromotion): { promotion: KnowledgePromotion; replayed: boolean } {
     if (!this.getProject(promotion.organizationId)) throw new Error("promotion organization not found");
     const source = this.readCommunicationEvents(promotion.organizationId)
@@ -426,30 +476,19 @@ export class ThreadStore {
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
     const canonical = this.readCommunicationEvents(projectId);
     const canonicalIds = new Set(canonical.map((event) => event.eventId));
-    const projectionIds: string[] = [];
-    for (const master of this.listMasterChats(projectId)) {
-      for (const file of [
-        masterChatMessagesPath(this.dataDir, projectId, master.id),
-        collaborationChatMessagesPath(this.dataDir, projectId, master.id),
-      ]) {
-        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
-          if (message.communicationEventId) projectionIds.push(message.communicationEventId);
-        }
-      }
-    }
-    for (const thread of this.listThreads(projectId)) {
-      for (const stored of this.readEvents(thread.id)) {
-        if (stored.event.type === "communication_projection") {
-          projectionIds.push(stored.event.communicationEventId);
-        }
-      }
-    }
+    const projections = this.readCommunicationProjections(projectId);
     const counts = new Map<string, number>();
-    for (const id of projectionIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+    for (const projection of projections) counts.set(projection.eventId, (counts.get(projection.eventId) ?? 0) + 1);
+    const tupleCounts = new Map<string, number>();
+    for (const projection of projections) {
+      const key = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
+      tupleCounts.set(key, (tupleCounts.get(key) ?? 0) + 1);
+    }
     const missingProjectionEventIds = canonical
       .filter((event) => !counts.has(event.eventId)).map((event) => event.eventId);
-    const duplicateProjectionEventIds = [...counts]
-      .filter(([id, count]) => canonicalIds.has(id) && count > 1).map(([id]) => id);
+    const duplicateProjectionEventIds = [...new Set(projections
+      .filter((projection) => (tupleCounts.get(`${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`) ?? 0) > 1)
+      .map((projection) => projection.eventId))];
     const orphanProjectionEventIds = [...counts.keys()].filter((id) => !canonicalIds.has(id));
     const classifiedIds = new Set(this.readContextClassifications(projectId).map((item) => item.eventId));
     const missingClassificationEventIds = canonical
@@ -457,7 +496,7 @@ export class ThreadStore {
     return {
       projectId,
       canonicalEvents: canonical.length,
-      linkedProjections: projectionIds.length,
+      linkedProjections: projections.length,
       missingProjectionEventIds,
       duplicateProjectionEventIds,
       orphanProjectionEventIds,
@@ -743,6 +782,14 @@ export class ThreadStore {
     const jsonPath = masterChatJsonPath(this.dataDir, masterChat.projectId, masterChatId);
     const json = readJson<MasterChatJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
+    if (message.communicationEventId) {
+      this.appendCommunicationProjection(masterChat.projectId, {
+        eventId: message.communicationEventId,
+        surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
+        projectionKey: masterChatId,
+        projectedAt: now,
+      });
+    }
     return {
       id: message.id,
       communicationEventId: message.communicationEventId,
@@ -1214,6 +1261,16 @@ export class ThreadStore {
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
     this.applyOps(threadId, projectId, ops);
+    const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
+      ? event.communicationEventId : undefined;
+    if (communicationEventId) {
+      this.appendCommunicationProjection(projectId, {
+        eventId: communicationEventId,
+        surface: "direct_agent_audit",
+        projectionKey: threadId,
+        projectedAt: stored.ts,
+      });
+    }
     return stored;
   }
 

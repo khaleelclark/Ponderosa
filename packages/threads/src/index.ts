@@ -9,7 +9,7 @@ export { openDb } from "./db.js";
 export {
   artifactContentPath, artifactsDir, attachmentPath, attachmentsDir,
   reactionEventsPath, communicationEventsPath, communicationContextPath,
-  knowledgePromotionsPath,
+  communicationProjectionsPath, knowledgePromotionsPath,
 } from "./paths.js";
 export type { Db } from "./db.js";
 

@@ -47,6 +47,10 @@ Manager broadcasts, direct replies, and Collaboration writes now enter the same
 canonical log and carry their event ID into legacy projections. Recipient-free
 Collaboration is rejected before persistence; the old mention-parsing request is
 accepted only as a temporary client migration path.
+Projection identity is recorded separately from events and delivery state.
+Multiple surfaces for one event are valid; only repeated
+`(eventId, surface, projectionKey)` tuples are duplicates. Startup repairs the
+ledger from linked canonical room/thread records before reporting migration parity.
 
 ## Delivery phases and gates
 
