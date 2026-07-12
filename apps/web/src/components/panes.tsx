@@ -38,6 +38,7 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
+import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
@@ -302,22 +303,7 @@ export function ChatPane({
               boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
             }}
           >
-            <Typography
-              component="div"
-              variant="caption"
-              dir="auto"
-              sx={{
-                mb: 0.5,
-                maxWidth: "100%",
-                overflowWrap: "anywhere",
-                unicodeBidi: "plaintext",
-                userSelect: "text",
-                fontWeight: 700,
-                lineHeight: 1.35,
-              }}
-            >
-              {senderLabel}
-            </Typography>
+            <MessageSenderLabel name={senderLabel} />
             {message.replyTo ? (
               <Box
                 component="button"
