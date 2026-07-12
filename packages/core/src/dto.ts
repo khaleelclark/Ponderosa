@@ -122,6 +122,23 @@ export interface CreateMasterChatMessageRequest {
   attachments?: ImageAttachmentDto[];
 }
 
+/** POST /api/master-chats/:id/direct-replies body. */
+export interface CreateDirectReplyRequest {
+  text: string;
+  replyToMessageId: string;
+  targetAuthorThreadId: string;
+  attachmentIds?: string[];
+  /** Stable across retries; the server applies both durable effects once. */
+  idempotencyKey: string;
+}
+
+export interface DirectReplyResponse {
+  messageId: string;
+  targetAuthorThreadId: string;
+  replayed: boolean;
+  queued: boolean;
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────────
 
 /** Derived thread state (current branch/commit), from `state` events (SPEC §2). */

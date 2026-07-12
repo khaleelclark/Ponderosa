@@ -18,6 +18,8 @@ import type {
   ReadinessDto,
   MasterChatMessageDto,
   ImageAttachmentDto,
+  CreateDirectReplyRequest,
+  DirectReplyResponse,
   SseEventEnvelope,
   SendAgentMessageRequest,
   SubagentRunDto,
@@ -73,6 +75,7 @@ interface PendingTurn {
   collaborationDeliveryIds?: string[];
   replyTo?: MessageReferenceDto;
   replyToMessageId?: string;
+  attachmentIds?: string[];
 }
 
 interface AgentMessageCapability {
@@ -537,6 +540,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   // request claims the thread in the tiny dispatch race window.
   const turnDispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
+  const directReplyClaims = new Set<string>();
   let closed = false;
 
   const app = Fastify({
@@ -573,6 +577,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceAuthorThreadId: delivery.authorThreadId,
       collaborationDeliveryId: delivery.id,
       replyToMessageId: delivery.replyToMessageId,
+      attachmentIds: delivery.attachmentIds,
     };
   }
 
@@ -720,6 +725,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             delegatedRunId: intent.delegatedRunId,
             createdAt: message.createdAt,
             orderKey: deliveryOrderKey,
+            sourceChannel: intent.kind === "direct" ? "main" : undefined,
+            attachmentIds: intent.kind === "direct" ? message.attachments?.map((item) => item.id) : undefined,
           });
           recipients.add(intent.targetThreadId);
           if (intent.delegatedRunId) {
@@ -1360,10 +1367,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string };
+    Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
   }>("/api/master-chats/:id/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
+    if (request.body.directReplyToAuthorThreadId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     let message;
     try {
@@ -1372,11 +1380,140 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         text,
         replyToMessageId: request.body.replyToMessageId,
       });
-    } catch {
-      return reply.code(400).send({ error: "reply target was not found in this conversation" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "reply target was not found in this conversation" });
     }
     return message ?? reply.code(404).send({ error: "master chat not found" });
   });
+
+  app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
+    "/api/master-chats/:id/direct-replies",
+    async (request, reply) => {
+      const text = request.body?.text?.trim() ?? "";
+      const replyToMessageId = request.body?.replyToMessageId?.trim() ?? "";
+      const targetAuthorThreadId = request.body?.targetAuthorThreadId?.trim() ?? "";
+      const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+      const attachmentIds = request.body?.attachmentIds ?? [];
+      if (!text && attachmentIds.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
+      if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+      if (!replyToMessageId || !targetAuthorThreadId) return reply.code(400).send({ error: "reply target and author are required" });
+      if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+      if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
+        return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
+      }
+      const master = store.getMasterChat(request.params.id);
+      if (!master || master.archived) return reply.code(404).send({ error: "master chat not found" });
+      const receiptKey = `direct-reply:${master.id}:${idempotencyKey}`;
+      const existingMessageId = collaborationDeliveries.messageReceipt(receiptKey);
+      const existing = existingMessageId
+        ? store.getMasterChatMessages(master.id).find((message) => message.id === existingMessageId)
+        : store.getMasterChatMessageByReceiptKey(master.id, receiptKey);
+      if (existing) {
+        const sameRequest = existing.text === text && existing.replyTo?.messageId === replyToMessageId &&
+          existing.replyTo.authorThreadId === targetAuthorThreadId &&
+          JSON.stringify(existing.attachments?.map((item) => item.id) ?? []) === JSON.stringify(attachmentIds);
+        if (!sameRequest) return reply.code(409).send({ error: "idempotency key was used with another direct reply" });
+        collaborationDeliveries.rememberMessageReceipt(receiptKey, existing.id);
+        let delivery = collaborationDeliveries.getForMessageTarget(existing.id, targetAuthorThreadId);
+        if (!delivery) {
+          const persisted = store.getMasterChatDeliveryIntents(master.id).find(({ message, intent, messageReceiptKey }) =>
+            message.id === existing.id && messageReceiptKey === receiptKey &&
+            intent.kind === "direct" && intent.targetThreadId === targetAuthorThreadId,
+          );
+          if (!persisted) {
+            return reply.code(503).send({
+              error: "direct reply delivery intent is unavailable; retry after recovery",
+              retryable: true,
+            });
+          }
+          try {
+            delivery = queueCollaborationDelivery({
+              masterChatId: master.id,
+              messageId: existing.id,
+              targetThreadId: persisted.intent.targetThreadId,
+              text: existing.text,
+              relayDepth: persisted.intent.relayDepth,
+              mentionTrail: persisted.intent.mentionTrail,
+              kind: "direct",
+              createdAt: existing.createdAt,
+              orderKey: persisted.deliveryOrderKey,
+              sourceChannel: "main",
+              attachmentIds: existing.attachments?.map((item) => item.id),
+            });
+          } catch {
+            delivery = undefined;
+          }
+          if (!delivery) {
+            return reply.code(503).send({
+              error: "direct reply delivery could not be persisted; retry is safe",
+              retryable: true,
+            });
+          }
+        }
+        return {
+          messageId: existing.id,
+          targetAuthorThreadId,
+          replayed: true,
+          queued: delivery?.status === "queued",
+        } satisfies DirectReplyResponse;
+      }
+      if (directReplyClaims.has(receiptKey)) {
+        return reply.code(409).send({ error: "direct reply with this idempotency key is in progress", retryable: true });
+      }
+      directReplyClaims.add(receiptKey);
+      try {
+      const target = store.getThread(targetAuthorThreadId);
+      if (!target || target.archived || !target.masterChatIds.includes(master.id)) return reply.code(404).send({ error: "direct reply target not found" });
+      const attached = await Promise.all(attachmentIds.map((id) => attachmentMetadata(target.id, id)));
+      if (attached.some((item) => !item || item.threadId !== target.id)) return reply.code(404).send({ error: "direct reply attachment not found" });
+      const attachments = attached as ImageAttachmentDto[];
+      const intent: MasterChatDeliveryIntent = {
+        targetThreadId: target.id,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "direct",
+      };
+      let message: MasterChatMessageDto | undefined;
+      try {
+        message = store.appendMasterChatMessage(
+          master.id,
+          { text, replyToMessageId, directReplyToAuthorThreadId: target.id, attachments },
+          undefined,
+          "main",
+          [intent],
+          receiptKey,
+        );
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
+      }
+      if (!message) return reply.code(404).send({ error: "master chat not found" });
+      collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
+      const wasBusy = activeRuns.has(target.id);
+      const delivery = queueCollaborationDelivery({
+        masterChatId: master.id,
+        messageId: message.id,
+        targetThreadId: target.id,
+        text,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "direct",
+        createdAt: message.createdAt,
+        orderKey: store.getMasterChatMessageDeliveryOrderKey(master.id, message.id),
+        sourceChannel: "main",
+        attachmentIds,
+      });
+      if (!delivery) return reply.code(503).send({ error: "direct reply delivery could not be persisted" });
+      return {
+        messageId: message.id,
+        targetAuthorThreadId: target.id,
+        replayed: false,
+        queued: wasBusy,
+      } satisfies DirectReplyResponse;
+      } finally {
+        directReplyClaims.delete(receiptKey);
+      }
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/master-chats/:id/collaboration", async (request, reply) => {
     const detail = store.getCollaborationChatDetail(request.params.id);
@@ -1385,11 +1522,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; replyToMessageId?: string };
+    Body: { text: string; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
   }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+    if (request.body.directReplyToAuthorThreadId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
     const detail = store.getCollaborationChatDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
