@@ -61,6 +61,11 @@ export function shouldIgnoreComposerKey(event: { key: string; isComposing: boole
   return event.key === "Enter" && event.isComposing;
 }
 
+export function matchingEngineCommands(commands: EngineCommand[], prefix: string): EngineCommand[] {
+  const normalized = prefix.toLocaleLowerCase();
+  return commands.filter((command) => command.name.toLocaleLowerCase().startsWith(normalized));
+}
+
 export function canSubmitComposerText(input: {
   text: string;
   disabled: boolean;
@@ -816,7 +821,6 @@ export function Composer({
     mentionMatch && mentionHandles && mentionHandles.length > 0
       ? mentionHandles
           .filter((handle) => handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()))
-          .slice(0, 6)
       : [];
   const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
   const fileToken = fileMatch?.[1] ?? "";
@@ -843,11 +847,10 @@ export function Composer({
   const fileSuggestions = fileMatch
     ? fileEntries
         .filter((entry) => entry.name.toLocaleLowerCase().startsWith(filePrefix.toLocaleLowerCase()))
-        .slice(0, 8)
     : [];
   const slashMatch = /^\/([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
   const commandSuggestions = slashMatch && commands
-    ? commands.filter((command) => command.name.toLocaleLowerCase().startsWith(slashMatch[1]!.toLocaleLowerCase())).slice(0, 8)
+    ? matchingEngineCommands(commands, slashMatch[1]!)
     : [];
   const menuSuggestions = commandSuggestions.length > 0
     ? commandSuggestions.map((command) => ({ kind: "command" as const, command }))
@@ -1036,8 +1039,14 @@ export function Composer({
           ) : null}
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
             <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
-              <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180 }}>
-                <MenuList dense id={mentionListId} role="listbox" aria-label={commandSuggestions.length ? "Commands" : suggestions.length ? "Agent tags" : "Project files and folders"}>
+              <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180, maxWidth: "min(720px, calc(100vw - 24px))" }}>
+                <MenuList
+                  dense
+                  id={mentionListId}
+                  role="listbox"
+                  aria-label={commandSuggestions.length ? "Commands" : suggestions.length ? "Agent tags" : "Project files and folders"}
+                  sx={{ maxHeight: "min(40vh, 360px)", overflowY: "auto", overscrollBehavior: "contain" }}
+                >
                   {menuSuggestions.map((suggestion, index) => (
                     <MenuItem
                       key={suggestion.kind === "mention" ? suggestion.handle : suggestion.kind === "file" ? suggestion.entry.path : suggestion.command.name}
@@ -1045,6 +1054,7 @@ export function Composer({
                       role="option"
                       aria-selected={index === highlighted}
                       selected={index === highlighted}
+                      sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
                       onMouseDown={(event) => {
                         event.preventDefault();
                         if (suggestion.kind === "mention") applyMention(suggestion.handle);
@@ -1056,7 +1066,7 @@ export function Composer({
                         ? `#${suggestion.handle}`
                         : suggestion.kind === "file"
                           ? <Box><Typography variant="body2">@{suggestion.entry.path}{suggestion.entry.kind === "dir" ? "/" : ""}</Typography><Typography variant="caption" color="text.secondary">{suggestion.entry.kind === "dir" ? "Folder" : "File"}</Typography></Box>
-                          : <Box><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary">{suggestion.command.description}</Typography></Box>}
+                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.description}</Typography></Box>}
                     </MenuItem>
                   ))}
                 </MenuList>

@@ -171,11 +171,11 @@ export function projectEvent(
           communicationEventId: event.communicationEventId,
           threadId,
           seq,
-          role: "assistant",
+          role: event.role ?? "assistant",
           text: event.text,
           createdAt: ts,
           replyToJson: null,
-          attachmentsJson: null,
+          attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
       ops.push({ kind: "touch_thread", updatedAt: ts });

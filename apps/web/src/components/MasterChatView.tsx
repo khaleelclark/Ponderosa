@@ -303,6 +303,7 @@ export function MasterChatView({
           text,
           attachmentIds: attachments.map((item) => item.id),
           sourceChannel: "main",
+          shareWithOrganization: true,
           sourceMasterChatId: masterChatId,
           replyToMessageId: replyTo?.id,
         });
@@ -711,7 +712,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent; <Box component="strong">#tag</Box> an agent to message it, or start with <Box component="strong">#broadcast</Box> to add shared context without starting an agent. Use <Box component="strong">@</Box> to reference a project file or folder.</>
+              <>This is your team's group chat. A plain message becomes shared project context and starts one fresh agent; <Box component="strong">#tag</Box> an agent to message it, or start with <Box component="strong">#broadcast</Box> to add shared context without starting an agent. Use <Box component="strong">@</Box> to reference a project file or folder.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (

@@ -479,7 +479,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/threads`,
       payload: { title: "API agent", engine: "codex", masterChatId: masterChat.id },
     });
-    expect(threadRes.statusCode).toBe(200);
+    expect(threadRes.statusCode, threadRes.body).toBe(200);
     const thread = threadRes.json<{ id: string; masterChatId: string }>();
     expect(thread.masterChatId).toBe(masterChat.id);
 
@@ -498,6 +498,69 @@ describe("server chunk F", () => {
       threads: [{ id: thread.id, masterChatId: masterChat.id }],
     });
 
+    await app.close();
+  });
+
+  it("shares plain Master Chat requests and passively projects broadcasts into every agent audit", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Shared default", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Project chat" });
+    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
+    const responsible = store.createThread(project.id, { title: "Responsible", engine: "codex", masterChatId: master.id });
+
+    const shared = await app.inject({
+      method: "POST",
+      url: `/api/threads/${responsible.id}/messages`,
+      payload: {
+        text: "Fix the onboarding flow",
+        sourceChannel: "main",
+        sourceMasterChatId: master.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(shared.statusCode, shared.body).toBe(200);
+    await waitForRun(responsible.id);
+
+    const eventId = shared.json<{ communicationEventId: string }>().communicationEventId;
+    expect(store.getCommunicationEvent(project.id, eventId)).toMatchObject({
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Fix the onboarding flow",
+    });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
+      expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow" }),
+    ]);
+    expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
+    ]));
+    expect(store.getMessages(responsible.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
+    ]));
+    expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
+    const responsiblePrompt = adapter.seeds.find((turn) => turn.threadId === responsible.id)?.prompt ?? "";
+    expect(responsiblePrompt.match(/Fix the onboarding flow/g)).toHaveLength(1);
+
+    const passive = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/messages`,
+      payload: { text: "#broadcast Release window is Friday" },
+    });
+    expect(passive.statusCode).toBe(200);
+    expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
+    expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
+    ]));
+
+    // The public creation path backfills historical Broadcasts without a run.
+    const futureViaApi = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/threads`,
+      payload: { title: "Future via API", engine: "codex", masterChatId: master.id },
+    });
+    expect(futureViaApi.statusCode).toBe(200);
+    const futureId = futureViaApi.json<{ id: string }>().id;
+    expect(store.getMessages(futureId).filter((message) => message.text.startsWith("#broadcast "))).toHaveLength(2);
+    expect(adapter.seeds.filter((turn) => turn.threadId === futureId)).toHaveLength(0);
     await app.close();
   });
 
@@ -1429,6 +1492,11 @@ describe("server chunk F", () => {
     expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
     ]));
+    for (const agent of [author, reviewer, verifier]) {
+      expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ text: "#broadcast Manager-facing checkpoint." }),
+      ]));
+    }
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
     ]));
@@ -1442,7 +1510,7 @@ describe("server chunk F", () => {
       .toEqual([collaborationEventId, collaborationEventId]);
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 4,
-      linkedProjections: 12,
+      linkedProjections: 15,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -1457,7 +1525,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 12 });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 15 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });

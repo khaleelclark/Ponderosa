@@ -298,7 +298,8 @@ function communicationMessageProjection(threadId: string, stored: StoredLogEvent
     messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts, sequence: stored.seq,
   };
   if (event.type === "communication_projection") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+    messageId: projectedMessageId(threadId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id), attachments: event.attachments } : {}),
   };
   return undefined;
 }
@@ -517,6 +518,10 @@ export class ThreadStore {
     if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
       (event.schemaVersion === 1 && event.intent === "direct_to_user"));
     if (projection.surface === "direct_agent_audit") {
+      if (event.intent === "broadcast") {
+        const thread = this.getThread(projection.projectionKey);
+        return Boolean(thread && thread.projectId === projectId && !thread.archived);
+      }
       if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
       if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
         (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
