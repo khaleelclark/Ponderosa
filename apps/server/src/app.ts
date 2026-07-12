@@ -29,6 +29,7 @@ import type {
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
   SseEventEnvelope,
+  ThreadStreamEvent,
   SendAgentMessageRequest,
   SubagentRunDto,
   ThreadDto,
@@ -105,9 +106,6 @@ interface ActiveRun {
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
-  completionScope: "broadcast" | "direct_to_user";
-  /** Explicit manager-facing communication already emitted during this run. */
-  userFacingIntent?: "direct_to_user" | "broadcast";
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -231,20 +229,8 @@ function secretEqual(provided: string | undefined, expected: string): boolean {
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }
 
-function isAgentEvent(event: StoredLogEvent["event"]): event is AgentEvent {
+function isThreadStreamEvent(event: StoredLogEvent["event"]): event is ThreadStreamEvent {
   return event.type !== "user_message";
-}
-
-/**
- * The agent's final human-facing message for a turn, trimmed and length-capped for
- * the group chat. Keeps the tail (final answer / PR link usually ends the message).
- * Returns undefined when the turn produced no text (e.g. pure tool work).
- */
-function summarizeFinalMessage(text: string): string | undefined {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  const cap = 4000;
-  return trimmed.length <= cap ? trimmed : `…${trimmed.slice(-cap)}`;
 }
 
 function agentMentionHandle(title: string): string {
@@ -349,17 +335,11 @@ export function boundedSeedHistory<T extends { text: string }>(
   return selected.reverse();
 }
 
-function agentMessagingPrompt(replyScope: "broadcast" | "direct_to_user" | "collaboration"): string[] {
+function agentMessagingPrompt(): string[] {
   return [
     "Communication scope is immutable. Choose the scope when creating a message; never try to promote or re-scope an existing message.",
-    replyScope === "collaboration"
-      ? "Your ordinary final response stays in this Collaboration with its existing participants and is not inherited by future agents."
-      : replyScope === "broadcast"
-        ? "Your ordinary final response is the completed answer or task result and the server publishes it as a Broadcast for the organization."
-      : "Your ordinary final response is a Direct Message to the manager. It is visible as a DM but is not inherited by future agents.",
-    replyScope === "broadcast"
-      ? "Use direct_to_user when you need to ask the manager a question or send private progress/information before completion. After any explicit user DM, the server suppresses the ordinary final response to avoid duplicates; explicitly Broadcast the completed result if you also finish during that turn."
-      : "Use the messaging tool only when you need to create a Broadcast or send Collaboration:",
+    "Your ordinary runtime response is execution-scoped output saved in your Thinking tab. It is never delivered to the manager, agents, or organization.",
+    "If anyone should receive information, you must explicitly use the messaging tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
     "Reactions are lightweight social signals, not messages. When a visible Master Chat or Collaboration message includes a message ID, prefer a reaction for approval, acknowledgment, celebration, concern, or watching instead of sending redundant prose.",
@@ -439,14 +419,14 @@ function masterChatPrompt(
   const staticInstructions = incremental ? [] : [
     "You are handling a manager request that originated in Master Chat.",
     replyScope === "broadcast"
-      ? "The latest plain Master Chat request is shared work. The server acknowledges its start with 👍 and publishes your ordinary completed answer or result as a Broadcast."
-      : "The latest request is a Direct Message. Reply privately unless you deliberately publish a separate durable Broadcast.",
+      ? "The latest plain Master Chat request is shared work. Explicitly send a Broadcast when its completed answer or result should reach the manager and organization."
+      : "The latest request is a Direct Message. Explicitly send direct_to_user to answer privately.",
     "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only the new direct update or result. Do not repeat a Broadcast or Collaboration message you already sent.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
-    ...agentMessagingPrompt(replyScope),
+    ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
   ];
   return [
@@ -493,7 +473,7 @@ function collaborationChatPrompt(
     "To involve a teammate, send a collaboration intent with their stable agent ID; the server routes it and renders any display handle.",
     "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
     "Do not claim to have seen the main chat.",
-    ...agentMessagingPrompt("collaboration"),
+    ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
   ];
   return [
@@ -515,7 +495,7 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
   return [
     "You are replying in your individual Ponderosa agent chat.",
     ...messageContextPrompt(context),
-    ...agentMessagingPrompt("direct_to_user"),
+    ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
     "",
     "Latest message for you:",
@@ -526,10 +506,10 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
 /** Minimal turn prompt for a session that already received the full protocol. */
 function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
   const channelRule = context.channel === "collaboration"
-    ? "Reply in Collaboration; use a full #tag only when another agent must act."
+    ? "Explicitly send Collaboration to stable recipient IDs when another agent should receive this turn's result."
     : context.channel === "main"
-      ? "Your normal reply is a Direct Message. Broadcast durable organizational knowledge only through an explicit broadcast intent."
-      : "Reply in your individual agent chat.";
+      ? "Explicitly use direct_to_user for a private answer or broadcast for durable organizational knowledge."
+      : "Explicitly use direct_to_user when the manager should receive an answer.";
   return [
     ...messageContextPrompt(context),
     channelRule,
@@ -544,9 +524,9 @@ function replyContext(reference: MessageReferenceDto | undefined): string {
   return `\nReplying specifically to this earlier message:\n> ${quote}\n`;
 }
 
-function envelope(threadId: string, stored: StoredLogEvent): SseEventEnvelope | undefined {
-  if (!isAgentEvent(stored.event)) return undefined;
-  return { threadId, seq: stored.seq, ts: stored.ts, event: stored.event };
+function envelope(threadId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {
+  if (!isThreadStreamEvent(stored.event)) return undefined;
+  return { threadId, seq: stored.seq, ts: stored.ts, event: stored.event, ...(replayed ? { replayed: true } : {}) };
 }
 
 function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): void {
@@ -1576,13 +1556,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       });
-      if (communication) store.appendCommunicationProjection(currentAuthor.projectId, {
+      store.appendCommunicationProjection(currentAuthor.projectId, {
         eventId: communication.eventId,
         surface: "user_inbox",
         projectionKey: "local-operator",
         projectedAt: communication.createdAt,
       });
-      if (communication && capability.masterChatId) {
+      if (capability.masterChatId) {
         store.appendMasterChatMessage(
           capability.masterChatId,
           { text: renderScopedMessage("user", text) },
@@ -1593,14 +1573,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           communication.eventId,
         );
       }
-      const stored = store.appendEvent(capability.threadId, communication ? {
+      const stored = store.appendEvent(capability.threadId, {
         type: "communication_projection", communicationEventId: communication.eventId, text,
-      } : { type: "text", delta: text });
+      });
       publish(capability.threadId, stored);
-      active.userFacingIntent = "direct_to_user";
       const messageId = `thread-event-${stored.seq}`;
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
-      return { intent, eventId: communication?.eventId, messageId, replayed: false };
+      return { intent, eventId: communication.eventId, messageId, replayed: false };
     }
     if (!capability.masterChatId) {
       return reply.code(409).send({ error: "agent is not linked to a master chat" });
@@ -1671,7 +1650,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
     if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication, [], message.attachments);
-    if (intent === "broadcast") active.userFacingIntent = "broadcast";
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (intent === "collaboration") {
       queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
@@ -1733,7 +1711,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       delegatedRunId: run.id,
       generation: durableClaim.generation,
       ownershipState: "running",
-      completionScope: "direct_to_user",
     };
     claimActiveRun(childThread.id, activeRun);
     agentMessageCapabilities.set(messageCapabilityToken, {
@@ -1752,6 +1729,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
     void (async () => {
       let runtimeError: string | undefined;
+      let finalText = "";
+      let firstTextSeq: number | undefined;
+      let lastTextSeq: number | undefined;
       try {
         const stream = engine.adapter.seed({
           threadId: childThread.id,
@@ -1761,7 +1741,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             "",
             `You are a first-class delegated Ponderosa agent${parentThread ? ` created by #${agentMentionHandle(parentThread.title)}` : ""}.`,
             "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
-            ...agentMessagingPrompt("direct_to_user"),
+            ...agentMessagingPrompt(),
             ...agentDelegationPrompt(),
             ...delegatedOutcomePrompt(),
           ].join("\n"),
@@ -1784,23 +1764,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (closed || !renewExecutionLease(childThread.id, activeRun)) break;
           if (!receiveRuntimeEvent(childThread.id, activeRun)) break;
           if (opts.runtimeEventFaults?.beforePersist && !await waitBeforeRuntimePersist(childThread.id, activeRun, event)) break;
-          let logEvent: LogEvent = event;
-          if (event.type === "text" && event.delta.trim()) {
-            const communication = recordCommunication({
-              eventId: randomUUID(), schemaVersion: 2, projectId: project.id, masterChatId: run.masterChatId,
-              sender: { kind: "agent", agentId: childThread.id, executionId: run.id },
-              intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: childThread.id },
-              text: event.delta, createdAt: new Date().toISOString(),
-            });
-            if (communication) {
-              store.appendCommunicationProjection(project.id, {
-                eventId: communication.eventId, surface: "user_inbox", projectionKey: "local-operator",
-                projectedAt: communication.createdAt,
-              });
-              logEvent = { ...event, communicationEventId: communication.eventId };
-            }
+          const logEvent: LogEvent = event.type === "text" || event.type === "reasoning"
+            ? { ...event, executionId: run.id }
+            : event;
+          const stored = persistRuntimeEvent(childThread.id, activeRun, logEvent);
+          if (!stored) break;
+          if (event.type === "text") {
+            finalText += event.delta;
+            firstTextSeq ??= stored.seq;
+            lastTextSeq = stored.seq;
           }
-          if (!persistRuntimeEvent(childThread.id, activeRun, logEvent)) break;
           if (event.type === "error") runtimeError = event.message;
         }
         if (closed) return;
@@ -1817,6 +1790,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           store.clearResumeSession(childThread.id, "explicit_compaction");
         }
         if (owned && !closed && !controller.signal.aborted) {
+          if (!runtimeError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
+            const output = store.appendEvent(childThread.id, {
+              type: "agent_output",
+              executionId: run.id,
+              text: finalText,
+              sourceSeqStart: firstTextSeq,
+              sourceSeqEnd: lastTextSeq,
+            });
+            publish(childThread.id, output);
+          }
           const terminal = store.appendEvent(childThread.id, {
             type: "agent_lifecycle",
             status: runtimeError ? "failed" : "completed",
@@ -3074,8 +3057,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             clientMessageId: communicationEventId,
           });
           if (steered.status === "accepted") {
-            existingRun.completionScope = sharedTaskTurn ? "broadcast" : "direct_to_user";
-            existingRun.userFacingIntent = undefined;
             acknowledgeSharedTaskStart();
             const stored = store.appendEvent(thread.id, {
               type: "user_message",
@@ -3275,7 +3256,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}),
         generation: durableClaim.generation,
         ownershipState: "running",
-        completionScope: sharedTaskTurn ? "broadcast" : "direct_to_user",
       };
       claimActiveRun(thread.id, activeRun);
       acknowledgeSharedTaskStart();
@@ -3296,13 +3276,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
 
       void (async () => {
-        // Accumulate the agent's human-facing message so it can post its actual
-        // answer back into the master chat (the team group chat) when the turn ends
-        // — e.g. "It's 95°F and sunny" or "Done — PR here: <link>".
+        // Consolidate ordinary response deltas into one durable, execution-scoped
+        // Thinking entry. Communication is created only by explicit intent calls.
         let runError: string | undefined;
-        let sawWaiting = false;
         let finalText = "";
-        let lastCommunicationEventId: string | undefined;
+        let firstTextSeq: number | undefined;
+        let lastTextSeq: number | undefined;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -3442,31 +3421,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 persistRuntimeEvent(thread.id, activeRun, buffered);
               }
               if (event.type !== "error") sawMaterialRuntimeEvent = true;
-              let logEvent: LogEvent = event;
-              if (event.type === "text" && event.delta.trim()) {
-                const communication = recordCommunication({
-                  eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                  ...(routingMasterChatId ? { masterChatId: routingMasterChatId } : {}),
-                  sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                  intent: "user_dm",
-                  audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-                  text: event.delta,
-                  createdAt: new Date().toISOString(),
-                  ...(pendingTurn.communicationEventId ? { causationId: pendingTurn.communicationEventId } : {}),
-                });
-                if (communication) store.appendCommunicationProjection(project.id, {
-                  eventId: communication.eventId,
-                  surface: "user_inbox",
-                  projectionKey: "local-operator",
-                  projectedAt: communication.createdAt,
-                });
-                lastCommunicationEventId = communication?.eventId;
-                if (communication) logEvent = { ...event, communicationEventId: communication.eventId };
+              const logEvent: LogEvent = event.type === "text" || event.type === "reasoning"
+                ? { ...event, executionId: runId }
+                : event;
+              const stored = persistRuntimeEvent(thread.id, activeRun, logEvent);
+              if (!stored) break;
+              if (event.type === "text") {
+                finalText += event.delta;
+                firstTextSeq ??= stored.seq;
+                lastTextSeq = stored.seq;
               }
-              if (!persistRuntimeEvent(thread.id, activeRun, logEvent)) break;
-              if (event.type === "text") finalText += event.delta;
               if (event.type === "error") runError = event.message;
-              if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
             }
             if (!retryFresh) break;
           }
@@ -3485,6 +3450,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
           }
           if (owned && !closed && !controller.signal.aborted) {
+            if (!runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
+              const output = store.appendEvent(thread.id, {
+                type: "agent_output",
+                executionId: runId,
+                text: finalText,
+                sourceSeqStart: firstTextSeq,
+                sourceSeqEnd: lastTextSeq,
+              });
+              publish(thread.id, output);
+            }
             const terminal = store.appendEvent(thread.id, {
               type: "agent_lifecycle",
               status: runError ? "failed" : "completed",
@@ -3497,57 +3472,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (released) {
             agentMessageCapabilities.delete(messageCapability);
             delegationCapabilities.delete(delegationCapability);
-          }
-          // Post a group-chat status unless the run was cancelled/aborted (cancel or
-          // thread deletion), in which case a report-back would be misleading.
-          const explicitSharedTaskMessage = activeRun.completionScope === "broadcast" && activeRun.userFacingIntent !== undefined;
-          if (released && routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted && !explicitSharedTaskMessage) {
-            const statusText = runError
-              ? `⚠️ Stuck — ${runError.slice(0, 200)}`
-              : summarizeFinalMessage(finalText) ??
-                (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
-            try {
-              const broadcastCompletion = activeRun.completionScope === "broadcast" && !runError;
-              const reportCommunication = recordCommunication(broadcastCompletion ? {
-                eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                masterChatId: routingMasterChatId,
-                sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
-                text: statusText, createdAt: new Date().toISOString(),
-                ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-              } : {
-                eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                masterChatId: routingMasterChatId,
-                sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-                text: statusText, createdAt: new Date().toISOString(),
-                ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-              });
-              // The main chat is manager-facing. Agent-to-agent handoffs are
-              // emitted only from the separate collaboration chat.
-              const renderedStatusText = broadcastCompletion ? statusText : renderScopedMessage("user", statusText);
-              const reportMessage = store.appendMasterChatMessage(
-                routingMasterChatId,
-                { role: "assistant", text: renderedStatusText },
-                thread.id,
-                "main",
-                [],
-                undefined,
-                reportCommunication?.eventId,
-              );
-              if (reportCommunication?.intent === "broadcast" && reportMessage) {
-                projectBroadcastToAgentAudits(reportCommunication, [], reportMessage.attachments);
-              } else if (reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm") {
-                store.appendCommunicationProjection(project.id, {
-                  eventId: reportCommunication.eventId,
-                  surface: "user_inbox",
-                  projectionKey: "local-operator",
-                  projectedAt: reportCommunication.createdAt,
-                });
-              }
-            } catch {
-              // Master chat may have been deleted mid-run; ignore.
-            }
           }
           if (released && !closed && requestedDeliveryIds.length) {
             // A cancelled delivery turn is not an acknowledgement. Put it back
@@ -3607,9 +3531,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       let lastWrittenSeq = replayFrom;
       let replaying = true;
       const queued: StoredLogEvent[] = [];
-      const writeStored = (stored: StoredLogEvent): void => {
+      const writeStored = (stored: StoredLogEvent, replayed = false): void => {
         if (stored.seq <= lastWrittenSeq) return;
-        const env = envelope(request.params.id, stored);
+        const env = envelope(request.params.id, stored, replayed);
         lastWrittenSeq = stored.seq;
         if (env) writeSse(reply.raw, "message", stored.seq, env);
       };
@@ -3622,7 +3546,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
 
       for (const stored of store.readEventsSince(request.params.id, replayFrom)) {
-        writeStored(stored);
+        writeStored(stored, true);
       }
       replaying = false;
       for (const stored of queued) writeStored(stored);

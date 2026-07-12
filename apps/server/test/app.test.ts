@@ -309,9 +309,12 @@ describe("persistent engine steering", () => {
     expect(steerable.steers[0]?.prompt).toContain("Use the new direction");
     expect(steerable.steers[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Start working");
     await waitForRun(thread.id);
-    expect(store.getMessages(thread.id).map((message) => message.text)).toEqual(expect.arrayContaining([
-      "Start working", "Use the new direction", "steered result",
-    ]));
+    expect(store.getMessages(thread.id).map((message) => message.text)).toEqual([
+      "Start working", "Use the new direction",
+    ]);
+    expect(store.getThreadDetail(thread.id)?.thinking).toEqual([
+      expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "steered result", completed: true }),
+    ]);
     expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
     await app.close();
   });
@@ -585,12 +588,13 @@ describe("server chunk F", () => {
         })],
       }),
     ]);
-    const completion = store.getMasterChatMessages(master.id)
-      .find((message) => message.authorThreadId === responsible.id && message.text === "done");
-    expect(store.getCommunicationEvent(project.id, completion!.communicationEventId!)).toMatchObject({
-      intent: "broadcast",
-      audience: { kind: "organization", organizationId: project.id },
-    });
+    expect(store.getMasterChatMessages(master.id)
+      .find((message) => message.authorThreadId === responsible.id && message.text === "done")).toBeUndefined();
+    expect(store.getThreadDetail(responsible.id)?.thinking).toEqual([
+      expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "done", completed: true }),
+    ]);
+    expect(store.readCommunicationEvents(project.id).some((event) =>
+      event.sender.kind === "agent" && event.text === "done")).toBe(false);
     expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
     ]));
@@ -623,7 +627,7 @@ describe("server chunk F", () => {
     });
     expect(futureViaApi.statusCode).toBe(200);
     const futureId = futureViaApi.json<{ id: string }>().id;
-    expect(store.getMessages(futureId).filter((message) => message.text.startsWith("#broadcast "))).toHaveLength(3);
+    expect(store.getMessages(futureId).filter((message) => message.text.startsWith("#broadcast "))).toHaveLength(2);
     expect(adapter.seeds.filter((turn) => turn.threadId === futureId)).toHaveLength(0);
     await app.close();
   });
@@ -666,7 +670,12 @@ describe("server chunk F", () => {
       const prompt = adapter.seeds.find((seed) => seed.threadId === agent.id)?.prompt ?? "";
       expect(prompt.match(/guess what! I just got married!!!!/g)).toHaveLength(1);
     }
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#user done")).toHaveLength(3);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#user done")).toHaveLength(0);
+    for (const agent of [kings, cabrillo, olympic]) {
+      expect(store.getThreadDetail(agent.id)?.thinking).toEqual([
+        expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
+      ]);
+    }
 
     const replay = await app.inject({
       method: "POST", url: `/api/master-chats/${master.id}/direct-messages`, payload,
@@ -792,8 +801,11 @@ describe("server chunk F", () => {
     const turn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceMasterChatId: second.id } });
     expect(turn.statusCode).toBe(200);
     await waitForRun(thread.id);
-    expect(store.getMasterChatMessages(second.id).some((message) => message.authorThreadId === thread.id)).toBe(true);
+    expect(store.getMasterChatMessages(second.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
     expect(store.getMasterChatMessages(first.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
+    expect(store.getThreadDetail(thread.id)?.thinking).toEqual([
+      expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
+    ]);
     await app.close();
   });
 
@@ -812,11 +824,12 @@ describe("server chunk F", () => {
     expect(store.getMessages(thread.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "first", communicationEventId: firstEventId }),
     ]));
-    expect(store.getMessages(thread.id).filter((message) => message.role === "assistant"))
-      .toEqual(expect.arrayContaining([expect.objectContaining({ communicationEventId: expect.any(String) })]));
-    expect(store.readCommunicationEvents(store.getThread(thread.id)!.projectId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sender: expect.objectContaining({ kind: "agent", agentId: thread.id }), causationId: firstEventId }),
-    ]));
+    expect(store.getMessages(thread.id).filter((message) => message.role === "assistant")).toEqual([]);
+    expect(store.getThreadDetail(thread.id)?.thinking).toEqual([
+      expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
+    ]);
+    expect(store.readCommunicationEvents(store.getThread(thread.id)!.projectId).some((event) =>
+      event.sender.kind === "agent" && event.text === "done")).toBe(false);
     expect(store.reconcileCommunicationEvents(store.getThread(thread.id)!.projectId)).toMatchObject({ ok: true });
 
     const second = await app.inject({
@@ -1073,7 +1086,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
     expect(adapter.continues[2]?.prompt).toContain("original context");
-    expect(adapter.continues[2]?.prompt).toContain("Your ordinary final response is a Direct Message");
+    expect(adapter.continues[2]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Thinking tab");
     await app.close();
   });
 
@@ -1092,7 +1105,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
-    expect(adapter.continues[0]?.prompt).toContain("Your ordinary final response is a Direct Message");
+    expect(adapter.continues[0]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Thinking tab");
     await app.close();
   });
 
@@ -1185,10 +1198,9 @@ describe("server chunk F", () => {
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Yosemite can you review this?" })]),
     );
-    expect(store.getMasterChatMessages(master.id)).toEqual([
-      expect.objectContaining({
-        authorThreadId: yosemite.id, text: "#user done", communicationEventId: expect.any(String),
-      }),
+    expect(store.getMasterChatMessages(master.id)).toEqual([]);
+    expect(store.getThreadDetail(yosemite.id)?.thinking).toEqual([
+      expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "#Yosemite can you review this?" })]),
@@ -1470,7 +1482,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("keeps a conversational Master Chat reply direct instead of broadcasting it", async () => {
+  it("keeps an ordinary conversational response in Thinking instead of inferring a DM", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Conversational reply", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Team room" });
@@ -1484,14 +1496,13 @@ describe("server chunk F", () => {
     });
     await waitForRun(greeter.id);
 
-    const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "#user You're welcome!");
-    const replyEvent = store.readCommunicationEvents(project.id).find((event) => event.eventId === replyMessage?.communicationEventId);
-    expect(replyEvent).toMatchObject({
-      schemaVersion: 2,
-      intent: "user_dm",
-      audience: { kind: "user_agent", userId: "local-operator", agentId: greeter.id },
-    });
-    expect(replyMessage).toMatchObject({ text: "#user You're welcome!", communicationEventId: replyEvent?.eventId });
+    expect(store.getMasterChatMessages(master.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
+    expect(store.getMessages(greeter.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
+    expect(store.getThreadDetail(greeter.id)?.thinking).toEqual([
+      expect.objectContaining({ executionId: expect.any(String), text: "You're welcome!", completed: true }),
+    ]);
+    expect(store.readCommunicationEvents(project.id).some((event) =>
+      event.sender.kind === "agent" && event.text === "You're welcome!")).toBe(false);
 
     const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
     await app.inject({
@@ -1503,12 +1514,21 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("continues casual conversation through completed broadcasts without inheriting private DMs", async () => {
+  it("continues casual conversation through explicit broadcasts without inheriting ordinary output", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Casual conversation", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Trip planning" });
     const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
     adapter.responseText = "Here are three trip options";
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "broadcast", text: "Here are three trip options" },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+    };
 
     const opening = await app.inject({
       method: "POST", url: `/api/threads/${first.id}/messages`,
@@ -1547,10 +1567,13 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds.find((turn) => turn.threadId === next.id)?.prompt ?? "";
     expect(prompt).toContain("Manager: Help me plan a trip");
-    expect(prompt).toContain("First: Here are three trip options");
+    expect(prompt).toContain("First: #broadcast Here are three trip options");
     expect(prompt).not.toContain("Inspect a private issue");
     expect(prompt).not.toContain("Private implementation detail");
     expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);
+    expect(store.getThreadDetail(privateAgent.id)?.thinking).toEqual([
+      expect.objectContaining({ text: "Private implementation detail", completed: true }),
+    ]);
     await app.close();
   });
 
@@ -3021,13 +3044,17 @@ describe("server chunk F", () => {
     });
 
     let chunk = "";
-    for (let i = 0; i < 30 && !chunk.includes('"type":"session"'); i += 1) {
+    for (let i = 0; i < 30 && !chunk.includes('"type":"agent_output"'); i += 1) {
       const read = await reader.read();
       chunk += new TextDecoder().decode(read.value);
     }
     liveAbort.abort();
     expect(chunk).toContain("id: 2");
     expect(chunk).toContain('"type":"session"');
+    expect(chunk).toContain('"type":"agent_output"');
+    expect(chunk).toContain('"executionId":');
+    expect(chunk).toContain('"text":"done"');
+    expect(chunk).not.toContain('"replayed":true');
     await waitForRun(thread.id);
 
     const replayAbort = new AbortController();
@@ -3040,6 +3067,7 @@ describe("server chunk F", () => {
     const replayChunk = new TextDecoder().decode(replayRead.value);
     expect(replayChunk).toContain("id: 2");
     expect(replayChunk).not.toContain("id: 1");
+    expect(replayChunk).toContain('"replayed":true');
 
     expect(project.id).toBeTruthy();
     await app.close();

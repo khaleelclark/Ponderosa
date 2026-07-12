@@ -33,13 +33,25 @@ describe("projectEvent — routing (SPEC §5)", () => {
     expect(kinds(ops)).toContain("insert_event");
   });
 
-  it("text → an assistant Chat message", () => {
+  it("ordinary text remains execution data and never creates a Chat message", () => {
     const { ops } = projectEvent(T, initProjectionState("codex"), stored(2, {
       type: "text",
       delta: "Working on it",
     }));
-    const msg = ops.find((o) => o.kind === "insert_message");
-    expect(msg?.kind === "insert_message" && msg.row.role).toBe("assistant");
+    expect(kinds(ops)).toEqual(["insert_event"]);
+    expect(ops.some((o) => o.kind === "insert_message")).toBe(false);
+  });
+
+  it("completed agent output remains execution data and never creates a Chat message", () => {
+    const { ops } = projectEvent(T, initProjectionState("codex"), stored(3, {
+      type: "agent_output",
+      executionId: "run-1",
+      text: "Completed result",
+      sourceSeqStart: 1,
+      sourceSeqEnd: 2,
+    }));
+    expect(kinds(ops)).toEqual(["insert_event"]);
+    expect(ops.some((o) => o.kind === "insert_message")).toBe(false);
   });
 
   it("reasoning → NOT a Chat message (events index only; keeps Chat clean)", () => {

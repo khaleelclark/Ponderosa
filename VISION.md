@@ -80,6 +80,12 @@ must deliberately publish durable knowledge or deliberately tell the user. This
 keeps Master Chat useful and prevents coordination traffic from overwhelming the
 project narrative.
 
+An agent's ordinary runtime response is not a fourth communication scope. It is
+execution data shown in that agent's Thinking tab. Only an explicit Broadcast,
+Direct Message, or Collaboration event may appear on a communication surface.
+Ponderosa never guesses scope from response text, mentions, or the room that
+started the turn.
+
 ### Collaboration Chat
 
 Collaboration Chat is exclusively for agent-to-agent communication. An agent
@@ -98,16 +104,19 @@ Direct Agent Chat is an agent's complete inbound and outbound audit timeline. It
 is a hub over existing communication and activity, not a separate conversation
 or an additional message scope.
 
-It can show:
+The Chat tab can show:
 
 - user messages;
 - Direct Messages;
 - Broadcasts;
 - collaboration messages;
 - assignments;
-- tool calls and execution activity;
-- lifecycle events; and
-- agent outputs.
+- explicit communication to or from that agent.
+
+The adjacent Thinking tab shows ordinary response text and transient reasoning,
+chronologically and associated with the originating execution. Completed
+response text is durable canonical execution data. Thinking never becomes
+future-agent context and never creates or triggers a delivery.
 
 When a user writes from this surface, the result is a Direct Message addressed to
 that agent. It remains visible in Master Chat without creating a duplicate
@@ -127,11 +136,10 @@ and agents who reacted, exposed on hover. Reacting never changes communication
 scope and never wakes an agent.
 
 For ordinary conversation, a plain Master Chat request creates shared work. The
-responsible agent reacts 👍 when it starts, can Direct Message the user with a
-question, private progress, or useful information, and Broadcasts its completed
-answer or task result while rendering it as ordinary assistant text without an
-automatic `#broadcast` prefix. A Direct Message from the user receives a Direct
-Message reply. Completed Broadcasts give the next fresh responder coherent
+responsible agent can Direct Message the user with a question, private progress,
+or useful information, and explicitly Broadcast its completed answer or task
+result. An ordinary final response that does not invoke one of those intents
+stays in Thinking. Completed Broadcasts give the next fresh responder coherent
 conversation context and tell other agents what has already been done.
 
 ## Shared knowledge and immutable scope
@@ -141,6 +149,10 @@ Only Broadcasts become shared organizational knowledge.
 Direct Messages remain between the user and the addressed agent. Collaboration
 remains between its explicit agent recipients. Audit and execution events remain
 local to the relevant timelines and diagnostic surfaces.
+
+Ordinary response text and reasoning are scoped to their originating agent and
+execution. They are never communications, recipients, deliveries, or shared
+knowledge merely because a runtime emitted them.
 
 Communication scope never changes after creation. A private message is not
 promoted or converted into a Broadcast. When private information becomes useful

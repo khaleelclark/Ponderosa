@@ -1,4 +1,4 @@
-import type { MessageDto, SseEventEnvelope, ThreadDetailDto } from "@ponderosa/core";
+import type { SseEventEnvelope, ThreadDetailDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { runningAfterAgentEvent, updateThreadDetail } from "../src/hooks/useThreadStream";
 
@@ -9,29 +9,50 @@ describe("updateThreadDetail", () => {
     expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "running", reason: "active_run" })).toBe(true);
   });
 
-  it("ignores an invalid cached message while appending streamed text", () => {
-    const liveMessage: MessageDto = {
-      id: "live-agent-thread-1-2",
-      threadId: "thread-1",
-      seq: 2,
-      role: "assistant",
-      text: "Hello",
-      createdAt: "2026-07-11T08:00:00.000Z",
-    };
+  it("keeps streamed response and reasoning deltas in distinct transient Thinking entries", () => {
     const detail = {
-      messages: [undefined, liveMessage],
+      messages: [],
+      thinking: [],
       tasks: [],
       artifacts: [],
       thread: { activeEngine: "codex" },
     } as unknown as ThreadDetailDto;
-    const envelope = {
+    const response = {
       seq: 3,
       ts: "2026-07-11T08:00:01.000Z",
-      event: { type: "text", delta: " world" },
+      event: { type: "text", delta: "final answer", executionId: "run-1" },
+    } as SseEventEnvelope;
+    const reasoning = {
+      seq: 4,
+      ts: "2026-07-11T08:00:02.000Z",
+      event: { type: "reasoning", delta: "checking", executionId: "run-1" },
     } as SseEventEnvelope;
 
-    expect(updateThreadDetail("thread-1", envelope, detail).messages).toEqual([
-      { ...liveMessage, text: "Hello world" },
+    const updated = updateThreadDetail("thread-1", reasoning, updateThreadDetail("thread-1", response, detail));
+    expect(updated.messages).toEqual([]);
+    expect(updated.thinking).toEqual([
+      expect.objectContaining({ kind: "response", text: "final answer", completed: false, executionId: "run-1" }),
+      expect.objectContaining({ kind: "reasoning", text: "checking", completed: false, executionId: "run-1" }),
+    ]);
+  });
+
+  it("replaces transient response text with the canonical completed output", () => {
+    const detail = {
+      messages: [],
+      thinking: [{
+        id: "live-thinking:run-1:response", threadId: "thread-1", executionId: "run-1", kind: "response",
+        text: "partial", completed: false, seq: 2, sourceSeqStart: 2, sourceSeqEnd: 2, createdAt: "2026-07-11T08:00:00.000Z",
+      }],
+      tasks: [], artifacts: [], thread: { activeEngine: "codex" },
+    } as unknown as ThreadDetailDto;
+    const envelope = {
+      seq: 5,
+      ts: "2026-07-11T08:00:03.000Z",
+      event: { type: "agent_output", executionId: "run-1", text: "complete", sourceSeqStart: 2, sourceSeqEnd: 4 },
+    } as SseEventEnvelope;
+
+    expect(updateThreadDetail("thread-1", envelope, detail).thinking).toEqual([
+      expect.objectContaining({ kind: "response", text: "complete", completed: true, executionId: "run-1", seq: 5 }),
     ]);
   });
 

@@ -28,7 +28,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ArtifactContentDto, ArtifactDto, EngineCommand, FileEntryDto, MessageDto, TaskDto } from "@ponderosa/core";
+import type { ArtifactContentDto, ArtifactDto, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -524,6 +524,31 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
         {body}
       </Typography>
     </Box>
+  );
+}
+
+export function ThinkingPane({ entries }: { entries: ThinkingEntryDto[] }): JSX.Element {
+  const ordered = [...entries].sort((a, b) => a.seq - b.seq);
+  return (
+    <Stack spacing={1.25} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent thinking">
+      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Thinking</Typography>
+        <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
+      </Stack>
+      {ordered.length === 0 ? <Alert severity="info">Ordinary agent output will appear here. Only explicitly sent messages appear in Chat.</Alert> : ordered.map((entry) => (
+        <Paper key={entry.id} variant="outlined" sx={{ p: 1.25 }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.75 }}>
+            <Chip size="small" variant="outlined" label={entry.kind === "reasoning" ? "Reasoning" : entry.completed ? "Response" : "Response · live"} />
+            <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+              Execution {entry.executionId.slice(0, 8)} · {new Date(entry.createdAt).toLocaleString()}
+            </Typography>
+          </Stack>
+          <Typography component="div" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+            {entry.text}
+          </Typography>
+        </Paper>
+      ))}
+    </Stack>
   );
 }
 

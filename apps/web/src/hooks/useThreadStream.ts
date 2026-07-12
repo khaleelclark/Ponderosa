@@ -1,4 +1,4 @@
-import type { AgentEvent, ArtifactDto, MessageDto, SseEventEnvelope, TaskDto, ThreadDetailDto } from "@ponderosa/core";
+import type { AgentEvent, ArtifactDto, SseEventEnvelope, TaskDto, ThinkingEntryDto, ThreadDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -52,32 +52,58 @@ function projectedTaskUpdateId(threadId: string, taskId: string): string {
 export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope, detail: ThreadDetailDto): ThreadDetailDto {
   const { event, seq, ts } = envelope;
 
-  if (event.type === "text") {
-    // Query-cache updates and live SSE events can interleave. Normalize a
-    // transient sparse/invalid cache entry before reading message properties so
-    // one bad slot cannot take down the entire React tree.
-    const messages = compactDefined(detail.messages);
-    if (messages.some((message) => message.seq === seq)) {
-      return detail;
-    }
-    const last = messages.at(-1);
-    const shouldAppend = last?.role === "assistant" && last.id.startsWith("live-agent-");
-    const nextMessages: MessageDto[] = shouldAppend
-      ? messages.map((message) =>
-          message.id === last.id ? { ...message, text: `${message.text}${event.delta}` } : message,
-        )
-      : [
-          ...messages,
-          {
-            id: `live-agent-${threadId}-${seq}`,
-            threadId,
-            seq,
-            role: "assistant",
-            text: event.delta,
-            createdAt: ts,
-          },
-        ];
-    return { ...detail, messages: nextMessages };
+  if (event.type === "text" || event.type === "reasoning") {
+    if (envelope.replayed) return detail;
+    const thinking = compactDefined(detail.thinking ?? []);
+    const executionId = event.executionId ?? `live:${seq}`;
+    const kind = event.type === "reasoning" ? "reasoning" : "response";
+    const id = `live-thinking:${executionId}:${kind}`;
+    const existing = thinking.find((entry) => entry.id === id);
+    const next: ThinkingEntryDto = existing ? {
+      ...existing,
+      text: `${existing.text}${event.delta}`,
+      seq,
+      sourceSeqEnd: seq,
+    } : {
+      id,
+      threadId,
+      executionId,
+      kind,
+      text: event.delta,
+      completed: false,
+      seq,
+      sourceSeqStart: seq,
+      sourceSeqEnd: seq,
+      createdAt: ts,
+    };
+    return {
+      ...detail,
+      thinking: existing
+        ? thinking.map((entry) => entry.id === id ? next : entry)
+        : [...thinking, next],
+    };
+  }
+
+  if (event.type === "agent_output") {
+    const thinking = compactDefined(detail.thinking ?? []);
+    const entry: ThinkingEntryDto = {
+      id: `${threadId}:thinking:${seq}`,
+      threadId,
+      executionId: event.executionId,
+      kind: "response",
+      text: event.text,
+      completed: true,
+      seq,
+      sourceSeqStart: event.sourceSeqStart,
+      sourceSeqEnd: event.sourceSeqEnd,
+      createdAt: ts,
+    };
+    if (thinking.some((item) => item.id === entry.id)) return detail;
+    return {
+      ...detail,
+      thinking: [...thinking.filter((item) => !(item.executionId === event.executionId && item.kind === "response" && !item.completed)), entry]
+        .sort((a, b) => a.seq - b.seq),
+    };
   }
 
   if (event.type === "task_update") {

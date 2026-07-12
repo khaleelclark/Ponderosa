@@ -49,6 +49,7 @@ import type {
   ThreadDetailDto,
   ThreadDto,
   ThreadState,
+  ThinkingEntryDto,
   UpdateThreadMasterChatMembershipsRequest,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
@@ -295,9 +296,6 @@ function communicationMessageProjection(threadId: string, stored: StoredLogEvent
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
     ...(event.replyTo ? { replyTo: event.replyTo } : {}),
     ...(event.attachments?.length ? { attachments: event.attachments } : {}),
-  };
-  if (event.type === "text") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts, sequence: stored.seq,
   };
   if (event.type === "communication_projection") return {
     messageId: projectedMessageId(threadId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
@@ -669,7 +667,7 @@ export class ThreadStore {
     }
     for (const thread of this.listThreads(projectId)) {
       for (const stored of this.readEvents(thread.id)) {
-        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message" || stored.event.type === "text"
+        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
           ? stored.event.communicationEventId : undefined;
         const message = communicationMessageProjection(thread.id, stored);
         if (eventId && message && canonicalIds.has(eventId)) {
@@ -1525,13 +1523,14 @@ export class ThreadStore {
     return true;
   }
 
-  /** Full four-pane hydration for GET /api/threads/:id (SPEC §8). */
+  /** Full agent-detail hydration for GET /api/threads/:id (SPEC §8). */
   getThreadDetail(id: string): ThreadDetailDto | undefined {
     const thread = this.rowToThreadDto(id);
     if (!thread) return undefined;
     return {
       thread,
       messages: this.getMessages(id),
+      thinking: this.getThinkingEntries(id),
       tasks: this.getTasks(id),
       artifacts: this.getArtifacts(id),
       state: thread.state,
@@ -1556,6 +1555,86 @@ export class ThreadStore {
         replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
         attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
       }));
+  }
+
+  /**
+   * Completed ordinary responses are read from the canonical thread log. Legacy
+   * text events are grouped by their surrounding execution and fail closed into
+   * Thinking rather than being inferred as communication.
+   */
+  getThinkingEntries(threadId: string): ThinkingEntryDto[] {
+    const storedEvents = this.readEvents(threadId);
+    const completedExecutionIds = new Set(storedEvents.flatMap(({ event }) =>
+      event.type === "agent_output" ? [event.executionId] : [],
+    ));
+    const entries: ThinkingEntryDto[] = [];
+    const legacy = new Map<string, { text: string; firstSeq: number; lastSeq: number; createdAt: string }>();
+    let activeExecutionId: string | undefined;
+    let fallbackExecutionId: string | undefined;
+
+    for (const stored of storedEvents) {
+      const { event } = stored;
+      if (event.type === "agent_lifecycle" && event.status === "running") {
+        activeExecutionId = event.executionId;
+        fallbackExecutionId = undefined;
+      } else if (event.type === "user_message") {
+        fallbackExecutionId = undefined;
+      } else if (event.type === "text" && !event.executionId) {
+        const executionId = activeExecutionId ?? fallbackExecutionId ?? `legacy:${stored.seq}`;
+        fallbackExecutionId = executionId;
+        if (!completedExecutionIds.has(executionId)) {
+          const current = legacy.get(executionId);
+          legacy.set(executionId, current ? {
+            ...current,
+            text: `${current.text}${event.delta}`,
+            lastSeq: stored.seq,
+            createdAt: stored.ts,
+          } : {
+            text: event.delta,
+            firstSeq: stored.seq,
+            lastSeq: stored.seq,
+            createdAt: stored.ts,
+          });
+        }
+      } else if (event.type === "turn_done") {
+        fallbackExecutionId = undefined;
+      } else if (event.type === "agent_lifecycle" && event.status !== "running" && event.executionId === activeExecutionId) {
+        activeExecutionId = undefined;
+        fallbackExecutionId = undefined;
+      }
+
+      if (event.type === "agent_output" && event.text.trim()) {
+        entries.push({
+          id: `${threadId}:thinking:${stored.seq}`,
+          threadId,
+          executionId: event.executionId,
+          kind: "response",
+          text: event.text,
+          completed: true,
+          seq: stored.seq,
+          sourceSeqStart: event.sourceSeqStart,
+          sourceSeqEnd: event.sourceSeqEnd,
+          createdAt: stored.ts,
+        });
+      }
+    }
+
+    for (const [executionId, item] of legacy) {
+      if (!item.text.trim()) continue;
+      entries.push({
+        id: `${threadId}:thinking:legacy:${item.lastSeq}`,
+        threadId,
+        executionId,
+        kind: "response",
+        text: item.text,
+        completed: true,
+        seq: item.lastSeq,
+        sourceSeqStart: item.firstSeq,
+        sourceSeqEnd: item.lastSeq,
+        createdAt: item.createdAt,
+      });
+    }
+    return entries.sort((a, b) => a.seq - b.seq);
   }
 
   getProjectedThreadMessages(threadId: string): MessageDto[] {
@@ -1649,7 +1728,7 @@ export class ThreadStore {
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
     this.applyOps(threadId, projectId, ops);
-    const communicationEventId = event.type === "communication_projection" || event.type === "user_message" || event.type === "text"
+    const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
       ? event.communicationEventId : undefined;
     const message = communicationMessageProjection(threadId, stored);
     if (communicationEventId && message) {

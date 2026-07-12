@@ -22,15 +22,16 @@ export interface TokenUsage {
 /**
  * The normalized agent event union — SPEC §5, verbatim in shape.
  *
- * Server routing (SPEC §5): `text`/`reasoning` → Chat; `command`/`file_change`/
- * `test_result` → Tasks & Artifacts; `session` → the thread's active session id.
+ * Server routing (SPEC §5): `text`/`reasoning` → execution-scoped Thinking;
+ * `command`/`file_change`/`test_result` → Tasks & Artifacts; `session` → the
+ * thread's active session id. Runtime output never implies communication scope.
  * This union is the single contract between engines and everything downstream;
  * changing it requires a SPEC edit (AGENTS.md).
  */
 export type AgentEvent =
   | { type: "session"; sessionId: string } // persist for resume
-  | { type: "text"; delta: string } // human-facing message → Chat
-  | { type: "reasoning"; delta: string } // thinking/summary → Chat (secondary)
+  | { type: "text"; delta: string } // ordinary response delta → Thinking
+  | { type: "reasoning"; delta: string } // transient reasoning → Thinking
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError?: boolean }
   | { type: "command"; command: string; cwd: string } // → Task/Artifact

@@ -57,8 +57,11 @@ pay-per-token provider API keys.
      Collaboration Chat and relevant Direct Agent timelines, but excluded from
      Master Chat and shared organizational context.
 
-   Scope never changes after creation. To share a private finding more broadly,
-   create a new communication with the intended scope.
+   Scope never changes after creation. Only an explicit communication event may
+   create a chat projection. Never infer scope from runtime response text,
+   rendered mentions, or the room that initiated a turn. Ambiguity fails closed
+   into execution data, never communication. To share a private finding more
+   broadly, create a new communication with the intended scope.
 
 5. **Only Broadcasts are shared knowledge.** Plain Master Chat requests are
    intentionally created as Broadcasts. Visibility does not otherwise imply context
@@ -67,23 +70,27 @@ pay-per-token provider API keys.
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
-   A plain Master Chat request starts shared work. The responsible agent reacts
-   👍 when it accepts the task and its ordinary completed answer or result is a
-   Broadcast rendered as a normal assistant answer without an automatic scope
-   prefix. Questions, private progress, and informational notes to the user are
-   Direct Messages. A user DM receives a DM reply. This inherited response scope
-   is server-enforced; do not rely on rendered labels or model discretion.
+   A plain Master Chat request starts shared work. The responsible agent must use
+   an explicit Broadcast for a completed answer or result, an explicit Direct
+   Message for a question or private manager update, and explicit Collaboration
+   for agent recipients. Its ordinary runtime response is not communication.
 
 6. **Master Chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
    calls, terminal output, file changes, or lifecycle noise into it. Different
    responder names may be the only orchestration detail a casual user sees.
 
-7. **Direct Agent Chat is an audit hub, not another conversation.** It projects
-   everything inbound and outbound for one agent: user communication, Broadcasts,
-   Collaboration, assignments, tools, lifecycle, and outputs. User input from
+7. **Agent detail is an audit hub, not another conversation.** Direct Agent Chat
+   projects explicit inbound and outbound communication for one agent. Thinking
+   projects ordinary response text and transient reasoning for the originating
+   execution; Log, Tasks, and Artifacts project the remaining execution data. User input from
    this surface creates a Direct Message to that agent; it does not create a
    second canonical message or gain shared scope.
+
+   Completed ordinary response text is canonical and durable in Thinking.
+   Reasoning deltas may remain transient stream detail. Neither may create a
+   delivery, enter a future agent's context, or escape its originating agent and
+   execution.
 
    Every Broadcast is passively projected into every current and future Direct
    Agent Chat. Projection alone must never enqueue, steer, or start an agent;
@@ -121,8 +128,8 @@ pay-per-token provider API keys.
 Master Chat → Agents → ephemeral runtime sessions
 Canonical event log → rebuildable SQLite projections
 Communication → Broadcast | Direct Message | Collaboration
-Agent activity → Direct Agent Chat audit timeline
-Agent outputs → user-meaningful deliverables
+Explicit communication → Direct Agent Chat audit timeline
+Ordinary runtime output → execution-scoped Thinking
 ```
 
 - **Web (required):** React + TypeScript + MUI, bundled with **Rspack** (via
