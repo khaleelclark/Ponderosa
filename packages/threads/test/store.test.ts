@@ -186,6 +186,30 @@ describe("ThreadStore — canonical communication events", () => {
     ]);
   });
 
+  it("projects one user-authored group DM into each explicit agent audit", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: room.id });
+    const second = store.createThread(project.id, { title: "Second", engine: "codex", masterChatId: room.id });
+    const groupDm: CommunicationEvent = {
+      eventId: "group-dm", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agents", userId: "local-operator", agentIds: [second.id, first.id, second.id] },
+      text: "One message", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    const recorded = store.appendCommunicationEvent(groupDm).event;
+    expect(recorded.intent === "user_dm" && recorded.audience.kind === "user_agents" && recorded.audience.agentIds)
+      .toEqual([first.id, second.id].sort());
+    store.appendMasterChatMessage(room.id, { role: "user", text: groupDm.text }, undefined, "main", undefined, undefined, groupDm.eventId);
+    store.appendEvent(first.id, { type: "user_message", text: groupDm.text, communicationEventId: groupDm.eventId });
+    store.appendEvent(second.id, { type: "user_message", text: groupDm.text, communicationEventId: groupDm.eventId });
+    expect(store.readProjectedCommunicationMessages(project.id, "master_chat", room.id).map((message) => message.eventId)).toEqual([groupDm.eventId]);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", first.id).map((message) => message.eventId)).toEqual([groupDm.eventId]);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", second.id).map((message) => message.eventId)).toEqual([groupDm.eventId]);
+    expect(() => store.appendCommunicationEvent({ ...groupDm, eventId: "agent-group", sender: { kind: "agent", agentId: first.id } }))
+      .toThrow("target agent");
+  });
+
   it("rejects self-recipient collaboration before writing the canonical ledger", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createMasterChat(project.id, { title: "Room" });

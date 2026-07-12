@@ -249,6 +249,8 @@ export interface MasterChatDeliveryIntent {
   /** The selector that authorized this recipient when the message was recorded. */
   audience?: "mention" | "everyone";
   delegatedRunId?: string;
+  /** Target-owned staged assets delivered with this recipient turn. */
+  attachmentIds?: string[];
 }
 
 interface MasterChatMessageJson {
@@ -302,6 +304,11 @@ function communicationMessageProjection(threadId: string, stored: StoredLogEvent
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id), attachments: event.attachments } : {}),
   };
   return undefined;
+}
+
+function userDmAgentIds(event: CommunicationEvent): string[] {
+  if (event.schemaVersion !== 2 || event.intent !== "user_dm") return [];
+  return event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds;
 }
 
 function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
@@ -398,7 +405,9 @@ export class ThreadStore {
   appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
     const event: CommunicationEvent = input.schemaVersion === 2 && input.intent === "collaboration"
       ? { ...input, audience: { kind: "agents", agentIds: normalizedAgentIds(input.audience.agentIds) } } as CommunicationEvent
-      : input;
+      : input.schemaVersion === 2 && input.intent === "user_dm" && input.audience.kind === "user_agents"
+        ? { ...input, audience: { ...input.audience, agentIds: normalizedAgentIds(input.audience.agentIds) } } as CommunicationEvent
+        : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
     if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
     if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
@@ -406,7 +415,9 @@ export class ThreadStore {
       throw new Error("collaboration requires at least one recipient");
     }
     if (event.schemaVersion === 2 && event.intent === "user_dm") {
-      if (event.sender.kind === "system" || (event.sender.kind === "agent" && event.sender.agentId !== event.audience.agentId)) {
+      const agentIds = userDmAgentIds(event);
+      if (agentIds.length === 0) throw new Error("user DM requires at least one recipient");
+      if (event.sender.kind === "system" || (event.sender.kind === "agent" && (agentIds.length !== 1 || event.sender.agentId !== agentIds[0]))) {
         throw new Error("user DM sender must be its local user or target agent");
       }
       if (event.sender.kind === "user" && event.sender.userId !== event.audience.userId) throw new Error("user DM user identity mismatch");
@@ -415,7 +426,7 @@ export class ThreadStore {
       throw new Error("broadcast organization must match its project");
     }
     const audienceIds = event.schemaVersion === 2 && event.intent === "collaboration" ? event.audience.agentIds
-      : event.schemaVersion === 2 && event.intent === "user_dm" ? [event.audience.agentId] : [];
+      : userDmAgentIds(event);
     for (const agentId of audienceIds) {
       const agent = this.getThread(agentId);
       if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
@@ -522,13 +533,13 @@ export class ThreadStore {
         const thread = this.getThread(projection.projectionKey);
         return Boolean(thread && thread.projectId === projectId && !thread.archived);
       }
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
       if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
         (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
       return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
     }
     if (projection.surface === "agent_inbox") {
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
       return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
     }
     if (projection.surface === "user_inbox") {

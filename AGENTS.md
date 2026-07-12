@@ -49,8 +49,10 @@ pay-per-token provider API keys.
      a Broadcast that also starts one fresh responsible agent and is rendered
      without an automatic scope prefix; explicit `#broadcast` records context
      without starting one and retains its visible prefix.
-   - **Direct Message:** a private user-agent exchange; visible in Master Chat but
-     excluded from shared organizational context.
+   - **Direct Message:** a private exchange between the user and one or more
+     explicit agents; visible in Master Chat but excluded from shared
+     organizational context. One user action is one canonical message even when
+     it creates multiple stable-ID recipient deliveries.
    - **Collaboration:** agent to one or more explicit agent recipients; visible in
      Collaboration Chat and relevant Direct Agent timelines, but excluded from
      Master Chat and shared organizational context.

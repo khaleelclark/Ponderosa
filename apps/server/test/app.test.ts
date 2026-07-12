@@ -628,6 +628,56 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("persists one tagged user message and fans it out to every explicit agent", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Group direct", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Friends" });
+    const kings = store.createThread(project.id, { title: "Kings Canyon", engine: "codex", masterChatId: master.id });
+    const cabrillo = store.createThread(project.id, { title: "Cabrillo", engine: "codex", masterChatId: master.id });
+    const olympic = store.createThread(project.id, { title: "Olympic", engine: "codex", masterChatId: master.id });
+    const text = "#Kings-Canyon #Cabrillo #Olympic guess what! I just got married!!!!";
+    const payload = {
+      text,
+      recipients: [kings, cabrillo, olympic].map((agent) => ({ agentId: agent.id })),
+      idempotencyKey: "wedding-news",
+    };
+
+    const sent = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/direct-messages`, payload,
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    await Promise.all([waitForRun(kings.id), waitForRun(cabrillo.id), waitForRun(olympic.id)]);
+
+    const userMessages = store.getMasterChatMessages(master.id).filter((message) => message.role === "user");
+    expect(userMessages).toEqual([expect.objectContaining({ text })]);
+    for (const handle of ["#Kings-Canyon", "#Cabrillo", "#Olympic"]) {
+      expect(userMessages[0]!.text.match(new RegExp(handle, "g"))).toHaveLength(1);
+    }
+    const communication = store.getCommunicationEvent(project.id, userMessages[0]!.communicationEventId!);
+    expect(communication).toMatchObject({
+      intent: "user_dm",
+      audience: { kind: "user_agents", userId: "local-operator", agentIds: [kings.id, cabrillo.id, olympic.id].sort() },
+      text,
+    });
+    for (const agent of [kings, cabrillo, olympic]) {
+      expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "user", text, communicationEventId: communication?.eventId }),
+      ]));
+      const prompt = adapter.seeds.find((seed) => seed.threadId === agent.id)?.prompt ?? "";
+      expect(prompt.match(/guess what! I just got married!!!!/g)).toHaveLength(1);
+    }
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#user done")).toHaveLength(3);
+
+    const replay = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/direct-messages`, payload,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({ replayed: true, messageId: userMessages[0]!.id });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.role === "user")).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(3);
+    await app.close();
+  });
+
   it("lets a shared-task agent DM a question without publishing an accidental completion", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Question flow", hostPath: repoDir });

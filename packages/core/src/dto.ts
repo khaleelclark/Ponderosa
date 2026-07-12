@@ -185,6 +185,20 @@ export interface DirectReplyResponse {
   queued: boolean;
 }
 
+export interface CreateMultiAgentDirectMessageRequest {
+  text: string;
+  recipients: Array<{ agentId: string; attachmentIds?: string[] }>;
+  replyToMessageId?: string;
+  /** Stable across retries; one user action creates one message and N deliveries. */
+  idempotencyKey: string;
+}
+
+export interface MultiAgentDirectMessageResponse {
+  messageId: string;
+  replayed: boolean;
+  recipients: Array<{ agentId: string; queued: boolean }>;
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────────
 
 /** Derived thread state (current branch/commit), from `state` events (SPEC §2). */
