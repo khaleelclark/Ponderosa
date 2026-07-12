@@ -118,11 +118,6 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request),
     });
   },
-  setMessageReaction(masterChatId, channel, messageId, emoji, active, idempotencyKey) {
-    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/${channel}/messages/${encodeURIComponent(messageId)}/reaction`, {
-      method: "PUT", body: JSON.stringify({ emoji, active, idempotencyKey }),
-    });
-  },
   async sendCollaborationMessage(masterChatId, request) {
     return requestJson<CreateCollaborationMessageResponse>("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
       method: "POST",

@@ -6,17 +6,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
-  closeSync,
   existsSync,
-  fstatSync,
-  fsyncSync,
-  ftruncateSync,
   mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   rmSync,
-  writeSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -39,9 +33,6 @@ import type {
   MasterChatChannel,
   MasterChatDto,
   MasterChatMessageDto,
-  MessageReactionDto,
-  ReactionActor,
-  ReactionEmoji,
   MessageDto,
   ProjectDto,
   TaskDto,
@@ -95,110 +86,10 @@ import {
   projectJsonPath,
   agentPresetsPath,
   projectsDir,
-  reactionEventsPath,
   threadDir,
   threadJsonPath,
   threadsDir,
 } from "./paths.js";
-
-interface ReactionEventJson {
-  kind?: "occurrence";
-  occurrenceId: string;
-  idempotencyKey: string;
-  actor: ReactionActor;
-  masterChatId: string;
-  channel: MasterChatChannel;
-  messageId: string;
-  emoji: ReactionEmoji;
-  active: boolean;
-  createdAt: string;
-  notifyAuthorThreadId?: string;
-  notificationInitial: "pending" | "suppressed" | "not_applicable";
-}
-
-interface ReactionNotificationOutcomeJson {
-  kind: "notification_outcome";
-  occurrenceId: string;
-  outcome: "delivered" | "suppressed";
-  reason: string;
-  createdAt: string;
-}
-
-type ReactionLogRecord = ReactionEventJson | ReactionNotificationOutcomeJson;
-
-const REACTION_COOLDOWN_MS = 500;
-const MAX_REACTION_EVENTS = 100_000;
-const REACTION_EMOJIS = new Set<ReactionEmoji>(["👍", "👎", "❤️", "🎉", "👀", "🚀"]);
-
-function reactionActorKey(actor: ReactionActor): string {
-  return actor.kind === "manager" ? "manager" : `agent:${actor.threadId}`;
-}
-
-function readReactionLog(file: string, repair = false): ReactionLogRecord[] {
-  if (!existsSync(file)) return [];
-  const fd = openSync(file, "r+");
-  try {
-    const bytes = readFileSync(fd);
-    if (bytes.length === 0) return [];
-    const text = bytes.toString("utf8");
-    const lines = text.split("\n");
-    const completeCount = text.endsWith("\n") ? lines.length - 1 : lines.length;
-    const records: ReactionLogRecord[] = [];
-    let offset = 0;
-    for (let index = 0; index < completeCount; index += 1) {
-      const line = lines[index]!;
-      if (!line.trim()) { offset += Buffer.byteLength(line) + 1; continue; }
-      try {
-        records.push(JSON.parse(line) as ReactionLogRecord);
-        offset += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
-        if (repair && index === completeCount - 1 && !text.endsWith("\n")) {
-          writeSync(fd, "\n");
-          fsyncSync(fd);
-        }
-      } catch (error) {
-        const finalUnterminated = index === completeCount - 1 && !text.endsWith("\n");
-        if (!finalUnterminated) throw new Error("reaction log contains non-tail corruption", { cause: error });
-        if (repair) {
-          ftruncateSync(fd, offset);
-          fsyncSync(fd);
-        }
-      }
-    }
-    return records;
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function appendReactionRecords(file: string, records: ReactionLogRecord[]): void {
-  if (!records.length) return;
-  const fd = openSync(file, "a");
-  try {
-    const bytes = Buffer.from(records.map((record) => JSON.stringify(record) + "\n").join(""));
-    let written = 0;
-    while (written < bytes.length) {
-      const count = writeSync(fd, bytes, written, bytes.length - written);
-      if (count <= 0) throw new Error("reaction log append made no progress");
-      written += count;
-    }
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function reactionOccurrences(records: ReactionLogRecord[]): ReactionEventJson[] {
-  return records.filter((record): record is ReactionEventJson => record.kind !== "notification_outcome");
-}
-
-function notificationStates(records: ReactionLogRecord[]): Map<string, "pending" | "delivered" | "suppressed" | "not_applicable"> {
-  const states = new Map<string, "pending" | "delivered" | "suppressed" | "not_applicable">();
-  for (const record of records) {
-    if (record.kind === "notification_outcome") states.set(record.occurrenceId, record.outcome);
-    else states.set(record.occurrenceId, record.notificationInitial);
-  }
-  return states;
-}
 
 interface ProjectJson {
   id: string;
@@ -720,7 +611,7 @@ export class ThreadStore {
           const candidate = projected.get(message.id);
           const parityKey = (item: MasterChatMessageDto) => JSON.stringify([
             item.id, item.communicationEventId, item.masterChatId, item.role, item.text, item.createdAt,
-            item.authorThreadId, item.replyTo, item.attachments ?? [], item.reactions ?? [],
+            item.authorThreadId, item.replyTo, item.attachments ?? [],
           ]);
           if (!candidate || parityKey(candidate) !== parityKey(message)) {
             projectionReadMismatchMessageIds.push(message.id);
@@ -1166,171 +1057,7 @@ export class ThreadStore {
     ).find((message) => message.id === messageId)?.deliveryOrderKey;
   }
 
-  setMasterChatReaction(input: {
-    masterChatId: string; channel: MasterChatChannel; messageId: string; actor: ReactionActor;
-    emoji: ReactionEmoji; active: boolean; idempotencyKey: string;
-  }): { event: ReactionEventJson; replayed: boolean; notification: "pending" | "delivered" | "suppressed" | "not_applicable"; reactions: MessageReactionDto[] } {
-    this.client.exec("BEGIN IMMEDIATE");
-    try {
-      const result = this.setMasterChatReactionLocked(input);
-      this.client.exec("COMMIT");
-      return result;
-    } catch (error) {
-      try { this.client.exec("ROLLBACK"); } catch { /* transaction did not begin */ }
-      throw error;
-    }
-  }
-
-  private setMasterChatReactionLocked(input: {
-    masterChatId: string; channel: MasterChatChannel; messageId: string; actor: ReactionActor;
-    emoji: ReactionEmoji; active: boolean; idempotencyKey: string;
-  }): { event: ReactionEventJson; replayed: boolean; notification: "pending" | "delivered" | "suppressed" | "not_applicable"; reactions: MessageReactionDto[] } {
-    if (!REACTION_EMOJIS.has(input.emoji)) throw new Error("unsupported reaction");
-    if (!input.idempotencyKey || input.idempotencyKey.length > 200) throw new Error("invalid idempotency key");
-    const master = this.getMasterChat(input.masterChatId);
-    if (!master || master.archived) throw new Error("master chat not found");
-    const message = this.getMasterChatMessages(input.masterChatId, input.channel)
-      .find((candidate) => candidate.id === input.messageId);
-    if (!message) throw new Error("message not found in this conversation");
-    if (input.actor.kind === "agent") {
-      const actor = this.getThread(input.actor.threadId);
-      if (!actor || actor.archived || !actor.masterChatIds.includes(input.masterChatId)) {
-        throw new Error("reaction actor is not an active member");
-      }
-    }
-    const file = reactionEventsPath(this.dataDir);
-    const records = readReactionLog(file, true);
-    const events = reactionOccurrences(records);
-    const states = notificationStates(records);
-    const actorKey = reactionActorKey(input.actor);
-    const prior = events.find((candidate) =>
-      reactionActorKey(candidate.actor) === actorKey && candidate.idempotencyKey === input.idempotencyKey,
-    );
-    if (prior) {
-      const same = prior.masterChatId === input.masterChatId && prior.channel === input.channel &&
-        prior.messageId === input.messageId && prior.emoji === input.emoji && prior.active === input.active;
-      if (!same) throw new Error("idempotency key was used for another reaction");
-      return { event: prior, replayed: true, notification: states.get(prior.occurrenceId) ?? prior.notificationInitial, reactions: this.getMessageReactions(input.masterChatId, input.channel, input.messageId, input.actor) };
-    }
-    if (events.length >= MAX_REACTION_EVENTS) throw new Error("reaction history bound reached");
-    const latest = [...events].reverse().find((candidate) => reactionActorKey(candidate.actor) === actorKey &&
-      candidate.masterChatId === input.masterChatId && candidate.channel === input.channel &&
-      candidate.messageId === input.messageId && candidate.emoji === input.emoji);
-    const now = new Date();
-    if (latest && now.getTime() - Date.parse(latest.createdAt) < REACTION_COOLDOWN_MS) {
-      throw new Error("reaction cooldown active");
-    }
-    const notifyTarget = message.authorThreadId && message.authorThreadId !== (input.actor.kind === "agent" ? input.actor.threadId : undefined)
-      ? this.getThread(message.authorThreadId) : undefined;
-    const canNotify = Boolean(notifyTarget && !notifyTarget.archived && notifyTarget.masterChatIds.includes(input.masterChatId));
-    const event: ReactionEventJson = {
-      kind: "occurrence",
-      occurrenceId: randomUUID(), idempotencyKey: input.idempotencyKey, actor: input.actor,
-      masterChatId: input.masterChatId, channel: input.channel, messageId: input.messageId,
-      emoji: input.emoji, active: input.active, createdAt: now.toISOString(),
-      ...(canNotify ? { notifyAuthorThreadId: message.authorThreadId } : {}),
-      notificationInitial: canNotify ? "pending" : message.authorThreadId ? "suppressed" : "not_applicable",
-    };
-    const superseded = [...events].reverse().find((candidate) =>
-      reactionActorKey(candidate.actor) === actorKey && candidate.masterChatId === input.masterChatId &&
-      candidate.channel === input.channel && candidate.messageId === input.messageId && candidate.emoji === input.emoji &&
-      states.get(candidate.occurrenceId) === "pending");
-    const writes: ReactionLogRecord[] = [];
-    if (superseded) writes.push({ kind: "notification_outcome", occurrenceId: superseded.occurrenceId, outcome: "suppressed", reason: "superseded", createdAt: now.toISOString() });
-    writes.push(event);
-    appendReactionRecords(file, writes);
-    return { event, replayed: false, notification: event.notificationInitial, reactions: this.getMessageReactions(input.masterChatId, input.channel, input.messageId, input.actor) };
-  }
-
-  getMessageReactions(masterChatId: string, channel: MasterChatChannel, messageId: string, currentActor: ReactionActor): MessageReactionDto[] {
-    const state = new Map<string, ReactionEventJson>();
-    for (const event of reactionOccurrences(readReactionLog(reactionEventsPath(this.dataDir)))) {
-      if (event.masterChatId === masterChatId && event.channel === channel && event.messageId === messageId) {
-        state.set(`${reactionActorKey(event.actor)}:${event.emoji}`, event);
-      }
-    }
-    return [...REACTION_EMOJIS].map((emoji) => {
-      const active = [...state.values()].filter((event) => event.emoji === emoji && event.active);
-      const reactors = active.map((event) => event.actor.kind === "manager"
-        ? { kind: "manager" as const }
-        : {
-            kind: "agent" as const,
-            threadId: event.actor.threadId,
-            label: this.getThread(event.actor.threadId)?.title ?? "Agent",
-          });
-      return {
-        emoji,
-        count: reactors.length,
-        reactedByCurrentActor: active.some((event) => reactionActorKey(event.actor) === reactionActorKey(currentActor)),
-        reactors,
-      };
-    }).filter((reaction) => reaction.count > 0 || reaction.reactedByCurrentActor);
-  }
-
-  /** Rebuildable notification outbox. Reading revalidates current membership. */
-  getReactionNotificationOutbox(): Array<{
-    occurrenceId: string;
-    targetThreadId: string;
-    masterChatId: string;
-    channel: MasterChatChannel;
-    messageId: string;
-    emoji: ReactionEmoji;
-    active: boolean;
-    actor: ReactionActor;
-    createdAt: string;
-  }> {
-    const records = readReactionLog(reactionEventsPath(this.dataDir));
-    const states = notificationStates(records);
-    const invalid: string[] = [];
-    const pending = reactionOccurrences(records).flatMap((event) => {
-      if (states.get(event.occurrenceId) !== "pending" || !event.notifyAuthorThreadId) return [];
-      const target = this.getThread(event.notifyAuthorThreadId);
-      const master = this.getMasterChat(event.masterChatId);
-      const messageExists = master && this.getMasterChatMessages(event.masterChatId, event.channel).some((message) => message.id === event.messageId);
-      if (!target || target.archived || !target.masterChatIds.includes(event.masterChatId) || !master || master.archived || !messageExists) {
-        invalid.push(event.occurrenceId);
-        return [];
-      }
-      return [{
-        occurrenceId: event.occurrenceId,
-        targetThreadId: target.id,
-        masterChatId: event.masterChatId,
-        channel: event.channel,
-        messageId: event.messageId,
-        emoji: event.emoji,
-        active: event.active,
-        actor: event.actor,
-        createdAt: event.createdAt,
-      }];
-    });
-    for (const occurrenceId of invalid) this.completeReactionNotification(occurrenceId, "suppressed", "membership_or_message_unavailable");
-    return pending;
-  }
-
-  completeReactionNotification(occurrenceId: string, outcome: "delivered" | "suppressed", reason: string = outcome): "delivered" | "suppressed" {
-    this.client.exec("BEGIN IMMEDIATE");
-    try {
-      const file = reactionEventsPath(this.dataDir);
-      const records = readReactionLog(file, true);
-      const event = reactionOccurrences(records).find((candidate) => candidate.occurrenceId === occurrenceId);
-      if (!event) throw new Error("reaction occurrence not found");
-      const state = notificationStates(records).get(occurrenceId);
-      if (state === "delivered" || state === "suppressed") { this.client.exec("COMMIT"); return state; }
-      let final = outcome;
-      const target = event.notifyAuthorThreadId ? this.getThread(event.notifyAuthorThreadId) : undefined;
-      const master = this.getMasterChat(event.masterChatId);
-      const messageExists = master && this.getMasterChatMessages(event.masterChatId, event.channel).some((message) => message.id === event.messageId);
-      if (!target || target.archived || !target.masterChatIds.includes(event.masterChatId) || !master || master.archived || !messageExists) final = "suppressed";
-      appendReactionRecords(file, [{ kind: "notification_outcome", occurrenceId, outcome: final, reason, createdAt: new Date().toISOString() }]);
-      this.client.exec("COMMIT");
-      return final;
-    } catch (error) {
-      try { this.client.exec("ROLLBACK"); } catch { /* no transaction */ }
-      throw error;
-    }
-  }
-
-  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main", currentActor: ReactionActor = { kind: "manager" }): MasterChatMessageDto[] {
+  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
     return this.db
       .select()
       .from(masterChatMessages)
@@ -1351,7 +1078,6 @@ export class ThreadStore {
         authorThreadId: row.authorThreadId ?? undefined,
         replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
-        reactions: this.getMessageReactions(masterChatId, channel, row.id, currentActor),
       }));
   }
 
@@ -1364,7 +1090,6 @@ export class ThreadStore {
   getProjectedMasterChatMessages(
     masterChatId: string,
     channel: MasterChatChannel = "main",
-    currentActor: ReactionActor = { kind: "manager" },
   ): MasterChatMessageDto[] {
     const master = this.getMasterChat(masterChatId);
     if (!master) return [];
@@ -1380,7 +1105,6 @@ export class ThreadStore {
         ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-        reactions: this.getMessageReactions(masterChatId, channel, message.messageId, currentActor),
       };
     });
   }

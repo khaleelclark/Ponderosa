@@ -1,32 +1,47 @@
-import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { MasterChatMessage, reactionTooltipText } from "../src/components/MasterChatView";
+import { EmojiReactionPicker, isSingleEmoji, userReactionDirectMessage, userReactionMessage } from "../src/components/EmojiReactionPicker";
+import { MasterChatMessage } from "../src/components/MasterChatView";
 
-describe("message reaction controls", () => {
-  it("renders aggregate counts and pressed state without changing message semantics", () => {
-    const html = renderToStaticMarkup(<ThemeProvider theme={createTheme()}><MasterChatMessage
-      message={{ id: "m1", masterChatId: "room", role: "assistant", text: "Result", createdAt: "2026-07-12T00:00:00.000Z", authorThreadId: "agent", reactions: [{ emoji: "👍", count: 2, reactedByCurrentActor: true, reactors: [{ kind: "manager" }, { kind: "agent", threadId: "olympic", label: "Olympic" }] }] }}
-      conversation="main"
-      agentTitle={() => "Agent"}
-      agentIdForHandle={() => undefined}
-      onOpenAgent={vi.fn()}
-      onReply={vi.fn()}
-      onDirectReply={vi.fn()}
-      onReact={vi.fn()}
-    /></ThemeProvider>);
-    expect(html).toContain('aria-label="Remove 👍 reaction. Reacted by You, Olympic"');
-    expect(html).toContain('aria-pressed="true"');
-    expect(html).toContain("👍 2");
-    expect(html).toContain('aria-label="Agent message"');
+const renderMessage = (authorThreadId?: string) => renderToStaticMarkup(<MasterChatMessage
+  message={{
+    id: "m1",
+    masterChatId: "room",
+    role: authorThreadId ? "assistant" : "user",
+    text: "Result",
+    createdAt: "2026-07-12T00:00:00.000Z",
+    authorThreadId,
+  }}
+  conversation="main"
+  agentTitle={() => "Olympic"}
+  agentIdForHandle={() => undefined}
+  onOpenAgent={vi.fn()}
+  onReply={vi.fn()}
+  onDirectReply={vi.fn()}
+  onReact={vi.fn()}
+/>);
+
+describe("user emoji reactions", () => {
+  it("offers reactions only on agent-authored messages", () => {
+    expect(renderMessage("olympic")).toContain('aria-label="React to Olympic with an emoji"');
+    expect(renderMessage()).not.toContain("with an emoji");
   });
 
-  it("formats reactor identities for hover text", () => {
-    expect(reactionTooltipText({ emoji: "🎉", count: 2, reactedByCurrentActor: false, reactors: [
-      { kind: "agent", threadId: "a", label: "Olympic" },
-      { kind: "agent", threadId: "b", label: "Denali" },
-    ] })).toBe("Reacted by Olympic, Denali");
-    expect(reactionTooltipText(undefined)).toBe("No reactions yet");
+  it("accepts any single emoji grapheme and creates the exact direct-message text", () => {
+    for (const emoji of ["👍", "🧑🏽‍🚀", "🇯🇵", "1️⃣"]) expect(isSingleEmoji(emoji)).toBe(true);
+    for (const invalid of ["", "ok", "👍👍", "👍 thanks"]) expect(isSingleEmoji(invalid)).toBe(false);
+    expect(userReactionMessage("🧑🏽‍🚀")).toBe("the user reacted with 🧑🏽‍🚀");
+    expect(userReactionDirectMessage("author-agent", "🧑🏽‍🚀", "request-1")).toEqual({
+      text: "the user reacted with 🧑🏽‍🚀",
+      recipients: [{ agentId: "author-agent" }],
+      idempotencyKey: "request-1",
+    });
+  });
+
+  it("does not expose reaction state or agent reaction controls", () => {
+    const html = renderToStaticMarkup(<EmojiReactionPicker recipientName="Olympic" onReact={vi.fn()} />);
+    expect(html).not.toContain("aria-pressed");
+    expect(html).not.toContain("reaction count");
+    expect(html).toContain("React to Olympic with an emoji");
   });
 });

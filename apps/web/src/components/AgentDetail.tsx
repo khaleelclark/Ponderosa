@@ -46,6 +46,7 @@ import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane } from "./panes";
+import { userReactionMessage } from "./EmojiReactionPicker";
 
 type AgentTab = "chat" | "log" | "tasks" | "artifacts";
 
@@ -219,7 +220,7 @@ export function AgentDetail({
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReply={setReplyTo} />,
+    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReact={(emoji) => sendMessage.mutateAsync({ text: userReactionMessage(emoji) }).then(() => undefined)} onReply={setReplyTo} />,
     log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,

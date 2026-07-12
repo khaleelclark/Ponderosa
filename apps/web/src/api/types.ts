@@ -32,8 +32,6 @@ import type {
   CancelSubagentResponse,
   ThreadDetailDto,
   ThreadDto,
-  ReactionEmoji,
-  SetMessageReactionResponse,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent (a thread) from the UI. */
@@ -84,7 +82,6 @@ export interface PonderosaApi {
   sendCollaborationMessage(masterChatId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
   sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   sendMultiAgentDirectMessage(masterChatId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
-  setMessageReaction(masterChatId: string, channel: "main" | "collaboration", messageId: string, emoji: ReactionEmoji, active: boolean, idempotencyKey: string): Promise<SetMessageReactionResponse>;
   listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;
   cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;
   subscribeSubagents(masterChatId: string, lastSeenSeq: number | undefined, handlers: SubagentStreamHandlers): StreamSubscription;
