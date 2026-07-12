@@ -46,7 +46,7 @@ import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
+import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
@@ -351,6 +351,15 @@ export function MasterChatView({
     },
   });
 
+  const broadcast = useMutation({
+    mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) =>
+      api.sendMasterChatMessage(masterChatId, { text, replyToMessageId }),
+    onSuccess: () => {
+      clearReply();
+      invalidate();
+    },
+  });
+
   const directReply = useMutation({
     mutationFn: async ({ targetId, text, files, replyToMessageId, requestId }: { targetId: string; text: string; files: File[]; replyToMessageId: string; requestId: string }) => {
       let attachments = directReplyUploads.current.get(requestId);
@@ -472,13 +481,19 @@ export function MasterChatView({
   const activeCollaborationAgents = activeCollaborationRecipients(threads);
   const mentionHandles = conversation === "collaboration"
     ? undefined
-    : threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title));
+    : [
+        "broadcast",
+        ...threads
+          .filter((thread) => !thread.archived)
+          .map((thread) => agentMentionHandle(thread.title))
+          .filter((handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase())),
+      ];
   const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
   const busyMentionHandles = threads
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
     .map((agent) => agentMentionHandle(agent.title));
-  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending;
+  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
 
   const submit = async (text: string, files: File[]) => {
     if (conversation === "collaboration") {
@@ -486,6 +501,13 @@ export function MasterChatView({
       const recipientAgentIds = retainActiveRecipientIds(collaborationRecipientIds, threads);
       if (recipientAgentIds.length === 0) throw new Error("Select at least one active recipient.");
       await collaborate.mutateAsync({ text, recipientAgentIds: [...recipientAgentIds], replyToMessageId: replyTo?.id });
+      return;
+    }
+    const broadcastText = managerBroadcastText(text);
+    if (broadcastText !== undefined) {
+      if (!broadcastText) throw new Error("Add informational context after #broadcast.");
+      if (files.length) throw new Error("#broadcast does not currently support attachments.");
+      await broadcast.mutateAsync({ text: broadcastText, replyToMessageId: replyTo?.id });
       return;
     }
     const targets = findMentioned(text);
@@ -689,7 +711,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">#tag</Box> an agent to reply to it instead. Use <Box component="strong">@</Box> to reference a project file or folder.</>
+              <>This is your team's group chat. A plain message spawns a new agent; <Box component="strong">#tag</Box> an agent to message it, or start with <Box component="strong">#broadcast</Box> to add shared context without starting an agent. Use <Box component="strong">@</Box> to reference a project file or folder.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (
@@ -885,7 +907,7 @@ export function MasterChatView({
               ? collaborationRecipientIds.length > 0 ? "Message selected recipients" : "Select at least one active recipient"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
-                : "#tag an agent, or select a signed-in engine to spawn one"
+                : "#tag an agent or use #broadcast for shared context"
           }
           onSend={submit}
           replyTo={replyTo}

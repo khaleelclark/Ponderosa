@@ -362,7 +362,8 @@ export const mockApi: PonderosaApi = {
   },
   async sendMasterChatMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
-    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: request.text, createdAt: new Date().toISOString() }];
+    const text = request.text.replace(/^#broadcast(?=$|\s)\s*/iu, "").trim();
+    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: `#broadcast ${text}`, createdAt: new Date().toISOString() }];
     await delay(undefined, 80);
   },
   async setMessageReaction(masterChatId, channel, messageId, emoji, active) {
@@ -373,10 +374,16 @@ export const mockApi: PonderosaApi = {
     return { occurrenceId: crypto.randomUUID(), replayed: false, persistence: "recorded", notification: "not_applicable", reactions: target.reactions };
   },
   async sendDirectReply(masterChatId, request) {
-    await this.sendMasterChatMessage(masterChatId, {
-      text: request.text,
-      replyToMessageId: request.replyToMessageId,
-    });
+    const target = threads.find((thread) => thread.id === request.targetAuthorThreadId);
+    if (!target) throw new Error("Agent not found");
+    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), {
+      id: request.idempotencyKey,
+      masterChatId,
+      role: "user",
+      text: `#${target.title.replace(/\s+/g, "-")} ${request.text}`,
+      replyTo: { messageId: request.replyToMessageId, text: "", role: "assistant", authorThreadId: target.id },
+      createdAt: new Date().toISOString(),
+    }];
     return { messageId: request.idempotencyKey, targetAuthorThreadId: request.targetAuthorThreadId, replayed: false, queued: false };
   },
   async sendCollaborationMessage(masterChatId, request) {

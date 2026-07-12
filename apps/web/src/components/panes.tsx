@@ -1025,7 +1025,9 @@ export function Composer({
           />
           {mentionedHandles.length > 0 ? (
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
-              {mentionedBusyHandles.length > 0
+              {mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "broadcast")
+                ? "Adding durable shared context without starting an agent"
+                : mentionedBusyHandles.length > 0
                 ? `${mentionedBusyHandles.map((handle) => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
                   ? "Notifying every eligible agent in this collaboration room"

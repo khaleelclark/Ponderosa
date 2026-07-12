@@ -34,8 +34,11 @@ export function hasEveryoneMention(text: string): boolean {
 
 /** Resolve every distinct #tag against the agents currently in a master chat. */
 export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
+  const reserved = new Set(["broadcast", "user", "everyone"]);
   const byHandle = new Map(
-    threads.map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread]),
+    threads
+      .map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread] as const)
+      .filter(([handle]) => !reserved.has(handle)),
   );
   return findMentionedHandles(text, byHandle.keys())
     .map((handle) => byHandle.get(handle.toLocaleLowerCase()))

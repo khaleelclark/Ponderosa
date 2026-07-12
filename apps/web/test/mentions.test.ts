@@ -65,4 +65,10 @@ describe("agent mentions", () => {
   it("does not treat #everyone as a direct-agent mention outside collaboration", () => {
     expect(findMentionedAgents("#everyone review", [thread("Bryce")])).toEqual([]);
   });
+
+  it("reserves scope tags even when an agent has the same display name", () => {
+    expect(findMentionedAgents("#broadcast context #user note #everyone update", [
+      thread("Broadcast"), thread("User"), thread("Everyone"),
+    ])).toEqual([]);
+  });
 });

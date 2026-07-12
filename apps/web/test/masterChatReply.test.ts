@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../src/masterChatReply.js";
+import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../src/masterChatReply.js";
 
 describe("master-chat Reply Directly routing", () => {
+  it("recognizes only a leading standalone #broadcast directive", () => {
+    expect(managerBroadcastText("#broadcast release context")).toBe("release context");
+    expect(managerBroadcastText("  #BROADCAST   release context  ")).toBe("release context");
+    expect(managerBroadcastText("#broadcast")).toBe("");
+    expect(managerBroadcastText("note #broadcast later")).toBeUndefined();
+    expect(managerBroadcastText("#broadcasting later")).toBeUndefined();
+  });
+
   it("routes to exactly the locked author without a mention", () => {
     expect(resolveMasterChatSendRoute("author", [])).toEqual({ kind: "direct-reply", agentIds: ["author"] });
   });

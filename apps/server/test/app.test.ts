@@ -248,11 +248,18 @@ describe("persistent engine steering", () => {
     const first = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" } });
     expect(first.statusCode).toBe(200);
     await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
-    const second = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Use the new direction" } });
+    const original = store.getMessages(thread.id).find((message) => message.text === "Start working")!;
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "Use the new direction", replyToMessageId: original.id },
+    });
     expect(second.statusCode).toBe(200);
     expect(second.json()).toMatchObject({ queued: false, steered: true, mode: "steer" });
     expect(steerable.opened).toBe(1);
-    expect(steerable.steers).toEqual([expect.objectContaining({ prompt: "Use the new direction", kind: "user_message" })]);
+    expect(steerable.steers).toEqual([expect.objectContaining({ kind: "user_message" })]);
+    expect(steerable.steers[0]?.prompt).toContain("Use the new direction");
+    expect(steerable.steers[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Start working");
     await waitForRun(thread.id);
     expect(store.getMessages(thread.id).map((message) => message.text)).toEqual(expect.arrayContaining([
       "Start working", "Use the new direction", "steered result",
@@ -451,7 +458,7 @@ describe("server chunk F", () => {
     const messageRes = await app.inject({
       method: "POST",
       url: `/api/master-chats/${masterChat.id}/messages`,
-      payload: { text: "Start an API agent." },
+      payload: { text: "#broadcast Start an API agent." },
     });
     expect(messageRes.statusCode).toBe(200);
     const recordedMessage = messageRes.json<{ communicationEventId: string }>();
@@ -461,8 +468,10 @@ describe("server chunk F", () => {
         eventId: recordedMessage.communicationEventId,
         intent: "broadcast",
         sender: { kind: "user", userId: "local-operator" },
+        text: "Start an API agent.",
       }),
     ]);
+    expect(store.listThreads(project.id)).toHaveLength(0);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
 
     const threadRes = await app.inject({
@@ -485,7 +494,7 @@ describe("server chunk F", () => {
         threads: { id: string; masterChatId: string }[];
       }>(),
     ).toMatchObject({
-      messages: [{ text: "Start an API agent." }],
+      messages: [{ text: "#broadcast Start an API agent." }],
       threads: [{ id: thread.id, masterChatId: masterChat.id }],
     });
 
@@ -736,7 +745,7 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     expect(adapter.seeds[0]?.prompt).toContain(
-      "never write routing #tags into message text",
+      "never write routing tags into message text",
     );
 
     appendBroadcast(store, project.id, master.id, "#Aspen Is it tested?");
@@ -908,7 +917,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
-    const shared = store.getMasterChatMessages(master.id).find((message) => message.text === "Check the first-run path.");
+    const shared = store.getMasterChatMessages(master.id).find((message) => message.text === "#Acadia Check the first-run path.");
     const audit = store.getMessages(thread.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
     expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
@@ -958,7 +967,7 @@ describe("server chunk F", () => {
     );
     expect(store.getMasterChatMessages(master.id)).toEqual([
       expect.objectContaining({
-        authorThreadId: yosemite.id, text: "done", communicationEventId: expect.any(String),
+        authorThreadId: yosemite.id, text: "#user done", communicationEventId: expect.any(String),
       }),
     ]);
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
@@ -1255,14 +1264,14 @@ describe("server chunk F", () => {
     });
     await waitForRun(greeter.id);
 
-    const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "You're welcome!");
+    const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "#user You're welcome!");
     const replyEvent = store.readCommunicationEvents(project.id).find((event) => event.eventId === replyMessage?.communicationEventId);
     expect(replyEvent).toMatchObject({
       schemaVersion: 2,
       intent: "user_dm",
       audience: { kind: "user_agent", userId: "local-operator", agentId: greeter.id },
     });
-    expect(replyMessage).toMatchObject({ text: "You're welcome!", communicationEventId: replyEvent?.eventId });
+    expect(replyMessage).toMatchObject({ text: "#user You're welcome!", communicationEventId: replyEvent?.eventId });
 
     const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
     await app.inject({
@@ -1270,7 +1279,7 @@ describe("server chunk F", () => {
       payload: { text: "What shared context is available?", sourceChannel: "main" },
     });
     await waitForRun(observer.id);
-    expect(adapter.seeds[1]?.prompt).not.toContain("You're welcome!");
+    expect(adapter.seeds[1]?.prompt).not.toContain("#user You're welcome!");
     await app.close();
   });
 
@@ -1298,7 +1307,7 @@ describe("server chunk F", () => {
       messages: MasterChatMessageDto[];
     }>();
     expect(mainDetail.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ communicationEventId: main.json().communicationEventId, text: "Shared decision" }),
+      expect.objectContaining({ communicationEventId: main.json().communicationEventId, text: "#broadcast Shared decision" }),
     ]));
     expect(collaborationDetail.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId, text: "#Reviewer Review this" }),
@@ -1367,7 +1376,8 @@ describe("server chunk F", () => {
     );
     expect(store.getMasterChatMessages(master.id)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ authorThreadId: author.id, text: "Manager-facing checkpoint." }),
+        expect.objectContaining({ authorThreadId: author.id, text: "#user Private implementation note." }),
+        expect.objectContaining({ authorThreadId: author.id, text: "#broadcast Manager-facing checkpoint." }),
       ]),
     );
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
@@ -2800,6 +2810,8 @@ describe("server chunk F", () => {
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json()).toMatchObject({ replayed: false, targetAuthorThreadId: author.id });
     await waitForRun(author.id);
+    expect(adapter.seeds.find((turn) => turn.threadId === author.id)?.prompt)
+      .toContain("Replying specifically to this earlier message:\n> Result");
 
     const replayed = await app.inject({
       method: "POST",
@@ -2808,9 +2820,9 @@ describe("server chunk F", () => {
     });
     expect(replayed.statusCode).toBe(200);
     expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Author Follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
-    expect(store.getMasterChatMessages(master.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    expect(store.getMasterChatMessages(master.id).find((message) => message.text === "#Author Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     expect(store.getMessages(author.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     const conflict = await app.inject({
       method: "POST",
@@ -2827,7 +2839,7 @@ describe("server chunk F", () => {
     expect(concurrent.some((response) => response.statusCode === 200)).toBe(true);
     const concurrentReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload });
     expect(concurrentReplay.json()).toMatchObject({ replayed: true });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === concurrentPayload.text)).toHaveLength(1);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Author Concurrent follow up")).toHaveLength(1);
     await waitForRun(author.id, 2);
 
     const spoofed = await app.inject({
@@ -2856,7 +2868,7 @@ describe("server chunk F", () => {
     const receiptKey = `direct-reply:${master.id}:crash-window`;
     const canonical = store.appendMasterChatMessage(
       master.id,
-      { text: "Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id, attachments: [upload.json()] },
+      { text: "#Author Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id, attachments: [upload.json()] },
       undefined,
       "main",
       [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
@@ -2874,7 +2886,7 @@ describe("server chunk F", () => {
     const secondReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
     expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
     await waitForRun(author.id);
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Author Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).find((message) => message.text === "Recovered follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     expect(store.listThreads(project.id)).toHaveLength(threadCount);
@@ -2888,7 +2900,7 @@ describe("server chunk F", () => {
     const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
     store.appendMasterChatMessage(
       master.id,
-      { text: "Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
+      { text: "#Author Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
       undefined,
       "main",
       undefined,
@@ -2921,7 +2933,7 @@ describe("server chunk F", () => {
     const retry = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
     expect(first.json()).toMatchObject({ replayed: false, queued: true });
     expect(retry.json()).toMatchObject({ replayed: true, queued: true, messageId: first.json<{ messageId: string }>().messageId });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
 
     adapter.mode = "normal";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
