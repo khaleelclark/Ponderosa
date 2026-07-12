@@ -1045,18 +1045,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (previousMessageId) return { intent, messageId: previousMessageId, replayed: true };
     }
 
+    const currentAuthor = store.getThread(capability.threadId);
+    if (!currentAuthor || currentAuthor.archived) {
+      return reply.code(409).send({ error: "agent is no longer available" });
+    }
+
     if (intent === "direct_to_user") {
+      const communication = store.appendCommunicationEvent({
+        eventId: randomUUID(),
+        schemaVersion: 1,
+        projectId: currentAuthor.projectId,
+        sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
+        intent,
+        audience: { kind: "user", userId: "local-operator" },
+        text,
+        createdAt: new Date().toISOString(),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      }).event;
       const stored = store.appendEvent(capability.threadId, { type: "text", delta: text });
       publish(capability.threadId, stored);
       const messageId = `thread-event-${stored.seq}`;
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
-      return { intent, messageId, replayed: false };
+      return { intent, eventId: communication.eventId, messageId, replayed: false };
     }
     if (!capability.masterChatId) {
       return reply.code(409).send({ error: "agent is not linked to a master chat" });
     }
-    const currentAuthor = store.getThread(capability.threadId);
-    if (!currentAuthor || currentAuthor.archived || !currentAuthor.masterChatIds.includes(capability.masterChatId)) {
+    if (!currentAuthor.masterChatIds.includes(capability.masterChatId)) {
       return reply.code(409).send({ error: "agent is no longer an active member of this master chat" });
     }
     let renderedText = text;
@@ -1088,6 +1103,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       );
     }
     const channel = intent === "broadcast" ? "main" : "collaboration";
+    const communication = store.appendCommunicationEvent(intent === "broadcast" ? {
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      projectId: currentAuthor.projectId,
+      masterChatId: capability.masterChatId,
+      sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
+      intent,
+      audience: { kind: "organization", organizationId: currentAuthor.projectId },
+      text,
+      createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    } : {
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      projectId: currentAuthor.projectId,
+      masterChatId: capability.masterChatId,
+      sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
+      intent,
+      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
+      text,
+      createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    }).event;
     const message = store.appendMasterChatMessage(
       capability.masterChatId,
       { role: "assistant", text: renderedText },
@@ -1102,7 +1140,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
       appendBlockedMentionWarnings(capability.masterChatId, routing.blocked);
     }
-    return { intent, messageId: message.id, replayed: false };
+    return { intent, eventId: communication.eventId, messageId: message.id, replayed: false };
   });
 
   app.post("/api/agent-session/rollover", async (request, reply) => {

@@ -896,9 +896,12 @@ describe("server chunk F", () => {
         payload,
       });
 
-    expect((await send({ intent: "direct_to_user", text: "Private implementation note." })).statusCode).toBe(200);
-    expect((await send({ intent: "broadcast", text: "Manager-facing checkpoint." })).statusCode).toBe(200);
-    expect((await send({ intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review the API contract." })).statusCode).toBe(200);
+    const direct = await send({ intent: "direct_to_user", text: "Private implementation note." });
+    const broadcast = await send({ intent: "broadcast", text: "Manager-facing checkpoint." });
+    const collaboration = await send({ intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review the API contract." });
+    expect(direct.statusCode).toBe(200);
+    expect(broadcast.statusCode).toBe(200);
+    expect(collaboration.statusCode).toBe(200);
     await waitForSeedCount(2);
 
     expect(store.getMessages(author.id)).toEqual(
@@ -922,6 +925,18 @@ describe("server chunk F", () => {
     expect(reviewerPrompt).toContain("- author: Author Agent");
     expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
+    const communicationEvents = store.readCommunicationEvents(project.id);
+    expect(communicationEvents).toHaveLength(3);
+    expect(communicationEvents.map((event) => event.eventId)).toEqual([
+      direct.json<{ eventId: string }>().eventId,
+      broadcast.json<{ eventId: string }>().eventId,
+      collaboration.json<{ eventId: string }>().eventId,
+    ]);
+    expect(communicationEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" } }),
+      expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
+      expect.objectContaining({ intent: "collaboration", audience: { kind: "agents", agentIds: [reviewer.id] } }),
+    ]));
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });

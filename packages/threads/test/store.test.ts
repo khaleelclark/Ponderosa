@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
+import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, masterChatMessagesPath } from "../src/paths.js";
+import { artifactContentPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -49,6 +50,64 @@ function seedThread(): { projectId: string; threadId: string } {
   const thread = store.createThread(project.id, { title: "Auth", engine: "codex" });
   return { projectId: project.id, threadId: thread.id };
 }
+
+describe("ThreadStore — canonical communication events", () => {
+  it("persists one fsynced project event and makes exact retries idempotent", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const event: CommunicationEvent = {
+      eventId: "018f5f17-7c22-7b00-8000-000000000001",
+      schemaVersion: 1,
+      projectId: project.id,
+      sender: { kind: "agent", agentId: "agent-a", executionId: "run-a" },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: ["agent-b"] },
+      text: "Review the routing contract.",
+      createdAt: "2026-07-12T00:00:00.000Z",
+      idempotencyKey: "review-routing",
+    };
+
+    expect(store.appendCommunicationEvent(event).replayed).toBe(false);
+    expect(store.appendCommunicationEvent(event)).toEqual({ event, replayed: true });
+    expect(store.readCommunicationEvents(project.id)).toEqual([event]);
+    expect(readFileSync(communicationEventsPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
+    expect(() => store.appendCommunicationEvent({ ...event, text: "Collision" })).toThrow("ID collision");
+  });
+
+  it("rejects unknown projects and runtime-empty collaboration audiences", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const base = {
+      eventId: "event-1", schemaVersion: 1 as const, projectId: project.id,
+      sender: { kind: "system" as const, component: "test" }, text: "Message",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    expect(() => store.appendCommunicationEvent({
+      ...base, projectId: "missing", intent: "broadcast",
+      audience: { kind: "organization", organizationId: "missing" },
+    })).toThrow("project not found");
+    expect(() => store.appendCommunicationEvent({
+      ...base, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [] },
+    } as unknown as CommunicationEvent)).toThrow("at least one recipient");
+  });
+
+  it("repairs a torn tail before appending and rejects interior corruption", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const file = communicationEventsPath(dir, project.id);
+    const event: CommunicationEvent = {
+      eventId: "event-1", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "system", component: "test" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "First", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    writeFileSync(file, `${readFileSync(file, "utf8")}{\"eventId\":\"torn`, "utf8");
+    store.appendCommunicationEvent({ ...event, eventId: "event-2", text: "Second" });
+    expect(store.readCommunicationEvents(project.id).map((item) => item.eventId)).toEqual(["event-1", "event-2"]);
+
+    writeFileSync(file, `{not-json}\n${JSON.stringify(event)}\n`, "utf8");
+    expect(() => store.readCommunicationEvents(project.id)).toThrow("non-tail corruption");
+  });
+});
 
 describe("ThreadStore — multi-master-chat membership", () => {
   it("rebuilds membership and removes only a deleted room", () => {

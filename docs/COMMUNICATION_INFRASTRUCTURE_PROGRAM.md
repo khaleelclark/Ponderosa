@@ -30,6 +30,9 @@ The first migration seam is `/api/agent-messages`. Newly seeded runtimes use
 `broadcast`, `direct_to_user`, or `collaboration` intents. Collaboration supplies
 stable recipient IDs and the server renders handles. The old channel/mention shape
 is accepted temporarily for already-running sessions and is not advertised.
+Agent-originated intents are now shadow-written once to the project's fsynced
+`communication-events.jsonl`; existing room and thread logs remain authoritative
+until reconciliation and projection rebuild gates are satisfied.
 
 ## Delivery phases and gates
 

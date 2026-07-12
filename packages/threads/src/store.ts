@@ -23,6 +23,7 @@ import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
+  CommunicationEvent,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -79,6 +80,7 @@ import {
   eventsPath,
   masterChatDir,
   collaborationChatMessagesPath,
+  communicationEventsPath,
   masterChatJsonPath,
   masterChatMessagesPath,
   masterChatsDir,
@@ -274,6 +276,42 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
+function readCommunicationLog(file: string, repair = false): CommunicationEvent[] {
+  if (!existsSync(file)) return [];
+  const fd = openSync(file, repair ? "r+" : "r");
+  try {
+    const bytes = readFileSync(fd);
+    if (bytes.length === 0) return [];
+    const text = bytes.toString("utf8");
+    const lines = text.split("\n");
+    const count = text.endsWith("\n") ? lines.length - 1 : lines.length;
+    const events: CommunicationEvent[] = [];
+    let validBytes = 0;
+    for (let index = 0; index < count; index += 1) {
+      const line = lines[index]!;
+      if (!line.trim()) { validBytes += Buffer.byteLength(line) + 1; continue; }
+      try {
+        events.push(JSON.parse(line) as CommunicationEvent);
+        validBytes += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
+        if (repair && index === count - 1 && !text.endsWith("\n")) {
+          writeSync(fd, "\n");
+          fsyncSync(fd);
+        }
+      } catch (error) {
+        const tornTail = index === count - 1 && !text.endsWith("\n");
+        if (!tornTail) throw new Error("communication log contains non-tail corruption", { cause: error });
+        if (repair) {
+          ftruncateSync(fd, validBytes);
+          fsyncSync(fd);
+        }
+      }
+    }
+    return events;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export class ThreadStore {
   private readonly db: Db;
   private readonly client: Database.Database;
@@ -306,6 +344,46 @@ export class ThreadStore {
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
   get database(): Db {
     return this.db;
+  }
+
+  /**
+   * Append one canonical communication before creating any projections.
+   * Duplicate IDs are accepted only when the complete event is byte-equivalent,
+   * making transport retries idempotent while detecting identity collisions.
+   */
+  appendCommunicationEvent(event: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
+    if (!this.getProject(event.projectId)) throw new Error("communication project not found");
+    if (event.schemaVersion !== 1) throw new Error("unsupported communication schema version");
+    if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
+    if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
+      throw new Error("collaboration requires at least one recipient agent ID");
+    }
+    const file = communicationEventsPath(this.dataDir, event.projectId);
+    const existing = readCommunicationLog(file, true).find((candidate) => candidate.eventId === event.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
+      return { event: existing, replayed: true };
+    }
+    mkdirSync(dirname(file), { recursive: true });
+    const fd = openSync(file, "a");
+    try {
+      const bytes = Buffer.from(JSON.stringify(event) + "\n");
+      let written = 0;
+      while (written < bytes.length) {
+        const count = writeSync(fd, bytes, written, bytes.length - written);
+        if (count <= 0) throw new Error("communication log append made no progress");
+        written += count;
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    return { event, replayed: false };
+  }
+
+  readCommunicationEvents(projectId: string): CommunicationEvent[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return readCommunicationLog(communicationEventsPath(this.dataDir, projectId));
   }
 
   /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
