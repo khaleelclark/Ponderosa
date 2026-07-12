@@ -214,24 +214,45 @@ export interface MessageDto {
   attachments?: ImageAttachmentDto[];
 }
 
-/** A validated raster image stored beneath one thread's attachments directory. */
-export interface ImageAttachmentDto {
+export type AssetMediaType =
+  | "image/png" | "image/jpeg" | "image/webp"
+  | "application/pdf" | "text/plain" | "application/json" | "application/zip";
+
+/** A content-validated, thread-owned asset staged for or associated with a message. */
+export interface AssetDto {
   id: string;
   threadId: string;
   name: string;
-  mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  mediaType: AssetMediaType;
   size: number;
-  width: number;
-  height: number;
-  /** Opaque API URL; never a host filesystem path. */
+  width?: number;
+  height?: number;
+  sha256?: string;
+  state?: "staged" | "associated";
+  createdAt?: string;
+  /** Opaque preview-or-download URL; never a host filesystem path. */
   url: string;
+  downloadUrl?: string;
+  previewUrl?: string;
+}
+
+/** Backward-compatible name retained while clients migrate to AssetDto. */
+export type ImageAttachmentDto = AssetDto;
+
+export interface AssetLimitsDto {
+  maxFileBytes: number;
+  maxRequestBytes: number;
+  maxAssetsPerMessage: number;
+  maxMessageBytes: number;
+  maxThreadBytes: number;
+  acceptedMediaTypes: AssetMediaType[];
 }
 
 export interface ImageAttachmentLimitsDto {
   maxFileBytes: number;
   maxRequestBytes: number;
   maxAttachmentsPerMessage: number;
-  acceptedMediaTypes: ImageAttachmentDto["mediaType"][];
+  acceptedMediaTypes: AssetMediaType[];
 }
 
 /** A Tasks-pane execution unit (SPEC §7 `tasks`). */

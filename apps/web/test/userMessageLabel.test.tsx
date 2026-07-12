@@ -58,7 +58,7 @@ describe("user message labels on chat surfaces", () => {
     const label = html.indexOf(">User</div>");
     const bubble = html.indexOf('data-message-bubble="true"');
     const content = html.indexOf("Manager request");
-    const attachment = html.indexOf('aria-label="Open diagram.png"');
+    const attachment = html.indexOf('aria-label="Download diagram.png"');
     const reply = html.indexOf('aria-label="Reply to message"');
     const timestamp = html.indexOf("<time");
     expect(label).toBeGreaterThanOrEqual(0);
@@ -101,8 +101,8 @@ describe("user message labels on chat surfaces", () => {
     const agent = renderMaster(masterMessage({ role: "assistant", authorThreadId: "agent-1", text: "@everyone result" }));
 
     expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
-    expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Open diagram.png"'));
-    expect(manager.indexOf('aria-label="Open diagram.png"')).toBeLessThan(manager.indexOf(">Reply</button>"));
+    expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
+    expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf(">Reply</button>"));
     expect(manager.indexOf(">Reply</button>")).toBeLessThan(manager.indexOf("<time"));
     expect(agent).toContain("@everyone result");
     expect(agent.indexOf(">Reply</button>")).toBeLessThan(agent.indexOf("Reply Directly"));

@@ -320,8 +320,10 @@ export function ChatPane({
             ) : null}
             <ChatMarkdown>{message.text}</ChatMarkdown>
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-              {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
-                <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+              {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
+                {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
+                  ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+                  : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
               </Box>)}
             </Stack> : null}
             <MessageActionsAndTimestamp
@@ -779,22 +781,22 @@ export function Composer({
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-        {files.map((item, index) => <Box key={`${item.file.name}-${index}`} sx={{ position: "relative" }}>
-          <Box component="a" href={item.preview} target="_blank" rel="noreferrer" aria-label={`Open ${item.file.name}`}>
+        {files.map((item, index) => <Box key={`${item.file.name}-${index}`} sx={{ position: "relative", minWidth: 0, maxWidth: 180 }}>
+          {item.file.type.startsWith("image/") ? <Box component="a" href={item.preview} target="_blank" rel="noreferrer" aria-label={`Open ${item.file.name}`}>
             <Box component="img" src={item.preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
-          </Box>
-          <IconButton size="small" aria-label={`Remove ${item.file.name}`} onClick={() => { URL.revokeObjectURL(item.preview); setFiles((current) => current.filter((_, i) => i !== index)); }} sx={{ position: "absolute", right: -8, top: -8, bgcolor: "background.paper" }}><CloseIcon fontSize="small" /></IconButton>
+          </Box> : <Typography variant="caption" sx={{ display: "block", p: 1, pr: 5, overflowWrap: "anywhere" }}>{item.file.name}<br />{item.file.size} bytes</Typography>}
+          <IconButton size="small" aria-label={`Remove ${item.file.name}`} onClick={() => { URL.revokeObjectURL(item.preview); setFiles((current) => current.filter((_, i) => i !== index)); }} sx={{ position: "absolute", right: 0, top: 0, bgcolor: "background.paper", minWidth: 44, minHeight: 44 }}><CloseIcon fontSize="small" /></IconButton>
         </Box>)}
       </Stack> : null}
       {sendError ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {sendError}</Alert> : null}
       <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} sx={{ alignItems: "flex-end" }}>
-        <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => {
+        <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
           const selected = Array.from(event.target.files ?? []).slice(0, 4 - files.length);
           const valid = selected.filter((file) => file.size <= 8 * 1024 * 1024);
           setFiles((current) => [...current, ...valid.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
           event.target.value = "";
         }} />
-        <Tooltip title="Attach images (PNG, JPEG, GIF, or WebP; 8 MiB each)"><span><IconButton aria-label="Attach images" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Attach assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= 4} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
         <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
           <TextField
             fullWidth

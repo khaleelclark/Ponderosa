@@ -191,7 +191,11 @@ export const realApi: PonderosaApi = {
   uploadAttachment(threadId, file) {
     return requestJson<ImageAttachmentDto>(`/api/threads/${encodeURIComponent(threadId)}/attachments`, {
       method: "POST",
-      headers: { "content-type": file.type || "application/octet-stream", "x-ponderosa-filename": file.name },
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-media-type": file.type || "application/octet-stream",
+        "x-ponderosa-filename": file.name,
+      },
       body: file,
     });
   },
