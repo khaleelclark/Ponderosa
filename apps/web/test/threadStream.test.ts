@@ -1,8 +1,14 @@
 import type { MessageDto, SseEventEnvelope, ThreadDetailDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { updateThreadDetail } from "../src/hooks/useThreadStream";
+import { runningAfterAgentEvent, updateThreadDetail } from "../src/hooks/useThreadStream";
 
 describe("updateThreadDetail", () => {
+  it("does not resurrect a finished run when its terminal lifecycle record arrives", () => {
+    expect(runningAfterAgentEvent(true, { type: "turn_done" })).toBe(false);
+    expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "completed", reason: "turn_completed" })).toBe(false);
+    expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "running", reason: "active_run" })).toBe(true);
+  });
+
   it("ignores an invalid cached message while appending streamed text", () => {
     const liveMessage: MessageDto = {
       id: "live-agent-thread-1-2",
