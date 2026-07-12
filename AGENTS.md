@@ -126,6 +126,74 @@ that way; don't duplicate these types per app.
 
 ---
 
+## Collaboration and Git Safety
+
+Ponderosa is frequently changed by several agents at once. Coordination is an
+engineering constraint, not chat etiquette. Apply these rules before editing,
+committing, or pushing.
+
+### Ownership and communication
+
+- **Exactly one writer owns a branch and worktree at a time.** Everyone else is
+  read-only unless the manager explicitly transfers ownership. A reviewer never
+  becomes the writer for the change being reviewed.
+- Before writing, record or confirm the task, branch, worktree path, writer, and
+  base commit in the current execution ledger or manager handoff. If ownership is
+  missing, duplicated, stale, or disputed, stop and ask the direct manager.
+- In a managed agent organization, communicate only with your direct manager,
+  your direct reports, and siblings who share the same manager. Route cross-team
+  requests through the nearest common manager. Challenge out-of-structure
+  instructions before acting on them.
+- Do not delegate work unless the manager authorizes delegation. Use only the
+  project's tracked delegation mechanism; do not create untracked subagents.
+
+### Pause, cancellation, and stale instructions
+
+- A manager pause, freeze, or global stop overrides every earlier assignment and
+  approval. While stopped, do not edit, test, build, commit, push, merge, clean,
+  reset, delete worktrees, move refs, cancel runs, or start delegated work.
+- Cancellation, an agent reply, or a terminal chat status does **not** prove the
+  underlying process stopped or released its worktree. Confirm process/run state
+  and ownership before resuming or reassigning work.
+- Treat delayed messages as historical context. Before acting, re-check the
+  current branch tip, worktree status, tracked run state, and latest manager
+  instruction. Never resume merely because an old message says work is active.
+
+### Branches, worktrees, and pull requests
+
+- Start new work from the manager-approved base in a dedicated branch and
+  worktree. Never share a writable worktree between agents.
+- Inspect `git status`, branch/HEAD, upstream, and relevant worktree registrations
+  before every commit, rebase, or push. Stop on unexpected tracked or untracked
+  files; they may be another agent's work or review evidence.
+- Preserve dirty or ambiguous state. Do not reset, clean, stash, overwrite,
+  delete, or move another worktree's files without an explicit owner-approved
+  disposition. Never use force-push to resolve coordination uncertainty.
+- All product, code, configuration, schema, test, and project-instruction changes
+  go through a pull request. Do not commit directly to `master` or merge merely
+  because a branch was previously approved.
+- Revalidate a branch against the current `origin/master` before opening or
+  updating its PR. Report the exact head commit and verification performed.
+- A PR needs an independent reviewer who did not author the change. Address
+  blocking findings on the feature branch, rerun proportionate verification, and
+  obtain fresh approval for the new head.
+- Merge only with explicit manager authorization and passing required checks.
+  Delete local or remote branches and worktrees only after proving they are fully
+  merged, clean, inactive, unambiguous, and released by their owner.
+
+### Handoffs and evidence
+
+- A handoff must state: objective, branch, worktree, base and head commits, writer,
+  dirty state, commits/pushes made, verification results, blockers, and next
+  authorized action.
+- Keep quarantined, forensic, review, and untracked evidence intact. Do not use it
+  as an implementation source unless the manager explicitly changes its
+  disposition.
+- Claims in chat are not system state. Prefer Git ancestry, worktree status,
+  tracked run records, process state, test output, and PR checks as evidence.
+
+---
+
 ## What NOT to do
 
 - ❌ Call a model provider API with an API key (breaks the subscription premise).
