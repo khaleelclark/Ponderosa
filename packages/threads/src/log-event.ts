@@ -12,6 +12,7 @@ import type { AgentEvent, ImageAttachmentDto } from "@ponderosa/core";
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
 export interface UserMessageEvent {
   type: "user_message";
+  communicationEventId?: string;
   text: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
   attachments?: ImageAttachmentDto[];

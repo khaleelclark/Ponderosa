@@ -121,7 +121,7 @@ export function projectEvent(
         kind: "insert_message",
         row: {
           id: messageId(threadId, seq),
-          communicationEventId: null,
+          communicationEventId: event.communicationEventId ?? null,
           threadId,
           seq,
           role: "user",

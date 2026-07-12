@@ -43,6 +43,10 @@ idempotent, provenance-linked promotion record created by the operator endpoint.
 Active, non-superseded promotion summaries are injected only when seeding a fresh
 runtime. The underlying local text is never injected, and resumed sessions do not
 receive repeated context packets.
+Manager broadcasts, direct replies, and Collaboration writes now enter the same
+canonical log and carry their event ID into legacy projections. Recipient-free
+Collaboration is rejected before persistence; the old mention-parsing request is
+accepted only as a temporary client migration path.
 
 ## Delivery phases and gates
 

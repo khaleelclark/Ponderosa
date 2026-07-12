@@ -273,6 +273,16 @@ describe("server chunk F", () => {
       payload: { text: "Start an API agent." },
     });
     expect(messageRes.statusCode).toBe(200);
+    const recordedMessage = messageRes.json<{ communicationEventId: string }>();
+    expect(recordedMessage.communicationEventId).toBeTruthy();
+    expect(store.readCommunicationEvents(project.id)).toEqual([
+      expect.objectContaining({
+        eventId: recordedMessage.communicationEventId,
+        intent: "broadcast",
+        sender: { kind: "user", userId: "local-operator" },
+      }),
+    ]);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
 
     const threadRes = await app.inject({
       method: "POST",
@@ -821,7 +831,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("never sends collaboration context until a valid agent mention is accepted", async () => {
+  it("rejects recipient-free collaboration and sends context only after explicit routing", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Private collaboration" });
@@ -837,19 +847,20 @@ describe("server chunk F", () => {
       url: `/api/master-chats/${master.id}/collaboration/messages`,
       payload: { text: "Private review notes that should not reach an agent yet." },
     });
-    expect(untargeted.statusCode).toBe(200);
+    expect(untargeted.statusCode).toBe(400);
+    expect(untargeted.json()).toMatchObject({ error: expect.stringContaining("explicit recipient") });
     expect(adapter.seeds).toHaveLength(0);
 
     const targeted = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Yosemite Please review the private notes." },
+      payload: { text: "Please review the private notes.", recipientAgentIds: [agent.id] },
     });
     expect(targeted.statusCode).toBe(200);
     await waitForRun(agent.id);
 
     const prompt = adapter.seeds[0]?.prompt ?? "";
-    expect(prompt).toContain("Private review notes that should not reach an agent yet.");
+    expect(prompt).not.toContain("Private review notes that should not reach an agent yet.");
     expect(prompt).toContain("@Yosemite Please review the private notes.");
     expect(prompt).not.toContain("Main-chat-only deployment plan.");
     expect(store.getMasterChatMessages(master.id)).toEqual(

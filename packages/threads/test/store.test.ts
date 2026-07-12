@@ -68,12 +68,14 @@ describe("ThreadStore — canonical communication events", () => {
 
     expect(store.appendCommunicationEvent(event).replayed).toBe(false);
     expect(store.appendCommunicationEvent(event)).toEqual({ event, replayed: true });
+    expect(store.appendCommunicationEvent({ ...event, eventId: "transport-retry", createdAt: "2026-07-12T00:00:01.000Z" }))
+      .toEqual({ event, replayed: true });
     expect(store.readCommunicationEvents(project.id)).toEqual([event]);
     expect(store.readContextClassifications(project.id)).toEqual([expect.objectContaining({
       eventId: event.eventId, policy: "local_only",
     })]);
     expect(readFileSync(communicationEventsPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
-    expect(() => store.appendCommunicationEvent({ ...event, text: "Collision" })).toThrow("ID collision");
+    expect(() => store.appendCommunicationEvent({ ...event, text: "Collision" })).toThrow("collision");
   });
 
   it("rejects unknown projects and runtime-empty collaboration audiences", () => {

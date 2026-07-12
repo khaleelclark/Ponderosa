@@ -1553,6 +1553,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       validatedAssets.push({ ...publicAsset, state: "associated" });
     }
     if (validatedAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
+    const communication = store.appendCommunicationEvent({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      projectId: master.projectId,
+      masterChatId: master.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: master.projectId },
+      text,
+      createdAt: new Date().toISOString(),
+    }).event;
     let message;
     try {
       message = store.appendMasterChatMessage(request.params.id, {
@@ -1560,7 +1571,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         text,
         replyToMessageId: request.body.replyToMessageId,
         attachments: validatedAssets,
-      });
+      }, undefined, "main", undefined, undefined, communication.eventId);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "reply target was not found in this conversation" });
     }
@@ -1701,6 +1712,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: [],
         kind: "direct",
       };
+      const communication = store.appendCommunicationEvent({
+        eventId: randomUUID(),
+        schemaVersion: 1,
+        projectId: master.projectId,
+        masterChatId: master.id,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "collaboration",
+        audience: { kind: "agents", agentIds: [target.id] },
+        text,
+        createdAt: new Date().toISOString(),
+        idempotencyKey: receiptKey,
+      }).event;
       let message: MasterChatMessageDto | undefined;
       try {
         message = store.appendMasterChatMessage(
@@ -1710,6 +1733,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           "main",
           [intent],
           receiptKey,
+          communication.eventId,
         );
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
@@ -1750,7 +1774,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
+    Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
   }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
@@ -1759,21 +1783,56 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const detail = store.getCollaborationChatDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
-    const routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
+    let renderedText = text;
+    let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
+    if (request.body.recipientAgentIds !== undefined) {
+      const ids = request.body.recipientAgentIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
+        return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
+      }
+      const uniqueIds = [...new Set(ids)];
+      const members = new Map(detail.threads.map((thread) => [thread.id, thread]));
+      const targets = uniqueIds.map((id) => members.get(id));
+      if (targets.some((target) => !target || target.archived)) {
+        return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this master chat" });
+      }
+      renderedText = `${targets.map((target) => `@${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+      routing = {
+        intents: targets.map((target) => ({
+          targetThreadId: target!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
+        })),
+        blocked: [],
+      };
+    } else {
+      // Compatibility for clients loaded before the recipient-picker contract.
+      routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
+    }
+    if (routing.intents.length === 0) {
+      return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
+    }
+    const master = store.getMasterChat(request.params.id)!;
+    const communication = store.appendCommunicationEvent({
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId: master.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
+      text, createdAt: new Date().toISOString(),
+    }).event;
     let message;
     try { message = store.appendMasterChatMessage(
       request.params.id,
-      { role: "user", text, replyToMessageId: request.body.replyToMessageId },
+      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId },
       undefined,
       "collaboration",
       routing.intents,
+      undefined,
+      communication.eventId,
     ); } catch { return reply.code(400).send({ error: "reply target was not found in this conversation" }); }
     const notifiedAgentIds: string[] = [];
     queueRecordedCollaborationMessage(request.params.id, message!, undefined, routing.intents);
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetThreadId));
     return {
       message,
-      audience: hasEveryoneMention(text) ? "everyone" : routing.intents.length ? "mention" : "none",
+      audience: hasEveryoneMention(text) ? "everyone" : "mention",
       notifiedAgentIds,
     };
   });

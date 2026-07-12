@@ -336,8 +336,24 @@ export class ThreadStore {
       classifiedAt: event.createdAt,
       classifiedBy: { kind: "system", component: "communication-router" },
     };
-    const existing = readRepairableJsonl<CommunicationEvent>(file, "communication log", true)
-      .find((candidate) => candidate.eventId === event.eventId);
+    const recorded = readRepairableJsonl<CommunicationEvent>(file, "communication log", true);
+    const idempotent = event.idempotencyKey ? recorded.find((candidate) =>
+      candidate.idempotencyKey === event.idempotencyKey &&
+      JSON.stringify(candidate.sender) === JSON.stringify(event.sender)) : undefined;
+    if (idempotent) {
+      const equivalent = idempotent.projectId === event.projectId && idempotent.masterChatId === event.masterChatId &&
+        idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
+        idempotent.text === event.text;
+      if (!equivalent) throw new Error("communication idempotency collision");
+      this.appendContextClassification(event.projectId, {
+        eventId: idempotent.eventId,
+        policy: idempotent.intent === "broadcast" ? "organizational_candidate" : "local_only",
+        classifiedAt: idempotent.createdAt,
+        classifiedBy: { kind: "system", component: "communication-router" },
+      });
+      return { event: idempotent, replayed: true };
+    }
+    const existing = recorded.find((candidate) => candidate.eventId === event.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
       this.appendContextClassification(event.projectId, classification);
