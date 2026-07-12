@@ -830,7 +830,11 @@ describe("server chunk F", () => {
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Yosemite can you review this?" })]),
     );
-    expect(store.getMasterChatMessages(master.id)).toEqual([]);
+    expect(store.getMasterChatMessages(master.id)).toEqual([
+      expect.objectContaining({
+        authorThreadId: yosemite.id, text: "@User done", communicationEventId: expect.any(String),
+      }),
+    ]);
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "@Yosemite can you review this?" })]),
     );
@@ -998,7 +1002,7 @@ describe("server chunk F", () => {
     const verifier = store.createThread(project.id, { title: "Verifier", engine: "codex", masterChatId: master.id });
 
     // Organization-audience system guidance is explicitly shared with every
-    // project agent even when rendered on the Collaboration surface.
+    // project agent through the Main projection.
     const sharedAt = "2026-07-12T00:00:00.000Z";
     store.appendCommunicationEvent({
       eventId: "shared-collaboration-guidance", schemaVersion: 1, projectId: project.id, masterChatId: master.id,
@@ -1007,7 +1011,7 @@ describe("server chunk F", () => {
       text: "Shared system guidance for all project agents.", createdAt: sharedAt,
     });
     store.appendCommunicationProjection(project.id, {
-      eventId: "shared-collaboration-guidance", surface: "collaboration_chat", projectionKey: master.id,
+      eventId: "shared-collaboration-guidance", surface: "master_chat", projectionKey: master.id,
       projectedAt: sharedAt,
       message: { messageId: "shared-guidance-message", role: "system", createdAt: sharedAt },
     });
@@ -1053,9 +1057,7 @@ describe("server chunk F", () => {
     const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
     const verifierPrompt = adapter.seeds.find((turn) => turn.threadId === verifier.id)?.prompt ?? "";
     expect(reviewerPrompt).toContain("Reviewer-only launch credential: ALPHA.");
-    expect(reviewerPrompt).toContain("Shared system guidance for all project agents.");
     expect(verifierPrompt).toContain("Verifier-only release checklist.");
-    expect(verifierPrompt).toContain("Shared system guidance for all project agents.");
     expect(verifierPrompt).not.toContain("Reviewer-only launch credential: ALPHA.");
 
     await Promise.all([
@@ -1123,8 +1125,9 @@ describe("server chunk F", () => {
     const replyMessage = store.getMasterChatMessages(master.id).find((message) => message.text === "@User You're welcome!");
     const replyEvent = store.readCommunicationEvents(project.id).find((event) => event.eventId === replyMessage?.communicationEventId);
     expect(replyEvent).toMatchObject({
-      intent: "direct_to_user",
-      audience: { kind: "user", userId: "local-operator" },
+      schemaVersion: 2,
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: greeter.id },
     });
     expect(replyMessage).toMatchObject({ text: "@User You're welcome!", communicationEventId: replyEvent?.eventId });
 
@@ -1201,7 +1204,8 @@ describe("server chunk F", () => {
     expect(collaborationDetail.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId, text: "@Reviewer Review this" }),
     ]));
-    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+    const readiness = (await app.inject({ method: "GET", url: "/api/ready" })).json();
+    expect(readiness, JSON.stringify({ readiness, reconciliation: store.reconcileCommunicationEvents(project.id) }))
       .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
     await app.close();
   });
@@ -1331,7 +1335,10 @@ describe("server chunk F", () => {
       collaboration.json<{ eventId: string }>().eventId,
     ]));
     expect(communicationEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({ intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" } }),
+      expect.objectContaining({
+        schemaVersion: 2, intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: author.id },
+      }),
       expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
       expect.objectContaining({ intent: "collaboration", audience: { kind: "agents", agentIds: [reviewer.id] } }),
     ]));
@@ -1349,7 +1356,7 @@ describe("server chunk F", () => {
     ]));
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 4,
-      linkedProjections: 8,
+      linkedProjections: 9,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -1364,7 +1371,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 8 });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 9 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });
@@ -1503,7 +1510,12 @@ describe("server chunk F", () => {
       payload: { channel: "individual", text: "Too late." },
     });
     expect(response.statusCode).toBe(401);
-    expect(store.getMasterChatMessages(master.id)).toEqual([]);
+    expect(store.getMasterChatMessages(master.id)).toEqual([
+      expect.objectContaining({ text: "Finish.", communicationEventId: expect.any(String) }),
+    ]);
+    expect(store.getMasterChatMessages(master.id)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: "Too late." })]),
+    );
     await app.close();
   });
 

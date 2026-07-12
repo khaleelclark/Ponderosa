@@ -310,6 +310,12 @@ function legacyCommunicationEventId(projectId: string, source: string, sourceId:
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
 }
 
+function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
+  const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort();
+  if (normalized.length === 0) throw new Error("collaboration requires at least one recipient agent ID");
+  return normalized as [string, ...string[]];
+}
+
 export class ThreadStore {
   private readonly db: Db;
   private readonly client: Database.Database;
@@ -395,12 +401,37 @@ export class ThreadStore {
    * Duplicate IDs are accepted only when the complete event is byte-equivalent,
    * making transport retries idempotent while detecting identity collisions.
    */
-  appendCommunicationEvent(event: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
+  appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
+    const event: CommunicationEvent = input.intent === "collaboration"
+      ? { ...input, audience: { kind: "agents", agentIds: normalizedAgentIds(input.audience.agentIds) } } as CommunicationEvent
+      : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
-    if (event.schemaVersion !== 1) throw new Error("unsupported communication schema version");
+    if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
     if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
-    if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
-      throw new Error("collaboration requires at least one recipient agent ID");
+    if (event.schemaVersion === 2 && event.intent === "user_dm") {
+      if (event.sender.kind === "system" || (event.sender.kind === "agent" && event.sender.agentId !== event.audience.agentId)) {
+        throw new Error("user DM sender must be its local user or target agent");
+      }
+      if (event.sender.kind === "user" && event.sender.userId !== event.audience.userId) throw new Error("user DM user identity mismatch");
+    }
+    if (event.intent === "broadcast" && event.audience.organizationId !== event.projectId) {
+      throw new Error("broadcast organization must match its project");
+    }
+    const audienceIds = event.schemaVersion === 2 && event.intent === "collaboration" ? event.audience.agentIds
+      : event.schemaVersion === 2 && event.intent === "user_dm" ? [event.audience.agentId] : [];
+    for (const agentId of audienceIds) {
+      const agent = this.getThread(agentId);
+      if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
+      if (event.masterChatId && !agent.masterChatIds.includes(event.masterChatId)) throw new Error("communication recipient must belong to its master chat");
+    }
+    if (event.schemaVersion === 2 && event.intent === "collaboration") {
+      if (event.sender.kind === "agent" && event.audience.agentIds.includes(event.sender.agentId)) {
+        throw new Error("collaboration cannot target its sender");
+      }
+    }
+    if (event.masterChatId) {
+      const master = this.getMasterChat(event.masterChatId);
+      if (!master || master.projectId !== event.projectId || master.archived) throw new Error("communication master chat must be active in its project");
     }
     const file = communicationEventsPath(this.dataDir, event.projectId);
     const classification: CommunicationContextClassification = {
@@ -467,8 +498,27 @@ export class ThreadStore {
   }
 
   appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
-    const eventExists = this.communicationIndex(projectId).byId.has(projection.eventId);
-    if (!eventExists) throw new Error("communication projection source event not found");
+    const event = this.communicationIndex(projectId).byId.get(projection.eventId);
+    if (!event) throw new Error("communication projection source event not found");
+    const allowed = (() => {
+      if (projection.surface === "master_chat") return event.intent === "broadcast" || event.intent === "direct_to_user" ||
+        (event.schemaVersion === 2 && event.intent === "user_dm");
+      if (projection.surface === "collaboration_chat") return event.intent === "collaboration" ||
+        (event.schemaVersion === 1 && event.intent === "direct_to_user");
+      if (projection.surface === "direct_agent_audit") {
+        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+        if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
+          (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
+        return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
+      }
+      if (projection.surface === "agent_inbox") {
+        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+        return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
+      }
+      if (projection.surface === "user_inbox") return event.intent === "direct_to_user" || (event.schemaVersion === 2 && event.intent === "user_dm");
+      return false;
+    })();
+    if (!allowed) throw new Error("communication scope cannot project to requested surface");
     const file = communicationProjectionsPath(this.dataDir, projectId);
     const index = this.projectionIndex(projectId);
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
