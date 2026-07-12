@@ -14,6 +14,7 @@ export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
 export { LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
 export { codexAuthStatus, codexHome, claudeAuthStatus } from "./auth.js";
+export { shouldRolloverEngineSession } from "./session-recovery.js";
 
 // Re-export the Adapter contract from core so consumers import engines in one place.
 export type { Adapter, AgentEvent, EngineAuthStatus } from "@ponderosa/core";

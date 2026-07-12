@@ -66,7 +66,7 @@ export function AgentsTab({
   const subagentColor = (status: SubagentRunDto["status"]): "default" | "info" | "success" | "error" => {
     if (status === "running") return "info";
     if (status === "completed") return "success";
-    if (status === "failed") return "error";
+    if (status === "failed" || status === "blocked") return "error";
     return "default";
   };
 
