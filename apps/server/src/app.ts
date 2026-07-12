@@ -324,13 +324,19 @@ export function boundedSeedHistory<T extends { text: string }>(
   return selected.reverse();
 }
 
-function agentMessagingPrompt(): string[] {
+function agentMessagingPrompt(replyScope: "direct_to_user" | "collaboration"): string[] {
   return [
-    "You can send an additional message to any Ponderosa channel with your shell tool:",
+    "Communication scope is immutable. Choose the scope when creating a message; never try to promote or re-scope an existing message.",
+    replyScope === "collaboration"
+      ? "Your ordinary final response stays in this Collaboration with its existing participants and is not inherited by future agents."
+      : "Your ordinary final response is a Direct Message to the manager. It is visible as a DM but is not inherited by future agents.",
+    "Use the messaging tool only when you need to create a Broadcast or send Collaboration:",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders recipient names; never write routing @mentions into message text.',
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
-    "Use collaboration for teammate coordination, broadcast for durable shared organizational knowledge, and direct_to_user for notes in your own agent audit chat.",
+    "Broadcast only durable organizational knowledge that future agents should inherit: decisions, verified findings, completed outcomes, or material blockers.",
+    "Never Broadcast acknowledgments, thanks, conversational replies, routine progress, promises to act, or duplicate confirmations.",
+    "Use Collaboration for agent-to-agent coordination and direct_to_user for an additional private manager note. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After delegating work, end your turn. Do not poll, sleep, or remain active waiting for results. Delegated agents run asynchronously; their completion automatically queues a parent follow-up, and explicit collaboration tags do the same.",
     "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
@@ -396,15 +402,16 @@ function masterChatPrompt(
     .join("\n");
 
   const staticInstructions = incremental ? [] : [
-    "You are replying as a teammate in a shared master chat.",
-    "Respond directly to the latest message addressed to you, whether it came from the manager or a teammate.",
-    "The main chat is manager-facing: do not use @mentions here to coordinate with teammates, because they are plain text and do not notify anyone.",
-    "Agent-to-agent discussion belongs in the separate Collaboration chat. An explicit collaboration intent provides its context and starts the teammate's turn.",
+    "You are handling a manager request that originated in Master Chat.",
+    "Respond to the latest request, but do not treat presence in Master Chat as permission to Broadcast.",
+    "Your normal response is a Direct Message to the manager. Other agents may see its DM rendering in Master Chat, but future agents never inherit it.",
+    "Create a Broadcast explicitly only when the response contains durable organizational knowledge worth adding to future-agent context.",
+    "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
-    "When this turn is complete, give only your new update or result in a natural, conversational tone.",
+    "When this turn is complete, give only the new direct update or result. Do not repeat a Broadcast or Collaboration message you already sent.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
-    ...agentMessagingPrompt(),
+    ...agentMessagingPrompt("direct_to_user"),
     ...agentDelegationPrompt(),
   ];
   return [
@@ -449,7 +456,7 @@ function collaborationChatPrompt(
     "To involve a teammate, send a collaboration intent with their stable agent ID; the server routes it and renders any display handle.",
     "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
     "Do not claim to have seen the main chat.",
-    ...agentMessagingPrompt(),
+    ...agentMessagingPrompt("collaboration"),
     ...agentDelegationPrompt(),
   ];
   return [
@@ -470,7 +477,7 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
   return [
     "You are replying in your individual Ponderosa agent chat.",
     ...messageContextPrompt(context),
-    ...agentMessagingPrompt(),
+    ...agentMessagingPrompt("direct_to_user"),
     ...agentDelegationPrompt(),
     "",
     "Latest message for you:",
@@ -483,7 +490,7 @@ function continuationPrompt(currentRequest: string, context: InboundMessageConte
   const channelRule = context.channel === "collaboration"
     ? "Reply in Collaboration; use a full @handle only when another agent must act."
     : context.channel === "main"
-      ? "Reply with only the new manager-facing update or result."
+      ? "Your normal reply is a Direct Message. Broadcast durable organizational knowledge only through an explicit broadcast intent."
       : "Reply in your individual agent chat.";
   return [
     ...messageContextPrompt(context),
@@ -1648,7 +1655,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             "",
             `You are a first-class delegated Ponderosa agent${parentThread ? ` created by @${agentMentionHandle(parentThread.title)}` : ""}.`,
             "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
-            ...agentMessagingPrompt(),
+            ...agentMessagingPrompt("direct_to_user"),
             ...agentDelegationPrompt(),
             ...delegatedOutcomePrompt(),
           ].join("\n"),
@@ -3083,7 +3090,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
                     masterChatId: routingMasterChatId,
                     sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                    intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+                    intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
                     text: statusText, createdAt: new Date().toISOString(),
                     ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
                   })
@@ -3107,9 +3114,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
+              const renderedStatusText = reportCommunication?.intent === "direct_to_user"
+                ? `@User ${statusText}`
+                : statusText;
               const report = store.appendMasterChatMessage(
                 routingMasterChatId,
-                { role: "assistant", text: statusText },
+                { role: "assistant", text: renderedStatusText },
                 thread.id,
                 sourceChannel,
                 routing.intents,

@@ -81,6 +81,8 @@ audience; collaboration uses a non-empty tuple of stable agent IDs. Projection,
 delivery, and context-classification records reference the event ID and never
 mutate the original communication. The immutable intent determines projection
 visibility and future-context eligibility at creation: only broadcasts are shared.
+Ordinary agent replies are direct-to-user by default; broadcast and collaboration
+must be selected explicitly when creating those communication events.
 
 ## `config.ts` / `logger.ts` — Node-only (subpath exports)
 
