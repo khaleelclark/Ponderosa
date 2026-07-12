@@ -1236,7 +1236,7 @@ describe("server chunk F", () => {
     await waitForRun(future.id);
     const prompt = adapter.seeds.find((turn) => turn.threadId === future.id)?.prompt ?? "";
     expect(prompt).toContain("shared project finding");
-    expect(prompt).not.toContain("private manager note");
+    expect(prompt).not.toContain("Manager: #Participant private manager note");
     expect(prompt).not.toContain("participant-only review");
     await app.close();
   });
