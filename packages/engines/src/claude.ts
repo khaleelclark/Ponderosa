@@ -6,17 +6,24 @@
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { homedir } from "node:os";
+import path from "node:path";
 import type {
   Adapter,
   AgentEvent,
   ContinueOptions,
+  EngineCapabilities,
   EffortOption,
   ModelOption,
+  OpenRuntimeSessionOptions,
+  RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./codex.js";
 import { streamProcess, type SpawnFn } from "./process.js";
+import { discoverCliMcps, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
+import { ClaudeStreamSession } from "./claude-stream-session.js";
 
 export interface ClaudeAdapterOptions {
   /** Path/name of the claude binary. Default: "claude". */
@@ -74,6 +81,32 @@ export class ClaudeAdapter implements Adapter {
 
   listEfforts(): EffortOption[] {
     return DEFAULT_EFFORTS;
+  }
+
+  async capabilities(cwd: string): Promise<EngineCapabilities> {
+    const claudeHome = path.join(homedir(), ".claude");
+    const commands = discoverMarkdownCommands([
+      { path: path.join(cwd, ".claude", "commands"), source: "engine" },
+      { path: path.join(cwd, ".claude", "skills"), source: "skill", skillFilesOnly: true },
+      { path: path.join(claudeHome, "commands"), source: "engine" },
+      { path: path.join(claudeHome, "skills"), source: "skill", skillFilesOnly: true },
+    ]);
+    return {
+      steering: true,
+      persistentSessions: true,
+      commands,
+      mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList),
+    };
+  }
+
+  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    return Promise.resolve(new ClaudeStreamSession({
+      ...opts,
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      permissionMode: this.permissionMode,
+      killGraceMs: this.killGraceMs,
+    }));
   }
 
   /** Flags shared by seed + continue. */

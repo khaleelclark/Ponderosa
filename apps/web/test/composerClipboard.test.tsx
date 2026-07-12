@@ -15,6 +15,19 @@ const clipboard = (files: File[]) => ({
 const pasteTarget = (view: ReturnType<typeof create>) => view.root.findAll((node) => typeof node.props.onPaste === "function")[0]!;
 
 describe("composer clipboard attachments", () => {
+  it("locks synchronously against duplicate sends", () => {
+    let calls = 0;
+    const pending = new Promise<void>(() => undefined);
+    const view = create(<Composer disabled={false} running={false} onSend={() => { calls += 1; return pending; }} />);
+    const textarea = pasteTarget(view);
+    textarea.props.onChange({ target: { value: "one message", selectionStart: 11 } });
+    const send = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")[0]!;
+    send.props.onClick();
+    send.props.onClick();
+    expect(calls).toBe(1);
+    view.unmount();
+  });
+
   it("extracts only clipboard file items and preserves browser metadata", () => {
     const image = file("pasted-image.png", "image/png");
     const document = file("notes.pdf", "application/pdf");

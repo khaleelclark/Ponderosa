@@ -358,7 +358,9 @@ export interface StartedMessageResponse {
   queued: false;
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
-  mode: "seed" | "continue";
+  mode: "seed" | "continue" | "steer";
+  /** True when the message was accepted by the already-active engine turn. */
+  steered?: boolean;
   communicationEventId?: string;
 }
 
@@ -530,6 +532,14 @@ export interface EngineDto {
   efforts: EffortOption[];
   authenticated: boolean;
   authDetail?: string;
+}
+
+export interface ProjectEngineCapabilitiesDto {
+  engineId: EngineId;
+  steering: boolean;
+  persistentSessions: boolean;
+  commands: import("./adapter.js").EngineCommand[];
+  mcpServers: import("./adapter.js").EngineMcpServer[];
 }
 
 // ─── Files (scoped file browser, SPEC §8/§11) ────────────────────────────────

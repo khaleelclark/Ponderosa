@@ -24,7 +24,7 @@ const initialStreamState: StreamState = {
   timeline: [],
 };
 
-const executionTypes: ReadonlySet<AgentEvent["type"]> = new Set([
+const executionTypes: ReadonlySet<string> = new Set([
   "command",
   "file_change",
   "test_result",
@@ -32,6 +32,12 @@ const executionTypes: ReadonlySet<AgentEvent["type"]> = new Set([
   "tool_result",
   "error",
 ]);
+
+export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {
+  if (event.type === "turn_done" || event.type === "error") return false;
+  if (event.type === "agent_lifecycle") return event.status === "running" || event.status === "compacting";
+  return current || event.type === "session" || event.type === "task_update" || executionTypes.has(event.type);
+}
 
 const streamCursors = new Map<string, { lastSeq?: number; seenSeqs: Set<number> }>();
 
@@ -175,7 +181,7 @@ export function useThreadStream(threadId: string | undefined): StreamState {
         setState((current) => ({
           ...current,
           connected: true,
-          running: envelope.event.type === "turn_done" || envelope.event.type === "error" ? false : true,
+          running: runningAfterAgentEvent(current.running, envelope.event),
           lastSeq: envelope.seq,
           timeline: executionTypes.has(envelope.event.type)
             ? [

@@ -35,11 +35,11 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { agentStatusColor, agentStatusLabel, deriveAgentStatus } from "../agents";
+import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
 import { useThread } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
@@ -51,6 +51,8 @@ type AgentTab = "chat" | "log" | "tasks" | "artifacts";
 export function AgentDetail({
   agentId,
   engines,
+  engineCapabilities,
+  projectedStatus,
   masterChats,
   subagent,
   onBack,
@@ -60,6 +62,8 @@ export function AgentDetail({
 }: {
   agentId: string;
   engines: EngineDto[];
+  engineCapabilities: ProjectEngineCapabilitiesDto[];
+  projectedStatus?: AgentStatus;
   masterChats: MasterChatDto[];
   subagent?: SubagentRunDto;
   onBack(): void;
@@ -89,6 +93,13 @@ export function AgentDetail({
   const detail = threadQuery.data;
   const engine =
     engines.find((candidate) => candidate.id === detail?.thread.activeEngine) ?? engines[0];
+  const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
+  const commands: EngineCommand[] = [
+    { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
+    { name: "compact", description: "Compact this agent session", source: "ponderosa", acceptsArguments: false },
+    { name: "status", description: "Show this agent's runtime status", source: "ponderosa", acceptsArguments: false },
+    ...(engineCapability?.commands ?? []),
+  ];
 
   useEffect(() => {
     if (!engine) {
@@ -106,7 +117,9 @@ export function AgentDetail({
     () => stream.timeline.at(-1)?.event.type === "error",
     [stream.timeline],
   );
-  const status = deriveAgentStatus(detail, { running: stream.running, error: errorHint });
+  const status = stream.running ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
+  const connectedMcps = engineCapability?.mcpServers.filter((server) => server.status === "connected") ?? [];
+  const mcpSummary = engineCapability?.mcpServers.map((server) => `${server.name}: ${server.status}`).join("\n") || "No inherited MCP servers reported by this engine.";
 
   const cancelRun = useMutation({
     mutationFn: () => api.cancelRun(agentId),
@@ -242,6 +255,16 @@ export function AgentDetail({
             </Typography>
           </Box>
           <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} aria-label={`Agent status: ${agentStatusLabel(status)}`} />
+          {engineCapability?.steering ? <Chip size="small" color="info" variant="outlined" label="Steerable" /> : null}
+          <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}>
+            <Chip
+              size="small"
+              variant="outlined"
+              color={connectedMcps.length > 0 ? "success" : "default"}
+              label={`${connectedMcps.length}/${engineCapability?.mcpServers.length ?? 0} MCPs`}
+              aria-label={`${connectedMcps.length} of ${engineCapability?.mcpServers.length ?? 0} inherited MCP servers connected`}
+            />
+          </Tooltip>
           {subagent ? (
             <Chip
               size="small"
@@ -375,7 +398,7 @@ export function AgentDetail({
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {stream.running ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
-            This agent is working. New messages will be queued and start automatically.
+            This agent is working. New messages steer the active turn when supported and otherwise wait in its durable mailbox.
           </Alert>
         ) : null}
         {sendMessage.isError || cancelRun.isError ? (
@@ -385,10 +408,23 @@ export function AgentDetail({
           </Alert>
         ) : null}
         <Composer
+          commands={commands}
           disabled={sendMessage.isPending}
           running={false}
-          placeholder={stream.running ? "Queue a follow-up for this agent" : "Message this agent directly"}
+          placeholder={stream.running ? "Steer this agent's active turn" : "Message this agent directly"}
           onSend={(text, files) => {
+            if (files.length === 0 && text === "/cancel") {
+              setQueuedMessageNotice("Cancelling the active turn…");
+              return cancelRun.mutateAsync().then(() => setQueuedMessageNotice("Active turn cancelled."));
+            }
+            if (files.length === 0 && text === "/compact") {
+              setQueuedMessageNotice("Compacting this agent session…");
+              return api.compactSession(agentId).then(() => setQueuedMessageNotice("Agent session compacted."));
+            }
+            if (files.length === 0 && text === "/status") {
+              setQueuedMessageNotice(`${detail.thread.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
+              return Promise.resolve();
+            }
             const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
               try {
                 return await sendMessage.mutateAsync(
@@ -399,7 +435,9 @@ export function AgentDetail({
                       setQueuedMessageNotice(
                         response.queued
                           ? `Queued in position ${response.position}; it will start when the current response finishes.`
-                          : undefined,
+                          : response.steered
+                            ? "Steered into the active turn."
+                            : undefined,
                       );
                     },
                   },

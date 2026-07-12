@@ -157,7 +157,10 @@ export class AssetAuthority {
         let parsed: Record<string, unknown>;
         try { parsed = JSON.parse(line) as Record<string, unknown>; }
         catch { if (index !== rawLines.length - 1) throw new AssetError(409, "asset audit log is corrupt"); text = text.slice(0, validBytes); break; }
-        const eventId = typeof parsed.event_id === "string" ? parsed.event_id : `legacy-${createHash("sha256").update(`${projectId}\0${threadId}\0${index}\0${line}`).digest("hex")}`;
+        if (typeof parsed.event_id !== "string" || parsed.event_id.length === 0) {
+          throw new AssetError(409, "asset audit record is missing an event ID");
+        }
+        const eventId = parsed.event_id;
         if (fileIds.has(eventId)) throw new AssetError(409, "asset audit contains a duplicate event ID");
         fileIds.set(eventId, line); validBytes += Buffer.byteLength(line) + 1;
         const existing = this.db.prepare("SELECT record_json json FROM asset_audit WHERE event_id=?").get(eventId) as { json: string } | undefined;

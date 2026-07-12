@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
+import type { CollaborationChatDetailDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDetailDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -155,6 +155,7 @@ export function MasterChatMessage({
 export function MasterChatView({
   masterChatId,
   engines,
+  engineCapabilities,
   statusByAgentId,
   onOpenAgent,
   onNewAgent,
@@ -164,6 +165,7 @@ export function MasterChatView({
 }: {
   masterChatId: string;
   engines: EngineDto[];
+  engineCapabilities: ProjectEngineCapabilitiesDto[];
   statusByAgentId: Map<string, AgentStatus>;
   onOpenAgent(agentId: string): void;
   onNewAgent(master: MasterChatDto): void;
@@ -183,6 +185,7 @@ export function MasterChatView({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
+  const [reactionError, setReactionError] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
   const [collaborationRecipientIds, setCollaborationRecipientIds] = useState<string[]>([]);
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
@@ -452,6 +455,9 @@ export function MasterChatView({
   }
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
+  const commands: EngineCommand[] = [
+    ...(engineCapabilities.find((item) => item.engineId === activeEngine?.id)?.commands ?? []),
+  ];
   const models = activeEngine?.models ?? [];
   const efforts = activeEngine?.efforts ?? [];
   const engineReady = Boolean(activeEngine?.authenticated);
@@ -678,7 +684,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies to busy agents queue automatically.</>
+              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies steer active agents when supported and otherwise wait durably.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (
@@ -689,6 +695,7 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
+            {reactionError ? <Alert severity="error" onClose={() => setReactionError(undefined)}>Reaction not saved. {reactionError}</Alert> : null}
             {conversation === "collaboration" && showSubagents && subagentBinding ? (
               <SubagentTreePanel
                 store={subagentBinding.store}
@@ -723,9 +730,13 @@ export function MasterChatView({
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
                 }}
                 onReact={(selected, emoji, active) => {
-                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then(() => {
-                    void queryClient.invalidateQueries({ queryKey: conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId] });
-                  });
+                  setReactionError(undefined);
+                  const queryKey = conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId];
+                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then((response) => {
+                    queryClient.setQueryData<MasterChatDetailDto | CollaborationChatDetailDto>(queryKey, (current) => current
+                      ? { ...current, messages: current.messages.map((message) => message.id === selected.id ? { ...message, reactions: response.reactions } : message) }
+                      : current);
+                  }).catch((error: unknown) => setReactionError(error instanceof Error ? error.message : "Try again."));
                 }}
               />
             ))}
@@ -861,6 +872,7 @@ export function MasterChatView({
           disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
+          commands={commands}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={conversation === "collaboration" ? collaborationRecipientIds.length > 0 : engineReady}
           placeholder={

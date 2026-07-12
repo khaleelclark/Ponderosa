@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
+import { artifactContentPath, collaborationChatMessagesPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -136,6 +136,17 @@ describe("ThreadStore — canonical communication events", () => {
     expect(() => store.appendCommunicationProjection(project.id, {
       eventId: dm.eventId, surface: "user_inbox", projectionKey: "another-user", projectedAt: dm.createdAt,
     })).toThrow("scope cannot project");
+    expect(() => store.appendMasterChatMessage(
+      room.id,
+      { role: "user", text: dm.text },
+      undefined,
+      "collaboration",
+      undefined,
+      undefined,
+      dm.eventId,
+    )).toThrow("scope cannot project");
+    expect(store.getMasterChatMessages(room.id, "collaboration")).toEqual([]);
+    expect(existsSync(collaborationChatMessagesPath(dir, project.id, room.id))).toBe(false);
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "unknown", audience: { ...dm.audience, agentId: "missing" } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "foreign", audience: { ...dm.audience, agentId: foreign.id } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "wrong-room", masterChatId: otherRoom.id })).toThrow("belong to its master chat");
@@ -348,49 +359,6 @@ describe("ThreadStore — canonical communication events", () => {
     expect(store.getProjectedMasterChatMessages(room.id)).toEqual(expected);
   });
 
-  it("backfills legacy timelines deterministically and blocks ambiguous collaboration", () => {
-    const project = store.createProject({ label: "Legacy", hostPath: "/repo" });
-    const room = store.createMasterChat(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
-    const main = store.appendMasterChatMessage(room.id, { text: "Historical decision" })!;
-    const collaboration = store.appendMasterChatMessage(room.id, { text: "Historical local note" }, undefined, "collaboration")!;
-    store.appendEvent(thread.id, { type: "user_message", text: "Historical direct request" });
-    store.appendEvent(thread.id, { type: "text", delta: "Historical direct response" });
-
-    expect(store.backfillLegacyCommunications(project.id, { dryRun: true })).toMatchObject({
-      dryRun: true, candidates: 4, migrated: 0,
-      blocked: [
-        { source: "master_chat", sourceId: main.id, reason: "ambiguous_scope" },
-        { source: "collaboration_chat", sourceId: collaboration.id, reason: "explicit_recipients_required" },
-      ],
-    });
-    const migrated = store.backfillLegacyCommunications(project.id, {
-      dryRun: false,
-      collaborationRecipientsByMessageId: { [collaboration.id]: [thread.id] },
-    });
-    expect(migrated).toMatchObject({
-      dryRun: false, candidates: 4, migrated: 3,
-      blocked: [{ source: "master_chat", sourceId: main.id, reason: "ambiguous_scope" }],
-    });
-    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId).toBeUndefined();
-    expect(store.getMasterChatMessages(room.id, "collaboration").find((message) => message.id === collaboration.id)?.communicationEventId)
-      .toEqual(expect.any(String));
-    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", thread.id)).toHaveLength(2);
-    expect(store.readCommunicationEvents(project.id).every((event) => event.intent !== "broadcast")).toBe(true);
-    expect(store.readContextClassifications(project.id).every((item) => item.policy === "local_only")).toBe(true);
-    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: false, canonicalEvents: 3 });
-    store.close();
-    store = new ThreadStore(dir);
-    store.rebuildProjections();
-    expect(store.getMasterChatMessages(room.id).find((message) => message.id === main.id)?.communicationEventId).toBeUndefined();
-    expect(store.getProjectedThreadMessages(thread.id)).toHaveLength(2);
-    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: false, canonicalEvents: 3 });
-    expect(store.backfillLegacyCommunications(project.id, { dryRun: false })).toMatchObject({
-      candidates: 1, migrated: 0, alreadyLinked: 3,
-      blocked: [{ source: "master_chat", sourceId: main.id, reason: "ambiguous_scope" }],
-    });
-  });
-
   it("recovers a durable execution start that has no terminal event after restart", () => {
     const project = store.createProject({ label: "Recovery", hostPath: "/repo" });
     const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
@@ -470,7 +438,14 @@ describe("ThreadStore — canonical message reactions", () => {
     const first = store.setMasterChatReaction(input);
     const replay = store.setMasterChatReaction(input);
     expect(replay).toMatchObject({ replayed: true, event: { occurrenceId: first.event.occurrenceId } });
-    expect(store.getReactionNotificationOutbox()).toEqual([{ occurrenceId: first.event.occurrenceId, targetThreadId: author.id, messageId: message.id, emoji: "👍" }]);
+    expect(store.getReactionNotificationOutbox()).toEqual([expect.objectContaining({
+      occurrenceId: first.event.occurrenceId,
+      targetThreadId: author.id,
+      messageId: message.id,
+      emoji: "👍",
+      active: true,
+      actor: { kind: "manager" },
+    })]);
     expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
   });
 

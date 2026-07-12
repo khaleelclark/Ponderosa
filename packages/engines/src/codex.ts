@@ -17,12 +17,17 @@ import type {
   AgentEvent,
   ChatMessage,
   ContinueOptions,
+  EngineCapabilities,
   EffortOption,
   ModelOption,
+  OpenRuntimeSessionOptions,
+  RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
 import { mapCodexEvent } from "./events.js";
 import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
+import { discoverCliMcps, discoverMarkdownCommands, parseCodexMcpList } from "./capabilities.js";
+import { CodexAppServerSession } from "./codex-app-server.js";
 
 export type { SpawnFn };
 
@@ -144,6 +149,30 @@ export class CodexAdapter implements Adapter {
 
   listEfforts(): EffortOption[] {
     return DEFAULT_EFFORTS;
+  }
+
+  async capabilities(cwd: string): Promise<EngineCapabilities> {
+    const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
+    const commands = discoverMarkdownCommands([
+      { path: path.join(cwd, ".codex", "skills"), source: "skill", skillFilesOnly: true },
+      { path: path.join(codexHome, "skills"), source: "skill", skillFilesOnly: true },
+    ]);
+    return {
+      steering: true,
+      persistentSessions: true,
+      commands,
+      mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseCodexMcpList),
+    };
+  }
+
+  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    return CodexAppServerSession.open({
+      ...opts,
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      sandboxMode: this.sandboxMode,
+      killGraceMs: this.killGraceMs,
+    });
   }
 
   /** Config overrides accepted by BOTH `exec` and `exec resume`. */

@@ -22,7 +22,7 @@ function delegationObservation(run: SubagentRunDto): StatusObservation {
     case "awaiting_disposition": return { status: "waiting", statusTimestamp: run.updatedAt, reason: "delegation_awaiting_disposition" };
     case "blocked": return { status: "blocked", statusTimestamp: run.updatedAt, reason: "delegation_blocked" };
     case "cancelled": return { status: "cancelled", statusTimestamp: run.updatedAt, reason: "delegation_cancelled" };
-    case "completed": return { status: "completed", statusTimestamp: run.updatedAt, reason: "delegation_completed" };
+    case "completed": return { status: "idle", statusTimestamp: run.updatedAt, reason: "delegation_completed" };
     case "failed": return { status: "failed", statusTimestamp: run.failure?.occurredAt ?? run.updatedAt, reason: "delegation_failed" };
   }
 }
@@ -33,11 +33,13 @@ function eventObservation(events: StoredLogEvent[], after?: string): StatusObser
     const item = candidates[index]!;
     if (item.event.type === "error") return { status: "failed", statusTimestamp: item.ts, reason: "runtime_error" };
     if (item.event.type === "agent_lifecycle") return {
-      status: item.event.status, statusTimestamp: item.ts, reason: item.event.reason,
+      status: item.event.status === "completed" ? "idle" : item.event.status,
+      statusTimestamp: item.ts,
+      reason: item.event.reason,
     };
     if (item.event.type === "task_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "task_waiting_approval" };
-    if (item.event.type === "turn_done") return { status: "completed", statusTimestamp: item.ts, reason: "turn_completed" };
-    if (item.event.type === "task_update" && item.event.status === "done") return { status: "completed", statusTimestamp: item.ts, reason: "task_completed" };
+    if (item.event.type === "turn_done") return { status: "idle", statusTimestamp: item.ts, reason: "turn_completed" };
+    if (item.event.type === "task_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "task_completed" };
   }
   return undefined;
 }

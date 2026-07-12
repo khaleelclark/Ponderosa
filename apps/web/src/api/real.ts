@@ -16,6 +16,7 @@ import type {
   EngineDto,
   ImageAttachmentDto,
   ProjectDto,
+  ProjectEngineCapabilitiesDto,
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
@@ -187,6 +188,9 @@ export const realApi: PonderosaApi = {
   listEngines() {
     return requestJson<EngineDto[]>("/api/engines");
   },
+  getEngineCapabilities(projectId) {
+    return requestJson<ProjectEngineCapabilitiesDto[]>(`/api/projects/${encodeURIComponent(projectId)}/engine-capabilities`);
+  },
   getArtifact(threadId, artifactId) {
     return requestJson<ArtifactContentDto>(
       `/api/threads/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(artifactId)}`,
@@ -215,6 +219,9 @@ export const realApi: PonderosaApi = {
   },
   async cancelRun(threadId) {
     await requestJson(`/api/threads/${encodeURIComponent(threadId)}/cancel`, { method: "POST" });
+  },
+  compactSession(threadId) {
+    return requestJson<{ compacted: boolean }>(`/api/threads/${encodeURIComponent(threadId)}/compact`, { method: "POST" });
   },
   subscribeThread(threadId, lastSeenSeq, handlers): StreamSubscription {
     const url = `/api/threads/${encodeURIComponent(threadId)}/stream${toQuery({

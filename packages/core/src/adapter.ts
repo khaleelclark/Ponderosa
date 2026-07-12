@@ -70,6 +70,65 @@ export interface SeedOptions extends RunOptionsBase {
   history: ChatMessage[];
 }
 
+export type RuntimeDeliveryKind = "user_message" | "collaboration" | "reaction" | "delegation" | "system";
+
+export interface RuntimeTurnInput {
+  prompt: string;
+  kind: RuntimeDeliveryKind;
+  model?: string;
+  effort?: string;
+  clientMessageId?: string;
+}
+
+export type RuntimeSteerResult =
+  | { status: "accepted"; turnId?: string }
+  | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
+
+/**
+ * One durable engine thread. The process/transport may survive many turns.
+ * New signals steer an active turn or start a turn while idle; callers retain a
+ * durable mailbox only for the short intervals where neither operation is safe.
+ */
+export interface RuntimeSession {
+  readonly engineThreadId: string;
+  readonly events: AsyncIterable<AgentEvent>;
+  startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
+  steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
+  interrupt(): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface OpenRuntimeSessionOptions {
+  threadId: string;
+  cwd: string;
+  resumeSessionId?: string;
+  history: ChatMessage[];
+  model?: string;
+  effort?: string;
+  environment?: Record<string, string>;
+  signal: AbortSignal;
+}
+
+export interface EngineCommand {
+  name: string;
+  description: string;
+  source: "ponderosa" | "engine" | "skill" | "plugin";
+  acceptsArguments: boolean;
+}
+
+export interface EngineMcpServer {
+  name: string;
+  status: "connected" | "disconnected" | "unknown";
+  detail?: string;
+}
+
+export interface EngineCapabilities {
+  steering: boolean;
+  persistentSessions: boolean;
+  commands: EngineCommand[];
+  mcpServers: EngineMcpServer[];
+}
+
 /**
  * The engine adapter. Adding an engine = implementing this, nothing else.
  * Both methods return a live stream of normalized {@link AgentEvent}s.
@@ -79,6 +138,12 @@ export interface Adapter {
   displayName: string;
   listModels(): ModelOption[];
   listEfforts(): EffortOption[];
+
+  /** Open the V1 persistent runtime. Required by steer-capable adapters. */
+  openSession?(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession>;
+
+  /** Discover engine-native commands, skills/plugins, and inherited host MCPs. */
+  capabilities?(cwd: string): Promise<EngineCapabilities>;
 
   /**
    * Continue the thread's ACTIVE session with the next user message. Resume by

@@ -4,6 +4,14 @@
 // by seq (critical for phones locking/unlocking).
 
 import type { AgentEvent } from "./events.js";
+import type { AgentLifecycleReason, AgentLifecycleStatus, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
+
+/** Canonical thread events visible on the live wire, including server-owned records. */
+export type ThreadStreamEvent = AgentEvent
+  | { type: "user_message"; communicationEventId?: string; text: string; replyTo?: MessageReferenceDto; attachments?: ImageAttachmentDto[] }
+  | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" }
+  | { type: "communication_projection"; communicationEventId: string; text: string }
+  | { type: "agent_lifecycle"; status: AgentLifecycleStatus; reason: AgentLifecycleReason; executionId?: string };
 
 /**
  * The JSON payload of a `data:` line on the event stream. Wraps a StoredEvent's
@@ -14,7 +22,7 @@ export interface SseEventEnvelope {
   threadId: string;
   seq: number;
   ts: string;
-  event: AgentEvent;
+  event: ThreadStreamEvent;
 }
 
 /**

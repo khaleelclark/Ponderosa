@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
 import { boundedSeedHistory, createServer, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
@@ -106,6 +106,49 @@ class MockAdapter implements Adapter {
   }
 }
 
+class TestEventQueue implements AsyncIterable<AgentEvent> {
+  private values: AgentEvent[] = [];
+  private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
+  push(value: AgentEvent): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value, done: false }); else this.values.push(value);
+  }
+  [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+    return { next: () => {
+      const value = this.values.shift();
+      return value ? Promise.resolve({ value, done: false }) : new Promise((resolve) => this.waiters.push(resolve));
+    } };
+  }
+}
+
+class SteerableMockAdapter extends MockAdapter {
+  readonly starts: RuntimeTurnInput[] = [];
+  readonly steers: RuntimeTurnInput[] = [];
+  opened = 0;
+
+  async openSession(_opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.opened += 1;
+    const queue = new TestEventQueue();
+    queue.push({ type: "session", sessionId: "persistent-session" });
+    return {
+      engineThreadId: "persistent-session",
+      events: queue,
+      startTurn: async (input) => {
+        this.starts.push(input);
+        return { turnId: "persistent-turn" };
+      },
+      steer: async (input) => {
+        this.steers.push(input);
+        queue.push({ type: "text", delta: "steered result" });
+        queue.push({ type: "turn_done" });
+        return { status: "accepted", turnId: "persistent-turn" };
+      },
+      interrupt: async () => undefined,
+      close: async () => undefined,
+    };
+  }
+}
+
 let dataDir: string;
 let repoDir: string;
 let store: ThreadStore;
@@ -162,11 +205,18 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("message reactions", () => {
-  it("persists/replays separately from notification and causes zero runtime side effects", async () => {
+  it("persists, replays, and delivers reaction feedback to the message author", async () => {
     const project = store.createProject({ label: "Reaction room", hostPath: repoDir });
     const room = store.createMasterChat(project.id, { title: "Room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
-    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Result" }, author.id)!;
+    const eventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId, schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "agent", agentId: author.id }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: author.id },
+      text: "Result", createdAt: new Date().toISOString(),
+    });
+    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Result" }, author.id, "main", [], undefined, eventId)!;
     const app = createServer({ dataDir, store, engines, logger: false });
     const request = { emoji: "👍", active: true, idempotencyKey: "manager-global" };
     const first = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
@@ -174,11 +224,40 @@ describe("message reactions", () => {
     expect(first.json()).toMatchObject({ replayed: false, persistence: "recorded", notification: "queued", reactions: [{ emoji: "👍", count: 1, reactedByCurrentActor: true }] });
     const replay = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
     expect(replay.json()).toMatchObject({ occurrenceId: first.json<{ occurrenceId: string }>().occurrenceId, replayed: true });
-    expect(adapter.seeds).toHaveLength(0);
+    await waitForSeedCount(1);
+    expect(adapter.seeds[0]?.threadId).toBe(author.id);
+    expect(adapter.seeds[0]?.prompt).toContain("The user reacted 👍 on your message");
+    expect(adapter.seeds[0]?.prompt).toContain("Result");
     expect(adapter.continues).toHaveLength(0);
-    expect(store.readEvents(author.id)).toHaveLength(0);
+    await waitForRun(author.id);
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
     const detail = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}` });
     expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true }]);
+    await app.close();
+  });
+});
+
+describe("persistent engine steering", () => {
+  it("steers an active agent immediately instead of adding a FIFO delivery", async () => {
+    const steerable = new SteerableMockAdapter();
+    engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Steering", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Persistent", engine: "codex" });
+
+    const first = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" } });
+    expect(first.statusCode).toBe(200);
+    await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
+    const second = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Use the new direction" } });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ queued: false, steered: true, mode: "steer" });
+    expect(steerable.opened).toBe(1);
+    expect(steerable.steers).toEqual([expect.objectContaining({ prompt: "Use the new direction", kind: "user_message" })]);
+    await waitForRun(thread.id);
+    expect(store.getMessages(thread.id).map((message) => message.text)).toEqual(expect.arrayContaining([
+      "Start working", "Use the new direction", "steered result",
+    ]));
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
     await app.close();
   });
 });
@@ -864,7 +943,7 @@ describe("server chunk F", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Yosemite can you review this?" },
+      payload: { text: "can you review this?", recipientAgentIds: [yosemite.id] },
     });
 
     expect(response.statusCode).toBe(200);
@@ -898,7 +977,7 @@ describe("server chunk F", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Yosemite retry this failed turn" },
+      payload: { text: "retry this failed turn", recipientAgentIds: [recipient.id] },
     });
     const messageId = response.json<{ message: { id: string } }>().message.id;
     await waitForRun(recipient.id);
@@ -920,7 +999,7 @@ describe("server chunk F", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Yosemite fail this turn twice" },
+      payload: { text: "fail this turn twice", recipientAgentIds: [recipient.id] },
     });
     const messageId = response.json<{ message: { id: string } }>().message.id;
     for (let i = 0; i < 80 && adapter.continues.length < 1; i += 1) await sleep(10);
@@ -954,7 +1033,7 @@ describe("server chunk F", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Wrangell-St-Elias can you review this?" },
+      payload: { text: "can you review this?", recipientAgentIds: [wrangell.id] },
     });
 
     expect(response.statusCode).toBe(200);
@@ -966,7 +1045,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("delivers @everyone once to every non-archived collaboration member", async () => {
+  it("delivers an explicit collaboration once to every selected active member", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Broadcast room" });
@@ -978,20 +1057,20 @@ describe("server chunk F", () => {
     const response = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@everyone @First please report status." },
+      payload: { text: "please report status.", recipientAgentIds: [first.id, second.id] },
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.json<{ notifiedAgentIds: string[] }>().notifiedAgentIds).toEqual([first.id, second.id]);
     await waitForSeedCount(2);
     expect(adapter.seeds).toHaveLength(2);
-    expect(store.getMessages(first.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(1);
-    expect(store.getMessages(second.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(1);
+    expect(store.getMessages(first.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
+    expect(store.getMessages(second.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
     expect(store.getMessages(archived.id)).toHaveLength(0);
     const intents = store.getMasterChatDeliveryIntents(master.id);
     expect(intents.map(({ intent }) => ({ id: intent.targetThreadId, audience: intent.audience }))).toEqual([
-      { id: first.id, audience: "everyone" },
-      { id: second.id, audience: "everyone" },
+      { id: first.id, audience: "mention" },
+      { id: second.id, audience: "mention" },
     ]);
     await Promise.all([cancelAndWait(app, first.id), cancelAndWait(app, second.id)]);
     await app.close();
@@ -1039,9 +1118,7 @@ describe("server chunk F", () => {
   });
 
   it("isolates three-agent collaboration context by canonical recipient audience", async () => {
-    const app = createServer({
-      dataDir, store, engines, logger: false, communicationReadMode: "authoritative",
-    });
+    const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Three-agent room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
@@ -1197,42 +1274,8 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rolls canonical communication capture back independently", async () => {
-    const project = store.createProject({ label: "Rollback", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const baseline = store.readCommunicationEvents(project.id).length;
-    const app = createServer({
-      dataDir, store, engines, logger: false, communicationMode: "off",
-    });
-    const message = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Legacy-only message" },
-    });
-    expect(message.statusCode).toBe(200);
-    expect(message.json()).not.toHaveProperty("communicationEventId");
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin" } });
-    await waitForRun(thread.id);
-    expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
-    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; parity=disabled" } } });
-    await app.close();
-  });
-
-  it("fails readiness when authoritative reads are combined with disabled canonical capture", async () => {
-    const app = createServer({
-      dataDir, store, engines, logger: false, communicationMode: "off", communicationReadMode: "authoritative",
-    });
-    const ready = await app.inject({ method: "GET", url: "/api/ready" });
-    expect(ready.statusCode).toBe(503);
-    expect(ready.json()).toMatchObject({
-      status: "not_ready",
-      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=disabled") } },
-    });
-    await app.close();
-  });
-
-  it("serves room timelines from canonical projections in authoritative read mode", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+  it("serves every room timeline from canonical projections", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Cutover", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Canonical room" });
     const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
@@ -1264,65 +1307,6 @@ describe("server chunk F", () => {
     expect(readiness, JSON.stringify({ readiness, reconciliation: store.reconcileCommunicationEvents(project.id) }))
       .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
     await app.close();
-  });
-
-  it("fails authoritative readiness when legacy room history is not canonical", async () => {
-    const project = store.createProject({ label: "Drift", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Pre-cutover room" });
-    const legacy = store.appendMasterChatMessage(master.id, { text: "Unmigrated history" })!;
-    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
-
-    const ready = await app.inject({ method: "GET", url: "/api/ready" });
-    expect(ready.statusCode).toBe(503);
-    expect(ready.json()).toMatchObject({
-      status: "not_ready",
-      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=drift") } },
-    });
-    expect(store.reconcileCommunicationEvents(project.id).unlinkedLegacyMessageIds).toEqual([legacy.id]);
-    const dryRun = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: true },
-    });
-    expect(dryRun.json()).toMatchObject({
-      dryRun: true, candidates: 1, migrated: 0,
-      blocked: [{ source: "master_chat", sourceId: legacy.id, reason: "ambiguous_scope" }],
-    });
-    const applied = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: false },
-    });
-    expect(applied.json()).toMatchObject({
-      dryRun: false, candidates: 1, migrated: 0,
-      blocked: [{ source: "master_chat", sourceId: legacy.id, reason: "ambiguous_scope" }],
-    });
-    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ status: "not_ready", checks: { communicationMigration: { ok: false } } });
-    await app.close();
-  });
-
-  it.each(["first", "second"])("rehearses authoritative cutover and legacy read rollback without data mutation (%s pass)", async (pass) => {
-    const project = store.createProject({ label: `Rehearsal ${pass}`, hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Rollback room" });
-    const shadow = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "shadow" });
-    const created = await shadow.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Durable checkpoint" },
-    });
-    expect(created.statusCode).toBe(200);
-    const eventId = created.json<{ communicationEventId: string }>().communicationEventId;
-    await shadow.close();
-    store = new ThreadStore(dataDir);
-
-    const authoritative = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
-    const canonical = (await authoritative.inject({ method: "GET", url: `/api/master-chats/${master.id}` }))
-      .json<{ messages: MasterChatMessageDto[] }>().messages;
-    expect(canonical).toEqual([expect.objectContaining({ communicationEventId: eventId, text: "Durable checkpoint" })]);
-    await authoritative.close();
-    store = new ThreadStore(dataDir);
-
-    const rollback = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "legacy" });
-    const legacy = (await rollback.inject({ method: "GET", url: `/api/master-chats/${master.id}` }))
-      .json<{ messages: MasterChatMessageDto[] }>().messages;
-    expect(legacy).toEqual(canonical);
-    expect(store.readCommunicationEvents(project.id).map((event) => event.eventId)).toEqual([eventId]);
-    await rollback.close();
   });
 
   it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
@@ -1468,8 +1452,8 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("retires mention routing while preserving explicit intents behind the rollback flag", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false, legacyRoutingMode: "reject" });
+  it("rejects retired routing syntax and preserves explicit intents", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Retirement", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Explicit room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
@@ -1540,7 +1524,7 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const payload = { channel: "collaboration", text: "@everyone review this.", idempotencyKey: "broadcast-review" };
+    const payload = { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "review this.", idempotencyKey: "broadcast-review" };
     const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
     const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
 
@@ -1548,8 +1532,8 @@ describe("server chunk F", () => {
     expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
     await waitForSeedCount(2);
     expect(adapter.seeds).toHaveLength(2);
-    expect(store.getMessages(author.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(0);
-    expect(store.getMessages(reviewer.id).filter((message) => message.text.includes("@everyone"))).toHaveLength(1);
+    expect(store.getMessages(author.id).filter((message) => message.text.includes("review this"))).toHaveLength(0);
+    expect(store.getMessages(reviewer.id).filter((message) => message.text.includes("review this"))).toHaveLength(1);
     expect(store.getMasterChatDeliveryIntents(master.id).filter(({ message }) => message.id === first.json<{ messageId: string }>().messageId))
       .toHaveLength(1);
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
@@ -1572,7 +1556,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${token}` },
-      payload: { channel: "collaboration", text: "@everyone should not receive this.", idempotencyKey: "removed-author" },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "should not receive this.", idempotencyKey: "removed-author" },
     });
 
     expect(response.statusCode).toBe(409);
@@ -1599,7 +1583,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${token}` },
-      payload: { channel: "individual", text: "Too late." },
+      payload: { intent: "direct_to_user", text: "Too late." },
     });
     expect(response.statusCode).toBe(401);
     expect(store.getMasterChatMessages(master.id)).toEqual([
@@ -1625,54 +1609,6 @@ describe("server chunk F", () => {
     await waitForSeedCount(1);
     expect(adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
     await cancelAndWait(app, thread.id);
-    await app.close();
-  });
-
-  it("queues an agent-authored mention until the tagged agent finishes its active turn", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
-    const reviewer = store.createThread(project.id, {
-      title: "Pinnacles",
-      engine: "codex",
-      masterChatId: master.id,
-    });
-    const author = store.createThread(project.id, {
-      title: "Badlands",
-      engine: "codex",
-      masterChatId: master.id,
-    });
-
-    adapter.mode = "hang";
-    await app.inject({
-      method: "POST",
-      url: `/api/threads/${reviewer.id}/messages`,
-      payload: { text: "Review another change first." },
-    });
-
-    adapter.mode = "normal";
-    adapter.responseText = "@Pinnacles please review my completed change.";
-    await app.inject({
-      method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Badlands Finish and request the security review." },
-    });
-    await waitForRun(author.id);
-
-    // The reviewer is still busy, so the follow-up must remain queued rather than
-    // being discarded. Finishing that turn should immediately activate it.
-    await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id);
-
-    expect(adapter.continues).toHaveLength(1);
-    expect(adapter.continues[0]?.prompt).toContain(
-      "Latest message for you:\n@Pinnacles please review my completed change.",
-    );
-    expect(store.getMessages(reviewer.id)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ role: "user", text: "@Pinnacles please review my completed change." }),
-      ]),
-    );
     await app.close();
   });
 
@@ -1702,7 +1638,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${token}` },
-      payload: { channel: "collaboration", text: "@Pinnacles Please review this once you finish." },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review this once you finish." },
     });
     expect(handoff.statusCode).toBe(200);
 
@@ -1730,7 +1666,7 @@ describe("server chunk F", () => {
     const childToken = adapter.seeds.find((seed) => seed.threadId === child.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
 
-    const tag = { channel: "collaboration" as const, text: "@Parent first completed result", idempotencyKey: "result-1" };
+    const tag = { intent: "collaboration" as const, recipientAgentIds: [parent.id], text: "first completed result", idempotencyKey: "result-1" };
     const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
     const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
     expect(first.json()).toMatchObject({ replayed: false });
@@ -1738,12 +1674,12 @@ describe("server chunk F", () => {
     await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Parent second completed result" },
+      payload: { text: "second completed result", recipientAgentIds: [parent.id] },
     });
     await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Parent third completed result" },
+      payload: { text: "third completed result", recipientAgentIds: [parent.id] },
     });
 
     // The recipient is still in a tool-like wait. Cancellation must not consume
@@ -1770,8 +1706,8 @@ describe("server chunk F", () => {
     await waitForSeedCount(1);
 
     await Promise.all([
-      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Parent result one" } }),
-      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Parent result two" } }),
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "result one", recipientAgentIds: [parent.id] } }),
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "result two", recipientAgentIds: [parent.id] } }),
     ]);
     await waitForRun(parent.id, 2);
     const prompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
@@ -1865,7 +1801,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${childToken}` },
-      payload: { channel: "collaboration", text: "@Cedar-Breaks Huntsville result is ready.", idempotencyKey: "huntsville-result" },
+      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text: "Huntsville result is ready.", idempotencyKey: "huntsville-result" },
     });
     expect(result.statusCode).toBe(200);
 
@@ -1962,7 +1898,7 @@ describe("server chunk F", () => {
     await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Parent arrived during active batch" },
+      payload: { text: "arrived during active batch", recipientAgentIds: [parent.id] },
     });
     await waitForRun(parent.id, 2);
     await waitForRun(other.id);
@@ -2361,30 +2297,6 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("allows a collaboration agent to hand off to another tagged agent", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Review room" });
-    const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", masterChatId: master.id });
-    adapter.responseText = "@Pinnacles please review the updated availability fix.";
-
-    await app.inject({
-      method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Canyon-de-Chelly Continue the review." },
-    });
-    await waitForRun(author.id);
-    await waitForRun(reviewer.id);
-
-    expect(store.getMessages(reviewer.id)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ role: "user", text: "@Pinnacles please review the updated availability fix." }),
-      ]),
-    );
-    await app.close();
-  });
-
   it("rejects attempts to inject collaboration context through the normal thread endpoint", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -2401,53 +2313,6 @@ describe("server chunk F", () => {
     expect(response.statusCode).toBe(403);
     expect(response.json()).toEqual({ error: "collaboration context must be delivered by an explicit recipient event" });
     expect(adapter.seeds).toHaveLength(0);
-    await app.close();
-  });
-
-  it("persists more than fifty mention follow-ups without terminal overflow", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Busy review room" });
-    const reviewer = store.createThread(project.id, {
-      title: "Pinnacles",
-      engine: "codex",
-      masterChatId: master.id,
-    });
-
-    adapter.mode = "hang";
-    await app.inject({
-      method: "POST",
-      url: `/api/threads/${reviewer.id}/messages`,
-      payload: { text: "Begin a long review." },
-    });
-
-    adapter.mode = "normal";
-    adapter.responseText = "@Pinnacles please review this follow-up.";
-    const authors = Array.from({ length: 51 }, (_, index) =>
-      store.createThread(project.id, {
-        title: `Author ${index}`,
-        engine: "codex",
-        masterChatId: master.id,
-      }),
-    );
-    for (const author of authors) {
-      await app.inject({
-        method: "POST",
-        url: `/api/master-chats/${master.id}/collaboration/messages`,
-        payload: { text: `@${author.title.replace(/\s+/g, "-")} Finish and request review.` },
-      });
-    }
-    await Promise.all(authors.map((author) => waitForRun(author.id)));
-
-    expect(store.getMasterChatMessages(master.id, "collaboration")).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("follow-up queue is full") })]),
-    );
-
-    await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id, 3);
-    const reviewerTurns = adapter.continues.filter((turn) => turn.threadId === reviewer.id);
-    expect(reviewerTurns).toHaveLength(3);
-    expect(reviewerTurns.map((turn) => turn.prompt.match(/CollaborationDeliveryBatch \((\d+) deliveries/)?.[1])).toEqual(["20", "20", "11"]);
     await app.close();
   });
 
@@ -2562,6 +2427,24 @@ describe("server chunk F", () => {
       expect.objectContaining({ id: "codex", authenticated: true, authDetail: "test" }),
       expect.objectContaining({ id: "broken", authenticated: false, authDetail: "not logged in" }),
     ]);
+    await app.close();
+  });
+
+  it("caches inherited engine capabilities instead of repeatedly spawning host CLIs", async () => {
+    let discoveries = 0;
+    Object.assign(adapter, { capabilities: async () => {
+      discoveries += 1;
+      return { steering: true, persistentSessions: true, commands: [], mcpServers: [] };
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Capabilities", hostPath: repoDir });
+
+    const first = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    const second = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(discoveries).toBe(1);
     await app.close();
   });
 
@@ -2740,7 +2623,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${adapter.seeds[1]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-      payload: { channel: "collaboration", text: "@Parent progress from child" },
+      payload: { intent: "collaboration", recipientAgentIds: [thread.id], text: "progress from child" },
     });
     expect(childCollaboration.statusCode).toBe(200);
     expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual([

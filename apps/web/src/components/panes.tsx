@@ -28,7 +28,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ArtifactContentDto, ArtifactDto, MessageDto, TaskDto } from "@ponderosa/core";
+import type { ArtifactContentDto, ArtifactDto, EngineCommand, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -747,6 +747,7 @@ export function Composer({
   running,
   placeholder,
   mentionHandles,
+  commands,
   busyMentionHandles,
   allowUnmentionedSend = true,
   onSend,
@@ -760,6 +761,8 @@ export function Composer({
   placeholder?: string;
   /** When provided, typing `@` autocompletes these agent handles (group chat). */
   mentionHandles?: string[];
+  /** Engine/system capabilities shown when the composer starts with `/`. */
+  commands?: EngineCommand[];
   /** Mentioned agents that cannot accept a new turn yet. */
   busyMentionHandles?: string[];
   /** Whether text without a valid mention may be submitted. */
@@ -775,6 +778,7 @@ export function Composer({
   const files = attachments.files;
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -811,7 +815,14 @@ export function Composer({
           .filter((handle) => handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()))
           .slice(0, 6)
       : [];
-  const menuOpen = suggestions.length > 0 && !suppressMenu;
+  const slashMatch = /^\/([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
+  const commandSuggestions = slashMatch && commands
+    ? commands.filter((command) => command.name.toLocaleLowerCase().startsWith(slashMatch[1]!.toLocaleLowerCase())).slice(0, 8)
+    : [];
+  const menuSuggestions = commandSuggestions.length > 0
+    ? commandSuggestions.map((command) => ({ kind: "command" as const, command }))
+    : suggestions.map((handle) => ({ kind: "mention" as const, handle }));
+  const menuOpen = menuSuggestions.length > 0 && !suppressMenu;
 
   const applyMention = (handle: string) => {
     const start = caret - mentionMatch![0].length + mentionMatch![0].indexOf("@");
@@ -830,13 +841,30 @@ export function Composer({
     });
   };
 
+  const applyCommand = (command: EngineCommand) => {
+    const next = `/${command.name}${command.acceptsArguments ? " " : ""}${text.slice(caret)}`;
+    update(next);
+    setHighlighted(0);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      const nextCaret = command.name.length + (command.acceptsArguments ? 2 : 1);
+      el.setSelectionRange(nextCaret, nextCaret);
+      setCaret(nextCaret);
+    });
+  };
+
   const send = () => {
+    if (sendingRef.current || !canSend) return;
+    sendingRef.current = true;
     setSendError(undefined);
     void Promise.resolve(onSend(text.trim(), files)).then(() => {
       update("");
       dispatchAttachments({ type: "clear" });
       setCaret(0);
-    }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."));
+    }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
+      .finally(() => { sendingRef.current = false; });
   };
 
   return (
@@ -887,9 +915,9 @@ export function Composer({
             inputProps={{
               "aria-label": "Message",
               enterKeyHint: "send",
-              role: mentionHandles ? "combobox" : undefined,
-              "aria-autocomplete": mentionHandles ? "list" : undefined,
-              "aria-expanded": mentionHandles ? menuOpen : undefined,
+              role: mentionHandles || commands?.length ? "combobox" : undefined,
+              "aria-autocomplete": mentionHandles || commands?.length ? "list" : undefined,
+              "aria-expanded": mentionHandles || commands?.length ? menuOpen : undefined,
               "aria-controls": menuOpen ? mentionListId : undefined,
               "aria-activedescendant": menuOpen ? `${mentionListId}-option-${highlighted}` : undefined,
             }}
@@ -914,17 +942,19 @@ export function Composer({
               }
               if (menuOpen && event.key === "ArrowDown") {
                 event.preventDefault();
-                setHighlighted((index) => (index + 1) % suggestions.length);
+                setHighlighted((index) => (index + 1) % menuSuggestions.length);
                 return;
               }
               if (menuOpen && event.key === "ArrowUp") {
                 event.preventDefault();
-                setHighlighted((index) => (index - 1 + suggestions.length) % suggestions.length);
+                setHighlighted((index) => (index - 1 + menuSuggestions.length) % menuSuggestions.length);
                 return;
               }
               if (menuOpen && (event.key === "Enter" || event.key === "Tab") && !event.metaKey && !event.ctrlKey) {
                 event.preventDefault();
-                applyMention(suggestions[highlighted]!);
+                const selected = menuSuggestions[highlighted]!;
+                if (selected.kind === "mention") applyMention(selected.handle);
+                else applyCommand(selected.command);
                 return;
               }
               if (menuOpen && event.key === "Escape") {
@@ -946,7 +976,7 @@ export function Composer({
           {mentionedHandles.length > 0 ? (
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
               {mentionedBusyHandles.length > 0
-                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — your message will be queued.`
+                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
                   ? "Notifying every eligible agent in this collaboration room"
                   : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
@@ -955,20 +985,23 @@ export function Composer({
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
             <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
               <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180 }}>
-                <MenuList dense id={mentionListId} role="listbox" aria-label="Agent mentions">
-                  {suggestions.map((handle, index) => (
+                <MenuList dense id={mentionListId} role="listbox" aria-label={commandSuggestions.length ? "Commands" : "Agent mentions"}>
+                  {menuSuggestions.map((suggestion, index) => (
                     <MenuItem
-                      key={handle}
+                      key={suggestion.kind === "mention" ? suggestion.handle : suggestion.command.name}
                       id={`${mentionListId}-option-${index}`}
                       role="option"
                       aria-selected={index === highlighted}
                       selected={index === highlighted}
                       onMouseDown={(event) => {
                         event.preventDefault();
-                        applyMention(handle);
+                        if (suggestion.kind === "mention") applyMention(suggestion.handle);
+                        else applyCommand(suggestion.command);
                       }}
                     >
-                      @{handle}
+                      {suggestion.kind === "mention"
+                        ? `@${suggestion.handle}`
+                        : <Box><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary">{suggestion.command.description}</Typography></Box>}
                     </MenuItem>
                   ))}
                 </MenuList>

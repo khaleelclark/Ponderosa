@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   EngineAuthStatus,
   EngineDto,
+  ProjectEngineCapabilitiesDto,
   FilesResponse,
   HealthDto,
   ReadinessDto,
@@ -31,6 +32,7 @@ import type {
   ThreadDto,
   MessageReferenceDto,
   ReactionActor,
+  RuntimeSession,
   SetMessageReactionRequest,
   SetMessageReactionResponse,
 } from "@ponderosa/core";
@@ -62,10 +64,6 @@ export interface CreateServerOptions {
   /** Host-local origin injected into runtime tools; agents run on this server host. */
   agentBaseUrl?: string;
   logger?: boolean;
-  /** Emergency rollback: `off` preserves legacy logs/projections only. */
-  communicationMode?: "off" | "shadow";
-  communicationReadMode?: "legacy" | "shadow" | "authoritative";
-  legacyRoutingMode?: "accept" | "reject";
   /** Deterministic scheduling seams for retry tests; production uses host timers and randomness. */
   deliveryScheduling?: {
     now?: () => number;
@@ -104,6 +102,7 @@ interface ActiveRun {
   ownershipState: RuntimeOwnershipState;
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
+  runtimeSession?: RuntimeSession;
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -613,10 +612,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
+  const runtimeSessions = new Map<string, { session: RuntimeSession; iterator: AsyncIterator<AgentEvent> }>();
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const runLedger = new RunLedger(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
+  const engineCapabilityCache = new Map<string, { expiresAt: number; value: Promise<ProjectEngineCapabilitiesDto> }>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
@@ -636,13 +637,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const directReplyClaims = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
-  const communicationMode = opts.communicationMode ?? "shadow";
-  const communicationReadMode = opts.communicationReadMode ?? "shadow";
-  // Embedders can opt into the compatibility window; the production config
-  // defaults to reject so newly deployed agents never depend on routing syntax.
-  const legacyRoutingMode = opts.legacyRoutingMode ?? "accept";
-  const recordCommunication = (event: CommunicationEvent): CommunicationEvent | undefined =>
-    communicationMode === "off" ? undefined : store.appendCommunicationEvent(event).event;
+  const recordCommunication = (event: CommunicationEvent): CommunicationEvent =>
+    store.appendCommunicationEvent(event).event;
   const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
   const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
   const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
@@ -728,7 +724,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (run.deliveryIds?.length) {
       for (const id of run.deliveryIds) {
         collaborationDeliveries.retryFailedTurn(id, "execution lease expired");
-        syncDelegatedCompletion(id);
+        syncDeliveryOutcome(id);
       }
     }
     run.controller.abort();
@@ -759,25 +755,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
     const detail = store.getMasterChatDetail(masterChatId);
-    if (!detail || communicationReadMode !== "authoritative") return detail;
+    if (!detail) return detail;
     return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "main") };
   }
 
   function collaborationChatDetail(masterChatId: string): CollaborationChatDetailDto | undefined {
     const detail = store.getCollaborationChatDetail(masterChatId);
-    if (!detail || communicationReadMode !== "authoritative") return detail;
+    if (!detail) return detail;
     return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "collaboration") };
   }
 
   function threadDetail(threadId: string): import("@ponderosa/core").ThreadDetailDto | undefined {
     const detail = store.getThreadDetail(threadId);
-    if (!detail || communicationReadMode !== "authoritative") return detail;
+    if (!detail) return detail;
     return { ...detail, messages: store.getProjectedThreadMessages(threadId) };
   }
 
-  const threadMessages = (threadId: string) => communicationReadMode === "authoritative"
-    ? store.getProjectedThreadMessages(threadId)
-    : store.getMessages(threadId);
+  const threadMessages = (threadId: string) => store.getProjectedThreadMessages(threadId);
 
   function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
     const now = Date.now();
@@ -834,7 +828,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort: delivery.effort,
       agentMentionDepth: delivery.relayDepth,
       agentMentionTrail: delivery.mentionTrail,
-      collaborationMasterChatId: delivery.kind === "direct" ? undefined : delivery.masterChatId,
+      collaborationMasterChatId: delivery.kind === "direct" || delivery.kind === "reaction" ? undefined : delivery.masterChatId,
       sourceChannel: delivery.sourceChannel,
       sourceMasterChatId: delivery.sourceChannel === "main" ? delivery.masterChatId : undefined,
       sourceAuthorThreadId: delivery.authorThreadId,
@@ -845,7 +839,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function canShareCollaborationBatch(first: CollaborationDelivery, candidate: CollaborationDelivery): boolean {
-    return first.kind !== "direct" && candidate.kind !== "direct";
+    return first.kind !== "direct" && first.kind !== "reaction" &&
+      candidate.kind !== "direct" && candidate.kind !== "reaction";
   }
 
   function formatDeliveryBatch(batch: CollaborationDeliveryBatch): string {
@@ -883,7 +878,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
     const first = pending[0];
     if (!first) return [];
-    if (first.kind === "direct") return [first];
+    if (first.kind === "direct" || first.kind === "reaction") return [first];
     const batch: CollaborationDelivery[] = [];
     for (const candidate of pending) {
       if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
@@ -944,6 +939,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return queued.delivery;
   }
 
+  function dispatchReactionNotifications(): void {
+    for (const notification of store.getReactionNotificationOutbox()) {
+      const message = store.getMasterChatMessages(notification.masterChatId, notification.channel)
+        .find((candidate) => candidate.id === notification.messageId);
+      if (!message) {
+        store.completeReactionNotification(notification.occurrenceId, "suppressed", "message_unavailable");
+        continue;
+      }
+      const actor = notification.actor.kind === "manager"
+        ? "The user"
+        : store.getThread(notification.actor.threadId)?.title ?? "Another agent";
+      const action = notification.active ? "reacted" : "removed their reaction";
+      const quoted = message.text.length > 500 ? `${message.text.slice(0, 499)}…` : message.text;
+      const delivery = queueCollaborationDelivery({
+        masterChatId: notification.masterChatId,
+        messageId: `reaction:${notification.occurrenceId}`,
+        targetThreadId: notification.targetThreadId,
+        text: `${actor} ${action} ${notification.emoji} on your message:\n\n${quoted}\n\nTreat this as feedback. You do not need to reply unless a response would be useful.`,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "reaction",
+        reactionOccurrenceId: notification.occurrenceId,
+        createdAt: notification.createdAt,
+      });
+      if (!delivery) store.completeReactionNotification(notification.occurrenceId, "suppressed", "server_closing");
+    }
+  }
+
   async function dispatchNextTurn(threadId: string): Promise<void> {
     if (closed) return;
     if (activeRuns.has(threadId)) return;
@@ -965,14 +988,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const batch = boundedDeliveryBatch(pending);
     if (batch.length === 0) {
       collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
-      syncDelegatedCompletion(delivery.id);
+      syncDeliveryOutcome(delivery.id);
       return;
     }
     const next = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
     const deliveryIds = batch.map((item) => item.id);
 
     collaborationDeliveries.markBatchDelivered(deliveryIds);
-    for (const id of deliveryIds) syncDelegatedCompletion(id);
+    for (const id of deliveryIds) syncDeliveryOutcome(id);
     const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
     const response = injectedStatus === undefined ? await app.inject({
       method: "POST",
@@ -993,7 +1016,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
       collaborationDeliveries.requeueBatch(deliveryIds, true);
-      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      for (const id of deliveryIds) syncDeliveryOutcome(id);
     } else if (response.statusCode === 429 || response.statusCode >= 500) {
       const attempt = Math.max(...deliveryIds.map((id) => collaborationDeliveries.get(id)?.dispatchAttempts ?? 0)) + 1;
       const delay = dispatchRetryDelay(attempt);
@@ -1004,7 +1027,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         nextDispatchAt,
         COLLABORATION_DISPATCH_LIMITS.maxDispatchAttempts,
       );
-      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      for (const id of deliveryIds) syncDeliveryOutcome(id);
       if (retried.some((item) => item.status === "queued")) {
         scheduleDeliveryDispatch(threadId, delay);
         retryScheduled = true;
@@ -1021,7 +1044,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
     } else if (response.statusCode >= 300) {
       collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
-      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      for (const id of deliveryIds) syncDeliveryOutcome(id);
       const delivery = collaborationDeliveries.get(deliveryIds[0]!);
       const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
       if (delivery?.masterChatId && target) {
@@ -1076,7 +1099,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           recipients.add(intent.targetThreadId);
           if (intent.delegatedRunId) {
             completionMessages.add(intent.delegatedRunId);
-            syncDelegatedCompletion(queued.delivery.id);
+            syncDeliveryOutcome(queued.delivery.id);
           }
         }
       }
@@ -1136,6 +1159,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       .flatMap((claim) => claim.deliveryIds ?? []));
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged(interruptedDeliveryIds));
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
+    dispatchReactionNotifications();
     for (const threadId of recipients) {
       scheduleDeliveryDispatch(threadId);
     }
@@ -1177,6 +1201,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       run.controller.abort();
     }
     activeRuns.clear();
+    await Promise.allSettled([...runtimeSessions.values()].map(({ session }) => session.close()));
+    runtimeSessions.clear();
     await Promise.allSettled([...deliveryDispatches]);
     assets.close();
     store.close();
@@ -1352,6 +1378,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   }
 
+  function syncReactionNotification(deliveryId: string): void {
+    const delivery = collaborationDeliveries.get(deliveryId);
+    if (!delivery?.reactionOccurrenceId) return;
+    if (delivery.status === "acknowledged") {
+      store.completeReactionNotification(delivery.reactionOccurrenceId, "delivered", "recipient_turn_acknowledged");
+    } else if (delivery.status === "failed") {
+      store.completeReactionNotification(delivery.reactionOccurrenceId, "suppressed", delivery.failure ?? "delivery_failed");
+    }
+  }
+
+  function syncDeliveryOutcome(deliveryId: string): void {
+    syncDelegatedCompletion(deliveryId);
+    syncReactionNotification(deliveryId);
+  }
+
   /** Completion is first-class: it is recorded and delivered even if a child never tags its parent. */
   function notifyParentOfDelegatedCompletion(run: SubagentRunDto): void {
     if (closed) return;
@@ -1414,7 +1455,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       orderKey: store.getMasterChatMessageDeliveryOrderKey(run.masterChatId, message.id),
     });
     if (!delivery) return;
-    syncDelegatedCompletion(delivery.id);
+    syncDeliveryOutcome(delivery.id);
   }
 
   app.post<{
@@ -1427,21 +1468,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    // Active runtime sessions may retain the pre-intent prompt until they roll
-    // over. Accept that wire shape during migration, but never advertise it to
-    // newly seeded sessions.
     const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
     const legacyChannel = legacyBody?.channel;
-    if (legacyChannel && legacyRoutingMode === "reject") {
+    if (legacyChannel) {
       return reply.code(410).send({ error: "legacy channel routing is retired; send an explicit communication intent" });
     }
-    const intent = request.body?.intent ?? (legacyChannel === "individual"
-      ? "direct_to_user"
-      : legacyChannel === "main"
-        ? "broadcast"
-        : legacyChannel === "collaboration"
-          ? "collaboration"
-          : undefined);
+    const intent = request.body?.intent;
     const text = request.body?.text?.trim();
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
       return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
@@ -1481,7 +1513,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         projectedAt: communication.createdAt,
       });
       if (communication && capability.masterChatId) {
-        const masterMessage = store.appendMasterChatMessage(
+        store.appendMasterChatMessage(
           capability.masterChatId,
           { text: `@User ${text}` },
           capability.threadId,
@@ -1490,19 +1522,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           undefined,
           communication.eventId,
         );
-        if (masterMessage) store.appendCommunicationProjection(currentAuthor.projectId, {
-          eventId: communication.eventId,
-          surface: "master_chat",
-          projectionKey: capability.masterChatId,
-          projectedAt: masterMessage.createdAt,
-          message: {
-            messageId: masterMessage.id,
-            role: masterMessage.role,
-            renderedText: masterMessage.text,
-            createdAt: masterMessage.createdAt,
-            authorAgentId: capability.threadId,
-          },
-        });
       }
       const stored = store.appendEvent(capability.threadId, communication ? {
         type: "communication_projection", communicationEventId: communication.eventId, text,
@@ -1896,14 +1915,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? "no runtimes are configured"
         : `${available} of ${engines.size} configured runtimes available`,
     };
-    const communicationReports = communicationMode === "off"
-      ? []
-      : store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
+    const communicationReports = store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
     const communicationParity = communicationReports.every((report) => report.ok);
-    const authoritativeSourceAvailable = communicationMode !== "off";
     const communicationMigration = {
-      ok: communicationReadMode !== "authoritative" || (authoritativeSourceAvailable && communicationParity),
-      detail: `communication=${communicationMode}; reads=${communicationReadMode}; legacy_routing=${legacyRoutingMode}; parity=${authoritativeSourceAvailable ? (communicationParity ? "ok" : "drift") : "disabled"}`,
+      ok: communicationParity,
+      detail: `canonical communication projections=${communicationParity ? "ok" : "drift"}`,
     };
     const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok && communicationMigration.ok;
     const body: ReadinessDto = {
@@ -1945,23 +1961,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const report = store.reconcileCommunicationEvents(request.params.id);
     if (!report.ok) reply.code(409);
     return report;
-  });
-
-  app.post<{
-    Params: { id: string };
-    Body: import("@ponderosa/core").LegacyCommunicationBackfillRequest;
-  }>("/api/projects/:id/communication-backfill", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const body = request.body ?? {};
-    if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
-      return reply.code(400).send({ error: "dryRun must be boolean" });
-    }
-    const overrides = body.collaborationRecipientsByMessageId;
-    if (overrides && (typeof overrides !== "object" || Array.isArray(overrides) || Object.keys(overrides).length > 10_000 ||
-      Object.values(overrides).some((ids) => !Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some((id) => typeof id !== "string")))) {
-      return reply.code(400).send({ error: "collaboration recipient overrides must contain 1 to 100 stable agent IDs per message" });
-    }
-    return store.backfillLegacyCommunications(request.params.id, body);
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/agent-health", async (request, reply) => {
@@ -2081,6 +2080,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     actor: ReactionActor; body: SetMessageReactionRequest;
   }): SetMessageReactionResponse => {
     const result = store.setMasterChatReaction({ ...input, ...input.body });
+    dispatchReactionNotifications();
     return {
       occurrenceId: result.event.occurrenceId,
       replayed: result.replayed,
@@ -2300,11 +2300,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         blocked: [],
       };
     } else {
-      // Compatibility for clients loaded before the recipient-picker contract.
-      if (legacyRoutingMode === "reject") {
-        return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds; mention routing is retired" });
-      }
-      routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
+      return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds" });
     }
     if (routing.intents.length === 0) {
       return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
@@ -2556,6 +2552,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       run.controller.abort();
       releaseActiveRun(id, run, "cancelled");
     }
+    const runtime = runtimeSessions.get(id);
+    if (runtime) {
+      await runtime.session.close();
+      runtimeSessions.delete(id);
+    }
     const delegated = delegations.findByChildThread(id);
     if (delegated && (delegated.status === "queued" || delegated.status === "running" || delegated.status === "awaiting_disposition")) {
       const cancelled = delegations.cancel(delegated.id, `thread-delete-${randomUUID()}`);
@@ -2711,7 +2712,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
           inboxDeliveries.some((delivery) => delivery?.targetThreadId !== thread.id || delivery.status !== "delivered") ||
-          (inboxDelivery?.kind !== "direct" && !collaborationMasterChatId))
+          (inboxDelivery?.kind !== "direct" && inboxDelivery?.kind !== "reaction" && !collaborationMasterChatId))
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
@@ -2789,8 +2790,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (request.body.replyToMessageId && !pendingTurn.replyTo) {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
       }
-      if (activeRuns.has(thread.id)) {
+      const existingRun = activeRuns.get(thread.id);
+      if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
+        if (existingRun.runtimeSession) {
+          const steered = await existingRun.runtimeSession.steer({
+            prompt: text,
+            kind: requestedDeliveryIds.length > 0
+              ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
+              : "user_message",
+            model: request.body.model,
+            effort: request.body.effort,
+            clientMessageId: communicationEventId,
+          });
+          if (steered.status === "accepted") {
+            const stored = store.appendEvent(thread.id, {
+              type: "user_message",
+              text,
+              communicationEventId,
+              replyTo: pendingTurn.replyTo,
+            });
+            publish(thread.id, stored);
+            if (requestedDeliveryIds.length > 0) {
+              collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
+              for (const id of requestedDeliveryIds) syncDeliveryOutcome(id);
+            }
+            renewExecutionLease(thread.id, existingRun);
+            return { queued: false, steered: true, runId: existingRun.runId, mode: "steer", communicationEventId };
+          }
+        }
         // A dispatcher that lost the claim race needs to restore the dequeued
         // item at the head itself; ordinary manager and agent messages join the
         // FIFO queue and receive an explicit acknowledgement.
@@ -2995,8 +3023,52 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_DELEGATION_TOKEN: delegationCapability,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
           };
+          let persistentRuntime = engine.adapter.openSession ? runtimeSessions.get(thread.id) : undefined;
+          if (engine.adapter.openSession && !persistentRuntime) {
+            const session = await engine.adapter.openSession({
+              threadId: thread.id,
+              cwd: project.hostPath,
+              resumeSessionId,
+              history,
+              model: request.body.model,
+              effort: request.body.effort,
+              environment,
+              signal: controller.signal,
+            });
+            persistentRuntime = { session, iterator: session.events[Symbol.asyncIterator]() };
+            runtimeSessions.set(thread.id, persistentRuntime);
+          }
+          if (persistentRuntime) activeRun.runtimeSession = persistentRuntime.session;
+          let persistentTurnStarted = false;
           const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
-            ? engine.adapter.continue({
+            ? persistentRuntime
+              ? {
+                  async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+                    if (!persistentTurnStarted) {
+                      await persistentRuntime!.session.startTurn({
+                        prompt,
+                        kind: requestedDeliveryIds.length > 0
+                          ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
+                          : "user_message",
+                        model: request.body.model,
+                        effort: request.body.effort,
+                        clientMessageId: communicationEventId,
+                      });
+                      persistentTurnStarted = true;
+                    }
+                    while (true) {
+                      const next = await persistentRuntime!.iterator.next();
+                      if (next.done) {
+                        runtimeSessions.delete(thread.id);
+                        yield { type: "error", message: "persistent engine session stopped" };
+                        return;
+                      }
+                      yield next.value;
+                      if (next.value.type === "turn_done" || next.value.type === "error") return;
+                    }
+                  },
+                }
+              : engine.adapter.continue({
                   threadId: thread.id,
                   cwd: project.hostPath,
                   prompt,
@@ -3006,7 +3078,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   environment,
                   signal: controller.signal,
                 })
-            : engine.adapter.seed({
+            : persistentRuntime
+              ? {
+                  async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+                    if (!persistentTurnStarted) {
+                      await persistentRuntime!.session.startTurn({
+                        prompt,
+                        kind: requestedDeliveryIds.length > 0
+                          ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
+                          : "user_message",
+                        model: request.body.model,
+                        effort: request.body.effort,
+                        clientMessageId: communicationEventId,
+                      });
+                      persistentTurnStarted = true;
+                    }
+                    while (true) {
+                      const next = await persistentRuntime!.iterator.next();
+                      if (next.done) {
+                        runtimeSessions.delete(thread.id);
+                        yield { type: "error", message: "persistent engine session stopped" };
+                        return;
+                      }
+                      yield next.value;
+                      if (next.value.type === "turn_done" || next.value.type === "error") return;
+                    }
+                  },
+                }
+              : engine.adapter.seed({
                   threadId: thread.id,
                   cwd: project.hostPath,
                   prompt,
@@ -3116,56 +3215,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
-              const routing = !runError && collaborationMasterChatId && legacyRoutingMode === "accept"
-                ? resolveCollaborationIntents(
-                    collaborationMasterChatId,
-                    thread.id,
-                    statusText,
-                    mentionDepth ?? 0,
-                    mentionTrail,
-                  )
-                : { intents: [], blocked: [] };
-              const reportCommunication = sourceChannel === "main"
-                ? recordCommunication({
-                    eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                    masterChatId: routingMasterChatId,
-                    sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                    intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-                    text: statusText, createdAt: new Date().toISOString(),
-                    ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-                  })
-                : routing.intents.length
-                  ? recordCommunication({
-                      eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                      masterChatId: routingMasterChatId,
-                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                      intent: "collaboration",
-                      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
-                      text: statusText, createdAt: new Date().toISOString(),
-                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-                    })
-                  : recordCommunication({
-                      eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                      masterChatId: routingMasterChatId,
-                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                      intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-                      text: statusText, createdAt: new Date().toISOString(),
-                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-                    });
+              const reportCommunication = recordCommunication({
+                eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
+                masterChatId: routingMasterChatId,
+                sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
+                text: statusText, createdAt: new Date().toISOString(),
+                ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+              });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
               const renderedStatusText = reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm"
                 ? `@User ${statusText}`
                 : statusText;
-              const reportChannel = reportCommunication?.intent === "user_dm" || reportCommunication?.intent === "direct_to_user"
-                ? "main"
-                : sourceChannel;
-              const report = store.appendMasterChatMessage(
+              store.appendMasterChatMessage(
                 routingMasterChatId,
                 { role: "assistant", text: renderedStatusText },
                 thread.id,
-                reportChannel,
-                routing.intents,
+                "main",
+                [],
                 undefined,
                 reportCommunication?.eventId,
               );
@@ -3176,13 +3244,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   projectionKey: "local-operator",
                   projectedAt: reportCommunication.createdAt,
                 });
-              }
-
-              // A tag in a main-chat report is ordinary text. A tag in the
-              // collaboration chat is an opt-in handoff and can start a turn.
-              if (!runError && collaborationMasterChatId && report) {
-                queueRecordedCollaborationMessage(collaborationMasterChatId, report, thread.id, routing.intents);
-                appendBlockedMentionWarnings(collaborationMasterChatId, routing.blocked);
               }
             } catch {
               // Master chat may have been deleted mid-run; ignore.
@@ -3196,7 +3257,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               for (const id of requestedDeliveryIds) collaborationDeliveries.retryFailedTurn(id, runError);
             }
             else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
-            for (const id of requestedDeliveryIds) syncDelegatedCompletion(id);
+            for (const id of requestedDeliveryIds) syncDeliveryOutcome(id);
           }
           if (released && !closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
             const acceptedSessionId = store.resumeSessionId(thread.id);
@@ -3281,6 +3342,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = activeRuns.get(request.params.id);
     if (!run || !transitionRun(request.params.id, run, "cancelling")) return { cancelled: false };
     run.controller.abort();
+    runtimeSessions.delete(request.params.id);
     const lifecycle = store.appendEvent(request.params.id, {
       type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled",
     });
@@ -3295,6 +3357,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
     if (activeRuns.has(request.params.id)) {
       return reply.code(409).send({ error: "cannot compact a thread with an active run", retryable: true });
+    }
+    const runtime = runtimeSessions.get(request.params.id);
+    if (runtime) {
+      await runtime.session.close();
+      runtimeSessions.delete(request.params.id);
     }
     return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
   });
@@ -3360,6 +3427,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }),
     );
   });
+
+  app.get<{ Params: { id: string } }>(
+    "/api/projects/:id/engine-capabilities",
+    async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
+      const project = store.getProject(request.params.id);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      return Promise.all([...engines.values()].map(({ adapter }) => {
+        const key = `${project.hostPath}\0${adapter.id}`;
+        const cached = engineCapabilityCache.get(key);
+        if (cached && cached.expiresAt > Date.now()) return cached.value;
+        const value = Promise.resolve(adapter.capabilities
+          ? adapter.capabilities(project.hostPath)
+          : { steering: false, persistentSessions: false, commands: [], mcpServers: [] })
+          .then((capabilities) => ({ engineId: adapter.id, ...capabilities }));
+        engineCapabilityCache.set(key, { expiresAt: Date.now() + 5 * 60_000, value });
+        void value.catch(() => engineCapabilityCache.delete(key));
+        return value;
+      }));
+    },
+  );
 
   if (opts.webDist) {
     app.get("/*", async (request, reply) => {

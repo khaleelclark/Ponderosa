@@ -27,8 +27,6 @@ import type {
   CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
-  LegacyCommunicationBackfillRequest,
-  LegacyCommunicationBackfillResponse,
   ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
@@ -305,11 +303,6 @@ function communicationMessageProjection(threadId: string, stored: StoredLogEvent
   return undefined;
 }
 
-function legacyCommunicationEventId(projectId: string, source: string, sourceId: string): string {
-  const hex = createHash("sha256").update(`ponderosa-legacy-communication\0${projectId}\0${source}\0${sourceId}`).digest("hex").slice(0, 32);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
-}
-
 function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
   const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort();
   if (normalized.length === 0) throw new Error("collaboration requires at least one recipient agent ID");
@@ -509,35 +502,41 @@ export class ThreadStore {
     return [...this.contextIndex(projectId).values()];
   }
 
-  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+  private communicationProjectionAllowed(
+    projectId: string,
+    projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey">,
+  ): boolean {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!event) throw new Error("communication projection source event not found");
     const roomKeyAllowed = event.masterChatId === projection.projectionKey && (() => {
       const room = this.getMasterChat(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
     })();
-    const allowed = (() => {
-      if (projection.surface === "master_chat") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
-        (event.schemaVersion === 2 && event.intent === "user_dm"));
-      if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
-        (event.schemaVersion === 1 && event.intent === "direct_to_user"));
-      if (projection.surface === "direct_agent_audit") {
-        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
-        if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
-          (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
-        return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
-      }
-      if (projection.surface === "agent_inbox") {
-        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
-        return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
-      }
-      if (projection.surface === "user_inbox") {
-        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
-        return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
-      }
-      return false;
-    })();
-    if (!allowed) throw new Error("communication scope cannot project to requested surface");
+    if (projection.surface === "master_chat") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
+      (event.schemaVersion === 2 && event.intent === "user_dm"));
+    if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
+      (event.schemaVersion === 1 && event.intent === "direct_to_user"));
+    if (projection.surface === "direct_agent_audit") {
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+      if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
+        (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
+      return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
+    }
+    if (projection.surface === "agent_inbox") {
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+      return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
+    }
+    if (projection.surface === "user_inbox") {
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
+      return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
+    }
+    return false;
+  }
+
+  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    if (!this.communicationProjectionAllowed(projectId, projection)) {
+      throw new Error("communication scope cannot project to requested surface");
+    }
     const file = communicationProjectionsPath(this.dataDir, projectId);
     const index = this.projectionIndex(projectId);
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
@@ -746,131 +745,6 @@ export class ThreadStore {
         missingProjectionMetadataEventIds.length === 0 && unlinkedLegacyMessageIds.length === 0 &&
         projectionReadMismatchMessageIds.length === 0,
     };
-  }
-
-  /**
-   * Expand-only migration from legacy room/thread logs into canonical events.
-   * IDs are content-location deterministic, so a crash or repeated operator
-   * request resumes safely. Ambiguous Collaboration audiences are never guessed.
-   */
-  backfillLegacyCommunications(
-    projectId: string,
-    request: LegacyCommunicationBackfillRequest = {},
-  ): LegacyCommunicationBackfillResponse {
-    if (!this.getProject(projectId)) throw new Error("communication project not found");
-    const dryRun = request.dryRun ?? true;
-    const blocked: LegacyCommunicationBackfillResponse["blocked"] = [];
-    let candidates = 0;
-    let migrated = 0;
-    let alreadyLinked = 0;
-    const projectionByMessage = new Map<string, CommunicationProjection>(
-      this.readCommunicationProjections(projectId).flatMap((projection) => projection.message
-        ? [[`${projection.surface}\0${projection.projectionKey}\0${projection.message.messageId}`, projection] as const]
-        : []),
-    );
-    const senderFor = (role: MasterChatMessageJson["role"], authorThreadId?: string | null): CommunicationEvent["sender"] =>
-      authorThreadId ? { kind: "agent", agentId: authorThreadId }
-        : role === "user" ? { kind: "user", userId: "local-operator" }
-          : { kind: "system", component: "legacy-communication-backfill" };
-
-    for (const master of this.listMasterChats(projectId)) {
-      const memberIds = new Set(this.listThreads(projectId)
-        .filter((thread) => thread.masterChatIds.includes(master.id))
-        .map((thread) => thread.id));
-      for (const [channel, surface, file] of [
-        ["main", "master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
-        ["collaboration", "collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
-      ] as const) {
-        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
-          const placementKey = `${surface}\0${master.id}\0${message.id}`;
-          if (message.communicationEventId || projectionByMessage.has(placementKey)) {
-            alreadyLinked += 1;
-            continue;
-          }
-          candidates += 1;
-          // Physical placement in the old Main log does not prove that a row
-          // was organizational: historically Main also contained private
-          // replies. Fail closed instead of promoting private history into
-          // future-agent context. Already-linked rows above retain their
-          // explicit canonical classification.
-          if (channel === "main") {
-            blocked.push({ source: "master_chat", sourceId: message.id, reason: "ambiguous_scope" });
-            continue;
-          }
-          const inferred = channel === "collaboration"
-            ? [...new Set((message.deliveryIntents ?? []).map((intent) => intent.targetThreadId))]
-            : [];
-          const override = request.collaborationRecipientsByMessageId?.[message.id];
-          const recipients = [...new Set(override ?? inferred)];
-          if (channel === "collaboration" && recipients.length === 0) {
-            blocked.push({ source: "collaboration_chat", sourceId: message.id, reason: "explicit_recipients_required" });
-            continue;
-          }
-          if (channel === "collaboration" && recipients.some((id) => !memberIds.has(id))) {
-            blocked.push({ source: "collaboration_chat", sourceId: message.id, reason: "recipient_not_room_member" });
-            continue;
-          }
-          if (dryRun) continue;
-          const eventId = legacyCommunicationEventId(projectId, surface, message.id);
-          const event: CommunicationEvent = {
-            eventId, schemaVersion: 1, projectId, masterChatId: master.id,
-            sender: senderFor(message.role, message.authorThreadId), intent: "collaboration",
-            audience: { kind: "agents", agentIds: recipients as [string, ...string[]] },
-            text: message.text, createdAt: message.createdAt,
-            idempotencyKey: `legacy:${surface}:${message.id}`,
-          };
-          this.appendCommunicationEvent(event);
-          const projection: CommunicationProjection = {
-            eventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
-            message: {
-              messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
-              ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
-              ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
-              ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
-              ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-              ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-            },
-          };
-          this.appendCommunicationProjection(projectId, projection);
-          projectionByMessage.set(placementKey, projection);
-          migrated += 1;
-        }
-      }
-    }
-
-    for (const thread of this.listThreads(projectId)) {
-      for (const stored of this.readEvents(thread.id)) {
-        const message = communicationMessageProjection(thread.id, stored);
-        if (!message || (stored.event.type !== "user_message" && stored.event.type !== "text")) continue;
-        const placementKey = `direct_agent_audit\0${thread.id}\0${message.messageId}`;
-        if (stored.event.communicationEventId || projectionByMessage.has(placementKey)) {
-          alreadyLinked += 1;
-          continue;
-        }
-        candidates += 1;
-        if (dryRun) continue;
-        const eventId = legacyCommunicationEventId(projectId, "direct_agent_audit", message.messageId);
-        const event: CommunicationEvent = {
-          eventId, schemaVersion: 2, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
-          sender: stored.event.type === "user_message"
-            ? { kind: "user", userId: "local-operator" }
-            : { kind: "agent", agentId: thread.id },
-          intent: "user_dm",
-          audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-          text: stored.event.type === "user_message" ? stored.event.text : stored.event.delta,
-          createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
-        };
-        this.appendCommunicationEvent(event);
-        const projection = {
-          eventId, surface: "direct_agent_audit" as const, projectionKey: thread.id,
-          projectedAt: stored.ts, message,
-        };
-        this.appendCommunicationProjection(projectId, projection);
-        projectionByMessage.set(placementKey, projection);
-        migrated += 1;
-      }
-    }
-    return { dryRun, candidates, migrated, alreadyLinked, blocked };
   }
 
   /** Mark executions whose durable start survived a daemon crash without a terminal record. */
@@ -1120,6 +994,16 @@ export class ThreadStore {
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
+    if (communicationEventId && !this.communicationProjectionAllowed(masterChat.projectId, {
+      eventId: communicationEventId,
+      surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
+      projectionKey: masterChatId,
+    })) {
+      // Validate the canonical communication before writing a legacy placement.
+      // A failed projection must never leave a chat row that startup repair will
+      // later reinterpret or reject.
+      throw new Error("communication scope cannot project to requested surface");
+    }
     const now = new Date().toISOString();
     const messagePath = channel === "collaboration"
       ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
@@ -1356,7 +1240,17 @@ export class ThreadStore {
   }
 
   /** Rebuildable notification outbox. Reading revalidates current membership. */
-  getReactionNotificationOutbox(): Array<{ occurrenceId: string; targetThreadId: string; messageId: string; emoji: ReactionEmoji }> {
+  getReactionNotificationOutbox(): Array<{
+    occurrenceId: string;
+    targetThreadId: string;
+    masterChatId: string;
+    channel: MasterChatChannel;
+    messageId: string;
+    emoji: ReactionEmoji;
+    active: boolean;
+    actor: ReactionActor;
+    createdAt: string;
+  }> {
     const records = readReactionLog(reactionEventsPath(this.dataDir));
     const states = notificationStates(records);
     const invalid: string[] = [];
@@ -1369,7 +1263,17 @@ export class ThreadStore {
         invalid.push(event.occurrenceId);
         return [];
       }
-      return [{ occurrenceId: event.occurrenceId, targetThreadId: target.id, messageId: event.messageId, emoji: event.emoji }];
+      return [{
+        occurrenceId: event.occurrenceId,
+        targetThreadId: target.id,
+        masterChatId: event.masterChatId,
+        channel: event.channel,
+        messageId: event.messageId,
+        emoji: event.emoji,
+        active: event.active,
+        actor: event.actor,
+        createdAt: event.createdAt,
+      }];
     });
     for (const occurrenceId of invalid) this.completeReactionNotification(occurrenceId, "suppressed", "membership_or_message_unavailable");
     return pending;
@@ -1399,16 +1303,6 @@ export class ThreadStore {
   }
 
   getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main", currentActor: ReactionActor = { kind: "manager" }): MasterChatMessageDto[] {
-    const master = this.getMasterChat(masterChatId);
-    const backfillLinks = new Map<string, string>();
-    if (master) {
-      const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
-      for (const projection of this.projectionIndex(master.projectId).projections) {
-        if (projection.surface === surface && projection.projectionKey === masterChatId && projection.message) {
-          backfillLinks.set(projection.message.messageId, projection.eventId);
-        }
-      }
-    }
     return this.db
       .select()
       .from(masterChatMessages)
@@ -1418,7 +1312,7 @@ export class ThreadStore {
       .filter((row) => row.channel === channel)
       .map((row) => ({
         id: row.id,
-        communicationEventId: row.communicationEventId ?? backfillLinks.get(row.id),
+        communicationEventId: row.communicationEventId ?? undefined,
         masterChatId: row.masterChatId,
         role:
           row.role === "assistant" || row.role === "system"
@@ -1617,15 +1511,6 @@ export class ThreadStore {
   }
 
   getMessages(threadId: string): MessageDto[] {
-    const thread = this.getThread(threadId);
-    const backfillLinks = new Map<string, string>();
-    if (thread) {
-      for (const projection of this.projectionIndex(thread.projectId).projections) {
-        if (projection.surface === "direct_agent_audit" && projection.projectionKey === threadId && projection.message) {
-          backfillLinks.set(projection.message.messageId, projection.eventId);
-        }
-      }
-    }
     return this.db
       .select()
       .from(messages)
@@ -1634,7 +1519,7 @@ export class ThreadStore {
       .all()
       .map((r) => ({
         id: r.id,
-        communicationEventId: r.communicationEventId ?? backfillLinks.get(r.id),
+        communicationEventId: r.communicationEventId ?? undefined,
         threadId: r.threadId,
         seq: r.seq,
         role: r.role === "user" ? "user" : "assistant",
