@@ -2483,7 +2483,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: new Date().toISOString(),
           });
           initialCommunicationEventId = communication?.eventId;
-          if (communication) store.appendCommunicationProjection(thread.projectId, {
+          if (communication?.intent === "user_dm") store.appendCommunicationProjection(thread.projectId, {
             eventId: communication.eventId,
             surface: "user_inbox",
             projectionKey: communication.audience.userId,
