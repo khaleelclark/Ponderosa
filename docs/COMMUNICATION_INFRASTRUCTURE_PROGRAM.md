@@ -1,7 +1,7 @@
 # Communication and Organization Infrastructure Program
 
-Status: active program plan  
-Owner: Program Director  
+Status: active program plan
+Owner: Program Director
 Strategy: gated strangler migration; no big-bang cutover
 
 ## Architectural invariants

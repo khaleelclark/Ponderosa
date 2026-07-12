@@ -117,14 +117,13 @@ systemctl status ponderosa                        # active (running)?
 curl -s http://127.0.0.1:8787/api/health          # {"status":"ok",...}
 ```
 
-`/api/health` is currently a **liveness** check only. It does not prove the data
-directory is writable or an engine is authenticated. Until a distinct readiness
-endpoint ships, use this operator readiness check:
+`/api/health` is a **liveness** check only. Use `/api/ready` as the work-admission
+probe; it verifies the data directory, projections, authenticated runtimes, and
+communication migration compatibility, and returns HTTP 503 when admission is
+unsafe:
 
 ```bash
-test -w /home/khaleel/.ponderosa
-curl -fsS http://127.0.0.1:8787/api/engines
-sudo -u khaleel codex login status
+curl -fsS http://127.0.0.1:8787/api/ready
 ```
 
 If `PONDEROSA_AUTH_TOKEN` is configured, all API calls except `/api/health` need

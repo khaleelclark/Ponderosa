@@ -1,7 +1,7 @@
 # Communication Infrastructure Completion Audit
 
-Audit date: 2026-07-12  
-Branch: `program/communication-infrastructure`  
+Audit date: 2026-07-12
+Branch: `program/communication-infrastructure`
 Scope: implementation readiness, not production cohort approval
 
 ## Verdict
