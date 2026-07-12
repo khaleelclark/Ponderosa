@@ -2471,6 +2471,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: new Date().toISOString(),
           });
           initialCommunicationEventId = communication?.eventId;
+          if (communication) store.appendCommunicationProjection(thread.projectId, {
+            eventId: communication.eventId,
+            surface: "user_inbox",
+            projectionKey: communication.audience.userId,
+            projectedAt: communication.createdAt,
+          });
           store.appendMasterChatMessage(
             thread.masterChatId,
             { text: initialMessage, replyToMessageId: request.body.replyToMessageId },
@@ -2715,8 +2721,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: new Date().toISOString(),
           })?.eventId
         : inheritedCommunicationEventId);
-      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && thread.masterChatId) {
-        store.appendMasterChatMessage(thread.masterChatId, { role: "user", text }, undefined, "main", undefined, undefined, communicationEventId);
+      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
+        const communication = store.getCommunicationEvent(project.id, communicationEventId);
+        if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
+          store.appendCommunicationProjection(project.id, {
+            eventId: communicationEventId,
+            surface: "user_inbox",
+            projectionKey: communication.audience.userId,
+            projectedAt: communication.createdAt,
+          });
+        }
+      }
+      const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
+      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
+        store.appendMasterChatMessage(directMessageMasterChatId, { role: "user", text }, undefined, "main", undefined, undefined, communicationEventId);
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (

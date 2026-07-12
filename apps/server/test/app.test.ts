@@ -801,6 +801,21 @@ describe("server chunk F", () => {
     const audit = store.getMessages(thread.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
     expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
+    const eventId = shared!.communicationEventId!;
+    expect(store.readCommunicationEvents(project.id).filter((event) => event.eventId === eventId)).toEqual([
+      expect.objectContaining({
+        schemaVersion: 2,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
+      }),
+    ]);
+    expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId)
+      .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
+        ["master_chat", master.id],
+        ["direct_agent_audit", thread.id],
+        ["user_inbox", "local-operator"],
+      ]));
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
@@ -1073,28 +1088,37 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Immutable scope", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Scope room" });
     const participant = store.createThread(project.id, { title: "Participant", engine: "codex", masterChatId: master.id });
+    const collaborator = store.createThread(project.id, { title: "Collaborator", engine: "codex", masterChatId: master.id });
 
     appendBroadcast(store, project.id, master.id, "shared project finding");
-    const directId = randomUUID();
-    store.appendCommunicationEvent({
-      eventId: directId, schemaVersion: 1, projectId: project.id, masterChatId: master.id,
-      sender: { kind: "agent", agentId: participant.id }, intent: "direct_to_user",
-      audience: { kind: "user", userId: "local-operator" }, text: "private manager note",
-      createdAt: new Date().toISOString(),
+    adapter.mode = "hang";
+    const direct = await app.inject({
+      method: "POST", url: `/api/threads/${participant.id}/messages`,
+      payload: { text: "private manager note", sourceChannel: "main" },
     });
-    store.appendMasterChatMessage(master.id, { text: "@User private manager note" }, participant.id, "main", undefined, undefined, directId);
-    const collaborationId = randomUUID();
-    store.appendCommunicationEvent({
-      eventId: collaborationId, schemaVersion: 1, projectId: project.id, masterChatId: master.id,
-      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
-      audience: { kind: "agents", agentIds: [participant.id] }, text: "participant-only review",
-      createdAt: new Date().toISOString(),
+    expect(direct.statusCode).toBe(200);
+    await waitForSeedCount(1);
+    const token = adapter.seeds.find((turn) => turn.threadId === participant.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const collaboration = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
+      payload: {
+        intent: "collaboration", recipientAgentIds: [collaborator.id],
+        text: "participant-only review", idempotencyKey: "local-review",
+      },
     });
-    store.appendMasterChatMessage(master.id, { text: "participant-only review" }, undefined, "collaboration", undefined, undefined, collaborationId);
+    expect(collaboration.statusCode).toBe(200);
+    await waitForSeedCount(2);
+    const directEvent = store.getCommunicationEvent(project.id, direct.json<{ communicationEventId: string }>().communicationEventId);
+    const collaborationEvent = store.getCommunicationEvent(project.id, collaboration.json<{ eventId: string }>().eventId);
+    expect(directEvent).toMatchObject({ schemaVersion: 2, intent: "user_dm" });
+    expect(collaborationEvent).toMatchObject({ schemaVersion: 2, intent: "collaboration" });
 
     expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ text: "@User private manager note", communicationEventId: directId }),
+      expect.objectContaining({ text: "private manager note", communicationEventId: directEvent?.eventId }),
     ]));
+    await cancelAndWait(app, participant.id);
+    await cancelAndWait(app, collaborator.id);
+    adapter.mode = "normal";
     const future = store.createThread(project.id, { title: "Future", engine: "codex", masterChatId: master.id });
     await app.inject({
       method: "POST", url: `/api/threads/${future.id}/messages`,
@@ -1226,13 +1250,19 @@ describe("server chunk F", () => {
     const dryRun = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: true },
     });
-    expect(dryRun.json()).toMatchObject({ dryRun: true, candidates: 1, migrated: 0, blocked: [] });
+    expect(dryRun.json()).toMatchObject({
+      dryRun: true, candidates: 1, migrated: 0,
+      blocked: [{ source: "master_chat", sourceId: legacy.id, reason: "ambiguous_scope" }],
+    });
     const applied = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: false },
     });
-    expect(applied.json()).toMatchObject({ dryRun: false, candidates: 1, migrated: 1, blocked: [] });
+    expect(applied.json()).toMatchObject({
+      dryRun: false, candidates: 1, migrated: 0,
+      blocked: [{ source: "master_chat", sourceId: legacy.id, reason: "ambiguous_scope" }],
+    });
     expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
+      .toMatchObject({ status: "not_ready", checks: { communicationMigration: { ok: false } } });
     await app.close();
   });
 
@@ -1277,6 +1307,11 @@ describe("server chunk F", () => {
       engine: "codex",
       masterChatId: master.id,
     });
+    const verifier = store.createThread(project.id, {
+      title: "Verify Agent",
+      engine: "codex",
+      masterChatId: master.id,
+    });
 
     adapter.mode = "hang";
     await app.inject({
@@ -1298,13 +1333,18 @@ describe("server chunk F", () => {
         payload,
       });
 
-    const direct = await send({ intent: "direct_to_user", text: "Private implementation note." });
+    const direct = await send({ intent: "direct_to_user", text: "Private implementation note.", idempotencyKey: "private-note" });
+    const directRetry = await send({ intent: "direct_to_user", text: "Private implementation note.", idempotencyKey: "private-note" });
     const broadcast = await send({ intent: "broadcast", text: "Manager-facing checkpoint." });
-    const collaboration = await send({ intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review the API contract." });
+    const collaboration = await send({
+      intent: "collaboration", recipientAgentIds: [reviewer.id, verifier.id, reviewer.id],
+      text: "Please review the API contract.",
+    });
     expect(direct.statusCode).toBe(200);
+    expect(directRetry.json()).toMatchObject({ intent: "direct_to_user", replayed: true });
     expect(broadcast.statusCode).toBe(200);
     expect(collaboration.statusCode).toBe(200);
-    await waitForSeedCount(2);
+    await waitForSeedCount(3);
 
     expect(store.getMessages(author.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "assistant", text: "Private implementation note." })]),
@@ -1318,14 +1358,14 @@ describe("server chunk F", () => {
       expect.arrayContaining([
         expect.objectContaining({
           authorThreadId: author.id,
-          text: "@Review-Agent Please review the API contract.",
+          text: "@Review-Agent @Verify-Agent Please review the API contract.",
         }),
       ]),
     );
-    const reviewerPrompt = adapter.seeds[1]?.prompt ?? "";
+    const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
     expect(reviewerPrompt).toContain("- channel: collaboration");
     expect(reviewerPrompt).toContain("- author: Author Agent");
-    expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
+    expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent, @Verify-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
     const communicationEvents = store.readCommunicationEvents(project.id);
     expect(communicationEvents).toHaveLength(4);
@@ -1337,10 +1377,14 @@ describe("server chunk F", () => {
     expect(communicationEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         schemaVersion: 2, intent: "user_dm",
+        sender: expect.objectContaining({ kind: "agent", agentId: author.id }),
         audience: { kind: "user_agent", userId: "local-operator", agentId: author.id },
       }),
       expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
-      expect.objectContaining({ intent: "collaboration", audience: { kind: "agents", agentIds: [reviewer.id] } }),
+      expect.objectContaining({
+        intent: "collaboration",
+        audience: { kind: "agents", agentIds: [reviewer.id, verifier.id].sort() },
+      }),
     ]));
     expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -1348,15 +1392,31 @@ describe("server chunk F", () => {
         text: "Private implementation note.",
       }),
     ]));
+    const directEventId = direct.json<{ eventId: string }>().eventId;
+    expect(communicationEvents.filter((event) => event.eventId === directEventId)).toHaveLength(1);
+    expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === directEventId)
+      .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
+        ["master_chat", master.id],
+        ["direct_agent_audit", author.id],
+        ["user_inbox", "local-operator"],
+      ]));
     expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
     ]));
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
     ]));
+    const collaborationEventId = collaboration.json<{ eventId: string }>().eventId;
+    expect(communicationEvents.filter((event) => event.eventId === collaborationEventId)).toHaveLength(1);
+    expect(store.readCommunicationProjections(project.id).filter((projection) =>
+      projection.eventId === collaborationEventId && projection.surface === "collaboration_chat")).toHaveLength(1);
+    const deliveryStore = new CollaborationDeliveryStore(dataDir);
+    expect([reviewer.id, verifier.id].map((agentId) =>
+      deliveryStore.getForMessageTarget(collaboration.json<{ messageId: string }>().messageId, agentId)?.communicationEventId))
+      .toEqual([collaborationEventId, collaborationEventId]);
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 4,
-      linkedProjections: 9,
+      linkedProjections: 12,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -1371,7 +1431,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 9 });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 12 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });

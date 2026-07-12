@@ -402,12 +402,15 @@ export class ThreadStore {
    * making transport retries idempotent while detecting identity collisions.
    */
   appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
-    const event: CommunicationEvent = input.intent === "collaboration"
+    const event: CommunicationEvent = input.schemaVersion === 2 && input.intent === "collaboration"
       ? { ...input, audience: { kind: "agents", agentIds: normalizedAgentIds(input.audience.agentIds) } } as CommunicationEvent
       : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
     if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
     if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
+    if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
+      throw new Error("collaboration requires at least one recipient");
+    }
     if (event.schemaVersion === 2 && event.intent === "user_dm") {
       if (event.sender.kind === "system" || (event.sender.kind === "agent" && event.sender.agentId !== event.audience.agentId)) {
         throw new Error("user DM sender must be its local user or target agent");
@@ -425,8 +428,17 @@ export class ThreadStore {
       if (event.masterChatId && !agent.masterChatIds.includes(event.masterChatId)) throw new Error("communication recipient must belong to its master chat");
     }
     if (event.schemaVersion === 2 && event.intent === "collaboration") {
-      if (event.sender.kind === "agent" && event.audience.agentIds.includes(event.sender.agentId)) {
-        throw new Error("collaboration cannot target its sender");
+      if (event.sender.kind === "agent") {
+        const sender = this.getThread(event.sender.agentId);
+        if (!sender || sender.projectId !== event.projectId || sender.archived) {
+          throw new Error("collaboration sender must be an active agent in its project");
+        }
+        if (event.masterChatId && !sender.masterChatIds.includes(event.masterChatId)) {
+          throw new Error("collaboration sender must belong to its master chat");
+        }
+        if (event.audience.agentIds.includes(event.sender.agentId)) {
+          throw new Error("collaboration cannot target its sender");
+        }
       }
     }
     if (event.masterChatId) {
@@ -500,11 +512,15 @@ export class ThreadStore {
   appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!event) throw new Error("communication projection source event not found");
+    const roomKeyAllowed = event.masterChatId === projection.projectionKey && (() => {
+      const room = this.getMasterChat(projection.projectionKey);
+      return Boolean(room && room.projectId === projectId && !room.archived);
+    })();
     const allowed = (() => {
-      if (projection.surface === "master_chat") return event.intent === "broadcast" || event.intent === "direct_to_user" ||
-        (event.schemaVersion === 2 && event.intent === "user_dm");
-      if (projection.surface === "collaboration_chat") return event.intent === "collaboration" ||
-        (event.schemaVersion === 1 && event.intent === "direct_to_user");
+      if (projection.surface === "master_chat") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
+        (event.schemaVersion === 2 && event.intent === "user_dm"));
+      if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
+        (event.schemaVersion === 1 && event.intent === "direct_to_user"));
       if (projection.surface === "direct_agent_audit") {
         if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
         if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
@@ -515,7 +531,10 @@ export class ThreadStore {
         if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
         return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
       }
-      if (projection.surface === "user_inbox") return event.intent === "direct_to_user" || (event.schemaVersion === 2 && event.intent === "user_dm");
+      if (projection.surface === "user_inbox") {
+        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
+        return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
+      }
       return false;
     })();
     if (!allowed) throw new Error("communication scope cannot project to requested surface");
@@ -769,6 +788,15 @@ export class ThreadStore {
             continue;
           }
           candidates += 1;
+          // Physical placement in the old Main log does not prove that a row
+          // was organizational: historically Main also contained private
+          // replies. Fail closed instead of promoting private history into
+          // future-agent context. Already-linked rows above retain their
+          // explicit canonical classification.
+          if (channel === "main") {
+            blocked.push({ source: "master_chat", sourceId: message.id, reason: "ambiguous_scope" });
+            continue;
+          }
           const inferred = channel === "collaboration"
             ? [...new Set((message.deliveryIntents ?? []).map((intent) => intent.targetThreadId))]
             : [];
@@ -784,21 +812,13 @@ export class ThreadStore {
           }
           if (dryRun) continue;
           const eventId = legacyCommunicationEventId(projectId, surface, message.id);
-          const event: CommunicationEvent = channel === "collaboration"
-            ? {
-                eventId, schemaVersion: 1, projectId, masterChatId: master.id,
-                sender: senderFor(message.role, message.authorThreadId), intent: "collaboration",
-                audience: { kind: "agents", agentIds: recipients as [string, ...string[]] },
-                text: message.text, createdAt: message.createdAt,
-                idempotencyKey: `legacy:${surface}:${message.id}`,
-              }
-            : {
-                eventId, schemaVersion: 1, projectId, masterChatId: master.id,
-                sender: senderFor(message.role, message.authorThreadId), intent: "broadcast",
-                audience: { kind: "organization", organizationId: projectId },
-                text: message.text, createdAt: message.createdAt,
-                idempotencyKey: `legacy:${surface}:${message.id}`,
-              };
+          const event: CommunicationEvent = {
+            eventId, schemaVersion: 1, projectId, masterChatId: master.id,
+            sender: senderFor(message.role, message.authorThreadId), intent: "collaboration",
+            audience: { kind: "agents", agentIds: recipients as [string, ...string[]] },
+            text: message.text, createdAt: message.createdAt,
+            idempotencyKey: `legacy:${surface}:${message.id}`,
+          };
           this.appendCommunicationEvent(event);
           const projection: CommunicationProjection = {
             eventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
@@ -830,19 +850,16 @@ export class ThreadStore {
         candidates += 1;
         if (dryRun) continue;
         const eventId = legacyCommunicationEventId(projectId, "direct_agent_audit", message.messageId);
-        const event: CommunicationEvent = stored.event.type === "user_message"
-          ? {
-              eventId, schemaVersion: 1, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
-              sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
-              audience: { kind: "agents", agentIds: [thread.id] }, text: stored.event.text,
-              createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
-            }
-          : {
-              eventId, schemaVersion: 1, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
-              sender: { kind: "agent", agentId: thread.id }, intent: "direct_to_user",
-              audience: { kind: "user", userId: "local-operator" }, text: stored.event.delta,
-              createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
-            };
+        const event: CommunicationEvent = {
+          eventId, schemaVersion: 2, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
+          sender: stored.event.type === "user_message"
+            ? { kind: "user", userId: "local-operator" }
+            : { kind: "agent", agentId: thread.id },
+          intent: "user_dm",
+          audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
+          text: stored.event.type === "user_message" ? stored.event.text : stored.event.delta,
+          createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
+        };
         this.appendCommunicationEvent(event);
         const projection = {
           eventId, surface: "direct_agent_audit" as const, projectionKey: thread.id,

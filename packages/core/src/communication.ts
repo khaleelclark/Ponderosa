@@ -152,9 +152,9 @@ export interface LegacyCommunicationBackfillRequest {
 }
 
 export interface LegacyCommunicationBackfillBlockedItem {
-  source: "collaboration_chat";
+  source: "master_chat" | "collaboration_chat";
   sourceId: string;
-  reason: "explicit_recipients_required" | "recipient_not_room_member";
+  reason: "ambiguous_scope" | "explicit_recipients_required" | "recipient_not_room_member";
 }
 
 export interface LegacyCommunicationBackfillResponse {
