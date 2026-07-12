@@ -10,7 +10,7 @@ import type { AgentLifecycleReason, AgentLifecycleStatus, ImageAttachmentDto, Me
 export type ThreadStreamEvent = AgentEvent
   | { type: "user_message"; communicationEventId?: string; text: string; replyTo?: MessageReferenceDto; attachments?: ImageAttachmentDto[] }
   | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" }
-  | { type: "communication_projection"; communicationEventId: string; text: string }
+  | { type: "communication_projection"; communicationEventId: string; text: string; role?: "user" | "assistant" | "system"; attachments?: ImageAttachmentDto[] }
   | { type: "agent_lifecycle"; status: AgentLifecycleStatus; reason: AgentLifecycleReason; executionId?: string };
 
 /**

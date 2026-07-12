@@ -52,10 +52,18 @@ organization is working behind the conversation.
 
 Two message scopes appear in Master Chat:
 
-- **Broadcast:** An agent tells the organization something durable. Broadcasts
-  become shared knowledge available to future agents.
+- **Broadcast:** The user or an agent tells the organization something durable.
+  Broadcasts become shared knowledge available to future agents.
 - **Direct Message:** The user and one agent communicate privately. The message
   is visible in Master Chat but does not become shared context for future agents.
+
+A plain user message in Master Chat is a Broadcast and starts a fresh agent to
+handle it. This is the familiar default chat workflow: the request remains part
+of the shared project story while Ponderosa handles assignment behind the
+scenes. Starting a message with `#broadcast` records shared informational context
+without starting an agent. Starting with an agent's `#name` creates a Direct
+Message to that agent. Only an explicit `#everyone` action may wake every agent;
+passively projecting a Broadcast into audit timelines never starts a run.
 
 Important collaboration results do not automatically become Broadcasts. An agent
 must deliberately publish durable knowledge or deliberately tell the user. This
@@ -94,6 +102,10 @@ It can show:
 When a user writes from this surface, the result is a Direct Message addressed to
 that agent. It remains visible in Master Chat without creating a duplicate
 canonical message.
+
+Broadcasts appear passively in every Direct Agent Chat, including agents created
+after the Broadcast. This visibility exists for debugging and shared situational
+awareness; it does not enqueue, steer, or start those agents.
 
 Direct Agent Chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because

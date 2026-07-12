@@ -30,6 +30,8 @@ export interface CommunicationProjectionEvent {
   type: "communication_projection";
   communicationEventId: string;
   text: string;
+  role?: "user" | "assistant" | "system";
+  attachments?: ImageAttachmentDto[];
 }
 
 /** Durable manager-facing lifecycle transition for ordinary agents. */

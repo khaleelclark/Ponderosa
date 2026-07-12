@@ -1223,6 +1223,46 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const subscriber of subscribers.get(threadId) ?? []) subscriber(stored);
   }
 
+  function projectBroadcastToAgentAudit(
+    threadId: string,
+    event: Extract<CommunicationEvent, { intent: "broadcast" }>,
+    attachments?: AssetDto[],
+  ): void {
+    if (store.readCommunicationProjections(event.projectId).some((projection) =>
+      projection.eventId === event.eventId && projection.surface === "direct_agent_audit" && projection.projectionKey === threadId)) return;
+    const role = event.sender.kind === "user" ? "user" : event.sender.kind === "system" ? "system" : "assistant";
+    const stored = store.appendEvent(threadId, {
+      type: "communication_projection",
+      communicationEventId: event.eventId,
+      text: renderScopedMessage("broadcast", event.text),
+      role,
+      attachments,
+    });
+    publish(threadId, stored);
+  }
+
+  function projectBroadcastToAgentAudits(
+    event: Extract<CommunicationEvent, { intent: "broadcast" }>,
+    excludedThreadIds: Iterable<string> = [],
+    attachments?: AssetDto[],
+  ): void {
+    const excluded = new Set(excludedThreadIds);
+    for (const candidate of store.listThreads(event.projectId)) {
+      if (!candidate.archived && !excluded.has(candidate.id)) projectBroadcastToAgentAudit(candidate.id, event, attachments);
+    }
+  }
+
+  function projectExistingBroadcastsToAgentAudit(threadId: string, projectId: string): void {
+    for (const event of store.readCommunicationEvents(projectId)) {
+      if (event.intent === "broadcast") {
+        const attachments = store.listMasterChats(projectId)
+          .flatMap((master) => store.getMasterChatMessages(master.id, "main"))
+          .find((message) => message.communicationEventId === event.eventId)?.attachments;
+        projectBroadcastToAgentAudit(threadId, event, attachments);
+      }
+    }
+  }
+
   function subscribe(threadId: string, subscriber: Subscriber): () => void {
     let set = subscribers.get(threadId);
     if (!set) {
@@ -1611,6 +1651,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       communication?.eventId,
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
+    if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication, [], message.attachments);
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (intent === "collaboration") {
       queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
@@ -2085,6 +2126,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const owner = store.getThread(asset.threadId)!;
       return assets.associate(owner.projectId, owner.id, [asset.id]);
     }));
+    if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
     return message ?? reply.code(404).send({ error: "master chat not found" });
   });
 
@@ -2485,6 +2527,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const initialMessage = request.body.initialMessage?.trim();
       let thread; try { thread = store.createThread(request.params.id, request.body); } catch { return reply.code(400).send({ error: "preset is unavailable for this project" }); }
+      projectExistingBroadcastsToAgentAudit(thread.id, thread.projectId);
       if (initialMessage) {
         let initialCommunicationEventId: string | undefined;
         if (thread.masterChatId) {
@@ -2675,6 +2718,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveryId?: string;
       collaborationDeliveryIds?: string[];
       sourceChannel?: "main";
+      shareWithOrganization?: boolean;
       sourceMasterChatId?: string;
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
@@ -2720,6 +2764,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return reply.code(400).send({ error: "archived master chats cannot route new turns" });
         }
       }
+      const shareWithOrganization = request.body.shareWithOrganization === true;
+      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceMasterChatId || collaborationMasterChatId)) {
+        return reply.code(400).send({ error: "shared turns must originate from a Master Chat" });
+      }
       const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
       const directReplyTarget = request.body.replyToMessageId
         ? threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId)
@@ -2758,7 +2806,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "communication event was not found in this project" });
       }
       const communicationEventId = serverCommunicationEventId ?? (requestedDeliveryIds.length === 0
-        ? recordCommunication({
+        ? recordCommunication(shareWithOrganization ? {
+            eventId: randomUUID(), schemaVersion: 2, projectId: project.id, masterChatId: sourceMasterChatId!,
+            sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+            audience: { kind: "organization", organizationId: project.id }, text,
+            createdAt: new Date().toISOString(),
+          } : {
             eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
             ...((sourceMasterChatId ?? thread.masterChatId) ? { masterChatId: sourceMasterChatId ?? thread.masterChatId } : {}),
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
@@ -2766,8 +2819,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: new Date().toISOString(),
           })?.eventId
         : inheritedCommunicationEventId);
+      const communication = communicationEventId
+        ? store.getCommunicationEvent(project.id, communicationEventId)
+        : undefined;
+      const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
-        const communication = store.getCommunicationEvent(project.id, communicationEventId);
         if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
           store.appendCommunicationProjection(project.id, {
             eventId: communicationEventId,
@@ -2780,10 +2836,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
         store.appendMasterChatMessage(directMessageMasterChatId, {
           role: "user",
-          text: `#${agentMentionHandle(thread.title)} ${text}`,
+          text: sharedCommunication
+            ? renderScopedMessage("broadcast", text)
+            : `#${agentMentionHandle(thread.title)} ${text}`,
           attachments: messageAttachments,
           replyToMessageId: sourceMasterReply?.id,
         }, undefined, "main", undefined, undefined, communicationEventId);
+        if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [thread.id], messageAttachments);
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (
@@ -2823,6 +2882,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             })()
           : undefined,
       };
+      const auditText = sharedCommunication ? renderScopedMessage("broadcast", text) : text;
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
@@ -2839,7 +2899,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (steered.status === "accepted") {
             const stored = store.appendEvent(thread.id, {
               type: "user_message",
-              text,
+              text: auditText,
               communicationEventId,
               replyTo: pendingTurn.replyTo,
             });
@@ -2880,7 +2940,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(202).send({ queued: true, position, communicationEventId });
       }
 
-      const fullHistory: ChatMessage[] = threadMessages(thread.id).map((message) => ({
+      const fullHistory: ChatMessage[] = threadMessages(thread.id)
+        .filter((message) => request.body.sourceChannel !== "main" || !message.communicationEventId ||
+          store.getCommunicationEvent(project.id, message.communicationEventId)?.intent !== "broadcast")
+        .map((message) => ({
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
@@ -2891,7 +2954,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           localPath: path.join(attachmentsDir(opts.dataDir, thread.projectId, thread.id), `${item.id}.bin`),
           available: existsSync(path.join(attachmentsDir(opts.dataDir, thread.projectId, thread.id), `${item.id}.bin`)),
         })),
-      }));
+        }));
       const runId = randomUUID();
       const controller = new AbortController();
       const messageCapability = randomUUID();
@@ -2949,7 +3012,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const sameEngineModelEpoch = !latestSessionCursor ||
         (latestSessionCursor.engine === thread.activeEngine && latestSessionCursor.model === cursorModel);
       const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
-      const allRoomMessages = collaboration
+      const allRoomMessagesIncludingCurrent = collaboration
         ? recipientCollaborationMessages(
             collaboration.messages,
             store.readCommunicationEvents(project.id),
@@ -2965,6 +3028,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               masterChat.threads,
             )
           : [];
+      const allRoomMessages = pendingTurn.communicationEventId
+        ? allRoomMessagesIncludingCurrent.filter((message) => message.communicationEventId !== pendingTurn.communicationEventId)
+        : allRoomMessagesIncludingCurrent;
       const previousIndex = previousCursor?.lastMessageId
         ? allRoomMessages.findIndex((message) => message.id === previousCursor.lastMessageId)
         : -1;
@@ -2997,7 +3063,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
 
       const userStored = store.appendEvent(thread.id, {
-        type: "user_message", text, communicationEventId: pendingTurn.communicationEventId,
+        type: "user_message", text: auditText, communicationEventId: pendingTurn.communicationEventId,
         replyTo: pendingTurn.replyTo, attachments: messageAttachments,
       });
       try {
@@ -3300,7 +3366,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 sessionId: acceptedSessionId,
                 masterChatId: cursorMasterChatId,
                 channel: cursorChannel,
-                lastMessageId: allRoomMessages.at(-1)?.id,
+                lastMessageId: allRoomMessagesIncludingCurrent.at(-1)?.id,
                 routingHash,
               });
             }

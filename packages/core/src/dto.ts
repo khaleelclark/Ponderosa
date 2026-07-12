@@ -348,6 +348,8 @@ export interface SendMessageRequest {
   effort?: string;
   /** Set by a master-chat client when this turn originated in that room. */
   sourceChannel?: "main";
+  /** A plain Master Chat request is shared context while still starting this agent. */
+  shareWithOrganization?: boolean;
   replyToMessageId?: string;
   /** Membership used for this main-chat turn; omitted by direct/legacy callers. */
   sourceMasterChatId?: string;

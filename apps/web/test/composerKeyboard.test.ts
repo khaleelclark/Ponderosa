@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { canSubmitComposerText, shouldIgnoreComposerKey, shouldSendComposerKey } from "../src/components/panes";
+import { canSubmitComposerText, matchingEngineCommands, shouldIgnoreComposerKey, shouldSendComposerKey } from "../src/components/panes";
 
 describe("composer keyboard behavior", () => {
+  it("returns every matching inherited command instead of truncating the menu", () => {
+    const commands = Array.from({ length: 20 }, (_, index) => ({
+      name: `command-${index}`,
+      description: `Command ${index}`,
+      source: "skill" as const,
+      acceptsArguments: true,
+    }));
+    expect(matchingEngineCommands(commands, "command-")).toHaveLength(20);
+  });
+
   it("sends on Enter", () => {
     expect(shouldSendComposerKey({ key: "Enter", shiftKey: false, isComposing: false, repeat: false })).toBe(true);
   });

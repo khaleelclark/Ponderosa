@@ -44,8 +44,10 @@ pay-per-token provider API keys.
 4. **Communication scope is explicit and immutable.** A communication is created
    as exactly one of:
 
-   - **Broadcast:** agent to organization; visible in Master Chat and inherited as
-     shared context by future agents.
+   - **Broadcast:** user or agent to organization; visible in Master Chat and
+     inherited as shared context by future agents. A plain Master Chat request is
+     a Broadcast that also starts one fresh responsible agent; `#broadcast`
+     records context without starting one.
    - **Direct Message:** a private user-agent exchange; visible in Master Chat but
      excluded from shared organizational context.
    - **Collaboration:** agent to one or more explicit agent recipients; visible in
@@ -55,7 +57,8 @@ pay-per-token provider API keys.
    Scope never changes after creation. To share a private finding more broadly,
    create a new communication with the intended scope.
 
-5. **Only Broadcasts are shared knowledge.** Visibility does not imply context
+5. **Only Broadcasts are shared knowledge.** Plain Master Chat requests are
+   intentionally created as Broadcasts. Visibility does not otherwise imply context
    inheritance. Direct Messages, Collaboration, assignments, tool calls,
    lifecycle events, and outputs do not become future-agent context merely
    because they are stored or displayed. Never rebuild context by indiscriminately
@@ -72,10 +75,14 @@ pay-per-token provider API keys.
    this surface creates a Direct Message to that agent; it does not create a
    second canonical message or gain shared scope.
 
+   Every Broadcast is passively projected into every current and future Direct
+   Agent Chat. Projection alone must never enqueue, steer, or start an agent;
+   only explicit recipient delivery (including `#everyone`) may do that.
+
 8. **Routing uses stable identities.** Store structured recipient agent IDs and
-   let the server own routing. Display names and rendered `@labels` are presentation,
-   never routing keys. Agents choose recipients and content; they do not manually
-   construct textual mentions.
+   let the server own routing. Display names and rendered `#labels` are presentation,
+   never routing keys; `@` is reserved for project file/folder references. Agents
+   choose recipients and content; they do not manually construct textual mentions.
 
 9. **Full host access is intentional and scoped by design.** Agents run as the
    host user with real fs/shell access (single-operator box). That is by design.
