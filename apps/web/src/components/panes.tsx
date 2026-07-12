@@ -224,13 +224,25 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
+export function UserMessageLabel(): JSX.Element {
+  return (
+    <Typography
+      variant="caption"
+      component="div"
+      sx={{ mb: 0.25, mr: 0.5, fontWeight: 700, color: "text.secondary", textAlign: "right" }}
+    >
+      User
+    </Typography>
+  );
+}
+
 export function ChatPane({
   messages,
-  agentName,
+  agentName = "Agent",
   onReply,
 }: {
   messages: MessageDto[];
-  agentName: string;
+  agentName?: string;
   onReply?(message: MessageDto): void;
 }): JSX.Element {
   const chatMessages = messages.filter(
@@ -273,56 +285,64 @@ export function ChatPane({
           sx={{
             alignSelf: message.role === "user" ? "flex-end" : "flex-start",
             maxWidth: "min(680px, 92%)",
-            px: 1.5,
-            py: 1,
-            borderRadius: 2,
-            bgcolor: message.role === "user" ? "primary.main" : "background.paper",
-            color: message.role === "user" ? "primary.contrastText" : "text.primary",
-            border: message.role === "assistant" ? 1 : 0,
-            borderColor: "divider",
-            boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+            minWidth: 0,
           }}
         >
-          <Typography
-            component="div"
-            variant="caption"
-            dir="auto"
+          {message.role === "user" ? <UserMessageLabel /> : null}
+          <Box
+            data-message-bubble="true"
             sx={{
-              mb: 0.5,
-              maxWidth: "100%",
-              overflowWrap: "anywhere",
-              unicodeBidi: "plaintext",
-              userSelect: "text",
-              fontWeight: 700,
-              lineHeight: 1.35,
+              px: 1.5,
+              py: 1,
+              borderRadius: 2,
+              bgcolor: message.role === "user" ? "primary.main" : "background.paper",
+              color: message.role === "user" ? "primary.contrastText" : "text.primary",
+              border: message.role === "assistant" ? 1 : 0,
+              borderColor: "divider",
+              boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
             }}
           >
-            {senderLabel}
-          </Typography>
-          {message.replyTo ? (
-            <Box
-              component="button"
-              onClick={() => {
-                const target = document.getElementById(`message-${message.replyTo!.messageId}`);
-                target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                target?.focus({ preventScroll: true });
+            <Typography
+              component="div"
+              variant="caption"
+              dir="auto"
+              sx={{
+                mb: 0.5,
+                maxWidth: "100%",
+                overflowWrap: "anywhere",
+                unicodeBidi: "plaintext",
+                userSelect: "text",
+                fontWeight: 700,
+                lineHeight: 1.35,
               }}
-              sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
-              aria-label="Go to replied-to message"
             >
-              <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
-            </Box>
-          ) : null}
-          <ChatMarkdown>{message.text}</ChatMarkdown>
-          {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-            {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
-              <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-            </Box>)}
-          </Stack> : null}
-          <MessageActionsAndTimestamp
-            value={message.createdAt}
-            actions={onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : undefined}
-          />
+              {senderLabel}
+            </Typography>
+            {message.replyTo ? (
+              <Box
+                component="button"
+                onClick={() => {
+                  const target = document.getElementById(`message-${message.replyTo!.messageId}`);
+                  target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  target?.focus({ preventScroll: true });
+                }}
+                sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
+                aria-label="Go to replied-to message"
+              >
+                <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
+              </Box>
+            ) : null}
+            <ChatMarkdown>{message.text}</ChatMarkdown>
+            {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+              {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
+                <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+              </Box>)}
+            </Stack> : null}
+            <MessageActionsAndTimestamp
+              value={message.createdAt}
+              actions={onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : undefined}
+            />
+          </Box>
         </Box>
         );
       })}

@@ -62,13 +62,17 @@ describe("individual chat sender identity", () => {
     expect(html).toContain("<time");
   });
 
-  it("keeps the individual-chat self label distinct from the pending master-chat User label", () => {
+  it("keeps the individual-chat self identity distinct from the outer User label", () => {
     const html = renderToStaticMarkup(createElement(ChatPane, {
       agentName: "Pinnacles",
       messages: [message("1", "user", "Manager-authored message")],
     }));
 
     expect(html).toContain('aria-label="You message"');
-    expect(html).not.toContain(">User</div>");
+    expect(html).toContain(">User</div>");
+    expect(html).toContain(">You</div>");
+    expect(html.indexOf(">User</div>")).toBeLessThan(html.indexOf('data-message-bubble="true"'));
+    expect(html.indexOf(">You</div>")).toBeGreaterThan(html.indexOf('data-message-bubble="true"'));
+    expect(html.indexOf(">You</div>")).toBeLessThan(html.indexOf("Manager-authored message"));
   });
 });
