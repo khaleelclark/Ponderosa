@@ -46,8 +46,9 @@ pay-per-token provider API keys.
 
    - **Broadcast:** user or agent to organization; visible in Master Chat and
      inherited as shared context by future agents. A plain Master Chat request is
-     a Broadcast that also starts one fresh responsible agent; `#broadcast`
-     records context without starting one.
+     a Broadcast that also starts one fresh responsible agent and is rendered
+     without an automatic scope prefix; explicit `#broadcast` records context
+     without starting one and retains its visible prefix.
    - **Direct Message:** a private user-agent exchange; visible in Master Chat but
      excluded from shared organizational context.
    - **Collaboration:** agent to one or more explicit agent recipients; visible in
