@@ -42,6 +42,9 @@ across processes; releases are conditional on the exact reservation ID. Aggregat
 quota combines committed and reserved bytes in the same transaction. Startup and
 pre-admission reconciliation imports restored raw assets and fails closed if an
 existing committed row disagrees with disk.
+Active reservation identity prevents recovery from importing a write that is still
+settling. Durable deletion tombstones are written before unlinking and retained so
+a stale filesystem scan cannot resurrect a deleted asset ID.
 Expired crashed reservations are reclaimed without giving an old process authority
 over a successor. The JSONL audit remains evidence only: a torn final record is
 repaired before projection, while non-tail corruption fails visibly. SQLite audit

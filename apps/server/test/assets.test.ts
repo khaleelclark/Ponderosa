@@ -179,6 +179,28 @@ describe("secure staged assets", () => {
     dataDir = mkdtempSync(path.join(tmpdir(), "pond-assets-replacement-")); assets = new AssetStore(dataDir);
   });
 
+  it("rejects duplicate owners and makes sync, settlement, and deletion idempotent", () => {
+    const authority = new AssetAuthority(dataDir); const id = randomUUID();
+    authority.syncThread("p", "one", new Map([[id, 8]]));
+    expect(() => authority.syncThread("p", "two", new Map([[id, 8]]))).toThrowError(AssetError);
+    const activeId = randomUUID(); const reservation = authority.reserve("p", "active", activeId, 9);
+    authority.syncThread("p", "active", new Map([[activeId, 9]]));
+    authority.settle(reservation); expect(() => authority.settle(reservation)).not.toThrow();
+    authority.beginDelete(id, "p", "one"); authority.finishDelete(id);
+    authority.syncThread("p", "one", new Map([[id, 8]]));
+    const db = new Database(path.join(dataDir, "asset-authority.sqlite"));
+    expect((db.prepare("SELECT count(*) count FROM asset_committed WHERE asset_id=?").get(id) as { count: number }).count).toBe(0);
+    db.close(); authority.close();
+  });
+
+  it("maps BEGIN IMMEDIATE contention to stable AssetError", async () => {
+    const authority = new AssetAuthority(dataDir); const db = path.join(dataDir, "asset-authority.sqlite");
+    const child = spawn(process.execPath, ["-e", `const D=require('better-sqlite3');const d=new D(process.argv[1]);d.exec('BEGIN IMMEDIATE');console.log('ready');setInterval(()=>{},1000)`, db], { stdio: ["ignore", "pipe", "inherit"] });
+    await new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+    expect(() => authority.reserve("p", "busy", randomUUID(), 1)).toThrowError(AssetError);
+    child.kill("SIGKILL"); authority.close();
+  });
+
   it("does not recreate asset storage after whole-thread deletion", async () => {
     const staged = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "gone.png", declaredType: "image/png" });
     const threadDirectory = path.join(dataDir, "projects", "p", "threads", "t");

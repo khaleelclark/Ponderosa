@@ -47,7 +47,7 @@ export class AssetAuthority {
   constructor(dataDir: string) {
     try {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
-      this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 5000");
+      this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
       if (version !== 0 && version !== 1 && version !== 2) throw new AssetError(409, "asset authority schema is incompatible");
       if (version === 1) this.db.exec("DROP TABLE IF EXISTS asset_reservations; DROP TABLE IF EXISTS asset_rate_events;");
@@ -58,6 +58,8 @@ export class AssetAuthority {
       CREATE TABLE IF NOT EXISTS asset_committed (
         asset_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT NOT NULL, size INTEGER NOT NULL CHECK(size > 0)
       ); CREATE INDEX IF NOT EXISTS asset_committed_thread ON asset_committed(project_id, thread_id);
+      CREATE TABLE IF NOT EXISTS asset_settlements (reservation_id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, project_id TEXT NOT NULL, thread_id TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS asset_deletions (asset_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS asset_rate_events (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL, thread_id TEXT NOT NULL, created_at INTEGER NOT NULL
       ); CREATE INDEX IF NOT EXISTS asset_rate_thread ON asset_rate_events(project_id, thread_id, created_at);
@@ -77,8 +79,8 @@ export class AssetAuthority {
   }
   reserve(projectId: string, threadId: string, assetId: string, size: number): string {
     const id = randomUUID();
-    this.db.exec("BEGIN IMMEDIATE");
     try {
+      this.db.exec("BEGIN IMMEDIATE");
       const now = this.now();
       this.db.prepare("DELETE FROM asset_reservations WHERE created_at <= ?").run(now - UPLOAD_LEASE_MS);
       this.db.prepare("DELETE FROM asset_rate_events WHERE created_at <= ?").run(now - 60_000);
@@ -94,31 +96,46 @@ export class AssetAuthority {
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
   release(id: string): boolean {
-    return this.db.prepare("DELETE FROM asset_reservations WHERE id=?").run(id).changes === 1;
+    try { return this.db.prepare("DELETE FROM asset_reservations WHERE id=?").run(id).changes === 1; } catch (error) { throw this.mapped(error); }
   }
   settle(id: string): void {
-    this.db.exec("BEGIN IMMEDIATE");
     try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const prior = this.db.prepare("SELECT 1 FROM asset_settlements WHERE reservation_id=?").get(id);
+      if (prior) { this.db.exec("COMMIT"); return; }
       const now = this.now();
       const row = this.db.prepare("SELECT asset_id assetId,project_id projectId,thread_id threadId,size,created_at createdAt FROM asset_reservations WHERE id=?").get(id) as { assetId: string; projectId: string; threadId: string; size: number; createdAt: number } | undefined;
       if (!row || row.createdAt <= now - UPLOAD_LEASE_MS) { this.db.prepare("DELETE FROM asset_reservations WHERE id=?").run(id); throw new AssetError(409, "upload reservation expired"); }
-      this.db.prepare("INSERT INTO asset_committed VALUES (?,?,?,?)").run(row.assetId, row.projectId, row.threadId, row.size);
+      const committed = this.db.prepare("SELECT project_id projectId,thread_id threadId,size FROM asset_committed WHERE asset_id=?").get(row.assetId) as { projectId: string; threadId: string; size: number } | undefined;
+      if (committed && (committed.projectId !== row.projectId || committed.threadId !== row.threadId || committed.size !== row.size)) throw new AssetError(409, "asset ownership conflicts with committed usage");
+      if (!committed) this.db.prepare("INSERT INTO asset_committed VALUES (?,?,?,?)").run(row.assetId, row.projectId, row.threadId, row.size);
+      this.db.prepare("INSERT INTO asset_settlements VALUES (?,?,?,?)").run(id, row.assetId, row.projectId, row.threadId);
       this.db.prepare("DELETE FROM asset_reservations WHERE id=?").run(id); this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
   syncThread(projectId: string, threadId: string, assets: Map<string, number>): void {
-    this.db.exec("BEGIN IMMEDIATE");
     try {
+      this.db.exec("BEGIN IMMEDIATE");
       const rows = this.db.prepare("SELECT asset_id id,size FROM asset_committed WHERE project_id=? AND thread_id=?").all(projectId, threadId) as Array<{ id: string; size: number }>;
       for (const row of rows) if (assets.get(row.id) !== row.size) throw new AssetError(409, "asset filesystem and quota ledger diverged");
-      for (const [id, size] of assets) this.db.prepare("INSERT OR IGNORE INTO asset_committed VALUES (?,?,?,?)").run(id, projectId, threadId, size);
+      for (const [id, size] of assets) {
+        const deletion = this.db.prepare("SELECT 1 FROM asset_deletions WHERE asset_id=? AND project_id=? AND thread_id=?").get(id, projectId, threadId);
+        if (deletion) continue;
+        const active = this.db.prepare("SELECT project_id projectId,thread_id threadId,size FROM asset_reservations WHERE asset_id=?").get(id) as { projectId: string; threadId: string; size: number } | undefined;
+        if (active) { if (active.projectId !== projectId || active.threadId !== threadId || active.size !== size) throw new AssetError(409, "asset reservation ownership conflicts"); continue; }
+        const existing = this.db.prepare("SELECT project_id projectId,thread_id threadId,size FROM asset_committed WHERE asset_id=?").get(id) as { projectId: string; threadId: string; size: number } | undefined;
+        if (existing) { if (existing.projectId !== projectId || existing.threadId !== threadId || existing.size !== size) throw new AssetError(409, "duplicate asset ID has conflicting ownership"); continue; }
+        if (this.db.prepare("INSERT INTO asset_committed VALUES (?,?,?,?)").run(id, projectId, threadId, size).changes !== 1) throw new AssetError(409, "asset usage import failed");
+      }
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
-  removeCommitted(assetId: string): void { this.db.prepare("DELETE FROM asset_committed WHERE asset_id=?").run(assetId); }
+  beginDelete(assetId: string, projectId: string, threadId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("INSERT OR REPLACE INTO asset_deletions VALUES (?,?,?)").run(assetId, projectId, threadId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
+  finishDelete(assetId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("DELETE FROM asset_committed WHERE asset_id=?").run(assetId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
+  removeCommitted(assetId: string): void { this.finishDelete(assetId); }
   recordAudit(file: string, projectId: string, threadId: string, record: Record<string, unknown>): void {
-    this.db.exec("BEGIN IMMEDIATE");
     try {
+      this.db.exec("BEGIN IMMEDIATE");
       if (existsSync(file)) {
         const text = readFileSync(file, "utf8"); const lines = text.split("\n");
         for (let i = 0; i < lines.length - 1; i++) if (lines[i]) { try { JSON.parse(lines[i]!); } catch { throw new AssetError(409, "asset audit log is corrupt"); } }
@@ -131,7 +148,7 @@ export class AssetAuthority {
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
   assertOwned(id: string): void {
-    this.db.exec("BEGIN IMMEDIATE"); try { const now = this.now(); const result = this.db.prepare("DELETE FROM asset_reservations WHERE id=? AND created_at <= ?").run(id, now - UPLOAD_LEASE_MS); if (result.changes || !this.db.prepare("SELECT 1 FROM asset_reservations WHERE id=?").get(id)) throw new AssetError(409, "upload reservation expired"); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw error; }
+    try { this.db.exec("BEGIN IMMEDIATE"); const now = this.now(); const result = this.db.prepare("DELETE FROM asset_reservations WHERE id=? AND created_at <= ?").run(id, now - UPLOAD_LEASE_MS); if (result.changes || !this.db.prepare("SELECT 1 FROM asset_reservations WHERE id=?").get(id)) throw new AssetError(409, "upload reservation expired"); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
   close(): void { this.db.close(); }
 }
@@ -303,7 +320,9 @@ export class AssetStore {
     const existing = new Map<string, number>();
     for (const entry of await readdir(directory)) {
       const match = entry.match(/^([a-f0-9-]{36})\.bin$/); if (!match) continue;
-      existing.set(match[1]!, await stat(path.join(directory, entry)).then((item) => item.isFile() ? item.size : ASSET_LIMITS.maxThreadBytes).catch(() => ASSET_LIMITS.maxThreadBytes));
+      const target = path.join(directory, entry); const first = await stat(target); const second = await stat(target);
+      if (!first.isFile() || first.dev !== second.dev || first.ino !== second.ino || first.size !== second.size) throw new AssetError(409, "asset filesystem changed during quota reconciliation");
+      existing.set(match[1]!, second.size);
     }
     this.authority.syncThread(projectId, threadId, existing);
     const id = randomUUID();
@@ -387,9 +406,10 @@ export class AssetStore {
     const openedDirectory = await this.safeDirectory(projectId, threadId);
     const directory = openedDirectory.path;
     try {
+      this.authority.beginDelete(id, projectId, threadId);
       await Promise.allSettled([unlink(path.join(directory, asset.originalFile)), asset.previewFile ? unlink(path.join(directory, asset.previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
       this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, threadId, { action: "deleted", id, threadId, projectId, at: new Date().toISOString() });
-      this.authority.removeCommitted(id);
+      this.authority.finishDelete(id);
     } finally { await openedDirectory.handle.close(); }
     return true;
   }
@@ -412,7 +432,7 @@ export class AssetStore {
       if ((raw && !metadataIds.has(raw[1]!)) || temporary) {
         const target = path.join(directory, entry);
         const old = now - await lstat(target).then((item) => item.mtimeMs).catch(() => now) > STAGED_TTL_MS;
-        if (old) { await rm(target, { force: true }); if (raw?.[1]) this.authority.removeCommitted(raw[1]); removed++; }
+        if (old) { if (raw?.[1]) this.authority.beginDelete(raw[1], projectId, threadId); await rm(target, { force: true }); if (raw?.[1]) this.authority.finishDelete(raw[1]); removed++; }
         continue;
       }
       if (!entry.endsWith(".json") || entry === "audit.jsonl") continue;
