@@ -214,6 +214,18 @@ the authority for parent/child/root lineage and the initial delegated lifecycle;
 the thread event log remains canonical for the child agent's work and subsequent
 turns. The raw delegation prompt is not copied into the public thread history.
 
+Manager-facing supervision uses one shared lifecycle vocabulary: `idle`,
+`running`, `waiting`, `blocked`, `compacting`, `cancelled`, `completed`, and
+`failed`. Project- and master-chat-scoped health are server-owned projections over
+active runs, delegation lineage, durable queued delivery, and canonical task/error
+events; clients do not infer status or emit heartbeat chat messages. Every result
+contains the stable thread/agent ID, direct parent/child IDs where recorded,
+status, observation timestamp, and reason. `compacting` is exposed only during
+the bounded interval after an active agent schedules session rollover and before
+that run closes; synchronous idle-thread reset does not fabricate an interval.
+Ordinary cancellation appends a canonical lifecycle event so it remains visible
+after the process and its in-memory run record disappear.
+
 ### Asynchronous delegated results and collaboration delivery
 
 Delegation is asynchronous. A parent that creates delegated work **ends its turn**
@@ -242,6 +254,22 @@ Canonical collaboration messages store their resolved recipient intents in the
 same append. Startup recreates any missing inbox record from those intents,
 closing the crash window between message persistence and inbox persistence
 without replaying blocked mentions or pre-inbox chat history.
+
+Newly seeded agents communicate through semantic intents rather than channel
+names or routing syntax: `broadcast`, `direct_to_user`, and `collaboration`.
+Collaboration requires a non-empty list of stable recipient agent IDs. The server
+validates membership, resolves delivery, and renders mutable display handles into
+the collaboration projection. A temporary compatibility path accepts the former
+channel-and-mention request from runtime sessions seeded before this contract was
+deployed; it is not advertised and is removed after the session migration window.
+
+The target persistence contract is one versioned, immutable, project-level
+`CommunicationEvent`. Master Chat, Collaboration Chat, Direct Agent audit,
+agent inbox, and user inbox entries are rebuildable projections referencing its
+globally unique event ID. Delivery attempts and receipts are mutable operational
+records outside that event. Context classification and knowledge promotion are
+append-only records referencing the same ID, so being visible in a projection
+never implicitly makes local conversation shared organizational context.
 
 The reserved, case-insensitive `@everyone` collaboration handle resolves once,
 at message creation, to every non-archived agent that is currently a member of
@@ -405,6 +433,14 @@ is simpler and reuses what the runtimes already do.
 > deferred to a v3 research track — a real opportunity (given long history, produce
 > the minimal highest-value context) but not a v1 dependency. Keeping the event log
 > clean and queryable leaves the door open without betting the MVP on it.
+
+Communication curation does not replace repository knowledge. A promoted
+communication summary is an append-only, provenance-linked project event used at
+fresh session boundaries; it is not a mutable fact database and never includes
+the source local message implicitly. Durable engineering standards and project
+instructions still belong in the repository's own markdown files. Promotions
+may expire or be superseded and are scoped organizational history, not timeless
+project truth.
 
 ---
 
@@ -608,6 +644,8 @@ PATCH  /api/agent-presets/:id
 DELETE /api/agent-presets/:id
 GET    /api/projects/:id/threads
 POST   /api/projects/:id/threads           # { title, engine, model, effort }
+GET    /api/projects/:id/agent-health      # stable IDs + lifecycle/lineage projection
+GET    /api/master-chats/:id/agent-health  # room-scoped lifecycle/lineage projection
 
 GET    /api/threads/:id                    # thread + messages + tasks + artifacts + state
 PATCH  /api/threads/:id                    # rename / archive

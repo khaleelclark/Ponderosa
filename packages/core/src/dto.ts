@@ -4,6 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TaskStatus } from "./events.js";
+import type { CommunicationIntent } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,8 @@ export interface UpdateMasterChatRequest {
 /** A message in the project-level master chat (a team group chat). */
 export interface MasterChatMessageDto {
   id: string;
+  /** Canonical cross-surface event identity, absent only on pre-migration history. */
+  communicationEventId?: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -146,10 +149,18 @@ export interface CreateMasterChatMessageRequest {
   attachments?: ImageAttachmentDto[];
 }
 
+/** POST /api/master-chats/:id/collaboration/messages body. */
+export interface CreateCollaborationMessageRequest {
+  text: string;
+  /** Stable IDs resolved by the client; display handles are never routing input. */
+  recipientAgentIds: string[];
+  replyToMessageId?: string;
+}
+
 /** POST collaboration message response; recipients are the immutable resolved audience. */
 export interface CreateCollaborationMessageResponse {
   message: MasterChatMessageDto;
-  audience: "mention" | "everyone" | "none";
+  audience: "mention" | "everyone";
   notifiedAgentIds: string[];
 }
 
@@ -229,6 +240,8 @@ export interface UpdateThreadMasterChatMembershipsRequest {
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
   id: string;
+  /** Canonical cross-surface event identity, absent only on pre-migration history. */
+  communicationEventId?: string;
   threadId: string;
   seq: number;
   role: "user" | "assistant";
@@ -346,6 +359,7 @@ export interface StartedMessageResponse {
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
   mode: "seed" | "continue";
+  communicationEventId?: string;
 }
 
 /** POST /api/threads/:id/messages response when another turn is still active. */
@@ -353,21 +367,33 @@ export interface QueuedMessageResponse {
   queued: true;
   /** One-based position among follow-ups waiting for this agent. */
   position: number;
+  communicationEventId?: string;
 }
 
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
 export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
 
-/** Destinations available to an agent through its short-lived run capability. */
+/** Semantic communication requested by an agent. Routing is server-owned. */
+export type AgentCommunicationIntent = CommunicationIntent;
+/** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
-/** POST /api/agent-messages body. The server derives the author from the capability. */
-export interface SendAgentMessageRequest {
-  channel: AgentMessageChannel;
+interface AgentMessageRequestBase {
   text: string;
-  /** Stable across a transport retry so a collaboration tag is delivered once. */
+  /** Stable across a transport retry so every durable effect occurs once. */
   idempotencyKey?: string;
 }
+
+/** POST /api/agent-messages body. The server derives the author from the capability. */
+export type SendAgentMessageRequest = AgentMessageRequestBase & (
+  | { intent: "broadcast"; recipientAgentIds?: never }
+  | { intent: "direct_to_user"; recipientAgentIds?: never }
+  | {
+      intent: "collaboration";
+      /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
+      recipientAgentIds: string[];
+    }
+);
 
 /** POST /api/threads/:id/cancel response. */
 export interface CancelResponse {
@@ -534,6 +560,37 @@ export interface HealthDto {
   version: string;
 }
 
+/** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
+export type AgentLifecycleStatus = "idle" | "running" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
+
+export type AgentLifecycleReason =
+  | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
+  | "delegation_queued" | "delegation_awaiting_disposition" | "delegation_blocked"
+  | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
+  | "task_completed" | "turn_completed" | "runtime_error"
+  | "session_rollover_scheduled" | "thread_cancelled"
+  | "execution_lease_expired" | "execution_interrupted";
+
+export interface AgentHealthDto {
+  /** Stable thread identity; titles and mention handles are presentation only. */
+  agentId: string;
+  parentAgentId?: string;
+  childAgentIds: string[];
+  status: AgentLifecycleStatus;
+  /** Timestamp of the authoritative observation that selected `status`. */
+  statusTimestamp: string;
+  reason: AgentLifecycleReason;
+  /** Runtime generation and bounded liveness window, when work is active. */
+  executionId?: string;
+  leaseExpiresAt?: string;
+}
+
+export interface AgentHealthProjectionDto {
+  scope: { type: "project" | "master_chat"; id: string };
+  generatedAt: string;
+  agents: AgentHealthDto[];
+}
+
 export interface ReadinessCheckDto {
   ok: boolean;
   detail: string;
@@ -550,6 +607,7 @@ export interface ReadinessDto {
     dataDirectory: ReadinessCheckDto;
     projections: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
+    communicationMigration: ReadinessCheckDto;
   };
   runtimes: Array<{ id: string; authenticated: boolean; detail?: string }>;
 }

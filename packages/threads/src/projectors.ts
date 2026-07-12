@@ -121,6 +121,7 @@ export function projectEvent(
         kind: "insert_message",
         row: {
           id: messageId(threadId, seq),
+          communicationEventId: event.communicationEventId ?? null,
           threadId,
           seq,
           role: "user",
@@ -147,6 +148,7 @@ export function projectEvent(
           kind: "insert_message",
           row: {
             id: messageId(threadId, seq),
+            communicationEventId: event.communicationEventId ?? null,
             threadId,
             seq,
             role: "assistant",
@@ -158,6 +160,25 @@ export function projectEvent(
         });
         ops.push({ kind: "touch_thread", updatedAt: ts });
       }
+      break;
+    }
+
+    case "communication_projection": {
+      ops.push({
+        kind: "insert_message",
+        row: {
+          id: messageId(threadId, seq),
+          communicationEventId: event.communicationEventId,
+          threadId,
+          seq,
+          role: "assistant",
+          text: event.text,
+          createdAt: ts,
+          replyToJson: null,
+          attachmentsJson: null,
+        },
+      });
+      ops.push({ kind: "touch_thread", updatedAt: ts });
       break;
     }
 

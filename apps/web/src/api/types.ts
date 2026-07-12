@@ -1,7 +1,9 @@
 import type {
   ArtifactContentDto,
+  AgentHealthProjectionDto,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   CollaborationChatDetailDto,
+  CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
   CreateDirectReplyRequest,
   CreateMasterChatMessageRequest,
@@ -67,6 +69,7 @@ export class ApiRequestError extends Error {
 export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
+  getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
   listMasterChats(projectId: string): Promise<MasterChatDto[]>;
   createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
   getMasterChat(masterChatId: string): Promise<MasterChatDetailDto>;
@@ -74,7 +77,7 @@ export interface PonderosaApi {
   updateMasterChat(masterChatId: string, patch: UpdateMasterChatRequest): Promise<MasterChatDto>;
   deleteMasterChat(masterChatId: string): Promise<void>;
   sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
-  sendCollaborationMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<CreateCollaborationMessageResponse>;
+  sendCollaborationMessage(masterChatId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
   sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   setMessageReaction(masterChatId: string, channel: "main" | "collaboration", messageId: string, emoji: ReactionEmoji, active: boolean, idempotencyKey: string): Promise<SetMessageReactionResponse>;
   listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;

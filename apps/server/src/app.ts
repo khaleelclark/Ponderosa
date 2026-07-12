@@ -9,6 +9,8 @@ import type {
   AgentDelegationDispositionRequest,
   AgentMessageChannel,
   AgentEvent,
+  CommunicationEvent,
+  AgentHealthProjectionDto,
   ArtifactContentDto,
   ChatMessage,
   EngineAuthStatus,
@@ -17,6 +19,8 @@ import type {
   HealthDto,
   ReadinessDto,
   MasterChatMessageDto,
+  MasterChatDetailDto,
+  CollaborationChatDetailDto,
   AssetDto,
   ImageAttachmentDto,
   CreateDirectReplyRequest,
@@ -30,12 +34,13 @@ import type {
   SetMessageReactionRequest,
   SetMessageReactionResponse,
 } from "@ponderosa/core";
-import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { DelegationError, DelegationStore } from "./delegations.js";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
+import { projectAgentHealth } from "./agent-health.js";
 import {
   CollaborationDeliveryStore,
   type CollaborationDelivery,
@@ -56,18 +61,85 @@ export interface CreateServerOptions {
   /** Host-local origin injected into runtime tools; agents run on this server host. */
   agentBaseUrl?: string;
   logger?: boolean;
+  /** Emergency rollback: `off` preserves legacy logs/projections only. */
+  communicationMode?: "off" | "shadow";
+  communicationReadMode?: "legacy" | "shadow" | "authoritative";
+  legacyRoutingMode?: "accept" | "reject";
+  /** Independent context-plane rollback switch. */
+  curatedContextEnabled?: boolean;
+  /** Deterministic scheduling seams for retry tests; production uses host timers and randomness. */
+  deliveryScheduling?: {
+    now?: () => number;
+    random?: () => number;
+    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+    /** Test-only internal claim response override. */
+    claimStatus?: () => number | undefined;
+  };
+  /** Deterministic execution-lease supervision seams; production uses one host timer per active run. */
+  executionLeaseScheduling?: {
+    leaseMs?: number;
+    now?: () => number;
+    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+    clearTimer?: (timer: NodeJS.Timeout) => void;
+  };
 }
 
 interface ActiveRun {
   runId: string;
+  startedAt: string;
+  executionId: string;
+  leaseExpiresAt: string;
   controller: AbortController;
   messageCapability: string;
+  delegationCapability?: string;
   delegatedRunId?: string;
+  deliveryIds?: string[];
+  leaseTimer?: NodeJS.Timeout;
+}
+
+export const COLLABORATION_DISPATCH_LIMITS = {
+  maxBatchDeliveries: 20,
+  maxBatchUtf8Bytes: 224 * 1024,
+  maxDispatchAttempts: 5,
+  baseRetryMs: 250,
+  maxRetryMs: 30_000,
+  jitterRatio: 0.2,
+} as const;
+
+/**
+ * Collaboration room projections are a display timeline, not an authorization
+ * boundary. Runtime context must be selected from the canonical audience:
+ * stable-ID collaboration recipients see their deliveries, while organization
+ * broadcasts are deliberately shared project context. Missing/unrecognized
+ * canonical events fail closed instead of falling back to rendered mentions.
+ */
+function canonicalAudienceIncludes(
+  event: CommunicationEvent | undefined,
+  projectId: string,
+  recipientAgentId: string,
+): boolean {
+  if (!event) return false;
+  if (event.intent === "collaboration") return event.audience.agentIds.includes(recipientAgentId);
+  return event.intent === "broadcast" && event.audience.organizationId === projectId;
+}
+
+function recipientCollaborationMessages(
+  messages: MasterChatMessageDto[],
+  events: CommunicationEvent[],
+  projectId: string,
+  recipientAgentId: string,
+): MasterChatMessageDto[] {
+  const eventsById = new Map(events.map((event) => [event.eventId, event]));
+  return messages.filter((message) => {
+    if (!message.communicationEventId) return false;
+    return canonicalAudienceIncludes(eventsById.get(message.communicationEventId), projectId, recipientAgentId);
+  });
 }
 
 /** A deferred user or agent turn.  Queues are per-thread and FIFO. */
 interface PendingTurn {
   text: string;
+  communicationEventId?: string;
   model?: string;
   effort?: string;
   agentMentionDepth: number;
@@ -197,6 +269,15 @@ function messageContextPrompt(context: InboundMessageContext): string[] {
   ];
 }
 
+function organizationalKnowledgePrompt(promotions: import("@ponderosa/core").KnowledgePromotion[]): string {
+  if (promotions.length === 0) return "";
+  return [
+    "Curated organizational knowledge (operator-promoted; summaries retain canonical provenance):",
+    ...promotions.map((promotion) => `- [source ${promotion.sourceEventId}] ${promotion.summary}`),
+    "",
+  ].join("\n");
+}
+
 const MAX_SEED_HISTORY_CHARS = 24_000;
 const MAX_SEED_HISTORY_MESSAGES = 40;
 
@@ -232,14 +313,13 @@ export function boundedSeedHistory<T extends { text: string }>(
 function agentMessagingPrompt(): string[] {
   return [
     "You can send an additional message to any Ponderosa channel with your shell tool:",
-    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message","idempotencyKey":"stable-retry-key"}\'',
-    "For a collaboration tag, write @Full-Agent-Handle at the start of the message or separate it from preceding text with whitespace.",
-    "In collaboration only, @everyone notifies every non-archived member of your current room except you. It is resolved and deduplicated when the message is recorded.",
-    'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
-    "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
-    "A valid collaboration @mention is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
+    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
+    'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders recipient names; never write routing @mentions into message text.',
+    "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
+    "Use collaboration for teammate coordination, broadcast for durable shared organizational knowledge, and direct_to_user for notes in your own agent audit chat.",
+    "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After delegating work, end your turn. Do not poll, sleep, or remain active waiting for results. Delegated agents run asynchronously; their completion automatically queues a parent follow-up, and explicit collaboration tags do the same.",
-    "Each valid tag is a separate FIFO delivery (not coalesced). If a tag arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued tags remain queued; a cancelled delivery turn itself is retried.",
+    "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
     "Track expected work in delegated-agent status/lineage: queued/running/awaiting_disposition/completed/blocked/failed/cancelled plus terminal-delivery state. A child does not need to tag you for its declared terminal result; it should tag you only for interim findings or questions.",
     "Accumulate results across those notification turns and update the manager once every expected task has reported.",
     'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
@@ -305,7 +385,7 @@ function masterChatPrompt(
     "You are replying as a teammate in a shared master chat.",
     "Respond directly to the latest message addressed to you, whether it came from the manager or a teammate.",
     "The main chat is manager-facing: do not use @mentions here to coordinate with teammates, because they are plain text and do not notify anyone.",
-    "Agent-to-agent discussion belongs in the separate Collaboration chat. A valid @mention there provides its context and starts the teammate's turn.",
+    "Agent-to-agent discussion belongs in the separate Collaboration chat. An explicit collaboration intent provides its context and starts the teammate's turn.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only your new update or result in a natural, conversational tone.",
@@ -327,7 +407,7 @@ function masterChatPrompt(
   ].join("\n");
 }
 
-/** Collaboration context is opt-in: it is only assembled after a valid @mention. */
+/** Collaboration context is opt-in: it is assembled only for an explicit recipient delivery. */
 function collaborationChatPrompt(
   messages: MasterChatMessageDto[],
   threads: ThreadDto[],
@@ -350,9 +430,9 @@ function collaborationChatPrompt(
     .join("\n");
   const staticInstructions = incremental ? [] : [
     "You are collaborating with teammates in Ponderosa's opt-in collaboration chat.",
-    "You received this context because you were successfully @mentioned.",
+    "You received this context because you were an explicit collaboration recipient.",
     "This is the only chat for agent-to-agent coordination. Respond directly to the latest request here.",
-    "To involve a teammate, @mention their full hyphenated handle; a valid mention provides this collaboration context and starts their turn.",
+    "To involve a teammate, send a collaboration intent with their stable agent ID; the server routes it and renders any display handle.",
     "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
     "Do not claim to have seen the main chat.",
     ...agentMessagingPrompt(),
@@ -497,6 +577,7 @@ async function readScopedPath(root: string, relInput: string | undefined): Promi
 
 export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
+  store.recoverInterruptedExecutions();
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
@@ -507,9 +588,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
-  const scheduledSessionRollovers = new Set<string>();
+  const scheduledSessionRollovers = new Map<string, string>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
   const dispatchingTurns = new Set<string>();
+  const deliveryRetryTimers = new Map<string, NodeJS.Timeout>();
+  const deliveryDispatches = new Set<Promise<void>>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct thread request.
   const collaborationDispatchKey = randomUUID();
@@ -520,6 +603,121 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const directReplyClaims = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
+  const communicationMode = opts.communicationMode ?? "shadow";
+  const communicationReadMode = opts.communicationReadMode ?? "shadow";
+  // Embedders can opt into the compatibility window; the production config
+  // defaults to reject so newly deployed agents never depend on routing syntax.
+  const legacyRoutingMode = opts.legacyRoutingMode ?? "accept";
+  const curatedContextEnabled = opts.curatedContextEnabled ?? true;
+  const recordCommunication = (event: CommunicationEvent): CommunicationEvent | undefined =>
+    communicationMode === "off" ? undefined : store.appendCommunicationEvent(event).event;
+  const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
+  const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
+  const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+  const clearExecutionLeaseTimer = opts.executionLeaseScheduling?.clearTimer ?? clearTimeout;
+  const leaseExpiry = () => new Date(executionLeaseNow() + executionLeaseMs).toISOString();
+  const deliveryNow = opts.deliveryScheduling?.now ?? Date.now;
+  const deliveryRandom = opts.deliveryScheduling?.random ?? Math.random;
+  const setDeliveryTimer = opts.deliveryScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+
+  function ownsActiveRun(threadId: string, run: ActiveRun): boolean {
+    return activeRuns.get(threadId) === run;
+  }
+
+  function clearRunLeaseTimer(run: ActiveRun): void {
+    if (!run.leaseTimer) return;
+    clearExecutionLeaseTimer(run.leaseTimer);
+    run.leaseTimer = undefined;
+  }
+
+  function expireExecutionLease(threadId: string, run: ActiveRun): void {
+    if (closed || !ownsActiveRun(threadId, run)) return;
+    const remaining = Date.parse(run.leaseExpiresAt) - executionLeaseNow();
+    if (remaining > 0) {
+      run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(threadId, run), remaining);
+      run.leaseTimer.unref?.();
+      return;
+    }
+
+    // Delete the claim and revoke capabilities before aborting. Any synchronous
+    // or late async continuation from this generation therefore fails its CAS.
+    activeRuns.delete(threadId);
+    clearRunLeaseTimer(run);
+    agentMessageCapabilities.delete(run.messageCapability);
+    if (run.delegationCapability) delegationCapabilities.delete(run.delegationCapability);
+    scheduledSessionRollovers.delete(threadId);
+    const lifecycle = store.appendEvent(threadId, {
+      type: "agent_lifecycle", status: "failed", reason: "execution_lease_expired", executionId: run.executionId,
+    });
+    publish(threadId, lifecycle);
+    if (run.delegatedRunId) {
+      const settled = delegations.finishRuntime(run.delegatedRunId, "execution lease expired");
+      if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
+    }
+    if (run.deliveryIds?.length) {
+      for (const id of run.deliveryIds) {
+        collaborationDeliveries.retryFailedTurn(id, "execution lease expired");
+        syncDelegatedCompletion(id);
+      }
+    }
+    run.controller.abort();
+    runDeliveryDispatch(threadId);
+  }
+
+  function renewExecutionLease(threadId: string, run: ActiveRun): boolean {
+    if (!ownsActiveRun(threadId, run)) return false;
+    clearRunLeaseTimer(run);
+    run.leaseExpiresAt = leaseExpiry();
+    run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(threadId, run), executionLeaseMs);
+    run.leaseTimer.unref?.();
+    return true;
+  }
+
+  function claimActiveRun(threadId: string, run: ActiveRun): void {
+    activeRuns.set(threadId, run);
+    renewExecutionLease(threadId, run);
+  }
+
+  function releaseActiveRun(threadId: string, run: ActiveRun): boolean {
+    if (!ownsActiveRun(threadId, run)) return false;
+    activeRuns.delete(threadId);
+    clearRunLeaseTimer(run);
+    return true;
+  }
+
+  function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
+    const detail = store.getMasterChatDetail(masterChatId);
+    if (!detail || communicationReadMode !== "authoritative") return detail;
+    return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "main") };
+  }
+
+  function collaborationChatDetail(masterChatId: string): CollaborationChatDetailDto | undefined {
+    const detail = store.getCollaborationChatDetail(masterChatId);
+    if (!detail || communicationReadMode !== "authoritative") return detail;
+    return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "collaboration") };
+  }
+
+  function threadDetail(threadId: string): import("@ponderosa/core").ThreadDetailDto | undefined {
+    const detail = store.getThreadDetail(threadId);
+    if (!detail || communicationReadMode !== "authoritative") return detail;
+    return { ...detail, messages: store.getProjectedThreadMessages(threadId) };
+  }
+
+  const threadMessages = (threadId: string) => communicationReadMode === "authoritative"
+    ? store.getProjectedThreadMessages(threadId)
+    : store.getMessages(threadId);
+
+  function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
+    return projectAgentHealth({
+      scope,
+      threads,
+      delegations: scopedDelegations,
+      activeRuns,
+      compactingAgents: scheduledSessionRollovers,
+      queuedDeliveries: (threadId) => collaborationDeliveries.pending(threadId),
+      events: (threadId) => store.readEvents(threadId),
+    });
+  }
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
@@ -546,6 +744,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function pendingTurnFromDelivery(delivery: CollaborationDelivery): PendingTurn {
     return {
       text: delivery.text,
+      communicationEventId: delivery.communicationEventId,
       model: delivery.model,
       effort: delivery.effort,
       agentMentionDepth: delivery.relayDepth,
@@ -588,10 +787,51 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return {
       ...pendingTurnFromDelivery(first),
       text: formatDeliveryBatch({ deliveries }),
+      communicationEventId: undefined,
       sourceAuthorThreadId: undefined,
       collaborationDeliveryId: undefined,
       collaborationDeliveryIds: deliveries.map((delivery) => delivery.id),
     };
+  }
+
+  function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
+    const first = pending[0];
+    if (!first) return [];
+    if (first.kind === "direct") return [first];
+    const batch: CollaborationDelivery[] = [];
+    for (const candidate of pending) {
+      if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
+      const proposed = [...batch, candidate];
+      const bytes = Buffer.byteLength(formatDeliveryBatch({ deliveries: proposed }), "utf8");
+      if (bytes > COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes) break;
+      batch.push(candidate);
+    }
+    return batch;
+  }
+
+  function dispatchRetryDelay(attempt: number): number {
+    const exponential = Math.min(
+      COLLABORATION_DISPATCH_LIMITS.maxRetryMs,
+      COLLABORATION_DISPATCH_LIMITS.baseRetryMs * (2 ** Math.max(0, attempt - 1)),
+    );
+    const jitter = exponential * COLLABORATION_DISPATCH_LIMITS.jitterRatio * ((deliveryRandom() * 2) - 1);
+    return Math.max(0, Math.round(exponential + jitter));
+  }
+
+  function scheduleDeliveryDispatch(threadId: string, delayMs = 0): void {
+    if (closed || activeRuns.has(threadId) || deliveryRetryTimers.has(threadId)) return;
+    const timer = setDeliveryTimer(() => {
+      deliveryRetryTimers.delete(threadId);
+      runDeliveryDispatch(threadId);
+    }, delayMs);
+    timer.unref?.();
+    deliveryRetryTimers.set(threadId, timer);
+  }
+
+  function runDeliveryDispatch(threadId: string): void {
+    const dispatch = dispatchNextTurn(threadId);
+    deliveryDispatches.add(dispatch);
+    void dispatch.finally(() => deliveryDispatches.delete(dispatch));
   }
 
   /**
@@ -603,7 +843,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   ): CollaborationDelivery | undefined {
     if (closed) return undefined;
     const queued = collaborationDeliveries.queue(input);
-    void dispatchNextTurn(queued.delivery.targetThreadId);
+    if (queued.delivery.communicationEventId) {
+      const target = store.getThread(queued.delivery.targetThreadId);
+      if (target) {
+        store.appendCommunicationProjection(target.projectId, {
+          eventId: queued.delivery.communicationEventId,
+          surface: "agent_inbox",
+          projectionKey: target.id,
+          projectedAt: queued.delivery.createdAt,
+        });
+      }
+    }
+    scheduleDeliveryDispatch(queued.delivery.targetThreadId);
     return queued.delivery;
   }
 
@@ -612,23 +863,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (activeRuns.has(threadId)) return;
     if (dispatchingTurns.has(threadId)) return;
     dispatchingTurns.add(threadId);
+    let retryScheduled = false;
     try {
     const pending = collaborationDeliveries.pending(threadId);
     const delivery = pending[0];
     if (!delivery) return;
+    const eligibleAt = delivery.nextDispatchAt ? Date.parse(delivery.nextDispatchAt) : 0;
+    if (eligibleAt > deliveryNow()) {
+      scheduleDeliveryDispatch(threadId, eligibleAt - deliveryNow());
+      return;
+    }
     // Direct follow-ups retain their exact existing behavior and remain FIFO
     // barriers. Every consecutive collaboration delivery for this recipient is
     // one fixed snapshot, regardless of author or relay metadata.
-    const boundary = pending.findIndex((item) => !canShareCollaborationBatch(delivery, item));
-    const batch = delivery.kind === "direct"
-      ? [delivery]
-      : pending.slice(0, boundary < 0 ? pending.length : boundary);
+    const batch = boundedDeliveryBatch(pending);
+    if (batch.length === 0) {
+      collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
+      syncDelegatedCompletion(delivery.id);
+      return;
+    }
     const next = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
     const deliveryIds = batch.map((item) => item.id);
 
     collaborationDeliveries.markBatchDelivered(deliveryIds);
     for (const id of deliveryIds) syncDelegatedCompletion(id);
-    const response = await app.inject({
+    const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
+    const response = injectedStatus === undefined ? await app.inject({
       method: "POST",
       url: `/api/threads/${threadId}/messages`,
       headers: {
@@ -639,40 +899,57 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         "x-ponderosa-turn-dispatch": turnDispatchKey,
       },
       payload: next,
-    });
+    }) : { statusCode: injectedStatus };
     // `app.close()` may have run while the internal injection was in flight.
     // Never mutate a delivery ledger after shutdown has revoked its data dir.
     if (closed) return;
     // Another request may have claimed the agent between our check and the
     // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
-      collaborationDeliveries.requeueBatch(deliveryIds);
+      collaborationDeliveries.requeueBatch(deliveryIds, true);
       for (const id of deliveryIds) syncDelegatedCompletion(id);
     } else if (response.statusCode === 429 || response.statusCode >= 500) {
-      collaborationDeliveries.requeueBatch(deliveryIds);
+      const attempt = Math.max(...deliveryIds.map((id) => collaborationDeliveries.get(id)?.dispatchAttempts ?? 0)) + 1;
+      const delay = dispatchRetryDelay(attempt);
+      const nextDispatchAt = new Date(deliveryNow() + delay).toISOString();
+      const retried = collaborationDeliveries.retryDispatchBatch(
+        deliveryIds,
+        `delivery dispatch rejected (${response.statusCode})`,
+        nextDispatchAt,
+        COLLABORATION_DISPATCH_LIMITS.maxDispatchAttempts,
+      );
       for (const id of deliveryIds) syncDelegatedCompletion(id);
-      setTimeout(() => void dispatchNextTurn(threadId), 250).unref?.();
+      if (retried.some((item) => item.status === "queued")) {
+        scheduleDeliveryDispatch(threadId, delay);
+        retryScheduled = true;
+      } else {
+        const failed = retried[0];
+        const target = failed ? store.getThread(failed.targetThreadId) : undefined;
+        if (failed?.masterChatId && target) {
+          appendCollaborationSystemNotice(
+            failed.masterChatId,
+            `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery exhausted bounded retries. The handoff is retained as failed; retry manually or contact the manager.`,
+            `delivery-failure:${failed.id}`,
+          );
+        }
+      }
     } else if (response.statusCode >= 300) {
       collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
       for (const id of deliveryIds) syncDelegatedCompletion(id);
       const delivery = collaborationDeliveries.get(deliveryIds[0]!);
       const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
       if (delivery?.masterChatId && target) {
-        store.appendMasterChatMessage(
+        appendCollaborationSystemNotice(
           delivery.masterChatId,
-          {
-            role: "system",
-            text: `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
-          },
-          undefined,
-          "collaboration",
+          `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
+          `delivery-failure:${delivery.id}`,
         );
       }
     }
     } finally {
       dispatchingTurns.delete(threadId);
-      if (!closed && !activeRuns.has(threadId) && collaborationDeliveries.pendingCount(threadId) > 0) {
-        setImmediate(() => void dispatchNextTurn(threadId));
+      if (!closed && !retryScheduled && !activeRuns.has(threadId) && collaborationDeliveries.pendingCount(threadId) > 0) {
+        scheduleDeliveryDispatch(threadId);
       }
     }
   }
@@ -696,6 +973,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const queued = collaborationDeliveries.queue({
             masterChatId: master.id,
             messageId: message.id,
+            communicationEventId: message.communicationEventId,
             targetThreadId: intent.targetThreadId,
             authorThreadId: message.authorThreadId,
             text: message.text,
@@ -770,7 +1048,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged());
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
     for (const threadId of recipients) {
-      setImmediate(() => void dispatchNextTurn(threadId));
+      scheduleDeliveryDispatch(threadId);
     }
     for (const interrupted of delegations.reconcileInterrupted()) {
       notifyParentOfDelegatedCompletion(interrupted);
@@ -801,8 +1079,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     closed = true;
+    for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
+    deliveryRetryTimers.clear();
     if (assetSweep) clearInterval(assetSweep);
-    for (const run of activeRuns.values()) run.controller.abort();
+    for (const run of activeRuns.values()) {
+      clearRunLeaseTimer(run);
+      run.controller.abort();
+    }
+    activeRuns.clear();
+    await Promise.allSettled([...deliveryDispatches]);
     assets.close();
     store.close();
   });
@@ -831,7 +1116,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     relayDepth: number,
     mentionTrail: string[],
   ): { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
-    const detail = store.getCollaborationChatDetail(masterChatId);
+    const detail = collaborationChatDetail(masterChatId);
     const eligible = detail?.threads.filter((thread) => !thread.archived && thread.id !== authorThreadId) ?? [];
     const targetsById = new Map(
       mentionedAgentThreads(text, eligible, authorThreadId).map((thread) => [thread.id, thread]),
@@ -864,6 +1149,42 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { intents, blocked };
   }
 
+  function resolveExplicitCollaborationIntents(
+    masterChatId: string,
+    authorThreadId: string,
+    recipientAgentIds: string[],
+    text: string,
+    relayDepth: number,
+    mentionTrail: string[],
+  ): { text: string; intents: MasterChatDeliveryIntent[]; error?: string } {
+    const detail = store.getCollaborationChatDetail(masterChatId);
+    const members = new Map((detail?.threads ?? []).map((thread) => [thread.id, thread]));
+    const targetIds = [...new Set(recipientAgentIds)];
+    const targets = targetIds.map((id) => members.get(id));
+    if (targets.some((target) => !target || target.archived || target.id === authorThreadId)) {
+      return { text, intents: [], error: "every collaboration recipient must be a different active agent in this master chat" };
+    }
+    const renderedText = `${targets.map((target) => `@${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+    const intents: MasterChatDeliveryIntent[] = [];
+    for (const target of targets) {
+      const fingerprint = mentionRelayFingerprint(authorThreadId, target!.id, renderedText);
+      if (mentionTrail.includes(fingerprint)) {
+        return { text, intents: [], error: "the same collaboration handoff already occurred in this delivery chain" };
+      }
+      if (relayDepth >= MAX_AGENT_MENTION_RELAYS) {
+        return { text, intents: [], error: "the collaboration reached its 12-handoff safety limit" };
+      }
+      intents.push({
+        targetThreadId: target!.id,
+        relayDepth: relayDepth + 1,
+        mentionTrail: [...mentionTrail, fingerprint],
+        kind: "tag",
+        audience: "mention",
+      });
+    }
+    return { text: renderedText, intents };
+  }
+
   function queueRecordedCollaborationMessage(
     masterChatId: string,
     message: MasterChatMessageDto,
@@ -875,6 +1196,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       queueCollaborationDelivery({
         masterChatId,
         messageId: message.id,
+        communicationEventId: message.communicationEventId,
         targetThreadId: intent.targetThreadId,
         authorThreadId,
         text: message.text,
@@ -894,16 +1216,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     blocked: Array<{ title: string; reason: string }>,
   ): void {
     for (const item of blocked) {
-      store.appendMasterChatMessage(
+      appendCollaborationSystemNotice(
         masterChatId,
-        {
-          role: "system",
-          text: `⚠️ @${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
-        },
-        undefined,
-        "collaboration",
+        `⚠️ @${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
       );
     }
+  }
+
+  function appendCollaborationSystemNotice(
+    masterChatId: string,
+    text: string,
+    idempotencyKey?: string,
+  ): MasterChatMessageDto | undefined {
+    const master = store.getMasterChat(masterChatId);
+    if (!master) return undefined;
+    const communication = recordCommunication({
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId,
+      sender: { kind: "system", component: "collaboration-supervision" },
+      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+      text, createdAt: new Date().toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    const existing = communication
+      ? store.getMasterChatMessages(masterChatId, "collaboration").find((message) => message.communicationEventId === communication.eventId)
+      : undefined;
+    if (existing) return existing;
+    return store.appendMasterChatMessage(
+      masterChatId, { role: "system", text }, undefined, "collaboration", undefined, undefined, communication?.eventId,
+    );
   }
 
   function syncDelegatedCompletion(deliveryId: string): void {
@@ -936,16 +1275,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
       return;
     }
-    const message = store.appendMasterChatMessage(
+    const completionText = run.status === "completed"
+      ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+      : run.status === "blocked"
+        ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. @${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+        : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. @${agentMentionHandle(parent.title)}, review the failure.`;
+    const master = store.getMasterChat(run.masterChatId);
+    if (!master) return;
+    const communication = recordCommunication({
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId: master.id,
+      sender: run.childThreadId
+        ? { kind: "agent", agentId: run.childThreadId, executionId: run.id }
+        : { kind: "system", component: "delegation-supervision" },
+      intent: "collaboration", audience: { kind: "agents", agentIds: [parent.id] },
+      text: completionText, createdAt: new Date().toISOString(), idempotencyKey: `delegation-completion:${run.id}`,
+    });
+    const existing = communication
+      ? store.getMasterChatMessages(run.masterChatId, "collaboration").find((message) => message.communicationEventId === communication.eventId)
+      : undefined;
+    const message = existing ?? store.appendMasterChatMessage(
       run.masterChatId,
-      {
-        role: "system",
-        text: run.status === "completed"
-          ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
-          : run.status === "blocked"
-            ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. @${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
-            : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. @${agentMentionHandle(parent.title)}, review the failure.`,
-      },
+      { role: "system", text: completionText },
       run.childThreadId,
       "collaboration",
       [{
@@ -955,11 +1305,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         kind: "delegation_completion",
         delegatedRunId: run.id,
       }],
+      undefined,
+      communication?.eventId,
     );
     if (!message) return;
     const delivery = queueCollaborationDelivery({
       masterChatId: run.masterChatId,
-      messageId: message.id,
+            messageId: message.id,
+            communicationEventId: message.communicationEventId,
       targetThreadId: parent.id,
       authorThreadId: run.childThreadId,
       text: message.text,
@@ -984,59 +1337,140 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const channel = request.body?.channel;
+    // Active runtime sessions may retain the pre-intent prompt until they roll
+    // over. Accept that wire shape during migration, but never advertise it to
+    // newly seeded sessions.
+    const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
+    const legacyChannel = legacyBody?.channel;
+    if (legacyChannel && legacyRoutingMode === "reject") {
+      return reply.code(410).send({ error: "legacy channel routing is retired; send an explicit communication intent" });
+    }
+    const intent = request.body?.intent ?? (legacyChannel === "individual"
+      ? "direct_to_user"
+      : legacyChannel === "main"
+        ? "broadcast"
+        : legacyChannel === "collaboration"
+          ? "collaboration"
+          : undefined);
     const text = request.body?.text?.trim();
-    if (!(["individual", "main", "collaboration"] as const).includes(channel)) {
-      return reply.code(400).send({ error: "channel must be individual, main, or collaboration" });
+    if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
+      return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
     }
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    const receiptKey = idempotencyKey ? `${capability.runId}:${channel}:${idempotencyKey}` : undefined;
+    const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
     if (receiptKey) {
       const previousMessageId = collaborationDeliveries.messageReceipt(receiptKey);
-      if (previousMessageId) return { channel, messageId: previousMessageId, replayed: true };
+      if (previousMessageId) return { intent, messageId: previousMessageId, replayed: true };
     }
 
-    if (channel === "individual") {
-      const stored = store.appendEvent(capability.threadId, { type: "text", delta: text });
+    const currentAuthor = store.getThread(capability.threadId);
+    if (!currentAuthor || currentAuthor.archived) {
+      return reply.code(409).send({ error: "agent is no longer available" });
+    }
+
+    if (intent === "direct_to_user") {
+      const communication = recordCommunication({
+        eventId: randomUUID(),
+        schemaVersion: 1,
+        projectId: currentAuthor.projectId,
+        sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
+        intent,
+        audience: { kind: "user", userId: "local-operator" },
+        text,
+        createdAt: new Date().toISOString(),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+      });
+      if (communication) store.appendCommunicationProjection(currentAuthor.projectId, {
+        eventId: communication.eventId,
+        surface: "user_inbox",
+        projectionKey: "local-operator",
+        projectedAt: communication.createdAt,
+      });
+      const stored = store.appendEvent(capability.threadId, communication ? {
+        type: "communication_projection", communicationEventId: communication.eventId, text,
+      } : { type: "text", delta: text });
       publish(capability.threadId, stored);
       const messageId = `thread-event-${stored.seq}`;
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
-      return { channel, messageId, replayed: false };
+      return { intent, eventId: communication?.eventId, messageId, replayed: false };
     }
     if (!capability.masterChatId) {
       return reply.code(409).send({ error: "agent is not linked to a master chat" });
     }
-    const currentAuthor = store.getThread(capability.threadId);
-    if (!currentAuthor || currentAuthor.archived || !currentAuthor.masterChatIds.includes(capability.masterChatId)) {
+    if (!currentAuthor.masterChatIds.includes(capability.masterChatId)) {
       return reply.code(409).send({ error: "agent is no longer an active member of this master chat" });
     }
-    const routing = channel === "collaboration"
-      ? resolveCollaborationIntents(
-          capability.masterChatId,
-          capability.threadId,
-          text,
-          capability.mentionDepth,
-          capability.mentionTrail,
-        )
-      : { intents: [], blocked: [] };
+    let renderedText = text;
+    let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
+    if (intent === "collaboration" && !legacyChannel) {
+      const recipientAgentIds = request.body.recipientAgentIds;
+      if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
+        return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
+      }
+      if (recipientAgentIds.length > 100) return reply.code(400).send({ error: "collaboration supports at most 100 recipients" });
+      const resolved = resolveExplicitCollaborationIntents(
+        capability.masterChatId,
+        capability.threadId,
+        recipientAgentIds,
+        text,
+        capability.mentionDepth,
+        capability.mentionTrail,
+      );
+      if (resolved.error) return reply.code(400).send({ error: resolved.error });
+      renderedText = resolved.text;
+      routing = { intents: resolved.intents, blocked: [] };
+    } else if (intent === "collaboration") {
+      routing = resolveCollaborationIntents(
+        capability.masterChatId,
+        capability.threadId,
+        text,
+        capability.mentionDepth,
+        capability.mentionTrail,
+      );
+    }
+    const channel = intent === "broadcast" ? "main" : "collaboration";
+    const communication = recordCommunication(intent === "broadcast" ? {
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      projectId: currentAuthor.projectId,
+      masterChatId: capability.masterChatId,
+      sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
+      intent,
+      audience: { kind: "organization", organizationId: currentAuthor.projectId },
+      text,
+      createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    } : {
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      projectId: currentAuthor.projectId,
+      masterChatId: capability.masterChatId,
+      sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
+      intent,
+      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
+      text,
+      createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
     const message = store.appendMasterChatMessage(
       capability.masterChatId,
-      { role: "assistant", text },
+      { role: "assistant", text: renderedText },
       capability.threadId,
       channel,
       routing.intents,
       receiptKey,
+      communication?.eventId,
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
-    if (channel === "collaboration") {
+    if (intent === "collaboration") {
       queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
       appendBlockedMentionWarnings(capability.masterChatId, routing.blocked);
     }
-    return { channel, messageId: message.id, replayed: false };
+    return { intent, eventId: communication?.eventId, messageId: message.id, replayed: false };
   });
 
   app.post("/api/agent-session/rollover", async (request, reply) => {
@@ -1047,7 +1481,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    scheduledSessionRollovers.add(capability.threadId);
+    scheduledSessionRollovers.set(capability.threadId, new Date().toISOString());
     return { scheduled: true, afterRunId: capability.runId };
   });
 
@@ -1075,12 +1509,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const messageCapabilityToken = randomUUID();
     const delegationCapabilityToken = randomUUID();
     const run = delegations.claim(runId);
-    activeRuns.set(childThread.id, {
+    const startedAt = new Date().toISOString();
+    const lifecycle = store.appendEvent(childThread.id, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: run.id,
+    });
+    publish(childThread.id, lifecycle);
+    const activeRun: ActiveRun = {
       runId: run.id,
+      startedAt,
+      executionId: run.id,
+      leaseExpiresAt: leaseExpiry(),
       controller,
       messageCapability: messageCapabilityToken,
+      delegationCapability: delegationCapabilityToken,
       delegatedRunId: run.id,
-    });
+    };
+    claimActiveRun(childThread.id, activeRun);
     agentMessageCapabilities.set(messageCapabilityToken, {
       threadId: childThread.id,
       masterChatId: run.masterChatId,
@@ -1125,8 +1569,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           signal: controller.signal,
         });
         for await (const event of stream) {
-          if (closed) break;
-          const stored = store.appendEvent(childThread.id, event);
+          if (closed || !renewExecutionLease(childThread.id, activeRun)) break;
+          let logEvent: LogEvent = event;
+          if (event.type === "text" && event.delta.trim()) {
+            const communication = recordCommunication({
+              eventId: randomUUID(), schemaVersion: 1, projectId: project.id, masterChatId: run.masterChatId,
+              sender: { kind: "agent", agentId: childThread.id, executionId: run.id },
+              intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+              text: event.delta, createdAt: new Date().toISOString(),
+            });
+            if (communication) {
+              store.appendCommunicationProjection(project.id, {
+                eventId: communication.eventId, surface: "user_inbox", projectionKey: "local-operator",
+                projectedAt: communication.createdAt,
+              });
+              logEvent = { ...event, communicationEventId: communication.eventId };
+            }
+          }
+          const stored = store.appendEvent(childThread.id, logEvent);
           publish(childThread.id, stored);
           if (event.type === "error") runtimeError = event.message;
         }
@@ -1135,17 +1595,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (runtimeError) notifyParentOfDelegatedCompletion(delegations.finishRuntime(runId, runtimeError));
         else delegations.finishRuntime(runId);
       } catch (error) {
-        if (closed) return;
+        if (closed || !ownsActiveRun(childThread.id, activeRun)) return;
         runtimeError = error instanceof Error ? error.message : String(error);
         notifyParentOfDelegatedCompletion(delegations.finishRuntime(runId, runtimeError));
       } finally {
-        if (scheduledSessionRollovers.delete(childThread.id)) {
+        const owned = ownsActiveRun(childThread.id, activeRun);
+        if (owned && scheduledSessionRollovers.delete(childThread.id)) {
           store.clearResumeSession(childThread.id, "explicit_compaction");
         }
-        if (activeRuns.get(childThread.id)?.controller === controller) activeRuns.delete(childThread.id);
-        agentMessageCapabilities.delete(messageCapabilityToken);
-        delegationCapabilities.delete(delegationCapabilityToken);
-        void dispatchNextTurn(childThread.id);
+        if (owned && !closed && !controller.signal.aborted) {
+          const terminal = store.appendEvent(childThread.id, {
+            type: "agent_lifecycle",
+            status: runtimeError ? "failed" : "completed",
+            reason: runtimeError ? "runtime_error" : "turn_completed",
+            executionId: run.id,
+          });
+          publish(childThread.id, terminal);
+        }
+        if (releaseActiveRun(childThread.id, activeRun)) {
+          agentMessageCapabilities.delete(messageCapabilityToken);
+          delegationCapabilities.delete(delegationCapabilityToken);
+          runDeliveryDispatch(childThread.id);
+        }
       }
     })();
 
@@ -1185,7 +1656,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: { code: "forbidden", message: "delegation fields exceed their size limits", retryable: false } });
       }
       try {
-        const context = store.getCollaborationChatDetail(capability.masterChatId);
+        const context = collaborationChatDetail(capability.masterChatId);
         if (!context) throw new DelegationError("forbidden", "bound master chat is unavailable", 409);
         const contextMessages = context.messages.map(({ id, role, text, authorThreadId }) => ({ id, role, text, ...(authorThreadId ? { authorThreadId } : {}) }));
         let spawned = delegations.spawn(capability.masterChatId, {
@@ -1208,9 +1679,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             effort,
             presetId: preset?.id,
           });
+          const initialText = `Delegated task: ${spawned.run.delegationSummary}`;
+          const communication = recordCommunication({
+            eventId: randomUUID(), schemaVersion: 1, projectId: masterChat.projectId, masterChatId: masterChat.id,
+            sender: { kind: "agent", agentId: capability.threadId, executionId: capability.parentRunId },
+            intent: "collaboration", audience: { kind: "agents", agentIds: [child.id] },
+            text: initialText, createdAt: new Date().toISOString(), idempotencyKey: `delegation-objective:${spawned.run.id}`,
+          });
+          if (communication) store.appendCommunicationProjection(masterChat.projectId, {
+            eventId: communication.eventId, surface: "agent_inbox", projectionKey: child.id,
+            projectedAt: communication.createdAt,
+          });
           const initial = store.appendEvent(child.id, {
             type: "user_message",
-            text: `Delegated task: ${spawned.run.delegationSummary}`,
+            text: initialText,
+            ...(communication ? { communicationEventId: communication.eventId } : {}),
           });
           publish(child.id, initial);
           const run = delegations.bindChildThread(spawned.run.id, child.id);
@@ -1294,7 +1777,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? "no runtimes are configured"
         : `${available} of ${engines.size} configured runtimes available`,
     };
-    const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok;
+    const communicationReports = communicationMode === "off"
+      ? []
+      : store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
+    const communicationParity = communicationReports.every((report) => report.ok);
+    const authoritativeSourceAvailable = communicationMode !== "off";
+    const communicationMigration = {
+      ok: communicationReadMode !== "authoritative" || (authoritativeSourceAvailable && communicationParity),
+      detail: `communication=${communicationMode}; reads=${communicationReadMode}; legacy_routing=${legacyRoutingMode}; curated_context=${curatedContextEnabled ? "on" : "off"}; parity=${authoritativeSourceAvailable ? (communicationParity ? "ok" : "drift") : "disabled"}`,
+    };
+    const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok && communicationMigration.ok;
     const body: ReadinessDto = {
       status: canAcceptWork ? "ready" : "not_ready",
       service: "ponderosa",
@@ -1305,6 +1797,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         dataDirectory,
         projections,
         runtimes,
+        communicationMigration,
       },
       runtimes: runtimeStatuses,
     };
@@ -1328,6 +1821,74 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return project ?? reply.code(404).send({ error: "project not found" });
   });
 
+  app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const report = store.reconcileCommunicationEvents(request.params.id);
+    if (!report.ok) reply.code(409);
+    return report;
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: import("@ponderosa/core").LegacyCommunicationBackfillRequest;
+  }>("/api/projects/:id/communication-backfill", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const body = request.body ?? {};
+    if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
+      return reply.code(400).send({ error: "dryRun must be boolean" });
+    }
+    const overrides = body.collaborationRecipientsByMessageId;
+    if (overrides && (typeof overrides !== "object" || Array.isArray(overrides) || Object.keys(overrides).length > 10_000 ||
+      Object.values(overrides).some((ids) => !Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some((id) => typeof id !== "string")))) {
+      return reply.code(400).send({ error: "collaboration recipient overrides must contain 1 to 100 stable agent IDs per message" });
+    }
+    return store.backfillLegacyCommunications(request.params.id, body);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id/knowledge-promotions", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    return store.readKnowledgePromotions(request.params.id);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: import("@ponderosa/core").CreateKnowledgePromotionRequest;
+  }>("/api/projects/:id/knowledge-promotions", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const { sourceEventId, summary, idempotencyKey, expiresAt } = request.body ?? {};
+    if (!sourceEventId?.trim() || !summary?.trim() || !idempotencyKey?.trim()) {
+      return reply.code(400).send({ error: "sourceEventId, summary, and idempotencyKey are required" });
+    }
+    if (summary.length > 4000 || idempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "promotion fields exceed their limits" });
+    }
+    try {
+      const result = store.promoteKnowledge({
+        promotionId: randomUUID(),
+        sourceEventId,
+        organizationId: request.params.id,
+        summary: summary.trim(),
+        promotedBy: { kind: "user", userId: "local-operator" },
+        promotedAt: new Date().toISOString(),
+        idempotencyKey: idempotencyKey.trim(),
+        ...(expiresAt ? { expiresAt } : {}),
+      });
+      return reply.code(result.replayed ? 200 : 201).send(result);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "knowledge promotion failed" });
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-health", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const masterIds = new Set(store.listMasterChats(request.params.id).map((master) => master.id));
+    return agentHealth(
+      { type: "project", id: request.params.id },
+      store.listThreads(request.params.id),
+      delegations.all().filter((run) => masterIds.has(run.masterChatId)),
+    );
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/master-chats", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.listMasterChats(request.params.id);
@@ -1346,8 +1907,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
-    const detail = store.getMasterChatDetail(request.params.id);
+    const detail = masterChatDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "master chat not found" });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/master-chats/:id/agent-health", async (request, reply) => {
+    const master = store.getMasterChat(request.params.id);
+    if (!master) return reply.code(404).send({ error: "master chat not found" });
+    const threads = store.listThreads(master.projectId).filter((thread) => thread.masterChatIds.includes(master.id));
+    return agentHealth({ type: "master_chat", id: master.id }, threads, delegations.list(master.id));
   });
 
   app.patch<{
@@ -1394,6 +1962,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       validatedAssets.push({ ...publicAsset, state: "associated" });
     }
     if (validatedAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
+    const communication = recordCommunication({
+      eventId: randomUUID(),
+      schemaVersion: 1,
+      projectId: master.projectId,
+      masterChatId: master.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: master.projectId },
+      text,
+      createdAt: new Date().toISOString(),
+    });
     let message;
     try {
       message = store.appendMasterChatMessage(request.params.id, {
@@ -1401,7 +1980,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         text,
         replyToMessageId: request.body.replyToMessageId,
         attachments: validatedAssets,
-      });
+      }, undefined, "main", undefined, undefined, communication?.eventId);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "reply target was not found in this conversation" });
     }
@@ -1499,6 +2078,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             delivery = queueCollaborationDelivery({
               masterChatId: master.id,
               messageId: existing.id,
+              communicationEventId: existing.communicationEventId,
               targetThreadId: persisted.intent.targetThreadId,
               text: existing.text,
               relayDepth: persisted.intent.relayDepth,
@@ -1542,6 +2122,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: [],
         kind: "direct",
       };
+      const communication = recordCommunication({
+        eventId: randomUUID(),
+        schemaVersion: 1,
+        projectId: master.projectId,
+        masterChatId: master.id,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "collaboration",
+        audience: { kind: "agents", agentIds: [target.id] },
+        text,
+        createdAt: new Date().toISOString(),
+        idempotencyKey: receiptKey,
+      });
       let message: MasterChatMessageDto | undefined;
       try {
         message = store.appendMasterChatMessage(
@@ -1551,6 +2143,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           "main",
           [intent],
           receiptKey,
+          communication?.eventId,
         );
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
@@ -1561,6 +2154,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const delivery = queueCollaborationDelivery({
         masterChatId: master.id,
         messageId: message.id,
+        communicationEventId: message.communicationEventId,
         targetThreadId: target.id,
         text,
         relayDepth: 0,
@@ -1585,36 +2179,84 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   );
 
   app.get<{ Params: { id: string } }>("/api/master-chats/:id/collaboration", async (request, reply) => {
-    const detail = store.getCollaborationChatDetail(request.params.id);
+    const detail = collaborationChatDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "master chat not found" });
   });
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
+    Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
   }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     if (request.body.directReplyToAuthorThreadId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
-    const detail = store.getCollaborationChatDetail(request.params.id);
+    const detail = collaborationChatDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "master chat not found" });
 
-    const routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
+    let renderedText = text;
+    let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
+    if (request.body.recipientAgentIds !== undefined) {
+      const ids = request.body.recipientAgentIds;
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
+        return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
+      }
+      const uniqueIds = [...new Set(ids)];
+      const members = new Map(detail.threads.map((thread) => [thread.id, thread]));
+      const targets = uniqueIds.map((id) => members.get(id));
+      if (targets.some((target) => !target || target.archived)) {
+        return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this master chat" });
+      }
+      renderedText = `${targets.map((target) => `@${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+      routing = {
+        intents: targets.map((target) => ({
+          targetThreadId: target!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
+        })),
+        blocked: [],
+      };
+    } else {
+      // Compatibility for clients loaded before the recipient-picker contract.
+      if (legacyRoutingMode === "reject") {
+        return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds; mention routing is retired" });
+      }
+      routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
+    }
+    if (routing.intents.length === 0) {
+      return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
+    }
+    const master = store.getMasterChat(request.params.id)!;
+    if (request.body.replyToMessageId) {
+      const replyTarget = detail.messages.find((message) => message.id === request.body.replyToMessageId);
+      const replyEvent = replyTarget?.communicationEventId
+        ? store.getCommunicationEvent(master.projectId, replyTarget.communicationEventId)
+        : undefined;
+      if (!replyTarget || routing.intents.some((intent) =>
+        !canonicalAudienceIncludes(replyEvent, master.projectId, intent.targetThreadId))) {
+        return reply.code(400).send({ error: "reply target is not visible to every collaboration recipient" });
+      }
+    }
+    const communication = recordCommunication({
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId: master.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
+      text, createdAt: new Date().toISOString(),
+    });
     let message;
     try { message = store.appendMasterChatMessage(
       request.params.id,
-      { role: "user", text, replyToMessageId: request.body.replyToMessageId },
+      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId },
       undefined,
       "collaboration",
       routing.intents,
+      undefined,
+      communication?.eventId,
     ); } catch { return reply.code(400).send({ error: "reply target was not found in this conversation" }); }
     const notifiedAgentIds: string[] = [];
     queueRecordedCollaborationMessage(request.params.id, message!, undefined, routing.intents);
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetThreadId));
     return {
       message,
-      audience: hasEveryoneMention(text) ? "everyone" : routing.intents.length ? "mention" : "none",
+      audience: hasEveryoneMention(text) ? "everyone" : "mention",
       notifiedAgentIds,
     };
   });
@@ -1747,18 +2389,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const initialMessage = request.body.initialMessage?.trim();
       let thread; try { thread = store.createThread(request.params.id, request.body); } catch { return reply.code(400).send({ error: "preset is unavailable for this project" }); }
       if (initialMessage) {
+        let initialCommunicationEventId: string | undefined;
         if (thread.masterChatId) {
-          store.appendMasterChatMessage(thread.masterChatId, { text: initialMessage, replyToMessageId: request.body.replyToMessageId });
+          const communication = recordCommunication({
+            eventId: randomUUID(), schemaVersion: 1, projectId: thread.projectId, masterChatId: thread.masterChatId,
+            sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+            audience: { kind: "organization", organizationId: thread.projectId }, text: initialMessage,
+            createdAt: new Date().toISOString(),
+          });
+          initialCommunicationEventId = communication?.eventId;
+          store.appendMasterChatMessage(
+            thread.masterChatId,
+            { text: initialMessage, replyToMessageId: request.body.replyToMessageId },
+            undefined, "main", undefined, undefined, initialCommunicationEventId,
+          );
         }
         const turn = await app.inject({
           method: "POST",
           url: `/api/threads/${thread.id}/messages`,
-          headers: opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined,
+          headers: {
+            ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
+            ...(initialCommunicationEventId ? { "x-ponderosa-turn-dispatch": turnDispatchKey } : {}),
+          },
           payload: {
             text: initialMessage,
             model: request.body.model,
             effort: request.body.effort,
             sourceChannel: "main",
+            ...(thread.masterChatId ? { sourceMasterChatId: thread.masterChatId } : {}),
+            ...(initialCommunicationEventId ? { communicationEventId: initialCommunicationEventId } : {}),
           },
         });
         if (turn.statusCode >= 400) {
@@ -1771,7 +2430,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   );
 
   app.get<{ Params: { id: string } }>("/api/threads/:id", async (request, reply) => {
-    const detail = store.getThreadDetail(request.params.id);
+    const detail = threadDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "thread not found" });
   });
 
@@ -1911,6 +2570,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
       attachmentIds?: string[];
+      /** Server-only link used when one action projects into room and audit timelines. */
+      communicationEventId?: string;
     };
   }>(
     "/api/threads/:id/messages",
@@ -1938,7 +2599,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         collaborationMasterChatId !== undefined &&
         request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey
       ) {
-        return reply.code(403).send({ error: "collaboration context must be delivered by a successful @mention" });
+        return reply.code(403).send({ error: "collaboration context must be delivered by an explicit recipient event" });
       }
       const sourceMasterChatId = request.body.sourceMasterChatId;
       if (sourceMasterChatId !== undefined && !thread.masterChatIds.includes(sourceMasterChatId)) {
@@ -1963,6 +2624,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
+      const inheritedCommunicationEventId = requestedDeliveryIds.length === 1
+        ? inboxDelivery?.communicationEventId : undefined;
+      const serverCommunicationEventId = request.body.communicationEventId;
+      if (serverCommunicationEventId && request.headers["x-ponderosa-turn-dispatch"] !== turnDispatchKey) {
+        return reply.code(403).send({ error: "communication event identity is server-controlled" });
+      }
+      if (serverCommunicationEventId && !store.getCommunicationEvent(project.id, serverCommunicationEventId)) {
+        return reply.code(400).send({ error: "communication event was not found in this project" });
+      }
+      const communicationEventId = serverCommunicationEventId ?? (requestedDeliveryIds.length === 0
+        ? recordCommunication({
+            eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+            ...(sourceMasterChatId ? { masterChatId: sourceMasterChatId } : {}),
+            sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+            audience: { kind: "agents", agentIds: [thread.id] }, text,
+            createdAt: new Date().toISOString(),
+          })?.eventId
+        : inheritedCommunicationEventId);
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&
@@ -1983,6 +2662,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const pendingTurn: PendingTurn = {
         text,
+        communicationEventId,
         model: request.body.model,
         effort: request.body.effort,
         agentMentionDepth: mentionDepth ?? 0,
@@ -1995,7 +2675,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         replyToMessageId: request.body.replyToMessageId,
         replyTo: request.body.replyToMessageId
           ? (() => {
-              const target = store.getMessages(thread.id).find((message) => message.id === request.body.replyToMessageId);
+              const target = threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId);
               return target ? { messageId: target.id, text: target.text, role: target.role } : undefined;
             })()
           : undefined,
@@ -2015,6 +2695,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const delivery = queueCollaborationDelivery({
           masterChatId: thread.masterChatId,
           messageId: `direct-${randomUUID()}`,
+          communicationEventId,
           targetThreadId: thread.id,
           text,
           relayDepth: mentionDepth ?? 0,
@@ -2029,10 +2710,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
         if (!delivery) return reply.code(503).send({ error: "turn could not be persisted" });
         const position = collaborationDeliveries.pendingCount(thread.id);
-        return reply.code(202).send({ queued: true, position });
+        return reply.code(202).send({ queued: true, position, communicationEventId });
       }
 
-      const fullHistory: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
+      const fullHistory: ChatMessage[] = threadMessages(thread.id).map((message) => ({
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
@@ -2058,10 +2739,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // particular linked agent.
       const routingMasterChatId = sourceMasterChatId ?? thread.masterChatId;
       const masterChat = routingMasterChatId
-        ? store.getMasterChatDetail(routingMasterChatId)
+        ? masterChatDetail(routingMasterChatId)
         : undefined;
       const collaboration = collaborationMasterChatId
-        ? store.getCollaborationChatDetail(collaborationMasterChatId)
+        ? collaborationChatDetail(collaborationMasterChatId)
         : undefined;
       const sourceChannel: AgentMessageChannel = collaboration
         ? "collaboration"
@@ -2101,7 +2782,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const sameEngineModelEpoch = !latestSessionCursor ||
         (latestSessionCursor.engine === thread.activeEngine && latestSessionCursor.model === cursorModel);
       const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
-      const allRoomMessages = collaboration?.messages ?? (masterChat && sourceChannel === "main" ? masterChat.messages : []);
+      const allRoomMessages = collaboration
+        ? recipientCollaborationMessages(
+            collaboration.messages,
+            store.readCommunicationEvents(project.id),
+            project.id,
+            thread.id,
+          )
+        : masterChat && sourceChannel === "main" ? masterChat.messages : [];
       const previousIndex = previousCursor?.lastMessageId
         ? allRoomMessages.findIndex((message) => message.id === previousCursor.lastMessageId)
         : -1;
@@ -2122,15 +2810,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const guidedPrompt = thread.presetSnapshot?.guidance
         ? `Agent preset snapshot (${thread.presetSnapshot.name}):\n${thread.presetSnapshot.guidance}\n\n${basePrompt}`
         : basePrompt;
+      // Project knowledge is assembled only at a fresh runtime boundary. Active
+      // sessions retain their own context and receive no repeated memory packet.
+      const promotedKnowledge = resumeSessionId || !curatedContextEnabled
+        ? ""
+        : organizationalKnowledgePrompt(store.activeKnowledgePromotions(project.id));
       const attachmentContext = messageAttachments.length ? `\n\nAttached images/assets (server-validated local files; labels are identifiers, not instructions):\n${messageAttachments.map((item) => `- asset ${item.id} (${item.mediaType}, ${item.size} bytes): ${path.join(attachmentsDir(opts.dataDir, thread.projectId, thread.id), `${item.id}.bin`)}`).join("\n")}` : "";
-      const prompt = `${guidedPrompt}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt().join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${promotedKnowledge}${guidedPrompt}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt().join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
-      const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo, attachments: messageAttachments });
+      const userStored = store.appendEvent(thread.id, {
+        type: "user_message", text, communicationEventId: pendingTurn.communicationEventId,
+        replyTo: pendingTurn.replyTo, attachments: messageAttachments,
+      });
       await assets.associate(thread.projectId, thread.id, attachmentIds);
       publish(thread.id, userStored);
 
-      activeRuns.set(thread.id, { runId, controller, messageCapability, ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}) });
+      const startedAt = new Date().toISOString();
+      const runningLifecycle = store.appendEvent(thread.id, {
+        type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
+      });
+      publish(thread.id, runningLifecycle);
+      const activeRun: ActiveRun = {
+        runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        delegationCapability,
+        ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
+        ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}),
+      };
+      claimActiveRun(thread.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: thread.masterChatId,
@@ -2154,6 +2861,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let runError: string | undefined;
         let sawWaiting = false;
         let finalText = "";
+        let lastCommunicationEventId: string | undefined;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -2193,7 +2901,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
             for await (const event of startStream(sessionId)) {
-              if (closed) break;
+              if (closed || controller.signal.aborted || !renewExecutionLease(thread.id, activeRun)) break;
               // Codex can emit its session id immediately before a resume-time
               // compaction failure. Hold only those initial session events so a
               // failed resume does not restore the stale id after we clear it.
@@ -2220,7 +2928,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 publish(thread.id, stored);
               }
               if (event.type !== "error") sawMaterialRuntimeEvent = true;
-              const stored = store.appendEvent(thread.id, event);
+              let logEvent: LogEvent = event;
+              if (event.type === "text" && event.delta.trim()) {
+                const communication = recordCommunication({
+                  eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                  ...(routingMasterChatId ? { masterChatId: routingMasterChatId } : {}),
+                  sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                  intent: "direct_to_user",
+                  audience: { kind: "user", userId: "local-operator" },
+                  text: event.delta,
+                  createdAt: new Date().toISOString(),
+                  ...(pendingTurn.communicationEventId ? { causationId: pendingTurn.communicationEventId } : {}),
+                });
+                if (communication) store.appendCommunicationProjection(project.id, {
+                  eventId: communication.eventId,
+                  surface: "user_inbox",
+                  projectionKey: "local-operator",
+                  projectedAt: communication.createdAt,
+                });
+                lastCommunicationEventId = communication?.eventId;
+                if (communication) logEvent = { ...event, communicationEventId: communication.eventId };
+              }
+              const stored = store.appendEvent(thread.id, logEvent);
               publish(thread.id, stored);
               if (event.type === "text") finalText += event.delta;
               if (event.type === "error") runError = event.message;
@@ -2229,31 +2958,43 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             if (!retryFresh) break;
           }
         } catch (err) {
-          if (closed) return;
+          if (closed || controller.signal.aborted || !ownsActiveRun(thread.id, activeRun)) return;
           const message = err instanceof Error ? err.message : String(err);
           const stored = store.appendEvent(thread.id, { type: "error", message });
           publish(thread.id, stored);
           runError = message;
         } finally {
-          if (scheduledSessionRollovers.delete(thread.id)) {
+          const owned = ownsActiveRun(thread.id, activeRun);
+          if (owned && scheduledSessionRollovers.delete(thread.id)) {
             store.clearResumeSession(thread.id, "explicit_compaction");
           }
-          if (delegatedObjective && !controller.signal.aborted) {
+          if (owned && delegatedObjective && !controller.signal.aborted) {
             const settled = delegations.finishRuntime(delegatedObjective.id, runError);
             if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
           }
-          if (activeRuns.get(thread.id)?.controller === controller) activeRuns.delete(thread.id);
-          agentMessageCapabilities.delete(messageCapability);
-          delegationCapabilities.delete(delegationCapability);
+          if (owned && !closed && !controller.signal.aborted) {
+            const terminal = store.appendEvent(thread.id, {
+              type: "agent_lifecycle",
+              status: runError ? "failed" : "completed",
+              reason: runError ? "runtime_error" : "turn_completed",
+              executionId: runId,
+            });
+            publish(thread.id, terminal);
+          }
+          const released = releaseActiveRun(thread.id, activeRun);
+          if (released) {
+            agentMessageCapabilities.delete(messageCapability);
+            delegationCapabilities.delete(delegationCapability);
+          }
           // Post a group-chat status unless the run was cancelled/aborted (cancel or
           // thread deletion), in which case a report-back would be misleading.
-          if (routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
+          if (released && routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
             const statusText = runError
               ? `⚠️ Stuck — ${runError.slice(0, 200)}`
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
-              const routing = !runError && collaborationMasterChatId
+              const routing = !runError && collaborationMasterChatId && legacyRoutingMode === "accept"
                 ? resolveCollaborationIntents(
                     collaborationMasterChatId,
                     thread.id,
@@ -2262,6 +3003,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     mentionTrail,
                   )
                 : { intents: [], blocked: [] };
+              const reportCommunication = sourceChannel === "main"
+                ? recordCommunication({
+                    eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                    masterChatId: routingMasterChatId,
+                    sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                    intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+                    text: statusText, createdAt: new Date().toISOString(),
+                    ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+                  })
+                : routing.intents.length
+                  ? recordCommunication({
+                      eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                      masterChatId: routingMasterChatId,
+                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                      intent: "collaboration",
+                      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
+                      text: statusText, createdAt: new Date().toISOString(),
+                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+                    })
+                  : recordCommunication({
+                      eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                      masterChatId: routingMasterChatId,
+                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+                      text: statusText, createdAt: new Date().toISOString(),
+                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+                    });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
               const report = store.appendMasterChatMessage(
@@ -2270,7 +3038,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 thread.id,
                 sourceChannel,
                 routing.intents,
+                undefined,
+                reportCommunication?.eventId,
               );
+              if (reportCommunication?.intent === "direct_to_user") {
+                store.appendCommunicationProjection(project.id, {
+                  eventId: reportCommunication.eventId,
+                  surface: "user_inbox",
+                  projectionKey: "local-operator",
+                  projectedAt: reportCommunication.createdAt,
+                });
+              }
 
               // A tag in a main-chat report is ordinary text. A tag in the
               // collaboration chat is an opt-in handoff and can start a turn.
@@ -2282,7 +3060,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // Master chat may have been deleted mid-run; ignore.
             }
           }
-          if (!closed && requestedDeliveryIds.length) {
+          if (released && !closed && requestedDeliveryIds.length) {
             // A cancelled delivery turn is not an acknowledgement. Put it back
             // into the durable queue; ordinary pending deliveries remain queued.
             if (controller.signal.aborted) collaborationDeliveries.requeueBatch(requestedDeliveryIds);
@@ -2292,7 +3070,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
             for (const id of requestedDeliveryIds) syncDelegatedCompletion(id);
           }
-          if (!closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
+          if (released && !closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
             const acceptedSessionId = store.resumeSessionId(thread.id);
             if (acceptedSessionId) {
               contextCursors.commit({
@@ -2309,11 +3087,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           // Mentions received while this agent was working are never dropped.
           // Start the oldest queued follow-up as soon as its current turn closes.
-          void dispatchNextTurn(thread.id);
+          if (released) runDeliveryDispatch(thread.id);
         }
       })();
 
-      return { queued: false, runId, mode };
+      return { queued: false, runId, mode, communicationEventId };
     },
   );
 
@@ -2375,6 +3153,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = activeRuns.get(request.params.id);
     if (!run) return { cancelled: false };
     run.controller.abort();
+    const lifecycle = store.appendEvent(request.params.id, {
+      type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled",
+    });
+    publish(request.params.id, lifecycle);
     if (run.delegatedRunId) {
       delegations.cancel(run.delegatedRunId, `thread-cancel-${randomUUID()}`);
     }

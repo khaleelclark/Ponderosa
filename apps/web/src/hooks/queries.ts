@@ -16,6 +16,19 @@ export function useMasterChats(projectId: string | undefined) {
   });
 }
 
+export function useAgentHealth(projectId: string | undefined) {
+  return useQuery({
+    queryKey: ["agent-health", projectId],
+    queryFn: () => api.getAgentHealth(projectId ?? ""),
+    enabled: Boolean(projectId),
+    refetchInterval: (query) => {
+      const agents = query.state.data?.agents ?? [];
+      return agents.some((agent) => agent.status === "running" || agent.status === "waiting" || agent.status === "compacting")
+        ? 5_000 : 30_000;
+    },
+  });
+}
+
 export function useMasterChat(masterChatId: string | undefined) {
   return useQuery({
     queryKey: ["master-chat", masterChatId],

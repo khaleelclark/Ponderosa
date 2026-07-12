@@ -183,6 +183,48 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: str
 }
 
 describe("server chunk F", () => {
+  it("serves server-owned agent health at project and master-chat scope", async () => {
+    const project = store.createProject({ label: "Health", hostPath: repoDir });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const outside = store.createThread(project.id, { title: "Outside", engine: "codex" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+
+    const roomHealth = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}/agent-health` });
+    expect(roomHealth.statusCode).toBe(200);
+    expect(roomHealth.json()).toMatchObject({
+      scope: { type: "master_chat", id: room.id },
+      agents: [{ agentId: agent.id, status: "idle", reason: "no_active_work" }],
+    });
+
+    const projectHealth = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    expect(projectHealth.statusCode).toBe(200);
+    expect(projectHealth.json<{ agents: Array<{ agentId: string }> }>().agents.map((item) => item.agentId).sort())
+      .toEqual([agent.id, outside.id].sort());
+    await app.close();
+  });
+
+  it("reports observed compaction and preserves ordinary cancellation", async () => {
+    const project = store.createProject({ label: "Health transitions", hostPath: repoDir });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${agent.id}/messages`, payload: { text: "Work" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect((await app.inject({
+      method: "POST", url: "/api/agent-session/rollover",
+      headers: { authorization: `Bearer ${token}` },
+    })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
+      .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "compacting", reason: "session_rollover_scheduled" })] });
+
+    await cancelAndWait(app, agent.id);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
+      .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "cancelled", reason: "thread_cancelled" })] });
+    await app.close();
+  });
+
   it("bounds fresh-session history by both characters and message count", () => {
     const history = Array.from({ length: 80 }, (_, index) => ({ role: "user" as const, text: `${index}:` + "x".repeat(1_000) }));
     const bounded = boundedSeedHistory(history, 5_000, 4);
@@ -273,6 +315,16 @@ describe("server chunk F", () => {
       payload: { text: "Start an API agent." },
     });
     expect(messageRes.statusCode).toBe(200);
+    const recordedMessage = messageRes.json<{ communicationEventId: string }>();
+    expect(recordedMessage.communicationEventId).toBeTruthy();
+    expect(store.readCommunicationEvents(project.id)).toEqual([
+      expect.objectContaining({
+        eventId: recordedMessage.communicationEventId,
+        intent: "broadcast",
+        sender: { kind: "user", userId: "local-operator" },
+      }),
+    ]);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
 
     const threadRes = await app.inject({
       method: "POST",
@@ -387,6 +439,17 @@ describe("server chunk F", () => {
     expect(first.statusCode).toBe(200);
     expect(first.json()).toMatchObject({ mode: "seed" });
     await waitForRun(thread.id);
+    const firstEventId = first.json<{ communicationEventId: string }>().communicationEventId;
+    expect(firstEventId).toBeTruthy();
+    expect(store.getMessages(thread.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "first", communicationEventId: firstEventId }),
+    ]));
+    expect(store.getMessages(thread.id).filter((message) => message.role === "assistant"))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ communicationEventId: expect.any(String) })]));
+    expect(store.readCommunicationEvents(store.getThread(thread.id)!.projectId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sender: expect.objectContaining({ kind: "agent", agentId: thread.id }), causationId: firstEventId }),
+    ]));
+    expect(store.reconcileCommunicationEvents(store.getThread(thread.id)!.projectId)).toMatchObject({ ok: true });
 
     const second = await app.inject({
       method: "POST",
@@ -533,7 +596,7 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     expect(adapter.seeds[0]?.prompt).toContain(
-      "separate it from preceding text with whitespace",
+      "never write routing @mentions into message text",
     );
 
     store.appendMasterChatMessage(master.id, { text: "@Aspen Is it tested?" });
@@ -674,9 +737,11 @@ describe("server chunk F", () => {
     await waitForRun(thread.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
-    expect(store.getMasterChatMessages(master.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "user", text: "Check the first-run path." })]),
-    );
+    const shared = store.getMasterChatMessages(master.id).find((message) => message.text === "Check the first-run path.");
+    const audit = store.getMessages(thread.id).find((message) => message.text === "Check the first-run path.");
+    expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
+    expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 
@@ -698,7 +763,7 @@ describe("server chunk F", () => {
     expect(response.statusCode).toBe(200);
     await waitForRun(yosemite.id);
     expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(adapter.seeds[0]?.prompt).toContain("This is the only chat for agent-to-agent coordination.");
     expect(adapter.seeds[0]?.prompt).toContain("Do not move collaboration discussion to the main chat");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
@@ -783,7 +848,7 @@ describe("server chunk F", () => {
 
     expect(response.statusCode).toBe(200);
     await waitForRun(wrangell.id);
-    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(store.getMessages(wrangell.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Wrangell-St-Elias can you review this?" })]),
     );
@@ -821,7 +886,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("never sends collaboration context until a valid agent mention is accepted", async () => {
+  it("rejects recipient-free collaboration and sends context only after explicit routing", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Private collaboration" });
@@ -837,19 +902,20 @@ describe("server chunk F", () => {
       url: `/api/master-chats/${master.id}/collaboration/messages`,
       payload: { text: "Private review notes that should not reach an agent yet." },
     });
-    expect(untargeted.statusCode).toBe(200);
+    expect(untargeted.statusCode).toBe(400);
+    expect(untargeted.json()).toMatchObject({ error: expect.stringContaining("explicit recipient") });
     expect(adapter.seeds).toHaveLength(0);
 
     const targeted = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/collaboration/messages`,
-      payload: { text: "@Yosemite Please review the private notes." },
+      payload: { text: "Please review the private notes.", recipientAgentIds: [agent.id] },
     });
     expect(targeted.statusCode).toBe(200);
     await waitForRun(agent.id);
 
     const prompt = adapter.seeds[0]?.prompt ?? "";
-    expect(prompt).toContain("Private review notes that should not reach an agent yet.");
+    expect(prompt).not.toContain("Private review notes that should not reach an agent yet.");
     expect(prompt).toContain("@Yosemite Please review the private notes.");
     expect(prompt).not.toContain("Main-chat-only deployment plan.");
     expect(store.getMasterChatMessages(master.id)).toEqual(
@@ -861,7 +927,244 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("lets an active agent send authenticated messages to all three channels", async () => {
+  it("isolates three-agent collaboration context by canonical recipient audience", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationReadMode: "authoritative",
+    });
+    const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Three-agent room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const verifier = store.createThread(project.id, { title: "Verifier", engine: "codex", masterChatId: master.id });
+
+    // Organization-audience system guidance is explicitly shared with every
+    // project agent even when rendered on the Collaboration surface.
+    const sharedAt = "2026-07-12T00:00:00.000Z";
+    store.appendCommunicationEvent({
+      eventId: "shared-collaboration-guidance", schemaVersion: 1, projectId: project.id, masterChatId: master.id,
+      sender: { kind: "system", component: "collaboration-policy" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Shared system guidance for all project agents.", createdAt: sharedAt,
+    });
+    store.appendCommunicationProjection(project.id, {
+      eventId: "shared-collaboration-guidance", surface: "collaboration_chat", projectionKey: master.id,
+      projectedAt: sharedAt,
+      message: { messageId: "shared-guidance-message", role: "system", createdAt: sharedAt },
+    });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Coordinate reviews." } });
+    await waitForSeedCount(1);
+    const authorToken = adapter.seeds.find((turn) => turn.threadId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(authorToken).toBeTruthy();
+
+    const toReviewer = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: {
+        intent: "collaboration", recipientAgentIds: [reviewer.id],
+        text: "Reviewer-only launch credential: ALPHA.", idempotencyKey: "author-to-reviewer",
+      },
+    });
+    expect(toReviewer.statusCode).toBe(200);
+    await waitForSeedCount(2);
+
+    const crossAudienceReply = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: {
+        text: "Do not disclose the quoted credential.", recipientAgentIds: [verifier.id],
+        replyToMessageId: toReviewer.json<{ messageId: string }>().messageId,
+      },
+    });
+    expect(crossAudienceReply.statusCode).toBe(400);
+    expect(crossAudienceReply.json()).toMatchObject({
+      error: "reply target is not visible to every collaboration recipient",
+    });
+
+    const toVerifier = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: {
+        intent: "collaboration", recipientAgentIds: [verifier.id],
+        text: "Verifier-only release checklist.", idempotencyKey: "author-to-verifier",
+      },
+    });
+    expect(toVerifier.statusCode).toBe(200);
+    await waitForSeedCount(3);
+
+    const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
+    const verifierPrompt = adapter.seeds.find((turn) => turn.threadId === verifier.id)?.prompt ?? "";
+    expect(reviewerPrompt).toContain("Reviewer-only launch credential: ALPHA.");
+    expect(reviewerPrompt).toContain("Shared system guidance for all project agents.");
+    expect(verifierPrompt).toContain("Verifier-only release checklist.");
+    expect(verifierPrompt).toContain("Shared system guidance for all project agents.");
+    expect(verifierPrompt).not.toContain("Reviewer-only launch credential: ALPHA.");
+
+    await Promise.all([
+      cancelAndWait(app, author.id),
+      cancelAndWait(app, reviewer.id),
+      cancelAndWait(app, verifier.id),
+    ]);
+    await app.close();
+  });
+
+  it("seeds only promoted summaries from local communication into future agent context", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    store.appendCommunicationEvent({
+      eventId: "private-source", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "agent", agentId: "source-agent" }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" },
+      text: "raw local secret must not be seeded", createdAt: "2026-07-12T00:00:00.000Z",
+    });
+    store.promoteKnowledge({
+      promotionId: "promotion-1", sourceEventId: "private-source", organizationId: project.id,
+      summary: "Use the reviewed deployment invariant.", promotedBy: { kind: "user", userId: "local-operator" },
+      promotedAt: "2026-07-12T00:01:00.000Z",
+    });
+    const thread = store.createThread(project.id, { title: "Future Agent", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin." } });
+    await waitForRun(thread.id);
+
+    expect(adapter.seeds[0]?.prompt).toContain("Curated organizational knowledge");
+    expect(adapter.seeds[0]?.prompt).toContain("[source private-source] Use the reviewed deployment invariant.");
+    expect(adapter.seeds[0]?.prompt).not.toContain("raw local secret must not be seeded");
+    await app.close();
+  });
+
+  it("rolls communication and curated context back independently", async () => {
+    const project = store.createProject({ label: "Rollback", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const source = {
+      eventId: "existing-local", schemaVersion: 1 as const, projectId: project.id,
+      sender: { kind: "agent" as const, agentId: "source" }, intent: "direct_to_user" as const,
+      audience: { kind: "user" as const, userId: "local-operator" }, text: "raw local",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(source);
+    store.promoteKnowledge({
+      promotionId: "existing-promotion", sourceEventId: source.eventId, organizationId: project.id,
+      summary: "Must be disabled", promotedBy: { kind: "user", userId: "local-operator" },
+      promotedAt: "2026-07-12T00:01:00.000Z",
+    });
+    const baseline = store.readCommunicationEvents(project.id).length;
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationMode: "off", curatedContextEnabled: false,
+    });
+    const message = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Legacy-only message" },
+    });
+    expect(message.statusCode).toBe(200);
+    expect(message.json()).not.toHaveProperty("communicationEventId");
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin" } });
+    await waitForRun(thread.id);
+    expect(adapter.seeds[0]?.prompt).not.toContain("Must be disabled");
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; curated_context=off; parity=disabled" } } });
+    await app.close();
+  });
+
+  it("fails readiness when authoritative reads are combined with disabled canonical capture", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationMode: "off", communicationReadMode: "authoritative",
+    });
+    const ready = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({
+      status: "not_ready",
+      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=disabled") } },
+    });
+    await app.close();
+  });
+
+  it("serves room timelines from canonical projections in authoritative read mode", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+    const project = store.createProject({ label: "Cutover", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Canonical room" });
+    const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+
+    const main = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Shared decision" },
+    });
+    const collaboration = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "Review this", recipientAgentIds: [agent.id] },
+    });
+    expect(main.statusCode).toBe(200);
+    expect(collaboration.statusCode, collaboration.body).toBe(200);
+    await waitForRun(agent.id);
+
+    const mainDetail = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}` })).json<{
+      messages: MasterChatMessageDto[];
+    }>();
+    const collaborationDetail = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/collaboration` })).json<{
+      messages: MasterChatMessageDto[];
+    }>();
+    expect(mainDetail.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: main.json().communicationEventId, text: "Shared decision" }),
+    ]));
+    expect(collaborationDetail.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId, text: "@Reviewer Review this" }),
+    ]));
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+      .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
+    await app.close();
+  });
+
+  it("fails authoritative readiness when legacy room history is not canonical", async () => {
+    const project = store.createProject({ label: "Drift", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Pre-cutover room" });
+    const legacy = store.appendMasterChatMessage(master.id, { text: "Unmigrated history" })!;
+    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+
+    const ready = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({
+      status: "not_ready",
+      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=drift") } },
+    });
+    expect(store.reconcileCommunicationEvents(project.id).unlinkedLegacyMessageIds).toEqual([legacy.id]);
+    const dryRun = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: true },
+    });
+    expect(dryRun.json()).toMatchObject({ dryRun: true, candidates: 1, migrated: 0, blocked: [] });
+    const applied = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: false },
+    });
+    expect(applied.json()).toMatchObject({ dryRun: false, candidates: 1, migrated: 1, blocked: [] });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+      .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
+    await app.close();
+  });
+
+  it.each(["first", "second"])("rehearses authoritative cutover and legacy read rollback without data mutation (%s pass)", async (pass) => {
+    const project = store.createProject({ label: `Rehearsal ${pass}`, hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Rollback room" });
+    const shadow = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "shadow" });
+    const created = await shadow.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Durable checkpoint" },
+    });
+    expect(created.statusCode).toBe(200);
+    const eventId = created.json<{ communicationEventId: string }>().communicationEventId;
+    await shadow.close();
+    store = new ThreadStore(dataDir);
+
+    const authoritative = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+    const canonical = (await authoritative.inject({ method: "GET", url: `/api/master-chats/${master.id}` }))
+      .json<{ messages: MasterChatMessageDto[] }>().messages;
+    expect(canonical).toEqual([expect.objectContaining({ communicationEventId: eventId, text: "Durable checkpoint" })]);
+    await authoritative.close();
+    store = new ThreadStore(dataDir);
+
+    const rollback = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "legacy" });
+    const legacy = (await rollback.inject({ method: "GET", url: `/api/master-chats/${master.id}` }))
+      .json<{ messages: MasterChatMessageDto[] }>().messages;
+    expect(legacy).toEqual(canonical);
+    expect(store.readCommunicationEvents(project.id).map((event) => event.eventId)).toEqual([eventId]);
+    await rollback.close();
+  });
+
+  it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Routing room" });
@@ -888,17 +1191,20 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(token).toBeTruthy();
-    const send = (channel: "individual" | "main" | "collaboration", text: string) =>
+    const send = (payload: Record<string, unknown>) =>
       app.inject({
         method: "POST",
         url: "/api/agent-messages",
         headers: { authorization: `Bearer ${token}` },
-        payload: { channel, text },
+        payload,
       });
 
-    expect((await send("individual", "Private implementation note.")).statusCode).toBe(200);
-    expect((await send("main", "Manager-facing checkpoint.")).statusCode).toBe(200);
-    expect((await send("collaboration", "@Review-Agent Please review the API contract.")).statusCode).toBe(200);
+    const direct = await send({ intent: "direct_to_user", text: "Private implementation note." });
+    const broadcast = await send({ intent: "broadcast", text: "Manager-facing checkpoint." });
+    const collaboration = await send({ intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review the API contract." });
+    expect(direct.statusCode).toBe(200);
+    expect(broadcast.statusCode).toBe(200);
+    expect(collaboration.statusCode).toBe(200);
     await waitForSeedCount(2);
 
     expect(store.getMessages(author.id)).toEqual(
@@ -922,7 +1228,126 @@ describe("server chunk F", () => {
     expect(reviewerPrompt).toContain("- author: Author Agent");
     expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
+    const communicationEvents = store.readCommunicationEvents(project.id);
+    expect(communicationEvents).toHaveLength(4);
+    expect(communicationEvents.map((event) => event.eventId)).toEqual(expect.arrayContaining([
+      direct.json<{ eventId: string }>().eventId,
+      broadcast.json<{ eventId: string }>().eventId,
+      collaboration.json<{ eventId: string }>().eventId,
+    ]));
+    expect(communicationEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" } }),
+      expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
+      expect.objectContaining({ intent: "collaboration", audience: { kind: "agents", agentIds: [reviewer.id] } }),
+    ]));
+    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        communicationEventId: direct.json<{ eventId: string }>().eventId,
+        text: "Private implementation note.",
+      }),
+    ]));
+    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
+    ]));
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
+    ]));
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      canonicalEvents: 4,
+      linkedProjections: 7,
+      missingProjectionEventIds: [],
+      duplicateProjectionEventIds: [],
+      orphanProjectionEventIds: [],
+      missingClassificationEventIds: [],
+      missingProjectionMetadataEventIds: [],
+      unlinkedLegacyMessageIds: [],
+      projectionReadMismatchMessageIds: [],
+      ok: true,
+    });
+    const reconciliation = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/communication-reconciliation`,
+    });
+    expect(reconciliation.statusCode).toBe(200);
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 7 });
+    const promotionPayload = {
+      sourceEventId: direct.json<{ eventId: string }>().eventId,
+      summary: "The private implementation note is now project-level guidance.",
+      idempotencyKey: "promote-private-note",
+    };
+    const promoted = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/knowledge-promotions`, payload: promotionPayload,
+    });
+    const promotionRetry = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/knowledge-promotions`, payload: promotionPayload,
+    });
+    expect(promoted.statusCode).toBe(201);
+    expect(promoted.json()).toMatchObject({ replayed: false, promotion: { sourceEventId: promotionPayload.sourceEventId } });
+    expect(promotionRetry.statusCode).toBe(200);
+    expect(promotionRetry.json()).toMatchObject({ replayed: true, promotion: { promotionId: promoted.json<{ promotion: { promotionId: string } }>().promotion.promotionId } });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
+    await app.close();
+  });
+
+  it("retires mention routing while preserving explicit intents behind the rollback flag", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false, legacyRoutingMode: "reject" });
+    const project = store.createProject({ label: "Retirement", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Explicit room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+
+    const manualMention = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Reviewer inspect this" },
+    });
+    expect(manualMention.statusCode).toBe(400);
+    expect(manualMention.json()).toMatchObject({ error: expect.stringContaining("explicit recipientAgentIds") });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Begin" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const legacy = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
+      payload: { channel: "collaboration", text: "@Reviewer legacy route" },
+    });
+    expect(legacy.statusCode).toBe(410);
+    const explicit = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Explicit route" },
+    });
+    expect(explicit.statusCode).toBe(200);
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
+    for (let index = 0; index < 80 && adapter.abortedSeeds < 1; index += 1) await sleep(10);
+    expect(adapter.abortedSeeds).toBeGreaterThanOrEqual(1);
+    await app.close();
+  });
+
+  it("rejects recipient-free and out-of-room collaboration intents before persistence", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Routing room" });
+    const otherMaster = store.createMasterChat(project.id, { title: "Other room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", masterChatId: otherMaster.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await waitForSeedCount(1);
+    const headers = { authorization: `Bearer ${adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` };
+
+    const recipientFree = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "collaboration", recipientAgentIds: [], text: "Unroutable." },
+    });
+    const unauthorized = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Cross-room." },
+    });
+
+    expect(recipientFree.statusCode).toBe(400);
+    expect(unauthorized.statusCode).toBe(400);
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toHaveLength(0);
+    expect(store.getMasterChatDeliveryIntents(master.id)).toHaveLength(0);
+    await cancelAndWait(app, author.id);
     await app.close();
   });
 
@@ -1199,6 +1624,7 @@ describe("server chunk F", () => {
     );
     expect(completionMessage).toBeUndefined();
     expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(0);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 
@@ -1221,7 +1647,11 @@ describe("server chunk F", () => {
     expect(first.statusCode).toBe(200);
     expect(duplicate.statusCode).toBe(200);
     expect(first.json().run).toEqual(expect.objectContaining({ status: "completed", disposition: expect.objectContaining({ outcome: "completed" }) }));
-    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text.includes("Delegated task “Research” completed"))).toHaveLength(1);
+    const completionMessages = store.getCollaborationChatDetail(master.id)?.messages
+      .filter((message) => message.text.includes("Delegated task “Research” completed")) ?? [];
+    expect(completionMessages).toHaveLength(1);
+    expect(completionMessages[0]?.communicationEventId).toEqual(expect.any(String));
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 
@@ -1312,7 +1742,7 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
     expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(prompt.indexOf("@Parent interrupted first result")).toBeLessThan(prompt.indexOf("@Parent queued second result"));
+    expect(prompt.lastIndexOf("@Parent interrupted first result")).toBeLessThan(prompt.lastIndexOf("@Parent queued second result"));
     await app.close();
   });
 
@@ -1785,7 +2215,7 @@ describe("server chunk F", () => {
       },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: "collaboration context must be delivered by a successful @mention" });
+    expect(response.json()).toEqual({ error: "collaboration context must be delivered by an explicit recipient event" });
     expect(adapter.seeds).toHaveLength(0);
     await app.close();
   });
@@ -1830,10 +2260,10 @@ describe("server chunk F", () => {
     );
 
     await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id);
+    await waitForRun(reviewer.id, 3);
     const reviewerTurns = adapter.continues.filter((turn) => turn.threadId === reviewer.id);
-    expect(reviewerTurns).toHaveLength(1);
-    expect(reviewerTurns[0]?.prompt).toContain("CollaborationDeliveryBatch (51 deliveries; canonical server order)");
+    expect(reviewerTurns).toHaveLength(3);
+    expect(reviewerTurns.map((turn) => turn.prompt.match(/CollaborationDeliveryBatch \((\d+) deliveries/)?.[1])).toEqual(["20", "20", "11"]);
     await app.close();
   });
 
@@ -1853,7 +2283,7 @@ describe("server chunk F", () => {
       payload: { text: "again" },
     });
     expect(concurrent.statusCode).toBe(202);
-    expect(concurrent.json()).toEqual({ queued: true, position: 1 });
+    expect(concurrent.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
     const cancel = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` });
     expect(cancel.json()).toEqual({ cancelled: true });

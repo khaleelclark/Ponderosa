@@ -45,7 +45,10 @@ export function Sidebar({
   onCreateMasterChat(): void;
 }): JSX.Element {
   const runningAgentIds = new Set(
-    agents.filter((agent) => statusByAgentId.get(agent.id) === "running").map((agent) => agent.id),
+    agents.filter((agent) => {
+      const status = statusByAgentId.get(agent.id);
+      return status === "running" || status === "compacting";
+    }).map((agent) => agent.id),
   );
   const runningCount = runningAgentIds.size;
 

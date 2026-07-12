@@ -3,7 +3,7 @@
 // Exposes NO HTTP (SPEC §7). SQLite is never a source of truth: everything here is
 // derivable from the logs + the *.json files, and `rebuildProjections()` proves it.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -23,6 +23,14 @@ import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
+  CommunicationEvent,
+  CommunicationContextClassification,
+  CommunicationProjection,
+  CommunicationReconciliationReport,
+  KnowledgePromotion,
+  LegacyCommunicationBackfillRequest,
+  LegacyCommunicationBackfillResponse,
+  ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -51,6 +59,8 @@ import type {
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
+import { messageId as projectedMessageId } from "./ids.js";
+import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
   initProjectionState,
@@ -79,6 +89,10 @@ import {
   eventsPath,
   masterChatDir,
   collaborationChatMessagesPath,
+  communicationEventsPath,
+  communicationContextPath,
+  communicationProjectionsPath,
+  knowledgePromotionsPath,
   masterChatJsonPath,
   masterChatMessagesPath,
   masterChatsDir,
@@ -243,6 +257,7 @@ export interface MasterChatDeliveryIntent {
 
 interface MasterChatMessageJson {
   id: string;
+  communicationEventId?: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -274,6 +289,29 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
+function communicationMessageProjection(threadId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
+  const event = stored.event;
+  if (event.type === "user_message") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+    ...(event.replyTo ? { replyToLegacyMessageId: event.replyTo.messageId } : {}),
+    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
+    ...(event.replyTo ? { replyTo: event.replyTo } : {}),
+    ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+  };
+  if (event.type === "text") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts, sequence: stored.seq,
+  };
+  if (event.type === "communication_projection") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+  };
+  return undefined;
+}
+
+function legacyCommunicationEventId(projectId: string, source: string, sourceId: string): string {
+  const hex = createHash("sha256").update(`ponderosa-legacy-communication\0${projectId}\0${source}\0${sourceId}`).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
 export class ThreadStore {
   private readonly db: Db;
   private readonly client: Database.Database;
@@ -281,6 +319,17 @@ export class ThreadStore {
   private readonly states = new Map<string, ProjectionState>();
   private readonly deliverySequenceFile: string;
   private deliverySequence: number;
+  private readonly communicationEventCache = new Map<string, {
+    events: CommunicationEvent[];
+    byId: Map<string, CommunicationEvent>;
+    byIdempotency: Map<string, CommunicationEvent>;
+  }>();
+  private readonly contextClassificationCache = new Map<string, Map<string, CommunicationContextClassification>>();
+  private readonly communicationProjectionCache = new Map<string, {
+    projections: CommunicationProjection[];
+    byTuple: Map<string, CommunicationProjection>;
+  }>();
+  private readonly knowledgePromotionCache = new Map<string, KnowledgePromotion[]>();
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -295,6 +344,7 @@ export class ThreadStore {
     // on startup closes the crash window where a durable append succeeded but
     // the projection write did not, and keeps every read path deterministic.
     this.rebuildProjections();
+    for (const project of this.listProjects()) this.repairCommunicationProjectionLedger(project.id);
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -303,9 +353,538 @@ export class ThreadStore {
     return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
   }
 
+  private communicationIndex(projectId: string) {
+    let cached = this.communicationEventCache.get(projectId);
+    if (cached) return cached;
+    const events = readRepairableJsonl<CommunicationEvent>(communicationEventsPath(this.dataDir, projectId), "communication log", true);
+    const byId = new Map(events.map((event) => [event.eventId, event]));
+    const byIdempotency = new Map<string, CommunicationEvent>();
+    for (const event of events) {
+      if (event.idempotencyKey) byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
+    }
+    cached = { events, byId, byIdempotency };
+    this.communicationEventCache.set(projectId, cached);
+    return cached;
+  }
+
+  private contextIndex(projectId: string): Map<string, CommunicationContextClassification> {
+    let cached = this.contextClassificationCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log", true);
+    cached = new Map(records.map((record) => [record.eventId, record]));
+    this.contextClassificationCache.set(projectId, cached);
+    return cached;
+  }
+
+  private projectionIndex(projectId: string) {
+    let cached = this.communicationProjectionCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log", true);
+    const byTuple = new Map(records.map((projection) => [
+      `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`, projection,
+    ]));
+    cached = { projections: [...byTuple.values()], byTuple };
+    this.communicationProjectionCache.set(projectId, cached);
+    return cached;
+  }
+
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
   get database(): Db {
     return this.db;
+  }
+
+  /**
+   * Append one canonical communication before creating any projections.
+   * Duplicate IDs are accepted only when the complete event is byte-equivalent,
+   * making transport retries idempotent while detecting identity collisions.
+   */
+  appendCommunicationEvent(event: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
+    if (!this.getProject(event.projectId)) throw new Error("communication project not found");
+    if (event.schemaVersion !== 1) throw new Error("unsupported communication schema version");
+    if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
+    if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
+      throw new Error("collaboration requires at least one recipient agent ID");
+    }
+    const file = communicationEventsPath(this.dataDir, event.projectId);
+    const classification: CommunicationContextClassification = {
+      eventId: event.eventId,
+      policy: event.intent === "broadcast" ? "organizational_candidate" : "local_only",
+      classifiedAt: event.createdAt,
+      classifiedBy: { kind: "system", component: "communication-router" },
+    };
+    const index = this.communicationIndex(event.projectId);
+    const idempotent = event.idempotencyKey
+      ? index.byIdempotency.get(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`) : undefined;
+    if (idempotent) {
+      const equivalent = idempotent.projectId === event.projectId && idempotent.masterChatId === event.masterChatId &&
+        idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
+        idempotent.text === event.text;
+      if (!equivalent) throw new Error("communication idempotency collision");
+      this.appendContextClassification(event.projectId, {
+        eventId: idempotent.eventId,
+        policy: idempotent.intent === "broadcast" ? "organizational_candidate" : "local_only",
+        classifiedAt: idempotent.createdAt,
+        classifiedBy: { kind: "system", component: "communication-router" },
+      });
+      return { event: idempotent, replayed: true };
+    }
+    const existing = index.byId.get(event.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
+      this.appendContextClassification(event.projectId, classification);
+      return { event: existing, replayed: true };
+    }
+    appendFsyncedJsonl(file, [event]);
+    index.events.push(event);
+    index.byId.set(event.eventId, event);
+    if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
+    this.appendContextClassification(event.projectId, classification);
+    return { event, replayed: false };
+  }
+
+  readCommunicationEvents(projectId: string): CommunicationEvent[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.communicationIndex(projectId).events];
+  }
+
+  getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return this.communicationIndex(projectId).byId.get(eventId);
+  }
+
+  private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
+    const file = communicationContextPath(this.dataDir, projectId);
+    const index = this.contextIndex(projectId);
+    const existing = index.get(classification.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(classification)) throw new Error("communication context classification collision");
+      return;
+    }
+    appendFsyncedJsonl(file, [classification]);
+    index.set(classification.eventId, classification);
+  }
+
+  readContextClassifications(projectId: string): CommunicationContextClassification[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.contextIndex(projectId).values()];
+  }
+
+  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    const eventExists = this.communicationIndex(projectId).byId.has(projection.eventId);
+    if (!eventExists) throw new Error("communication projection source event not found");
+    const file = communicationProjectionsPath(this.dataDir, projectId);
+    const index = this.projectionIndex(projectId);
+    const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
+    const existing = index.byTuple.get(tuple);
+    if (existing) {
+      if (!existing.message && projection.message) {
+        const enriched = { ...projection, revision: (existing.revision ?? 1) + 1 };
+        appendFsyncedJsonl(file, [enriched]);
+        const position = index.projections.findIndex((candidate) => candidate === existing);
+        if (position >= 0) index.projections[position] = enriched;
+        index.byTuple.set(tuple, enriched);
+        return { projection: enriched, replayed: false };
+      }
+      if (existing.message && projection.message) {
+        const enrichedMessage = {
+          ...existing.message,
+          ...(existing.message.sequence === undefined && projection.message.sequence !== undefined
+            ? { sequence: projection.message.sequence }
+            : {}),
+          ...(!existing.message.authorAgentId && projection.message.authorAgentId
+            ? { authorAgentId: projection.message.authorAgentId }
+            : {}),
+          ...(!existing.message.replyToLegacyMessageId && projection.message.replyToLegacyMessageId
+            ? { replyToLegacyMessageId: projection.message.replyToLegacyMessageId }
+            : {}),
+          ...(!existing.message.attachmentIds?.length && projection.message.attachmentIds?.length
+            ? { attachmentIds: projection.message.attachmentIds }
+            : {}),
+          ...(!existing.message.replyTo && projection.message.replyTo ? { replyTo: projection.message.replyTo } : {}),
+          ...(!existing.message.attachments?.length && projection.message.attachments?.length
+            ? { attachments: projection.message.attachments }
+            : {}),
+        };
+        if (JSON.stringify(enrichedMessage) !== JSON.stringify(existing.message)) {
+          const enriched = { ...existing, revision: (existing.revision ?? 1) + 1, message: enrichedMessage };
+          appendFsyncedJsonl(file, [enriched]);
+          const position = index.projections.findIndex((candidate) => candidate === existing);
+          if (position >= 0) index.projections[position] = enriched;
+          index.byTuple.set(tuple, enriched);
+          return { projection: enriched, replayed: false };
+        }
+      }
+      const sameMaterialization = existing.message && projection.message
+        && existing.message.role === projection.message.role
+        && (existing.message.renderedText ?? "") === (projection.message.renderedText ?? "");
+      if (projection.message && JSON.stringify(existing.message) !== JSON.stringify(projection.message) && !sameMaterialization) {
+        throw new Error("communication projection metadata collision");
+      }
+      // Delivery retries may create new runtime-local IDs and timestamps. Keep
+      // the first placement when the visible role and text are identical.
+      return { projection: existing, replayed: true };
+    }
+    appendFsyncedJsonl(file, [projection]);
+    index.projections.push(projection);
+    index.byTuple.set(tuple, projection);
+    return { projection, replayed: false };
+  }
+
+  readCommunicationProjections(projectId: string): CommunicationProjection[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.projectionIndex(projectId).projections];
+  }
+
+  readProjectedCommunicationMessages(
+    projectId: string,
+    surface: CommunicationProjection["surface"],
+    projectionKey: string,
+  ): ProjectedCommunicationMessage[] {
+    const events = this.communicationIndex(projectId).byId;
+    return this.projectionIndex(projectId).projections
+      .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey && projection.message)
+      .flatMap((projection) => {
+        const event = events.get(projection.eventId);
+        const message = projection.message;
+        if (!event || !message) return [];
+        return [{
+          eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
+          role: message.role, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
+          ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
+          ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
+          ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        }];
+      })
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
+  }
+
+  private repairCommunicationProjectionLedger(projectId: string): void {
+    const canonicalIds = new Set(this.readCommunicationEvents(projectId).map((event) => event.eventId));
+    if (canonicalIds.size === 0) return;
+    for (const master of this.listMasterChats(projectId)) {
+      for (const [surface, file] of [
+        ["master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
+        ["collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
+      ] as const) {
+        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+          if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
+            this.appendCommunicationProjection(projectId, {
+              eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
+              message: {
+                messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+                ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
+                ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+                ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+                ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+                ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+              },
+            });
+          }
+        }
+      }
+    }
+    for (const thread of this.listThreads(projectId)) {
+      for (const stored of this.readEvents(thread.id)) {
+        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message" || stored.event.type === "text"
+          ? stored.event.communicationEventId : undefined;
+        const message = communicationMessageProjection(thread.id, stored);
+        if (eventId && message && canonicalIds.has(eventId)) {
+          this.appendCommunicationProjection(projectId, {
+            eventId, surface: "direct_agent_audit", projectionKey: thread.id, projectedAt: stored.ts,
+            message,
+          });
+        }
+      }
+    }
+  }
+
+  promoteKnowledge(promotion: KnowledgePromotion): { promotion: KnowledgePromotion; replayed: boolean } {
+    if (!this.getProject(promotion.organizationId)) throw new Error("promotion organization not found");
+    const source = this.readCommunicationEvents(promotion.organizationId)
+      .find((event) => event.eventId === promotion.sourceEventId);
+    if (!source) throw new Error("promotion source event not found");
+    const classification = this.readContextClassifications(promotion.organizationId)
+      .find((candidate) => candidate.eventId === promotion.sourceEventId);
+    if (classification?.policy !== "local_only") throw new Error("only local knowledge requires promotion");
+    if (!promotion.summary.trim()) throw new Error("promotion summary is required");
+    const file = knowledgePromotionsPath(this.dataDir, promotion.organizationId);
+    let existing = this.knowledgePromotionCache.get(promotion.organizationId);
+    if (!existing) {
+      existing = readRepairableJsonl<KnowledgePromotion>(file, "knowledge promotion log", true);
+      this.knowledgePromotionCache.set(promotion.organizationId, existing);
+    }
+    const prior = promotion.idempotencyKey
+      ? existing.find((candidate) => candidate.idempotencyKey === promotion.idempotencyKey)
+      : existing.find((candidate) => candidate.promotionId === promotion.promotionId);
+    if (prior) {
+      const equivalent = prior.sourceEventId === promotion.sourceEventId && prior.summary === promotion.summary &&
+        JSON.stringify(prior.promotedBy) === JSON.stringify(promotion.promotedBy);
+      if (!equivalent) throw new Error("knowledge promotion idempotency collision");
+      return { promotion: prior, replayed: true };
+    }
+    appendFsyncedJsonl(file, [promotion]);
+    existing.push(promotion);
+    return { promotion, replayed: false };
+  }
+
+  readKnowledgePromotions(projectId: string): KnowledgePromotion[] {
+    if (!this.getProject(projectId)) throw new Error("promotion organization not found");
+    let cached = this.knowledgePromotionCache.get(projectId);
+    if (!cached) {
+      cached = readRepairableJsonl<KnowledgePromotion>(knowledgePromotionsPath(this.dataDir, projectId), "knowledge promotion log", true);
+      this.knowledgePromotionCache.set(projectId, cached);
+    }
+    return [...cached];
+  }
+
+  activeKnowledgePromotions(projectId: string, at = new Date().toISOString()): KnowledgePromotion[] {
+    const all = this.readKnowledgePromotions(projectId);
+    const superseded = new Set(all.flatMap((promotion) => promotion.supersedesPromotionId ? [promotion.supersedesPromotionId] : []));
+    const now = Date.parse(at);
+    return all.filter((promotion) => !superseded.has(promotion.promotionId) &&
+      (!promotion.expiresAt || Date.parse(promotion.expiresAt) > now));
+  }
+
+  /** Compare canonical events with legacy disk projections during shadow mode. */
+  reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
+    const canonical = this.readCommunicationEvents(projectId);
+    const canonicalIds = new Set(canonical.map((event) => event.eventId));
+    const projections = this.readCommunicationProjections(projectId);
+    const counts = new Map<string, number>();
+    for (const projection of projections) counts.set(projection.eventId, (counts.get(projection.eventId) ?? 0) + 1);
+    const tupleCounts = new Map<string, number>();
+    for (const projection of projections) {
+      const key = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
+      tupleCounts.set(key, (tupleCounts.get(key) ?? 0) + 1);
+    }
+    const missingProjectionEventIds = canonical
+      .filter((event) => !counts.has(event.eventId)).map((event) => event.eventId);
+    const duplicateProjectionEventIds = [...new Set(projections
+      .filter((projection) => (tupleCounts.get(`${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`) ?? 0) > 1)
+      .map((projection) => projection.eventId))];
+    const orphanProjectionEventIds = [...counts.keys()].filter((id) => !canonicalIds.has(id));
+    const classifiedIds = new Set(this.readContextClassifications(projectId).map((item) => item.eventId));
+    const missingClassificationEventIds = canonical
+      .filter((event) => !classifiedIds.has(event.eventId)).map((event) => event.eventId);
+    const missingProjectionMetadataEventIds = [...new Set(projections
+      .filter((projection) => (projection.surface === "master_chat" || projection.surface === "collaboration_chat" || projection.surface === "direct_agent_audit") && !projection.message)
+      .map((projection) => projection.eventId))];
+    const unlinkedLegacyMessageIds: string[] = [];
+    const projectionReadMismatchMessageIds: string[] = [];
+    for (const master of this.listMasterChats(projectId)) {
+      for (const channel of ["main", "collaboration"] as const) {
+        const legacy = this.getMasterChatMessages(master.id, channel);
+        const projected = new Map(this.getProjectedMasterChatMessages(master.id, channel).map((message) => [message.id, message]));
+        for (const message of legacy) {
+          if (!message.communicationEventId) {
+            unlinkedLegacyMessageIds.push(message.id);
+            continue;
+          }
+          const candidate = projected.get(message.id);
+          const parityKey = (item: MasterChatMessageDto) => JSON.stringify([
+            item.id, item.communicationEventId, item.masterChatId, item.role, item.text, item.createdAt,
+            item.authorThreadId, item.replyTo, item.attachments ?? [], item.reactions ?? [],
+          ]);
+          if (!candidate || parityKey(candidate) !== parityKey(message)) {
+            projectionReadMismatchMessageIds.push(message.id);
+          }
+        }
+      }
+    }
+    for (const thread of this.listThreads(projectId)) {
+      const projected = new Map(this.getProjectedThreadMessages(thread.id).map((message) => [message.id, message]));
+      for (const message of this.getMessages(thread.id)) {
+        if (!message.communicationEventId) {
+          unlinkedLegacyMessageIds.push(message.id);
+          continue;
+        }
+        const candidate = projected.get(message.id);
+        const parityKey = (item: MessageDto) => JSON.stringify([
+          item.id, item.communicationEventId, item.threadId, item.seq, item.role, item.text,
+          item.createdAt, item.replyTo, item.attachments ?? [],
+        ]);
+        if (!candidate || parityKey(candidate) !== parityKey(message)) {
+          projectionReadMismatchMessageIds.push(message.id);
+        }
+      }
+    }
+    return {
+      projectId,
+      canonicalEvents: canonical.length,
+      linkedProjections: projections.length,
+      missingProjectionEventIds,
+      duplicateProjectionEventIds,
+      orphanProjectionEventIds,
+      missingClassificationEventIds,
+      missingProjectionMetadataEventIds,
+      unlinkedLegacyMessageIds,
+      projectionReadMismatchMessageIds,
+      ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
+        orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
+        missingProjectionMetadataEventIds.length === 0 && unlinkedLegacyMessageIds.length === 0 &&
+        projectionReadMismatchMessageIds.length === 0,
+    };
+  }
+
+  /**
+   * Expand-only migration from legacy room/thread logs into canonical events.
+   * IDs are content-location deterministic, so a crash or repeated operator
+   * request resumes safely. Ambiguous Collaboration audiences are never guessed.
+   */
+  backfillLegacyCommunications(
+    projectId: string,
+    request: LegacyCommunicationBackfillRequest = {},
+  ): LegacyCommunicationBackfillResponse {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    const dryRun = request.dryRun ?? true;
+    const blocked: LegacyCommunicationBackfillResponse["blocked"] = [];
+    let candidates = 0;
+    let migrated = 0;
+    let alreadyLinked = 0;
+    const projectionByMessage = new Map<string, CommunicationProjection>(
+      this.readCommunicationProjections(projectId).flatMap((projection) => projection.message
+        ? [[`${projection.surface}\0${projection.projectionKey}\0${projection.message.messageId}`, projection] as const]
+        : []),
+    );
+    const senderFor = (role: MasterChatMessageJson["role"], authorThreadId?: string | null): CommunicationEvent["sender"] =>
+      authorThreadId ? { kind: "agent", agentId: authorThreadId }
+        : role === "user" ? { kind: "user", userId: "local-operator" }
+          : { kind: "system", component: "legacy-communication-backfill" };
+
+    for (const master of this.listMasterChats(projectId)) {
+      const memberIds = new Set(this.listThreads(projectId)
+        .filter((thread) => thread.masterChatIds.includes(master.id))
+        .map((thread) => thread.id));
+      for (const [channel, surface, file] of [
+        ["main", "master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
+        ["collaboration", "collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
+      ] as const) {
+        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+          const placementKey = `${surface}\0${master.id}\0${message.id}`;
+          if (message.communicationEventId || projectionByMessage.has(placementKey)) {
+            alreadyLinked += 1;
+            continue;
+          }
+          candidates += 1;
+          const inferred = channel === "collaboration"
+            ? [...new Set((message.deliveryIntents ?? []).map((intent) => intent.targetThreadId))]
+            : [];
+          const override = request.collaborationRecipientsByMessageId?.[message.id];
+          const recipients = [...new Set(override ?? inferred)];
+          if (channel === "collaboration" && recipients.length === 0) {
+            blocked.push({ source: "collaboration_chat", sourceId: message.id, reason: "explicit_recipients_required" });
+            continue;
+          }
+          if (channel === "collaboration" && recipients.some((id) => !memberIds.has(id))) {
+            blocked.push({ source: "collaboration_chat", sourceId: message.id, reason: "recipient_not_room_member" });
+            continue;
+          }
+          if (dryRun) continue;
+          const eventId = legacyCommunicationEventId(projectId, surface, message.id);
+          const event: CommunicationEvent = channel === "collaboration"
+            ? {
+                eventId, schemaVersion: 1, projectId, masterChatId: master.id,
+                sender: senderFor(message.role, message.authorThreadId), intent: "collaboration",
+                audience: { kind: "agents", agentIds: recipients as [string, ...string[]] },
+                text: message.text, createdAt: message.createdAt,
+                idempotencyKey: `legacy:${surface}:${message.id}`,
+              }
+            : {
+                eventId, schemaVersion: 1, projectId, masterChatId: master.id,
+                sender: senderFor(message.role, message.authorThreadId), intent: "broadcast",
+                audience: { kind: "organization", organizationId: projectId },
+                text: message.text, createdAt: message.createdAt,
+                idempotencyKey: `legacy:${surface}:${message.id}`,
+              };
+          this.appendCommunicationEvent(event);
+          const projection: CommunicationProjection = {
+            eventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
+            message: {
+              messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+              ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
+              ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+              ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+              ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+              ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+            },
+          };
+          this.appendCommunicationProjection(projectId, projection);
+          projectionByMessage.set(placementKey, projection);
+          migrated += 1;
+        }
+      }
+    }
+
+    for (const thread of this.listThreads(projectId)) {
+      for (const stored of this.readEvents(thread.id)) {
+        const message = communicationMessageProjection(thread.id, stored);
+        if (!message || (stored.event.type !== "user_message" && stored.event.type !== "text")) continue;
+        const placementKey = `direct_agent_audit\0${thread.id}\0${message.messageId}`;
+        if (stored.event.communicationEventId || projectionByMessage.has(placementKey)) {
+          alreadyLinked += 1;
+          continue;
+        }
+        candidates += 1;
+        if (dryRun) continue;
+        const eventId = legacyCommunicationEventId(projectId, "direct_agent_audit", message.messageId);
+        const event: CommunicationEvent = stored.event.type === "user_message"
+          ? {
+              eventId, schemaVersion: 1, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
+              sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+              audience: { kind: "agents", agentIds: [thread.id] }, text: stored.event.text,
+              createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
+            }
+          : {
+              eventId, schemaVersion: 1, projectId, ...(thread.masterChatId ? { masterChatId: thread.masterChatId } : {}),
+              sender: { kind: "agent", agentId: thread.id }, intent: "direct_to_user",
+              audience: { kind: "user", userId: "local-operator" }, text: stored.event.delta,
+              createdAt: stored.ts, idempotencyKey: `legacy:direct_agent_audit:${message.messageId}`,
+            };
+        this.appendCommunicationEvent(event);
+        const projection = {
+          eventId, surface: "direct_agent_audit" as const, projectionKey: thread.id,
+          projectedAt: stored.ts, message,
+        };
+        this.appendCommunicationProjection(projectId, projection);
+        projectionByMessage.set(placementKey, projection);
+        migrated += 1;
+      }
+    }
+    return { dryRun, candidates, migrated, alreadyLinked, blocked };
+  }
+
+  /** Mark executions whose durable start survived a daemon crash without a terminal record. */
+  recoverInterruptedExecutions(): string[] {
+    const recovered: string[] = [];
+    for (const project of this.listProjects()) {
+      for (const thread of this.listThreads(project.id)) {
+        const events = this.readEvents(thread.id);
+        let startedIndex = -1;
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index]!.event;
+          if (event.type === "agent_lifecycle" && event.status === "running") {
+            startedIndex = index;
+            break;
+          }
+        }
+        if (startedIndex < 0) continue;
+        const start = events[startedIndex]!;
+        const terminal = events.slice(startedIndex + 1).some((stored) =>
+          stored.event.type === "turn_done" || stored.event.type === "error" ||
+          (stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed"].includes(stored.event.status)));
+        if (terminal) continue;
+        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : undefined;
+        this.appendEvent(thread.id, {
+          type: "agent_lifecycle", status: "failed", reason: "execution_interrupted",
+          ...(executionId ? { executionId } : {}),
+        });
+        recovered.push(thread.id);
+      }
+    }
+    return recovered;
   }
 
   /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
@@ -520,6 +1099,7 @@ export class ThreadStore {
     channel: MasterChatChannel = "main",
     deliveryIntents?: MasterChatDeliveryIntent[],
     messageReceiptKey?: string,
+    communicationEventId?: string,
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
@@ -541,6 +1121,7 @@ export class ThreadStore {
     }
     const message: MasterChatMessageJson = {
       id: randomUUID(),
+      ...(communicationEventId ? { communicationEventId } : {}),
       masterChatId,
       role: input.role ?? "user",
       text: input.text,
@@ -564,6 +1145,7 @@ export class ThreadStore {
     );
     this.db.insert(masterChatMessages).values({
       id: message.id,
+      communicationEventId: message.communicationEventId ?? null,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -581,8 +1163,25 @@ export class ThreadStore {
     const jsonPath = masterChatJsonPath(this.dataDir, masterChat.projectId, masterChatId);
     const json = readJson<MasterChatJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
+    if (message.communicationEventId) {
+      this.appendCommunicationProjection(masterChat.projectId, {
+        eventId: message.communicationEventId,
+        surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
+        projectionKey: masterChatId,
+        projectedAt: now,
+        message: {
+          messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+          ...(authorThreadId ? { authorAgentId: authorThreadId } : {}),
+          ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+          ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        },
+      });
+    }
     return {
       id: message.id,
+      communicationEventId: message.communicationEventId,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -608,6 +1207,7 @@ export class ThreadStore {
     return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
       message: {
         id: message.id,
+        communicationEventId: message.communicationEventId,
         masterChatId: message.masterChatId,
         role: message.role,
         text: message.text,
@@ -630,6 +1230,7 @@ export class ThreadStore {
     ).find((candidate) => candidate.messageReceiptKey === receiptKey);
     return message ? {
       id: message.id,
+      communicationEventId: message.communicationEventId,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -781,6 +1382,16 @@ export class ThreadStore {
   }
 
   getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main", currentActor: ReactionActor = { kind: "manager" }): MasterChatMessageDto[] {
+    const master = this.getMasterChat(masterChatId);
+    const backfillLinks = new Map<string, string>();
+    if (master) {
+      const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
+      for (const projection of this.projectionIndex(master.projectId).projections) {
+        if (projection.surface === surface && projection.projectionKey === masterChatId && projection.message) {
+          backfillLinks.set(projection.message.messageId, projection.eventId);
+        }
+      }
+    }
     return this.db
       .select()
       .from(masterChatMessages)
@@ -790,6 +1401,7 @@ export class ThreadStore {
       .filter((row) => row.channel === channel)
       .map((row) => ({
         id: row.id,
+        communicationEventId: row.communicationEventId ?? backfillLinks.get(row.id),
         masterChatId: row.masterChatId,
         role:
           row.role === "assistant" || row.role === "system"
@@ -802,6 +1414,36 @@ export class ThreadStore {
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
         reactions: this.getMessageReactions(masterChatId, channel, row.id, currentActor),
       }));
+  }
+
+  /**
+   * Materialize a room timeline from canonical communication events and their
+   * projection ledger. Legacy rows are consulted only for ancillary snapshots
+   * (attachments and quoted replies) until those immutable payloads move into
+   * the canonical envelope; they do not select membership, ordering, or text.
+   */
+  getProjectedMasterChatMessages(
+    masterChatId: string,
+    channel: MasterChatChannel = "main",
+    currentActor: ReactionActor = { kind: "manager" },
+  ): MasterChatMessageDto[] {
+    const master = this.getMasterChat(masterChatId);
+    if (!master) return [];
+    const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
+    return this.readProjectedCommunicationMessages(master.projectId, surface, masterChatId).map((message) => {
+      return {
+        id: message.messageId,
+        communicationEventId: message.eventId,
+        masterChatId,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
+        ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        reactions: this.getMessageReactions(masterChatId, channel, message.messageId, currentActor),
+      };
+    });
   }
 
   private masterChatReference(masterChatId: string, channel: MasterChatChannel, messageId: string) {
@@ -958,6 +1600,15 @@ export class ThreadStore {
   }
 
   getMessages(threadId: string): MessageDto[] {
+    const thread = this.getThread(threadId);
+    const backfillLinks = new Map<string, string>();
+    if (thread) {
+      for (const projection of this.projectionIndex(thread.projectId).projections) {
+        if (projection.surface === "direct_agent_audit" && projection.projectionKey === threadId && projection.message) {
+          backfillLinks.set(projection.message.messageId, projection.eventId);
+        }
+      }
+    }
     return this.db
       .select()
       .from(messages)
@@ -966,6 +1617,7 @@ export class ThreadStore {
       .all()
       .map((r) => ({
         id: r.id,
+        communicationEventId: r.communicationEventId ?? backfillLinks.get(r.id),
         threadId: r.threadId,
         seq: r.seq,
         role: r.role === "user" ? "user" : "assistant",
@@ -974,6 +1626,26 @@ export class ThreadStore {
         replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
         attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
       }));
+  }
+
+  getProjectedThreadMessages(threadId: string): MessageDto[] {
+    const thread = this.getThread(threadId);
+    if (!thread) return [];
+    return this.readProjectedCommunicationMessages(thread.projectId, "direct_agent_audit", threadId)
+      .flatMap((message) => {
+        if (message.sequence === undefined || message.role === "system") return [];
+        return [{
+          id: message.messageId,
+          communicationEventId: message.eventId,
+          threadId,
+          seq: message.sequence,
+          role: message.role,
+          text: message.text,
+          createdAt: message.createdAt,
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        } satisfies MessageDto];
+      });
   }
 
   getTasks(threadId: string): TaskDto[] {
@@ -1047,6 +1719,18 @@ export class ThreadStore {
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
     this.applyOps(threadId, projectId, ops);
+    const communicationEventId = event.type === "communication_projection" || event.type === "user_message" || event.type === "text"
+      ? event.communicationEventId : undefined;
+    const message = communicationMessageProjection(threadId, stored);
+    if (communicationEventId && message) {
+      this.appendCommunicationProjection(projectId, {
+        eventId: communicationEventId,
+        surface: "direct_agent_audit",
+        projectionKey: threadId,
+        projectedAt: stored.ts,
+        message,
+      });
+    }
     return stored;
   }
 
@@ -1132,6 +1816,7 @@ export class ThreadStore {
             for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
               this.db.insert(masterChatMessages).values({
                 id: message.id,
+                communicationEventId: message.communicationEventId ?? null,
                 masterChatId: message.masterChatId,
                 role: message.role,
                 text: message.text,

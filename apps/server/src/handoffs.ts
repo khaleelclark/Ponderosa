@@ -8,6 +8,8 @@ export interface CollaborationDelivery {
   id: string;
   masterChatId?: string;
   messageId: string;
+  /** Canonical communication identity shared by every resulting projection. */
+  communicationEventId?: string;
   targetThreadId: string;
   authorThreadId?: string;
   text: string;
@@ -31,6 +33,10 @@ export interface CollaborationDelivery {
   acknowledgedAt?: string;
   /** Number of recipient turns started for this delivery, including retries. */
   attempts?: number;
+  /** Number of dispatcher claims rejected before a recipient turn could start. */
+  dispatchAttempts?: number;
+  /** Earliest time a retryable dispatcher claim may be attempted again. */
+  nextDispatchAt?: string;
   failure?: string;
 }
 
@@ -53,6 +59,9 @@ type Record =
 export class CollaborationDeliveryStore {
   private readonly deliveries = new Map<string, CollaborationDelivery>();
   private readonly byMessageTarget = new Map<string, string>();
+  private readonly pendingByTarget = new Map<string, Set<string>>();
+  private readonly insertionOrder = new Map<string, number>();
+  private nextInsertionOrder = 0;
   private readonly messageReceipts = new Map<string, string>();
   private readonly file: string;
   private boundary: string | undefined;
@@ -73,7 +82,7 @@ export class CollaborationDeliveryStore {
         this.boundary = record.createdAt;
         continue;
       }
-      this.deliveries.set(record.delivery.id, record.delivery);
+      this.replaceInMemory(record.delivery);
       this.byMessageTarget.set(`${record.delivery.messageId}:${record.delivery.targetThreadId}`, record.delivery.id);
     }
     if (!this.boundary) {
@@ -90,9 +99,25 @@ export class CollaborationDeliveryStore {
 
   private persist(delivery: CollaborationDelivery, type: "delivery" | "replace"): CollaborationDelivery {
     appendFileSync(this.file, `${JSON.stringify({ type, delivery } satisfies Record)}\n`, "utf8");
-    this.deliveries.set(delivery.id, delivery);
+    this.replaceInMemory(delivery);
     this.byMessageTarget.set(`${delivery.messageId}:${delivery.targetThreadId}`, delivery.id);
     return delivery;
+  }
+
+  private replaceInMemory(delivery: CollaborationDelivery): void {
+    if (!this.insertionOrder.has(delivery.id)) this.insertionOrder.set(delivery.id, this.nextInsertionOrder++);
+    const previous = this.deliveries.get(delivery.id);
+    if (previous?.status === "queued") {
+      const pending = this.pendingByTarget.get(previous.targetThreadId);
+      pending?.delete(previous.id);
+      if (pending?.size === 0) this.pendingByTarget.delete(previous.targetThreadId);
+    }
+    this.deliveries.set(delivery.id, delivery);
+    if (delivery.status === "queued") {
+      const pending = this.pendingByTarget.get(delivery.targetThreadId) ?? new Set<string>();
+      pending.add(delivery.id);
+      this.pendingByTarget.set(delivery.targetThreadId, pending);
+    }
   }
 
   queue(
@@ -110,13 +135,41 @@ export class CollaborationDeliveryStore {
   }
 
   pending(threadId: string): CollaborationDelivery[] {
-    return [...this.deliveries.values()]
-      .filter((delivery) => delivery.targetThreadId === threadId && delivery.status === "queued")
-      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
+    return [...(this.pendingByTarget.get(threadId) ?? [])]
+      .flatMap((id) => {
+        const delivery = this.deliveries.get(id);
+        return delivery?.status === "queued" ? [delivery] : [];
+      })
+      .sort((a, b) =>
+        (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt) ||
+        (this.insertionOrder.get(a.id) ?? 0) - (this.insertionOrder.get(b.id) ?? 0));
   }
 
   pendingCount(threadId: string): number {
-    return this.pending(threadId).length;
+    return this.pendingByTarget.get(threadId)?.size ?? 0;
+  }
+
+  /** Persist retry evidence before scheduling another dispatcher claim. */
+  retryDispatchBatch(ids: readonly string[], failure: string, nextDispatchAt: string, maxAttempts: number): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.deliveries.get(id);
+      if (!delivery || delivery.status !== "delivered") return delivery ? [delivery] : [];
+      const dispatchAttempts = (delivery.dispatchAttempts ?? 0) + 1;
+      if (dispatchAttempts >= maxAttempts) {
+        return [this.persist({
+          ...delivery,
+          status: "failed",
+          failure: `${failure}; dead-lettered after ${dispatchAttempts} dispatch attempts`,
+          dispatchAttempts,
+          attempts: Math.max(0, (delivery.attempts ?? 1) - 1),
+        }, "replace")];
+      }
+      const { deliveredAt: _deliveredAt, ...queued } = delivery;
+      return [this.persist({
+        ...queued, status: "queued", failure, dispatchAttempts, nextDispatchAt,
+        attempts: Math.max(0, (queued.attempts ?? 1) - 1),
+      }, "replace")];
+    });
   }
 
   /**
@@ -162,9 +215,9 @@ export class CollaborationDeliveryStore {
     });
   }
 
-  requeueBatch(ids: readonly string[]): CollaborationDelivery[] {
+  requeueBatch(ids: readonly string[], rollbackTurnAttempt = false): CollaborationDelivery[] {
     return ids.flatMap((id) => {
-      const delivery = this.requeue(id);
+      const delivery = this.requeue(id, rollbackTurnAttempt);
       return delivery ? [delivery] : [];
     });
   }
@@ -183,11 +236,15 @@ export class CollaborationDeliveryStore {
     });
   }
 
-  requeue(id: string): CollaborationDelivery | undefined {
+  requeue(id: string, rollbackTurnAttempt = false): CollaborationDelivery | undefined {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status !== "delivered") return delivery;
     const { deliveredAt: _deliveredAt, ...queued } = delivery;
-    return this.persist({ ...queued, status: "queued" }, "replace");
+    return this.persist({
+      ...queued,
+      status: "queued",
+      ...(rollbackTurnAttempt ? { attempts: Math.max(0, (queued.attempts ?? 1) - 1) } : {}),
+    }, "replace");
   }
 
   acknowledge(id: string): CollaborationDelivery | undefined {
@@ -210,10 +267,10 @@ export class CollaborationDeliveryStore {
     return this.persist({ ...queued, status: "queued", failure }, "replace");
   }
 
-  fail(id: string, failure: string): CollaborationDelivery | undefined {
+  fail(id: string, failure: string, dispatchAttempts?: number): CollaborationDelivery | undefined {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status === "acknowledged" || delivery.status === "failed") return delivery;
-    return this.persist({ ...delivery, status: "failed", failure }, "replace");
+    return this.persist({ ...delivery, status: "failed", failure, ...(dispatchAttempts === undefined ? {} : { dispatchAttempts }) }, "replace");
   }
 
   messageReceipt(key: string): string | undefined {

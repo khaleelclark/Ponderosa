@@ -75,6 +75,36 @@ sudo chown -R khaleel:khaleel /home/khaleel/.ponderosa
 chmod 700 /home/khaleel/.ponderosa
 ```
 
+During the communication-infrastructure migration, four restart-scoped rollout
+controls are available:
+
+- `PONDEROSA_COMMUNICATION_MODE=off` keeps legacy chat/audit writes active and
+  disables canonical communication shadow writes.
+- `PONDEROSA_COMMUNICATION_READ_MODE=legacy|shadow|authoritative` controls room
+  timeline reads independently. `authoritative` makes readiness fail closed if
+  reconciliation finds an unlinked legacy row, incomplete projection metadata,
+  or DTO parity drift; revert to `shadow` for an immediate read rollback.
+- `PONDEROSA_LEGACY_ROUTING=reject` (the default) disables mention-parsed
+  Collaboration and the old agent `channel` wire. Set `accept` only for a
+  time-bounded rollback cohort whose existing sessions have not rolled over.
+- `PONDEROSA_CURATED_CONTEXT=off` disables promoted-summary injection while
+  leaving communication capture unchanged.
+
+Capture and reads default to `shadow`, legacy routing defaults to rejected, and
+curated context defaults on. Verify the effective state
+in `/api/ready` before expanding a rollout cohort.
+Authoritative reads cannot be combined with `PONDEROSA_COMMUNICATION_MODE=off`;
+the configuration loader rejects that pairing and readiness also fails closed for
+programmatic embedders that bypass environment loading.
+
+Before selecting authoritative reads, call the project communication-backfill
+endpoint with `{ "dryRun": true }`. Apply only after every blocked historical
+Collaboration row has an operator-supplied `collaborationRecipientsByMessageId`
+mapping. Re-run reconciliation and require HTTP 200; HTTP 409 or not-ready status
+is a cutover stop. Backfill is deterministic and safe to retry after interruption.
+Use [COMMUNICATION_CUTOVER.md](./COMMUNICATION_CUTOVER.md) as the required
+per-cohort evidence and rollback checklist.
+
 ## 4. Install the systemd service
 
 ```bash
@@ -87,14 +117,13 @@ systemctl status ponderosa                        # active (running)?
 curl -s http://127.0.0.1:8787/api/health          # {"status":"ok",...}
 ```
 
-`/api/health` is currently a **liveness** check only. It does not prove the data
-directory is writable or an engine is authenticated. Until a distinct readiness
-endpoint ships, use this operator readiness check:
+`/api/health` is a **liveness** check only. Use `/api/ready` as the work-admission
+probe; it verifies the data directory, projections, authenticated runtimes, and
+communication migration compatibility, and returns HTTP 503 when admission is
+unsafe:
 
 ```bash
-test -w /home/khaleel/.ponderosa
-curl -fsS http://127.0.0.1:8787/api/engines
-sudo -u khaleel codex login status
+curl -fsS http://127.0.0.1:8787/api/ready
 ```
 
 If `PONDEROSA_AUTH_TOKEN` is configured, all API calls except `/api/health` need

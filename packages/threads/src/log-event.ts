@@ -8,10 +8,12 @@
 // redefinition of a core type).
 
 import type { AgentEvent, ImageAttachmentDto } from "@ponderosa/core";
+import type { AgentLifecycleReason, AgentLifecycleStatus } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
 export interface UserMessageEvent {
   type: "user_message";
+  communicationEventId?: string;
   text: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
@@ -23,8 +25,27 @@ export interface SessionResetEvent {
   reason: "explicit_compaction" | "resume_compaction_failed";
 }
 
+/** Direct Agent audit projection of one canonical communication event. */
+export interface CommunicationProjectionEvent {
+  type: "communication_projection";
+  communicationEventId: string;
+  text: string;
+}
+
+/** Durable manager-facing lifecycle transition for ordinary agents. */
+export interface AgentLifecycleEvent {
+  type: "agent_lifecycle";
+  status: AgentLifecycleStatus;
+  reason: AgentLifecycleReason;
+  executionId?: string;
+}
+
+/** Engine text may carry canonical persistence identity after edge normalization. */
+export type AgentTextLogEvent = Extract<AgentEvent, { type: "text" }> & { communicationEventId?: string };
+
 /** Anything that can be appended to a thread's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | AgentEvent;
+export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent |
+  Exclude<AgentEvent, { type: "text" }> | AgentTextLogEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-thread seq + ts. */
 export interface StoredLogEvent {

@@ -5,6 +5,22 @@ types. Nothing here changes without a matching `SPEC.md` edit (AGENTS.md). The
 barrel (`.`) is pure and JSON-serializable; `./config` and `./logger` are Node-only
 subpath exports kept out of the browser bundle.
 
+## Agent lifecycle health projection
+
+Manager-facing health uses the exhaustive `AgentLifecycleStatus` vocabulary:
+`idle`, `running`, `waiting`, `blocked`, `compacting`, `cancelled`, `completed`,
+and `failed`. The server projects it on demand at project and master-chat scope
+from stable thread IDs, active runs, delegation records, durable queued deliveries,
+and canonical task/error events. It uses no client inference, per-agent polling,
+heartbeat messages, or communication-event persistence.
+
+`compacting` is observable only while an active run has a scheduled rollover;
+the timestamped server operation is the authority and disappears when the run
+closes. Synchronous idle-thread reset does not fabricate a state interval.
+Ordinary cancellation appends an `agent_lifecycle` event, while delegated
+cancellation remains authoritative in the delegation ledger. Expected aborts do
+not become runtime failures.
+
 ## `events.ts` — the normalized event model (SPEC §5)
 
 | Export | Role — must not change without a SPEC edit |
@@ -50,6 +66,15 @@ v2 (501-stubbed) `SwitchEngineRequest`, `SearchResultDto`, `SearchResponse`.
 
 `SseEventEnvelope` (the `data:` JSON), `SseEventName` (`message`/`heartbeat`/`done`),
 `SseHeartbeat`. The SSE `id:` line carries `seq` for `Last-Event-ID` reconnect.
+
+## `communication.ts` — canonical communication contract
+
+`CommunicationEvent` is the one immutable project-level record behind chat,
+audit, and inbox projections. Its intent determines its structurally typed
+audience; collaboration uses a non-empty tuple of stable agent IDs. Projection,
+delivery, context-classification, and knowledge-promotion records reference the
+event ID and never mutate the original communication. Projection visibility and
+future-context eligibility are deliberately independent.
 
 ## `config.ts` / `logger.ts` — Node-only (subpath exports)
 

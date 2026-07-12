@@ -6,7 +6,11 @@ export { ThreadStore } from "./store.js";
 export type { MasterChatDeliveryIntent } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { openDb } from "./db.js";
-export { artifactContentPath, artifactsDir, attachmentPath, attachmentsDir, reactionEventsPath } from "./paths.js";
+export {
+  artifactContentPath, artifactsDir, attachmentPath, attachmentsDir,
+  reactionEventsPath, communicationEventsPath, communicationContextPath,
+  communicationProjectionsPath, knowledgePromotionsPath,
+} from "./paths.js";
 export type { Db } from "./db.js";
 
 export {
@@ -16,7 +20,7 @@ export {
 } from "./projectors.js";
 export type { ProjectionOp, ProjectionState } from "./projectors.js";
 
-export type { LogEvent, UserMessageEvent, StoredLogEvent } from "./log-event.js";
+export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, AgentLifecycleEvent, StoredLogEvent } from "./log-event.js";
 export * as schema from "./schema.js";
 export type {
   ProjectRow,

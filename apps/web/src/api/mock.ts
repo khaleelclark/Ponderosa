@@ -303,6 +303,20 @@ export const mockApi: PonderosaApi = {
     projects.push(project);
     return delay(project);
   },
+  getAgentHealth(projectId) {
+    const generatedAt = new Date().toISOString();
+    return delay({
+      scope: { type: "project" as const, id: projectId },
+      generatedAt,
+      agents: threads.filter((thread) => thread.projectId === projectId).map((thread) => {
+        const agentTasks = tasks[thread.id] ?? [];
+        const status = agentTasks.some((task) => task.status === "running") ? "running" as const
+          : agentTasks.some((task) => task.status === "waiting_approval") ? "waiting" as const
+            : agentTasks.length && agentTasks.every((task) => task.status === "done") ? "completed" as const : "idle" as const;
+        return { agentId: thread.id, childAgentIds: [], status, statusTimestamp: thread.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "task_waiting_approval" as const : status === "completed" ? "task_completed" as const : "no_active_work" as const };
+      }),
+    });
+  },
   listAgentPresets(projectId) { return delay(agentPresets.filter((preset) => preset.projectId === projectId)); },
   createAgentPreset(projectId, request) { const now = new Date().toISOString(); const preset: AgentPresetDto = { id: `preset-${Date.now()}`, projectId, ...request, enabled: request.enabled ?? true, createdAt: now, updatedAt: now }; agentPresets.push(preset); return delay(preset); },
   updateAgentPreset(id, patch) { const preset = agentPresets.find((item) => item.id === id); if (!preset) return Promise.reject(new Error("Preset not found")); Object.assign(preset, patch, { updatedAt: new Date().toISOString() }); return delay(preset); },
@@ -367,10 +381,11 @@ export const mockApi: PonderosaApi = {
   },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");
     const message = {
       id: "collaboration-message-" + Date.now(),
       masterChatId,
-      role: request.role ?? "user" as const,
+      role: "user" as const,
       text: request.text,
       createdAt: new Date().toISOString(),
     };
@@ -378,7 +393,7 @@ export const mockApi: PonderosaApi = {
       ...(collaborationMessages[masterChatId] ?? []),
       message,
     ];
-    return { message, audience: "none", notifiedAgentIds: [] };
+    return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
   },
   listSubagents() {
     return delay([]);
