@@ -22,6 +22,7 @@ export interface CollaborationDelivery {
   effort?: string;
   sourceChannel?: "main";
   replyToMessageId?: string;
+  attachmentIds?: string[];
   /** Canonical total-order key for messages sharing the same millisecond. */
   orderKey?: string;
   status: CollaborationDeliveryStatus;
@@ -31,6 +32,11 @@ export interface CollaborationDelivery {
   /** Number of recipient turns started for this delivery, including retries. */
   attempts?: number;
   failure?: string;
+}
+
+/** A fixed, canonical-order snapshot dispatched in one recipient agent turn. */
+export interface CollaborationDeliveryBatch {
+  deliveries: CollaborationDelivery[];
 }
 
 type Record =
@@ -147,6 +153,34 @@ export class CollaborationDeliveryStore {
       deliveredAt: new Date().toISOString(),
       attempts: (delivery.attempts ?? 0) + 1,
     }, "replace");
+  }
+
+  markBatchDelivered(ids: readonly string[]): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.markDelivered(id);
+      return delivery ? [delivery] : [];
+    });
+  }
+
+  requeueBatch(ids: readonly string[]): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.requeue(id);
+      return delivery ? [delivery] : [];
+    });
+  }
+
+  acknowledgeBatch(ids: readonly string[]): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.acknowledge(id);
+      return delivery ? [delivery] : [];
+    });
+  }
+
+  failBatch(ids: readonly string[], failure: string): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.fail(id, failure);
+      return delivery ? [delivery] : [];
+    });
   }
 
   requeue(id: string): CollaborationDelivery | undefined {

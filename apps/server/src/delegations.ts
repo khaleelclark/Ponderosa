@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   CancelSubagentResponse,
   AgentDelegationRequest,
+  AgentDelegationDispositionRequest,
   SubagentEventEnvelope,
   SubagentRunDto,
 } from "@ponderosa/core";
@@ -30,6 +31,8 @@ interface RunRecord extends SubagentRunDto {
   };
   requestHash: string;
   idempotencyKey: string;
+  dispositionIdempotencyKey?: string;
+  dispositionRequestHash?: string;
   /** Read only for backward compatibility with pre-bridge audit records. */
   registration?: LegacyRegistrationRecord;
 }
@@ -52,7 +55,7 @@ export class DelegationError extends Error {
 }
 
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
-const publicRun = ({ delegationPrompt: _prompt, model: _model, effort: _effort, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
+const publicRun = ({ delegationPrompt: _prompt, model: _model, effort: _effort, contextSnapshot: _snapshot, requestHash: _hash, idempotencyKey: _key, dispositionIdempotencyKey: _dispositionKey, dispositionRequestHash: _dispositionHash, registration: _reg, ...run }: RunRecord): SubagentRunDto => run;
 export const MAX_DELEGATION_DESCENDANTS = 100;
 export const MAX_CONCURRENT_DELEGATIONS = 100;
 
@@ -213,21 +216,50 @@ export class DelegationStore {
     };
   }
 
-  settle(runId: string, status: "completed" | "failed", message?: string): SubagentRunDto {
+  finishRuntime(runId: string, message?: string): SubagentRunDto {
     const run = this.runs.get(runId);
     if (!run) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
-    if (run.status === "cancelled" || run.status === "completed" || run.status === "failed") return publicRun(run);
+    if (run.status !== "running" && !(message && run.status === "queued")) return publicRun(run);
     const now = new Date().toISOString();
     const updated: RunRecord = {
       ...run,
-      status,
+      status: message ? "failed" : "awaiting_disposition",
+      canCancel: !message,
+      ...(message ? { finishedAt: now } : {}),
+      updatedAt: now,
+      version: run.version + 1,
+      ...(message
+        ? { failure: { code: "runtime_error", message, retryable: false, occurredAt: now } }
+        : {}),
+    };
+    this.persist(updated, "replace");
+    this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
+    return publicRun(updated);
+  }
+
+  declareDisposition(runId: string, input: AgentDelegationDispositionRequest): SubagentRunDto {
+    const run = this.runs.get(runId);
+    if (!run) throw new DelegationError("subagent_not_found", "subagent was not found", 404);
+    const requestHash = digest(JSON.stringify(input));
+    if (run.dispositionIdempotencyKey === input.idempotencyKey) {
+      if (run.dispositionRequestHash !== requestHash) throw new DelegationError("idempotency_conflict", "idempotency key was used with another disposition", 409);
+      return publicRun(run);
+    }
+    if (run.disposition) throw new DelegationError("lifecycle_conflict", "delegated objective already has a disposition", 409);
+    if (run.status !== "running" && run.status !== "awaiting_disposition") {
+      throw new DelegationError("lifecycle_conflict", "delegated objective cannot be disposed in its current state", 409);
+    }
+    const now = new Date().toISOString();
+    const updated: RunRecord = {
+      ...run,
+      status: input.outcome,
       canCancel: false,
       finishedAt: now,
       updatedAt: now,
       version: run.version + 1,
-      ...(status === "failed"
-        ? { failure: { code: "runtime_error", message: message ?? "delegated runtime failed", retryable: false, occurredAt: now } }
-        : {}),
+      disposition: { outcome: input.outcome, ...(input.message?.trim() ? { message: input.message.trim() } : {}), declaredAt: now },
+      dispositionIdempotencyKey: input.idempotencyKey,
+      dispositionRequestHash: requestHash,
     };
     this.persist(updated, "replace");
     this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });
@@ -278,7 +310,7 @@ export class DelegationStore {
     if (depth > 3) throw new DelegationError("depth_limit_exceeded", "delegation depth limit exceeded", 409);
     const rootRunId = parent?.rootRunId ?? input.parentRunId;
     const descendants = [...this.runs.values()].filter((run) => run.rootRunId === rootRunId);
-    const activeDescendants = descendants.filter((run) => run.status === "queued" || run.status === "running");
+    const activeDescendants = descendants.filter((run) => run.status === "queued" || run.status === "running" || run.status === "awaiting_disposition");
     if (activeDescendants.length >= MAX_CONCURRENT_DELEGATIONS) {
       throw new DelegationError("concurrency_limit_exceeded", "delegation concurrency limit exceeded", 409, true);
     }
@@ -348,7 +380,7 @@ export class DelegationStore {
     const affected = [...this.runs.values()].filter((run) => run.id === runId || this.isDescendant(run, runId));
     const now = new Date().toISOString();
     const results = affected.map((run) => {
-      const terminal = run.status === "completed" || run.status === "failed" || run.status === "cancelled";
+      const terminal = run.status === "completed" || run.status === "blocked" || run.status === "failed" || run.status === "cancelled";
       const updated: RunRecord = terminal ? run : { ...run, status: "cancelled", canCancel: false, finishedAt: now, updatedAt: now, version: run.version + 1 };
       if (!terminal) this.persist(updated, "replace");
       if (!terminal) this.emit(updated.masterChatId, { type: "subagent_updated", run: publicRun(updated) });

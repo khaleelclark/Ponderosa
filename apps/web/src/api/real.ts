@@ -99,6 +99,12 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
     });
   },
+  sendDirectReply(masterChatId, request) {
+    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/direct-replies`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
   async sendCollaborationMessage(masterChatId, request) {
     return requestJson<CreateCollaborationMessageResponse>("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
       method: "POST",

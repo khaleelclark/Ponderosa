@@ -19,6 +19,7 @@ class MockAdapter implements Adapter {
   mode: "normal" | "hang" | "boundary" | "resume_compaction_fail" | "material_compaction_fail" = "normal";
   responseText = "done";
   failuresRemaining = 0;
+  failNextTurn = false;
 
   listModels(): ModelOption[] {
     return [{ id: "mock-model", label: "Mock Model" }];
@@ -34,6 +35,12 @@ class MockAdapter implements Adapter {
     if (this.failuresRemaining > 0) {
       this.failuresRemaining -= 1;
       yield { type: "error", message: "simulated runtime failure" };
+      return;
+    }
+    if (this.failNextTurn) {
+      this.failNextTurn = false;
+      yield { type: "error", message: "transient runtime failure" };
+      yield { type: "turn_done" };
       return;
     }
     if (this.mode === "hang") {
@@ -74,6 +81,12 @@ class MockAdapter implements Adapter {
       yield { type: "session", sessionId: opts.resumeSessionId };
       yield { type: "command", command: "touch already-ran", cwd: opts.cwd };
       yield { type: "error", message: "codex exited with code 1: Failed to run pre-sampling compact" };
+      return;
+    }
+    if (this.failNextTurn) {
+      this.failNextTurn = false;
+      yield { type: "error", message: "transient runtime failure" };
+      yield { type: "turn_done" };
       return;
     }
     yield { type: "text", delta: `continued ${opts.resumeSessionId}` };
@@ -508,10 +521,11 @@ describe("server chunk F", () => {
     });
     await waitForRun(thread.id, 2);
 
-    expect(adapter.continues[0]?.prompt).not.toContain("Aspen: done");
-    expect(adapter.continues[0]?.prompt).not.toContain("Current master chat history:");
+    expect(adapter.continues[0]?.prompt).toContain("Aspen: done");
+    expect(adapter.continues[0]?.prompt).toContain("Manager: @Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).not.toContain("The main chat is manager-facing");
     expect(adapter.continues[0]?.prompt).not.toContain("PONDEROSA_DELEGATION_URL");
-    expect(adapter.continues[0]?.prompt).toContain("Reply with only the new manager-facing update or result.");
+    expect(adapter.continues[0]?.prompt).toContain("Context injection accounting: room_messages=2; room_characters=24");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n@Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("- tagged agents: @Aspen");
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
@@ -521,6 +535,99 @@ describe("server chunk F", () => {
       ]),
     );
     await app.close();
+  });
+
+  it("delivers only accepted-session room deltas and does not replay unchanged history", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Incremental room" });
+    store.appendMasterChatMessage(master.id, { text: "seed-only marker" });
+    const thread = store.createThread(project.id, { title: "Delta", engine: "codex", masterChatId: master.id });
+
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(thread.id);
+    expect(adapter.seeds[0]?.prompt).toContain("seed-only marker");
+    expect(adapter.seeds[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=16");
+
+    store.appendMasterChatMessage(master.id, { text: "delta marker" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delta", sourceChannel: "main" } });
+    await waitForRun(thread.id, 2);
+    expect(adapter.continues[0]?.prompt).toContain("delta marker");
+    expect(adapter.continues[0]?.prompt).not.toContain("seed-only marker");
+
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "unchanged", sourceChannel: "main" } });
+    await waitForRun(thread.id, 3);
+    expect(adapter.continues[1]?.prompt).toContain("Delta: continued sess-1");
+    expect(adapter.continues[1]?.prompt).toContain("room_messages=1; room_characters=16");
+    expect(adapter.continues[1]?.prompt).not.toContain("delta marker");
+    expect(adapter.continues[1]?.prompt).not.toContain("seed-only marker");
+    await app.close();
+  });
+
+  it("does not advance context after a failed turn and reseeds a changed session epoch", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Retry room" });
+    store.appendMasterChatMessage(master.id, { text: "original context" });
+    const thread = store.createThread(project.id, { title: "Retry", engine: "codex", masterChatId: master.id });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(thread.id);
+
+    store.appendMasterChatMessage(master.id, { text: "must redeliver" });
+    adapter.failNextTurn = true;
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "fails", sourceChannel: "main" } });
+    await waitForRun(thread.id, 2);
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "retry", sourceChannel: "main" } });
+    await waitForRun(thread.id, 3);
+    expect(adapter.continues[0]?.prompt).toContain("must redeliver");
+    expect(adapter.continues[1]?.prompt).toContain("must redeliver");
+
+    store.appendEvent(thread.id, { type: "session", sessionId: "sess-2" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "new epoch", sourceChannel: "main" } });
+    await waitForRun(thread.id, 4);
+    expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
+    expect(adapter.continues[2]?.prompt).toContain("original context");
+    expect(adapter.continues[2]?.prompt).toContain("The main chat is manager-facing");
+    await app.close();
+  });
+
+  it("keeps incremental cursors isolated by visible master room", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const first = store.createMasterChat(project.id, { title: "First" });
+    const second = store.createMasterChat(project.id, { title: "Second" });
+    store.appendMasterChatMessage(first.id, { text: "first-room secret" });
+    store.appendMasterChatMessage(second.id, { text: "second-room secret" });
+    const thread = store.createThread(project.id, { title: "Rooms", engine: "codex", masterChatId: first.id });
+    store.updateThreadMasterChatMemberships(thread.id, { masterChatIds: [first.id, second.id], primaryMasterChatId: first.id });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceMasterChatId: first.id } });
+    await waitForRun(thread.id);
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceMasterChatId: second.id } });
+    await waitForRun(thread.id, 2);
+    expect(adapter.continues[0]?.prompt).toContain("second-room secret");
+    expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
+    expect(adapter.continues[0]?.prompt).toContain("The main chat is manager-facing");
+    await app.close();
+  });
+
+  it("preserves accepted context cursors across a server restart", async () => {
+    const firstApp = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Restart room" });
+    store.appendMasterChatMessage(master.id, { text: "before-restart marker" });
+    const thread = store.createThread(project.id, { title: "Restart", engine: "codex", masterChatId: master.id });
+    await firstApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(thread.id);
+    await firstApp.close();
+
+    store = new ThreadStore(dataDir);
+    store.appendMasterChatMessage(master.id, { text: "after-restart marker" });
+    const secondApp = createServer({ dataDir, store, engines, logger: false });
+    await secondApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "resume", sourceChannel: "main" } });
+    await waitForRun(thread.id, 2);
+    expect(adapter.continues[0]?.prompt).toContain("after-restart marker");
+    expect(adapter.continues[0]?.prompt).not.toContain("before-restart marker");
+    await secondApp.close();
   });
 
   it("starts a new master-chat agent with its initial message in the creation request", async () => {
@@ -822,6 +929,33 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("rejects a broadcast when the authenticated agent is no longer a current room member", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Membership room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    store.updateThreadMasterChatMemberships(author.id, { masterChatIds: [] });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { channel: "collaboration", text: "@everyone should not receive this.", idempotencyKey: "removed-author" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toHaveLength(0);
+    expect(store.getMessages(reviewer.id)).toHaveLength(0);
+    expect(store.getMasterChatDeliveryIntents(master.id)).toHaveLength(0);
+    await cancelAndWait(app, author.id);
+    await app.close();
+  });
+
   it("expires an agent messaging capability when its run ends", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -981,14 +1115,14 @@ describe("server chunk F", () => {
     });
 
     // The recipient is still in a tool-like wait. Cancellation must not consume
-    // its queued tags; all three start as separate FIFO continuation turns.
+    // its queued tags; all three enter one lossless FIFO continuation turn.
     adapter.mode = "normal";
     await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
-    await waitForRun(parent.id, 3);
-    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(3);
-    expect(store.getMessages(parent.id).filter((message) => message.role === "user").map((message) => message.text)).toEqual(
-      expect.arrayContaining(["@Parent first completed result", "@Parent second completed result", "@Parent third completed result"]),
-    );
+    await waitForRun(parent.id);
+    const batchPrompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
+    expect(batchPrompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
+    expect(batchPrompt.indexOf("@Parent first completed result")).toBeLessThan(batchPrompt.indexOf("@Parent second completed result"));
+    expect(batchPrompt.indexOf("@Parent second completed result")).toBeLessThan(batchPrompt.indexOf("@Parent third completed result"));
     expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text === "@Parent first completed result")).toHaveLength(1);
     await cancelAndWait(app, child.id);
     await app.close();
@@ -1007,18 +1141,14 @@ describe("server chunk F", () => {
       app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Parent result one" } }),
       app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Parent result two" } }),
     ]);
-    await waitForRun(parent.id, 3);
-    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(2);
-    expect(adapter.continues.map((turn) => turn.prompt)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("Latest message for you:\n@Parent result one"),
-        expect.stringContaining("Latest message for you:\n@Parent result two"),
-      ]),
-    );
+    await waitForRun(parent.id, 2);
+    const prompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
+    expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
+    expect(prompt.indexOf("@Parent result one")).toBeLessThan(prompt.indexOf("@Parent result two"));
     await app.close();
   });
 
-  it("automatically records and delivers a delegated completion to its active parent", async () => {
+  it("keeps a delegated objective awaiting disposition after turn_done without notifying its parent", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Completion delivery" });
@@ -1039,20 +1169,36 @@ describe("server chunk F", () => {
     const run = delegated.json<{ run: { id: string; childThreadId: string } }>().run;
     await waitForRun(run.childThreadId);
     expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
-      expect.objectContaining({ id: run.id, status: "completed", completionDelivery: expect.objectContaining({ status: "queued" }) }),
-    ]);
-
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
-    await waitForRun(parent.id, 1);
-    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(1);
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
-      expect.objectContaining({ id: run.id, completionDelivery: expect.objectContaining({ status: "acknowledged" }) }),
+      expect.objectContaining({ id: run.id, status: "awaiting_disposition", canCancel: true }),
     ]);
     const completionMessage = store.getCollaborationChatDetail(master.id)?.messages.find(
       (message) => message.text.includes("Delegated task “Research” completed"),
     );
-    expect(completionMessage?.text).toContain("@Parent, the result is ready");
-    expect(completionMessage?.text).not.toContain("has been notified");
+    expect(completionMessage).toBeUndefined();
+    expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(0);
+    await app.close();
+  });
+
+  it("accepts an authenticated explicit completion exactly once and notifies the parent", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Explicit outcome" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Delegate." } });
+    await waitForSeedCount(1);
+    const parentToken = adapter.seeds[0]!.environment!.PONDEROSA_DELEGATION_TOKEN;
+    const delegated = await app.inject({ method: "POST", url: "/api/agent-delegations", headers: { authorization: `Bearer ${parentToken}` }, payload: { displayLabel: "Research", delegationPrompt: "Finish.", runtime: "codex", idempotencyKey: "explicit-1" } });
+    const run = delegated.json<{ run: { id: string; childThreadId: string } }>().run;
+    await waitForSeedCount(2);
+    const outcomeToken = adapter.seeds.find((seed) => seed.threadId === run.childThreadId)!.environment!.PONDEROSA_DELEGATION_TOKEN;
+    const payload = { outcome: "completed", message: "Verified result.", idempotencyKey: "outcome-1" };
+    const first = await app.inject({ method: "POST", url: "/api/agent-delegation-outcomes", headers: { authorization: `Bearer ${outcomeToken}` }, payload });
+    const duplicate = await app.inject({ method: "POST", url: "/api/agent-delegation-outcomes", headers: { authorization: `Bearer ${outcomeToken}` }, payload });
+    expect(first.statusCode).toBe(200);
+    expect(duplicate.statusCode).toBe(200);
+    expect(first.json().run).toEqual(expect.objectContaining({ status: "completed", disposition: expect.objectContaining({ outcome: "completed" }) }));
+    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text.includes("Delegated task “Research” completed"))).toHaveLength(1);
     await app.close();
   });
 
@@ -1139,14 +1285,99 @@ describe("server chunk F", () => {
 
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
-    await waitForRun(parent.id, 2);
+    await waitForRun(parent.id);
 
-    expect(adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
-      "Latest message for you:\n@Parent interrupted first result",
+    const prompt = adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
+    expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
+    expect(prompt.indexOf("@Parent interrupted first result")).toBeLessThan(prompt.indexOf("@Parent queued second result"));
+    await app.close();
+  });
+
+  it("dispatches a fixed, exact collaboration batch and leaves in-flight arrivals for the next turn", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Batch room" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
+    const author = store.createThread(project.id, { title: "Mesa Author", engine: "codex", masterChatId: master.id });
+    const deliveries = new CollaborationDeliveryStore(dataDir);
+    const firstAt = "2026-07-11T10:00:00.000Z";
+    const secondAt = "2026-07-11T10:00:01.000Z";
+    const queue = (messageId: string, targetThreadId: string, text: string, createdAt: string) => deliveries.queue({
+      masterChatId: master.id,
+      messageId,
+      targetThreadId,
+      authorThreadId: author.id,
+      text,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "tag",
+      createdAt,
+      orderKey: createdAt,
+    }).delivery;
+    const first = queue("batch-first", parent.id, "first exact\nline two", firstAt);
+    const second = queue("batch-second", parent.id, "second exact", secondAt);
+    const isolated = queue("batch-other", other.id, "other recipient only", firstAt);
+
+    adapter.mode = "boundary";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForSeedCount(2);
+    await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "@Parent arrived during active batch" },
+    });
+    await waitForRun(parent.id, 2);
+    await waitForRun(other.id);
+
+    const parentTurns = [
+      ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
+      ...adapter.continues.filter((turn) => turn.threadId === parent.id),
+    ];
+    expect(parentTurns).toHaveLength(2);
+    expect(parentTurns[0]?.prompt).toContain(
+      `Author: Mesa Author (@Mesa-Author, thread ${author.id})\nUTC timestamp: ${firstAt}\nOriginal message (exact):\nfirst exact\nline two`,
     );
-    expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
-      "Latest message for you:\n@Parent queued second result",
-    );
+    expect(parentTurns[0]?.prompt).toContain(`UTC timestamp: ${secondAt}\nOriginal message (exact):\nsecond exact`);
+    expect(parentTurns[0]?.prompt).not.toContain("arrived during active batch");
+    expect(parentTurns[1]?.prompt).toContain("@Parent arrived during active batch");
+    expect(adapter.seeds.find((turn) => turn.threadId === other.id)?.prompt).toContain("other recipient only");
+    expect(parentTurns.every((turn) => !turn.prompt.includes("other recipient only"))).toBe(true);
+
+    const persisted = new CollaborationDeliveryStore(dataDir);
+    expect([first.id, second.id, isolated.id].map((id) => persisted.get(id)?.status)).toEqual([
+      "acknowledged",
+      "acknowledged",
+      "acknowledged",
+    ]);
+    await app.close();
+  });
+
+  it("retries every unacknowledged batch member after a shared runtime failure", async () => {
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Batch retry" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const deliveries = new CollaborationDeliveryStore(dataDir);
+    const ids = ["one", "two"].map((text, index) => deliveries.queue({
+      masterChatId: master.id,
+      messageId: `retry-${text}`,
+      targetThreadId: parent.id,
+      text,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "tag",
+      createdAt: `2026-07-11T10:00:0${index}.000Z`,
+    }).delivery.id);
+    adapter.failNextTurn = true;
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    await waitForRun(parent.id, 2);
+    const turns = [...adapter.seeds, ...adapter.continues].filter((turn) => turn.threadId === parent.id);
+    expect(turns).toHaveLength(2);
+    expect(turns.every((turn) => turn.prompt.includes("Original message (exact):\none") && turn.prompt.includes("Original message (exact):\ntwo"))).toBe(true);
+    const persisted = new CollaborationDeliveryStore(dataDir);
+    expect(ids.map((id) => persisted.get(id)?.status)).toEqual(["acknowledged", "acknowledged"]);
     await app.close();
   });
 
@@ -1261,13 +1492,15 @@ describe("server chunk F", () => {
 
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
-    await waitForRun(parent.id, 2);
+    await waitForRun(parent.id);
     const turns = [
       ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
       ...adapter.continues.filter((turn) => turn.threadId === parent.id),
     ];
-    expect(turns[0]?.prompt).toContain("Latest message for you:\n@Parent older message missing its inbox write");
-    expect(turns[1]?.prompt).toContain("Latest message for you:\n@Parent newer message already queued");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.prompt.indexOf("@Parent older message missing its inbox write")).toBeLessThan(
+      turns[0]?.prompt.indexOf("@Parent newer message already queued") ?? -1,
+    );
     await app.close();
   });
 
@@ -1349,7 +1582,7 @@ describe("server chunk F", () => {
     }, true, [], parent.id);
     delegations.bindChildThread(spawned.run.id, child.id);
     delegations.claim(spawned.run.id);
-    delegations.settle(spawned.run.id, "completed");
+    delegations.declareDisposition(spawned.run.id, { outcome: "completed", idempotencyKey: "crash-outcome" });
     store.appendMasterChatMessage(
       master.id,
       { role: "system", text: "✅ Delegated task “Crash completion” completed. @Parent, the result is ready." },
@@ -1445,7 +1678,7 @@ describe("server chunk F", () => {
     await waitForRun(queuedThread.id);
     const runs = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ id: string; status: string; failure?: { retryable: boolean } }>>();
     expect(runs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: queued.run.id, status: "completed" }),
+      expect.objectContaining({ id: queued.run.id, status: "awaiting_disposition" }),
       expect.objectContaining({ id: interrupted.run.id, status: "failed", failure: expect.objectContaining({ retryable: true }) }),
     ]));
     await app.close();
@@ -1574,8 +1807,10 @@ describe("server chunk F", () => {
     );
 
     await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id, 51);
-    expect(adapter.continues).toHaveLength(51);
+    await waitForRun(reviewer.id);
+    const reviewerTurns = adapter.continues.filter((turn) => turn.threadId === reviewer.id);
+    expect(reviewerTurns).toHaveLength(1);
+    expect(reviewerTurns[0]?.prompt).toContain("CollaborationDeliveryBatch (51 deliveries; canonical server order)");
     await app.close();
   });
 
@@ -1987,6 +2222,160 @@ describe("server chunk F", () => {
     expect(adapter.continues.at(-1)?.prompt).toContain("Original question");
     expect(store.getMessages(thread.id).find((message) => message.text === "Specific answer")?.replyTo?.messageId).toBe(original.id);
     await waitForRun(thread.id);
+    await app.close();
+  });
+
+  it("delivers Reply Directly once and replays a stable receipt", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "direct.png" },
+      payload: png,
+    });
+    expect(upload.statusCode).toBe(201);
+    const attachmentId = upload.json<{ id: string }>().id;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ replayed: false, targetAuthorThreadId: author.id });
+    await waitForRun(author.id);
+
+    const replayed = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
+    });
+    expect(replayed.statusCode).toBe(200);
+    expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
+    expect(store.getMessages(author.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
+    expect(store.getMasterChatMessages(master.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    expect(store.getMessages(author.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    const conflict = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Changed payload", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-1" },
+    });
+    expect(conflict.statusCode).toBe(409);
+
+    const concurrentPayload = { text: "Concurrent follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-concurrent" };
+    const concurrent = await Promise.all([
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload }),
+      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload }),
+    ]);
+    expect(concurrent.some((response) => response.statusCode === 200)).toBe(true);
+    const concurrentReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload });
+    expect(concurrentReplay.json()).toMatchObject({ replayed: true });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === concurrentPayload.text)).toHaveLength(1);
+    await waitForRun(author.id, 2);
+
+    const spoofed = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Wrong target", replyToMessageId: report.id, targetAuthorThreadId: other.id, idempotencyKey: "reply-2" },
+    });
+    expect(spoofed.statusCode).toBe(400);
+    expect(spoofed.json()).toMatchObject({ error: expect.stringMatching(/must be the author/) });
+    await app.close();
+  });
+
+  it("repairs a same-process direct-reply crash window and double replay without duplicates or spawning", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Recovery room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "recovered.png" },
+      payload: png,
+    });
+    const attachmentId = upload.json<{ id: string }>().id;
+    const receiptKey = `direct-reply:${master.id}:crash-window`;
+    const canonical = store.appendMasterChatMessage(
+      master.id,
+      { text: "Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id, attachments: [upload.json()] },
+      undefined,
+      "main",
+      [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+      receiptKey,
+    )!;
+    const threadCount = store.listThreads(project.id).length;
+    const payload = { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "crash-window" };
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    const secondReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    await waitForRun(author.id);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
+    expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
+    expect(store.getMessages(author.id).find((message) => message.text === "Recovered follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    expect(store.listThreads(project.id)).toHaveLength(threadCount);
+    await app.close();
+  });
+
+  it("returns a truthful retryable failure when a canonical direct reply has no persisted delivery intent", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Incomplete recovery room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    store.appendMasterChatMessage(
+      master.id,
+      { text: "Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
+      undefined,
+      "main",
+      undefined,
+      `direct-reply:${master.id}:missing-intent`,
+    );
+
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-replies`,
+      payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "missing-intent" },
+    });
+    expect(replay.statusCode).toBe(503);
+    expect(replay.json()).toMatchObject({ retryable: true, error: expect.stringMatching(/intent is unavailable/) });
+    expect(replay.json()).not.toHaveProperty("replayed");
+    expect(store.getMessages(author.id).filter((message) => message.text === "Incomplete follow up")).toHaveLength(0);
+    await app.close();
+  });
+
+  it("queues one direct reply for a busy author and deduplicates retries", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Busy room" });
+    const author = store.createThread(project.id, { title: "Busy author", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Working" }, author.id)!;
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Current work" } });
+    await waitForSeedCount(1);
+
+    const payload = { text: "Queued follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "busy-reply" };
+    const first = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    const retry = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    expect(first.json()).toMatchObject({ replayed: false, queued: true });
+    expect(retry.json()).toMatchObject({ replayed: true, queued: true, messageId: first.json<{ messageId: string }>().messageId });
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+
+    adapter.mode = "normal";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
+    for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
+    expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
     await app.close();
   });
 });

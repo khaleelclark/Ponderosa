@@ -126,7 +126,7 @@ export interface MasterChatDeliveryIntent {
   targetThreadId: string;
   relayDepth: number;
   mentionTrail: string[];
-  kind: "tag" | "delegation_completion";
+  kind: "direct" | "tag" | "delegation_completion";
   /** The selector that authorized this recipient when the message was recorded. */
   audience?: "mention" | "everyone";
   delegatedRunId?: string;
@@ -144,6 +144,7 @@ interface MasterChatMessageJson {
   messageReceiptKey?: string;
   deliveryOrderKey?: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
+  directReplyToAuthorThreadId?: string;
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
@@ -405,7 +406,7 @@ export class ThreadStore {
 
   appendMasterChatMessage(
     masterChatId: string,
-    input: CreateMasterChatMessageRequest,
+    input: CreateMasterChatMessageRequest & { directReplyToAuthorThreadId?: string },
     authorThreadId?: string,
     channel: MasterChatChannel = "main",
     deliveryIntents?: MasterChatDeliveryIntent[],
@@ -417,6 +418,18 @@ export class ThreadStore {
     const messagePath = channel === "collaboration"
       ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
       : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId);
+    const replyTo = input.replyToMessageId
+      ? this.masterChatReference(masterChatId, channel, input.replyToMessageId)
+      : undefined;
+    if (input.directReplyToAuthorThreadId) {
+      if (channel !== "main" || !replyTo || replyTo.authorThreadId !== input.directReplyToAuthorThreadId) {
+        throw new Error("direct reply target must be the author of the referenced main-chat message");
+      }
+      const target = this.getThread(input.directReplyToAuthorThreadId);
+      if (!target || target.archived || !target.masterChatIds.includes(masterChatId)) {
+        throw new Error("direct reply target is not an active agent in this master chat");
+      }
+    }
     const message: MasterChatMessageJson = {
       id: randomUUID(),
       masterChatId,
@@ -425,9 +438,8 @@ export class ThreadStore {
       createdAt: now,
       authorThreadId: authorThreadId ?? null,
       channel,
-      ...(input.replyToMessageId
-        ? { replyTo: this.masterChatReference(masterChatId, channel, input.replyToMessageId) }
-        : {}),
+      ...(replyTo ? { replyTo } : {}),
+      ...(input.directReplyToAuthorThreadId ? { directReplyToAuthorThreadId: input.directReplyToAuthorThreadId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
@@ -480,9 +492,11 @@ export class ThreadStore {
   }> {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return [];
-    return readJsonLines<MasterChatMessageJson>(
-      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
-    ).flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
+    const messages = [
+      ...readJsonLines<MasterChatMessageJson>(masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)),
+      ...readJsonLines<MasterChatMessageJson>(collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)),
+    ];
+    return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
       message: {
         id: message.id,
         masterChatId: message.masterChatId,
@@ -490,11 +504,31 @@ export class ThreadStore {
         text: message.text,
         createdAt: message.createdAt,
         authorThreadId: message.authorThreadId ?? undefined,
+        replyTo: message.replyTo,
+        attachments: message.attachments,
       },
       intent,
       messageReceiptKey: message.messageReceiptKey,
       deliveryOrderKey: message.deliveryOrderKey ?? `${message.createdAt}:${String(0).padStart(12, "0")}`,
     })));
+  }
+
+  getMasterChatMessageByReceiptKey(masterChatId: string, receiptKey: string): MasterChatMessageDto | undefined {
+    const masterChat = this.getMasterChat(masterChatId);
+    if (!masterChat) return undefined;
+    const message = readJsonLines<MasterChatMessageJson>(
+      masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+    ).find((candidate) => candidate.messageReceiptKey === receiptKey);
+    return message ? {
+      id: message.id,
+      masterChatId: message.masterChatId,
+      role: message.role,
+      text: message.text,
+      createdAt: message.createdAt,
+      authorThreadId: message.authorThreadId ?? undefined,
+      replyTo: message.replyTo,
+      attachments: message.attachments,
+    } : undefined;
   }
 
   getMasterChatMessageDeliveryOrderKey(masterChatId: string, messageId: string): string | undefined {

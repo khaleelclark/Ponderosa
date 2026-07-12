@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath } from "../src/paths.js";
+import { artifactContentPath, masterChatMessagesPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -275,6 +275,43 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
     expect(store.getMasterChatMessages(master.id)[1]?.replyTo).toMatchObject({ messageId: first.id, text: "Original context" });
     expect(store.getMessages(thread.id)[1]?.replyTo).toMatchObject({ text: "Thread original" });
     expect(() => store.appendMasterChatMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
+  });
+
+  it("records direct replies only for the referenced active agent author", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Done" }, author.id)!;
+    const managerMessage = store.appendMasterChatMessage(master.id, { text: "Manager note" })!;
+
+    const direct = store.appendMasterChatMessage(master.id, {
+      text: "Please revise",
+      replyToMessageId: report.id,
+      directReplyToAuthorThreadId: author.id,
+    }, undefined, "main", [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }], "direct-receipt")!;
+    expect(direct.replyTo?.authorThreadId).toBe(author.id);
+    expect(store.getMasterChatMessageByReceiptKey(master.id, "direct-receipt")?.id).toBe(direct.id);
+    expect(store.getMasterChatDeliveryIntents(master.id)).toMatchObject([{ message: { id: direct.id }, intent: { kind: "direct", targetThreadId: author.id }, messageReceiptKey: "direct-receipt" }]);
+    expect(readFileSync(masterChatMessagesPath(dir, project.id, master.id), "utf8"))
+      .toContain(`"directReplyToAuthorThreadId":"${author.id}"`);
+    expect(() => store.appendMasterChatMessage(master.id, {
+      text: "Spoofed",
+      replyToMessageId: report.id,
+      directReplyToAuthorThreadId: other.id,
+    })).toThrow(/must be the author/);
+    expect(() => store.appendMasterChatMessage(master.id, {
+      text: "No agent author",
+      replyToMessageId: managerMessage.id,
+      directReplyToAuthorThreadId: author.id,
+    })).toThrow(/must be the author/);
+
+    store.updateThread(author.id, { archived: true });
+    expect(() => store.appendMasterChatMessage(master.id, {
+      text: "Archived",
+      replyToMessageId: report.id,
+      directReplyToAuthorThreadId: author.id,
+    })).toThrow(/not an active agent/);
   });
 });
 
