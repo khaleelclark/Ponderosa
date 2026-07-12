@@ -49,6 +49,10 @@ export function agentStatusLabel(status: AgentStatus): string {
   switch (status) {
     case "running":
       return "Running";
+    case "stalled":
+      return "Stalled";
+    case "interrupted":
+      return "Interrupted";
     case "waiting":
       return "Waiting";
     case "completed":
@@ -79,6 +83,8 @@ export function agentStatusColor(
       return "success";
     case "blocked":
     case "failed":
+    case "stalled":
+    case "interrupted":
       return "error";
     default:
       return "default";

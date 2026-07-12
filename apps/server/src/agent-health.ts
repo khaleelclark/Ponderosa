@@ -1,7 +1,7 @@
 import type { AgentHealthDto, AgentHealthProjectionDto, AgentLifecycleReason, AgentLifecycleStatus, SubagentRunDto, ThreadDto } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/threads";
 
-export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string }
+export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface QueuedDeliveryObservation { createdAt: string }
 export interface AgentHealthProjectionInput {
   scope: AgentHealthProjectionDto["scope"];
@@ -66,6 +66,8 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const parentAgentId = run?.parentThreadId && threadIds.has(run.parentThreadId) ? run.parentThreadId : undefined;
     let observation: StatusObservation;
     if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
+    else if (active?.ownershipState === "stalled") observation = { status: "stalled", statusTimestamp: active.startedAt, reason: "runtime_event_consumer_stalled" };
+    else if (active?.ownershipState === "interrupted") observation = { status: "interrupted", statusTimestamp: active.startedAt, reason: "execution_interrupted" };
     else if (active?.leaseExpiresAt && active.leaseExpiresAt < (input.now ?? new Date().toISOString())) {
       observation = { status: "blocked", statusTimestamp: active.leaseExpiresAt, reason: "execution_lease_expired" };
     }
@@ -81,6 +83,8 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       ...observation,
       ...(active?.executionId ? { executionId: active.executionId } : {}),
       ...(active?.leaseExpiresAt ? { leaseExpiresAt: active.leaseExpiresAt } : {}),
+      ...(active?.ownershipState && ["running", "stalled", "cancelling", "interrupted"].includes(active.ownershipState)
+        ? { runtimeOwnership: active.ownershipState as "running" | "stalled" | "cancelling" | "interrupted" } : {}),
     };
   });
   return { scope: input.scope, generatedAt: input.now ?? new Date().toISOString(), agents: agents.sort((a, b) => a.agentId.localeCompare(b.agentId)) };

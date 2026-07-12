@@ -11,6 +11,22 @@ import { parseJsonlChunks } from "./jsonl.js";
 /** A minimal spawn signature so tests can inject a fake CLI. */
 export type SpawnFn = typeof nodeSpawn;
 
+export interface ProcessStreamSnapshot {
+  pid?: number;
+  pgid?: number;
+  parentPid: number;
+  exitCode: number | null;
+  stdinOpen: boolean;
+  stdoutOpen: boolean;
+  stderrOpen: boolean;
+}
+
+export interface RuntimeProcessFaults {
+  afterDecodeBeforeYield?: (raw: unknown, child: ProcessStreamSnapshot) => void | Promise<void>;
+  /** Test-only: keep the fake runtime's stdin connected after writing its prompt. */
+  keepStdinOpen?: boolean;
+}
+
 export interface StreamProcessOptions {
   bin: string;
   args: string[];
@@ -26,6 +42,7 @@ export interface StreamProcessOptions {
   label: string;
   /** Optional stdin payload. Use this for unbounded user/context text, never argv. */
   stdin?: string;
+  faults?: RuntimeProcessFaults;
 }
 
 /**
@@ -47,6 +64,7 @@ export async function* streamProcess(
     map,
     label,
     stdin,
+    faults,
   } = opts;
 
   if (signal.aborted) {
@@ -69,7 +87,8 @@ export async function* streamProcess(
   // the process exit/spawn error below remains the canonical error signal.
   if (stdin !== undefined && child.stdin) {
     child.stdin.on("error", () => undefined);
-    child.stdin.end(stdin);
+    if (faults?.keepStdinOpen) child.stdin.write(stdin);
+    else child.stdin.end(stdin);
   }
 
   let stderrTail = "";
@@ -99,6 +118,7 @@ export async function* streamProcess(
     if (stdout) {
       stdout.setEncoding("utf8");
       for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
+        await faults?.afterDecodeBeforeYield?.(raw, processSnapshot(child));
         for (const ev of map(raw, { cwd })) {
           yield ev;
         }
@@ -122,6 +142,17 @@ export async function* streamProcess(
     signal.removeEventListener("abort", onAbort);
     if (killTimer) clearTimeout(killTimer);
   }
+}
+
+function processSnapshot(child: ChildProcess): ProcessStreamSnapshot {
+  return {
+    ...(child.pid ? { pid: child.pid, ...(process.platform !== "win32" ? { pgid: child.pid } : {}) } : {}),
+    parentPid: process.pid,
+    exitCode: child.exitCode,
+    stdinOpen: Boolean(child.stdin && !child.stdin.destroyed),
+    stdoutOpen: Boolean(child.stdout && !child.stdout.destroyed),
+    stderrOpen: Boolean(child.stderr && !child.stderr.destroyed),
+  };
 }
 
 /** Signal the entire run, including commands spawned by the agent CLI. */

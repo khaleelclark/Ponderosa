@@ -22,7 +22,7 @@ import type {
   SeedOptions,
 } from "@ponderosa/core";
 import { mapCodexEvent } from "./events.js";
-import { streamProcess, type SpawnFn } from "./process.js";
+import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
 
 export type { SpawnFn };
 
@@ -41,6 +41,7 @@ export interface CodexAdapterOptions {
   killGraceMs?: number;
   /** Override the CLI model cache path. Primarily useful for tests. */
   modelsCachePath?: string;
+  processFaults?: RuntimeProcessFaults;
 }
 
 // Model availability differs by Codex version, account type, and subscription.
@@ -124,6 +125,7 @@ export class CodexAdapter implements Adapter {
   private readonly sandboxMode: string;
   private readonly killGraceMs: number;
   private readonly modelsCachePath: string;
+  private readonly processFaults?: RuntimeProcessFaults;
 
   constructor(opts: CodexAdapterOptions = {}) {
     this.bin = opts.bin ?? "codex";
@@ -133,6 +135,7 @@ export class CodexAdapter implements Adapter {
     this.killGraceMs = opts.killGraceMs ?? 3000;
     const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
     this.modelsCachePath = opts.modelsCachePath ?? path.join(codexHome, "models_cache.json");
+    this.processFaults = opts.processFaults;
   }
 
   listModels(): ModelOption[] {
@@ -200,6 +203,7 @@ export class CodexAdapter implements Adapter {
       map: mapCodexEvent,
       label: "codex",
       stdin,
+      faults: this.processFaults,
     });
   }
 }

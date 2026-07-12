@@ -215,8 +215,9 @@ the thread event log remains canonical for the child agent's work and subsequent
 turns. The raw delegation prompt is not copied into the public thread history.
 
 Manager-facing supervision uses one shared lifecycle vocabulary: `idle`,
-`running`, `waiting`, `blocked`, `compacting`, `cancelled`, `completed`, and
-`failed`. Project- and master-chat-scoped health are server-owned projections over
+`running`, `stalled`, `interrupted`, `waiting`, `blocked`, `compacting`,
+`cancelled`, `completed`, and `failed`. Project- and master-chat-scoped health are
+server-owned projections over
 active runs, delegation lineage, durable queued delivery, and canonical task/error
 events; clients do not infer status or emit heartbeat chat messages. Every result
 contains the stable thread/agent ID, direct parent/child IDs where recorded,
@@ -225,6 +226,14 @@ the bounded interval after an active agent schedules session rollover and before
 that run closes; synchronous idle-thread reset does not fabricate an interval.
 Ordinary cancellation appends a canonical lifecycle event so it remains visible
 after the process and its in-memory run record disappear.
+
+Each runtime turn mirrors the authoritative in-memory `ActiveRun` CAS into an
+append-only per-thread claim with a unique run ID and monotonically increasing
+generation. Every runtime event append and final cleanup must still own both the
+same object identity and durable generation. Startup rebuild marks unfinished
+claims `interrupted`; received-but-unpersisted activity is exposed as `stalled`.
+PID, process-group, and start-fingerprint fields are reserved for the later
+supervisor and do not imply orphan detection in this phase.
 
 ### Asynchronous delegated results and collaboration delivery
 
@@ -246,10 +255,11 @@ key, so a repeated request returns the original message and does not enqueue a
 second handoff.
 
 On server startup, persisted `queued` deliveries resume automatically. A
-`delivered` record without an acknowledgement is treated as an interrupted turn,
-returned to `queued`, and retried in the recipient's original FIFO order. This is
-an at-least-once recovery boundary: runtime prompts must tolerate a replay after a
-process failure, while transport retries remain idempotent by message receipt.
+`delivered` record without an acknowledgement and without an interrupted run
+claim returns to `queued` in FIFO order. A delivery attached to an interrupted
+runtime claim is retained for explicit recovery and never automatically replayed,
+because its earlier prompt may already have produced external side effects.
+Transport retries before runtime ownership remain idempotent by message receipt.
 Canonical collaboration messages store their resolved recipient intents in the
 same append. Startup recreates any missing inbox record from those intents,
 closing the crash window between message persistence and inbox persistence
@@ -279,8 +289,8 @@ deduplicated by recipient. The resolved intent records whether it came from an
 individual mention or `@everyone`, and the delivery ledger's `(message, target)`
 key makes retries idempotent while retaining queued/delivered/acknowledged/failed
 audit transitions. Recipient selection and inbox identity are deduplicated;
-runtime execution remains at-least-once because an interrupted, unacknowledged
-delivery is safely requeued after restart. Reconciliation skips recipients that
+runtime execution is generation-fenced; interrupted runtime delivery requires
+explicit recovery instead of prompt replay. Reconciliation skips recipients that
 were deleted, archived, or removed from the room after the canonical message was
 recorded. `@everyone` has no routing authority in main or individual chat.
 Delegation depth is lineage metadata only; collaboration relay depth and its

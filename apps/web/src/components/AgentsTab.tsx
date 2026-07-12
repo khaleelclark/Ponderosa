@@ -136,7 +136,7 @@ export function AgentsTab({
       counts[status] += 1;
       return counts;
     },
-    { running: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
+    { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
 
   return (
@@ -165,9 +165,11 @@ export function AgentsTab({
           useFlexGap
           flexWrap="wrap"
           role="status"
-          aria-label={`${statusCounts.running} running, ${statusCounts.waiting} waiting, ${statusCounts.compacting} compacting, ${statusCounts.blocked} blocked, ${statusCounts.failed} failed, ${statusCounts.cancelled} cancelled, ${statusCounts.completed} completed`}
+          aria-label={`${statusCounts.running} running, ${statusCounts.stalled} stalled, ${statusCounts.interrupted} interrupted, ${statusCounts.waiting} waiting, ${statusCounts.compacting} compacting, ${statusCounts.blocked} blocked, ${statusCounts.failed} failed, ${statusCounts.cancelled} cancelled, ${statusCounts.completed} completed`}
         >
           <Chip size="small" color="info" label={`${statusCounts.running} running`} />
+          {statusCounts.stalled ? <Chip size="small" color="error" label={`${statusCounts.stalled} stalled`} /> : null}
+          {statusCounts.interrupted ? <Chip size="small" color="error" label={`${statusCounts.interrupted} interrupted`} /> : null}
           <Chip size="small" color="warning" label={`${statusCounts.waiting} waiting`} />
           {statusCounts.compacting ? <Chip size="small" color="info" label={`${statusCounts.compacting} compacting`} /> : null}
           {statusCounts.blocked ? <Chip size="small" color="error" label={`${statusCounts.blocked} blocked`} /> : null}
