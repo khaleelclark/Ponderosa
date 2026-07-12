@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, ModelOption, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
 import { createServer, type EngineRegistration } from "../src/app.js";
+import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 class LeaseAdapter implements Adapter {
   id = "codex";
@@ -154,7 +155,8 @@ describe("enforced execution leases", () => {
     const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
     const app = server();
     const queued = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "@Agent queued follow-up" },
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "queued follow-up", recipientAgentIds: [thread.id] },
     });
     expect(queued.statusCode).toBe(200);
     await eventually(() => adapter.seeds.length === 1);
@@ -167,6 +169,34 @@ describe("enforced execution leases", () => {
     adapter.releaseLateEvent();
     await flush();
     await eventually(() => store.readEvents(thread.id).some((item) => item.event.type === "text" && item.event.delta === "new generation completed"));
+    await app.close();
+  });
+
+  it("bounds repeated lease-expired recipient turns using the durable turn-attempt policy", async () => {
+    adapter.hangRuns = 2;
+    const project = store.createProject({ label: "Lease", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
+    const app = server();
+    const queued = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      payload: { text: "bounded expiry", recipientAgentIds: [thread.id] },
+    });
+    const messageId = queued.json<{ message: { id: string } }>().message.id;
+    await eventually(() => adapter.seeds.length === 1);
+
+    await clock.advance(1_000);
+    await eventually(() => adapter.seeds.length === 2);
+    await clock.advance(1_000);
+    await flush();
+
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, thread.id);
+    expect(delivery).toMatchObject({ status: "failed", attempts: 2, failure: "execution lease expired" });
+    expect(adapter.seeds).toHaveLength(2);
+    expect(store.readEvents(thread.id).filter((item) =>
+      item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(2);
+    adapter.releaseAllLateEvents();
+    await flush();
     await app.close();
   });
 

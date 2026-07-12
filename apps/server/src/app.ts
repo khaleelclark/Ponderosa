@@ -655,8 +655,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
     }
     if (run.deliveryIds?.length) {
-      collaborationDeliveries.requeueBatch(run.deliveryIds);
-      for (const id of run.deliveryIds) syncDelegatedCompletion(id);
+      for (const id of run.deliveryIds) {
+        collaborationDeliveries.retryFailedTurn(id, "execution lease expired");
+        syncDelegatedCompletion(id);
+      }
     }
     run.controller.abort();
     runDeliveryDispatch(threadId);
