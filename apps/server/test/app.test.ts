@@ -2430,6 +2430,24 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("caches inherited engine capabilities instead of repeatedly spawning host CLIs", async () => {
+    let discoveries = 0;
+    Object.assign(adapter, { capabilities: async () => {
+      discoveries += 1;
+      return { steering: true, persistentSessions: true, commands: [], mcpServers: [] };
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Capabilities", hostPath: repoDir });
+
+    const first = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    const second = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+
+    expect(first.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(discoveries).toBe(1);
+    await app.close();
+  });
+
   it("keeps v2 routes as explicit 501 stubs", async () => {
     const { app, thread } = await createProjectAndThread();
 

@@ -617,6 +617,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const runLedger = new RunLedger(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
+  const engineCapabilityCache = new Map<string, { expiresAt: number; value: Promise<ProjectEngineCapabilitiesDto> }>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
@@ -3432,11 +3433,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
-      return Promise.all([...engines.values()].map(async ({ adapter }) => {
-        const capabilities = adapter.capabilities
-          ? await adapter.capabilities(project.hostPath)
-          : { steering: false, persistentSessions: false, commands: [], mcpServers: [] };
-        return { engineId: adapter.id, ...capabilities };
+      return Promise.all([...engines.values()].map(({ adapter }) => {
+        const key = `${project.hostPath}\0${adapter.id}`;
+        const cached = engineCapabilityCache.get(key);
+        if (cached && cached.expiresAt > Date.now()) return cached.value;
+        const value = Promise.resolve(adapter.capabilities
+          ? adapter.capabilities(project.hostPath)
+          : { steering: false, persistentSessions: false, commands: [], mcpServers: [] })
+          .then((capabilities) => ({ engineId: adapter.id, ...capabilities }));
+        engineCapabilityCache.set(key, { expiresAt: Date.now() + 5 * 60_000, value });
+        void value.catch(() => engineCapabilityCache.delete(key));
+        return value;
       }));
     },
   );
