@@ -183,6 +183,27 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: str
 }
 
 describe("server chunk F", () => {
+  it("serves server-owned agent health at project and master-chat scope", async () => {
+    const project = store.createProject({ label: "Health", hostPath: repoDir });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const outside = store.createThread(project.id, { title: "Outside", engine: "codex" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+
+    const roomHealth = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}/agent-health` });
+    expect(roomHealth.statusCode).toBe(200);
+    expect(roomHealth.json()).toMatchObject({
+      scope: { type: "master_chat", id: room.id },
+      agents: [{ agentId: agent.id, status: "idle", reason: "no_active_work" }],
+    });
+
+    const projectHealth = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    expect(projectHealth.statusCode).toBe(200);
+    expect(projectHealth.json<{ agents: Array<{ agentId: string }> }>().agents.map((item) => item.agentId).sort())
+      .toEqual([agent.id, outside.id].sort());
+    await app.close();
+  });
+
   it("bounds fresh-session history by both characters and message count", () => {
     const history = Array.from({ length: 80 }, (_, index) => ({ role: "user" as const, text: `${index}:` + "x".repeat(1_000) }));
     const bounded = boundedSeedHistory(history, 5_000, 4);

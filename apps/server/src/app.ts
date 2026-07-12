@@ -9,6 +9,7 @@ import type {
   AgentDelegationDispositionRequest,
   AgentMessageChannel,
   AgentEvent,
+  AgentHealthProjectionDto,
   ArtifactContentDto,
   ChatMessage,
   EngineAuthStatus,
@@ -36,6 +37,7 @@ import { DelegationError, DelegationStore } from "./delegations.js";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
+import { projectAgentHealth } from "./agent-health.js";
 import {
   CollaborationDeliveryStore,
   type CollaborationDelivery,
@@ -60,6 +62,7 @@ export interface CreateServerOptions {
 
 interface ActiveRun {
   runId: string;
+  startedAt: string;
   controller: AbortController;
   messageCapability: string;
   delegatedRunId?: string;
@@ -529,6 +532,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const directReplyClaims = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
+
+  function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
+    return projectAgentHealth({
+      scope,
+      threads,
+      delegations: scopedDelegations,
+      activeRuns,
+      queuedDeliveries: (threadId) => collaborationDeliveries.pending(threadId),
+      events: (threadId) => store.readEvents(threadId),
+    });
+  }
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
@@ -1218,6 +1232,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const run = delegations.claim(runId);
     activeRuns.set(childThread.id, {
       runId: run.id,
+      startedAt: new Date().toISOString(),
       controller,
       messageCapability: messageCapabilityToken,
       delegatedRunId: run.id,
@@ -1510,6 +1525,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   });
 
+  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-health", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const masterIds = new Set(store.listMasterChats(request.params.id).map((master) => master.id));
+    return agentHealth(
+      { type: "project", id: request.params.id },
+      store.listThreads(request.params.id),
+      delegations.all().filter((run) => masterIds.has(run.masterChatId)),
+    );
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/master-chats", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return store.listMasterChats(request.params.id);
@@ -1530,6 +1555,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.get<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
     const detail = store.getMasterChatDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "master chat not found" });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/master-chats/:id/agent-health", async (request, reply) => {
+    const master = store.getMasterChat(request.params.id);
+    if (!master) return reply.code(404).send({ error: "master chat not found" });
+    const threads = store.listThreads(master.projectId).filter((thread) => thread.masterChatIds.includes(master.id));
+    return agentHealth({ type: "master_chat", id: master.id }, threads, delegations.list(master.id));
   });
 
   app.patch<{
@@ -2394,7 +2426,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       await assets.associate(thread.projectId, thread.id, attachmentIds);
       publish(thread.id, userStored);
 
-      activeRuns.set(thread.id, { runId, controller, messageCapability, ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}) });
+      activeRuns.set(thread.id, { runId, startedAt: new Date().toISOString(), controller, messageCapability, ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}) });
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: thread.masterChatId,

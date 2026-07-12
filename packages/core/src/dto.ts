@@ -560,6 +560,32 @@ export interface HealthDto {
   version: string;
 }
 
+/** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
+export type AgentLifecycleStatus = "idle" | "running" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
+
+export type AgentLifecycleReason =
+  | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
+  | "delegation_queued" | "delegation_awaiting_disposition" | "delegation_blocked"
+  | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
+  | "task_completed" | "turn_completed" | "runtime_error";
+
+export interface AgentHealthDto {
+  /** Stable thread identity; titles and mention handles are presentation only. */
+  agentId: string;
+  parentAgentId?: string;
+  childAgentIds: string[];
+  status: AgentLifecycleStatus;
+  /** Timestamp of the authoritative observation that selected `status`. */
+  statusTimestamp: string;
+  reason: AgentLifecycleReason;
+}
+
+export interface AgentHealthProjectionDto {
+  scope: { type: "project" | "master_chat"; id: string };
+  generatedAt: string;
+  agents: AgentHealthDto[];
+}
+
 export interface ReadinessCheckDto {
   ok: boolean;
   detail: string;

@@ -214,6 +214,16 @@ the authority for parent/child/root lineage and the initial delegated lifecycle;
 the thread event log remains canonical for the child agent's work and subsequent
 turns. The raw delegation prompt is not copied into the public thread history.
 
+Manager-facing supervision uses one shared lifecycle vocabulary: `idle`,
+`running`, `waiting`, `blocked`, `compacting`, `cancelled`, `completed`, and
+`failed`. Project- and master-chat-scoped health are server-owned projections over
+active runs, delegation lineage, durable queued delivery, and canonical task/error
+events; clients do not infer status or emit heartbeat chat messages. Every result
+contains the stable thread/agent ID, direct parent/child IDs where recorded,
+status, observation timestamp, and reason. `compacting` remains reserved until a
+runtime event or bounded operation lease exposes an observable interval; the
+current synchronous session reset must not fabricate that transition.
+
 ### Asynchronous delegated results and collaboration delivery
 
 Delegation is asynchronous. A parent that creates delegated work **ends its turn**
@@ -632,6 +642,8 @@ PATCH  /api/agent-presets/:id
 DELETE /api/agent-presets/:id
 GET    /api/projects/:id/threads
 POST   /api/projects/:id/threads           # { title, engine, model, effort }
+GET    /api/projects/:id/agent-health      # stable IDs + lifecycle/lineage projection
+GET    /api/master-chats/:id/agent-health  # room-scoped lifecycle/lineage projection
 
 GET    /api/threads/:id                    # thread + messages + tasks + artifacts + state
 PATCH  /api/threads/:id                    # rename / archive

@@ -5,6 +5,25 @@ types. Nothing here changes without a matching `SPEC.md` edit (AGENTS.md). The
 barrel (`.`) is pure and JSON-serializable; `./config` and `./logger` are Node-only
 subpath exports kept out of the browser bundle.
 
+## Agent lifecycle health projection
+
+Manager-facing health uses the exhaustive `AgentLifecycleStatus` vocabulary:
+`idle`, `running`, `waiting`, `blocked`, `compacting`, `cancelled`, `completed`,
+and `failed`. The server projects it on demand at project and master-chat scope
+from stable thread IDs, active runs, delegation records, durable queued deliveries,
+and canonical task/error events. It uses no client inference, per-agent polling,
+heartbeat messages, or communication-event persistence.
+
+Seven states are currently observable. `compacting` is intentionally unavailable:
+the compact endpoint performs a synchronous session-boundary reset and exposes no
+durable or asynchronous compaction interval. Projecting that transition would
+fabricate state. A future runtime event or bounded server operation lease can make
+it representable.
+
+Ordinary cancellation also has no durable lifecycle event today; `cancelled` is
+authoritative for delegated agents through the delegation ledger. The projection
+cannot preserve ordinary-thread cancellation across restart until that event exists.
+
 ## `events.ts` — the normalized event model (SPEC §5)
 
 | Export | Role — must not change without a SPEC edit |
