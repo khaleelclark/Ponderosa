@@ -568,7 +568,8 @@ export type AgentLifecycleReason =
   | "delegation_queued" | "delegation_awaiting_disposition" | "delegation_blocked"
   | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
   | "task_completed" | "turn_completed" | "runtime_error"
-  | "session_rollover_scheduled" | "thread_cancelled";
+  | "session_rollover_scheduled" | "thread_cancelled"
+  | "execution_lease_expired" | "execution_interrupted";
 
 export interface AgentHealthDto {
   /** Stable thread identity; titles and mention handles are presentation only. */
@@ -579,6 +580,9 @@ export interface AgentHealthDto {
   /** Timestamp of the authoritative observation that selected `status`. */
   statusTimestamp: string;
   reason: AgentLifecycleReason;
+  /** Runtime generation and bounded liveness window, when work is active. */
+  executionId?: string;
+  leaseExpiresAt?: string;
 }
 
 export interface AgentHealthProjectionDto {

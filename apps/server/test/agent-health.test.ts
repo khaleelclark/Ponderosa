@@ -23,7 +23,7 @@ const event = (value: StoredLogEvent["event"], ts = t1): StoredLogEvent => ({ se
 function project(options: {
   threads?: ThreadDto[];
   runs?: SubagentRunDto[];
-  active?: Map<string, { startedAt: string }>;
+  active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string }>;
   compacting?: Map<string, string>;
   queued?: Record<string, Array<{ createdAt: string }>>;
   events?: Record<string, StoredLogEvent[]>;
@@ -46,6 +46,15 @@ describe("agent health projection", () => {
   it("projects running from an active server run", () => {
     expect(project({ active: new Map([["agent", { startedAt: t1 }]]) }).agents[0])
       .toMatchObject({ status: "running", statusTimestamp: t1, reason: "active_run" });
+  });
+
+  it("surfaces execution identity and marks an expired lease blocked", () => {
+    expect(project({ active: new Map([[
+      "agent", { startedAt: t0, executionId: "execution-1", leaseExpiresAt: "2026-07-12T00:00:30.000Z" },
+    ]]) }).agents[0]).toMatchObject({
+      status: "blocked", reason: "execution_lease_expired", executionId: "execution-1",
+      leaseExpiresAt: "2026-07-12T00:00:30.000Z",
+    });
   });
 
   it("projects waiting from task approval, durable delivery, and delegation states", () => {

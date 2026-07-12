@@ -64,6 +64,7 @@ export interface CreateServerOptions {
   /** Emergency rollback: `off` preserves legacy logs/projections only. */
   communicationMode?: "off" | "shadow";
   communicationReadMode?: "legacy" | "shadow" | "authoritative";
+  legacyRoutingMode?: "accept" | "reject";
   /** Independent context-plane rollback switch. */
   curatedContextEnabled?: boolean;
 }
@@ -71,6 +72,8 @@ export interface CreateServerOptions {
 interface ActiveRun {
   runId: string;
   startedAt: string;
+  executionId: string;
+  leaseExpiresAt: string;
   controller: AbortController;
   messageCapability: string;
   delegatedRunId?: string;
@@ -517,6 +520,7 @@ async function readScopedPath(root: string, relInput: string | undefined): Promi
 
 export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new ThreadStore(opts.dataDir);
+  store.recoverInterruptedExecutions();
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
@@ -542,9 +546,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   let assetSweep: NodeJS.Timeout | undefined;
   const communicationMode = opts.communicationMode ?? "shadow";
   const communicationReadMode = opts.communicationReadMode ?? "shadow";
+  // Embedders can opt into the compatibility window; the production config
+  // defaults to reject so newly deployed agents never depend on routing syntax.
+  const legacyRoutingMode = opts.legacyRoutingMode ?? "accept";
   const curatedContextEnabled = opts.curatedContextEnabled ?? true;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent | undefined =>
     communicationMode === "off" ? undefined : store.appendCommunicationEvent(event).event;
+  const executionLeaseMs = 6 * 60 * 1000;
+  const leaseExpiry = () => new Date(Date.now() + executionLeaseMs).toISOString();
+  const renewExecutionLease = (threadId: string) => {
+    const active = activeRuns.get(threadId);
+    if (active) active.leaseExpiresAt = leaseExpiry();
+  };
 
   function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
     const detail = store.getMasterChatDetail(masterChatId);
@@ -1100,6 +1113,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     // newly seeded sessions.
     const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
     const legacyChannel = legacyBody?.channel;
+    if (legacyChannel && legacyRoutingMode === "reject") {
+      return reply.code(410).send({ error: "legacy channel routing is retired; send an explicit communication intent" });
+    }
     const intent = request.body?.intent ?? (legacyChannel === "individual"
       ? "direct_to_user"
       : legacyChannel === "main"
@@ -1264,9 +1280,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const messageCapabilityToken = randomUUID();
     const delegationCapabilityToken = randomUUID();
     const run = delegations.claim(runId);
+    const startedAt = new Date().toISOString();
+    const lifecycle = store.appendEvent(childThread.id, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: run.id,
+    });
+    publish(childThread.id, lifecycle);
     activeRuns.set(childThread.id, {
       runId: run.id,
-      startedAt: new Date().toISOString(),
+      startedAt,
+      executionId: run.id,
+      leaseExpiresAt: leaseExpiry(),
       controller,
       messageCapability: messageCapabilityToken,
       delegatedRunId: run.id,
@@ -1316,6 +1339,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
         for await (const event of stream) {
           if (closed) break;
+          renewExecutionLease(childThread.id);
           const stored = store.appendEvent(childThread.id, event);
           publish(childThread.id, stored);
           if (event.type === "error") runtimeError = event.message;
@@ -1331,6 +1355,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } finally {
         if (scheduledSessionRollovers.delete(childThread.id)) {
           store.clearResumeSession(childThread.id, "explicit_compaction");
+        }
+        if (!closed && !controller.signal.aborted) {
+          const terminal = store.appendEvent(childThread.id, {
+            type: "agent_lifecycle",
+            status: runtimeError ? "failed" : "completed",
+            reason: runtimeError ? "runtime_error" : "turn_completed",
+            executionId: run.id,
+          });
+          publish(childThread.id, terminal);
         }
         if (activeRuns.get(childThread.id)?.controller === controller) activeRuns.delete(childThread.id);
         agentMessageCapabilities.delete(messageCapabilityToken);
@@ -1490,7 +1523,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const communicationParity = communicationReports.every((report) => report.ok);
     const communicationMigration = {
       ok: communicationReadMode !== "authoritative" || communicationParity,
-      detail: `communication=${communicationMode}; reads=${communicationReadMode}; curated_context=${curatedContextEnabled ? "on" : "off"}; parity=${communicationParity ? "ok" : "drift"}`,
+      detail: `communication=${communicationMode}; reads=${communicationReadMode}; legacy_routing=${legacyRoutingMode}; curated_context=${curatedContextEnabled ? "on" : "off"}; parity=${communicationParity ? "ok" : "drift"}`,
     };
     const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok && communicationMigration.ok;
     const body: ReadinessDto = {
@@ -1922,6 +1955,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       };
     } else {
       // Compatibility for clients loaded before the recipient-picker contract.
+      if (legacyRoutingMode === "reject") {
+        return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds; mention routing is retired" });
+      }
       routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
     }
     if (routing.intents.length === 0) {
@@ -2486,7 +2522,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       await assets.associate(thread.projectId, thread.id, attachmentIds);
       publish(thread.id, userStored);
 
-      activeRuns.set(thread.id, { runId, startedAt: new Date().toISOString(), controller, messageCapability, ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}) });
+      const startedAt = new Date().toISOString();
+      const runningLifecycle = store.appendEvent(thread.id, {
+        type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
+      });
+      publish(thread.id, runningLifecycle);
+      activeRuns.set(thread.id, {
+        runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}),
+      });
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: thread.masterChatId,
@@ -2551,6 +2595,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             let retryFresh = false;
             for await (const event of startStream(sessionId)) {
               if (closed || controller.signal.aborted) break;
+              renewExecutionLease(thread.id);
               // Codex can emit its session id immediately before a resume-time
               // compaction failure. Hold only those initial session events so a
               // failed resume does not restore the stale id after we clear it.
@@ -2620,6 +2665,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             const settled = delegations.finishRuntime(delegatedObjective.id, runError);
             if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
           }
+          if (!closed && !controller.signal.aborted) {
+            const terminal = store.appendEvent(thread.id, {
+              type: "agent_lifecycle",
+              status: runError ? "failed" : "completed",
+              reason: runError ? "runtime_error" : "turn_completed",
+              executionId: runId,
+            });
+            publish(thread.id, terminal);
+          }
           if (activeRuns.get(thread.id)?.controller === controller) activeRuns.delete(thread.id);
           agentMessageCapabilities.delete(messageCapability);
           delegationCapabilities.delete(delegationCapability);
@@ -2631,7 +2685,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
-              const routing = !runError && collaborationMasterChatId
+              const routing = !runError && collaborationMasterChatId && legacyRoutingMode === "accept"
                 ? resolveCollaborationIntents(
                     collaborationMasterChatId,
                     thread.id,

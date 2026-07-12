@@ -17,6 +17,7 @@ export interface PonderosaConfig {
   nodeEnv: string;
   communicationMode: "off" | "shadow";
   communicationReadMode: "legacy" | "shadow" | "authoritative";
+  legacyRoutingMode: "accept" | "reject";
   curatedContextEnabled: boolean;
 }
 
@@ -53,6 +54,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
   if (communicationReadMode !== "legacy" && communicationReadMode !== "shadow" && communicationReadMode !== "authoritative") {
     throw new Error(`Invalid PONDEROSA_COMMUNICATION_READ_MODE: ${communicationReadMode}`);
   }
+  const legacyRoutingMode = env.PONDEROSA_LEGACY_ROUTING ?? "reject";
+  if (legacyRoutingMode !== "accept" && legacyRoutingMode !== "reject") {
+    throw new Error(`Invalid PONDEROSA_LEGACY_ROUTING: ${legacyRoutingMode}`);
+  }
 
   return {
     dataDir,
@@ -61,6 +66,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
     nodeEnv: env.NODE_ENV ?? "development",
     communicationMode,
     communicationReadMode,
+    legacyRoutingMode,
     curatedContextEnabled: env.PONDEROSA_CURATED_CONTEXT !== "off",
   };
 }

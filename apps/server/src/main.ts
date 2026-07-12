@@ -16,6 +16,7 @@ const app = createServer({
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? `http://127.0.0.1:${config.port}`,
   communicationMode: config.communicationMode,
   communicationReadMode: config.communicationReadMode,
+  legacyRoutingMode: config.legacyRoutingMode,
   curatedContextEnabled: config.curatedContextEnabled,
 });
 

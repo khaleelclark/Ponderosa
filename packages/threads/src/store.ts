@@ -813,6 +813,37 @@ export class ThreadStore {
     return { dryRun, candidates, migrated, alreadyLinked, blocked };
   }
 
+  /** Mark executions whose durable start survived a daemon crash without a terminal record. */
+  recoverInterruptedExecutions(): string[] {
+    const recovered: string[] = [];
+    for (const project of this.listProjects()) {
+      for (const thread of this.listThreads(project.id)) {
+        const events = this.readEvents(thread.id);
+        let startedIndex = -1;
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index]!.event;
+          if (event.type === "agent_lifecycle" && event.status === "running") {
+            startedIndex = index;
+            break;
+          }
+        }
+        if (startedIndex < 0) continue;
+        const start = events[startedIndex]!;
+        const terminal = events.slice(startedIndex + 1).some((stored) =>
+          stored.event.type === "turn_done" || stored.event.type === "error" ||
+          (stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed"].includes(stored.event.status)));
+        if (terminal) continue;
+        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : undefined;
+        this.appendEvent(thread.id, {
+          type: "agent_lifecycle", status: "failed", reason: "execution_interrupted",
+          ...(executionId ? { executionId } : {}),
+        });
+        recovered.push(thread.id);
+      }
+    }
+    return recovered;
+  }
+
   /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
   get sqlite(): Database.Database {
     return this.client;

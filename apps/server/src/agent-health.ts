@@ -1,7 +1,7 @@
 import type { AgentHealthDto, AgentHealthProjectionDto, AgentLifecycleReason, AgentLifecycleStatus, SubagentRunDto, ThreadDto } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/threads";
 
-export interface ActiveRunObservation { startedAt: string }
+export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string }
 export interface QueuedDeliveryObservation { createdAt: string }
 export interface AgentHealthProjectionInput {
   scope: AgentHealthProjectionDto["scope"];
@@ -66,6 +66,9 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const parentAgentId = run?.parentThreadId && threadIds.has(run.parentThreadId) ? run.parentThreadId : undefined;
     let observation: StatusObservation;
     if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
+    else if (active?.leaseExpiresAt && active.leaseExpiresAt < (input.now ?? new Date().toISOString())) {
+      observation = { status: "blocked", statusTimestamp: active.leaseExpiresAt, reason: "execution_lease_expired" };
+    }
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
     else if (queued) observation = { status: "waiting", statusTimestamp: queued.createdAt, reason: "queued_delivery" };
@@ -76,6 +79,8 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
       ...(parentAgentId ? { parentAgentId } : {}),
       childAgentIds: [...(childIdsByParent.get(thread.id) ?? [])].sort(),
       ...observation,
+      ...(active?.executionId ? { executionId: active.executionId } : {}),
+      ...(active?.leaseExpiresAt ? { leaseExpiresAt: active.leaseExpiresAt } : {}),
     };
   });
   return { scope: input.scope, generatedAt: input.now ?? new Date().toISOString(), agents: agents.sort((a, b) => a.agentId.localeCompare(b.agentId)) };

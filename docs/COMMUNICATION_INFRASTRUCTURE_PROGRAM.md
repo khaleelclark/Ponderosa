@@ -85,6 +85,14 @@ repeat targeted work, or stop for architectural revision.
 - Collapse subtree incidents and suppress repeats by agent, execution generation, and incident class.
 - Do not wake idle managers for unchanged state.
 
+Every execution now writes a durable generation-tagged `running` transition and
+a terminal `completed`, `failed`, or `cancelled` transition. Runtime activity
+renews a six-minute in-memory lease; the aggregate health projection exposes the
+execution ID and expiry and marks an expired lease `blocked` without producing a
+chat message. On daemon startup, a durable start with no later terminal evidence
+is closed as `failed/execution_interrupted`. This makes crash recovery auditable
+while keeping heartbeat writes and manager polling bounded.
+
 Project- and room-scoped health projections now expose every required lifecycle
 state. Scheduled active-session rollover supplies the bounded `compacting`
 interval; ordinary cancellation is a durable thread lifecycle event, and expected
@@ -99,13 +107,16 @@ deriving status from each agent's task rows. One aggregate refresh runs every
 5 seconds only while work is active and backs off to 30 seconds otherwise;
 per-agent detail polling was removed. All eight lifecycle states retain distinct
 labels and exception counts in the roster.
-Three independent rollout and rollback controls are available at daemon start:
+Four independent rollout and rollback controls are available at daemon start:
 `PONDEROSA_COMMUNICATION_MODE=off` preserves legacy writes while skipping the
 canonical shadow plane; `PONDEROSA_COMMUNICATION_READ_MODE=legacy|shadow|authoritative`
 cuts room reads over independently; and `PONDEROSA_CURATED_CONTEXT=off` stops
 promotion injection without disabling event capture. Authoritative readiness
 fails closed on missing projection metadata, unlinked legacy room rows, or DTO
 parity drift. `/api/ready` reports every effective mode and reconciliation state.
+`PONDEROSA_LEGACY_ROUTING` is a separate contract-retirement switch. Production
+defaults to `reject`, making recipient-free mention routing and the old agent
+`channel` wire unavailable; `accept` exists only as a time-bounded session rollback.
 
 Initial values are tuning ranges, not schema constants. Phase 0 measurements set
 production values.

@@ -37,6 +37,7 @@ export interface AgentLifecycleEvent {
   type: "agent_lifecycle";
   status: AgentLifecycleStatus;
   reason: AgentLifecycleReason;
+  executionId?: string;
 }
 
 /** Engine text may carry canonical persistence identity after edge normalization. */

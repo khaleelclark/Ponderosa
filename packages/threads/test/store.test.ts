@@ -243,6 +243,22 @@ describe("ThreadStore — canonical communication events", () => {
     });
   });
 
+  it("recovers a durable execution start that has no terminal event after restart", () => {
+    const project = store.createProject({ label: "Recovery", hostPath: "/repo" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    store.appendEvent(thread.id, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "execution-before-crash",
+    });
+    store.close();
+    store = new ThreadStore(dir);
+
+    expect(store.recoverInterruptedExecutions()).toEqual([thread.id]);
+    expect(store.readEvents(thread.id).at(-1)?.event).toEqual({
+      type: "agent_lifecycle", status: "failed", reason: "execution_interrupted", executionId: "execution-before-crash",
+    });
+    expect(store.recoverInterruptedExecutions()).toEqual([]);
+  });
+
   it("indexes sustained canonical writes without rescanning prior history", () => {
     const project = store.createProject({ label: "Scale", hostPath: "/repo" });
     for (let index = 0; index < 500; index += 1) {
