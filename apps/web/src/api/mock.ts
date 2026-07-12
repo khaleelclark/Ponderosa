@@ -367,10 +367,11 @@ export const mockApi: PonderosaApi = {
   },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+    if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");
     const message = {
       id: "collaboration-message-" + Date.now(),
       masterChatId,
-      role: request.role ?? "user" as const,
+      role: "user" as const,
       text: request.text,
       createdAt: new Date().toISOString(),
     };
@@ -378,7 +379,7 @@ export const mockApi: PonderosaApi = {
       ...(collaborationMessages[masterChatId] ?? []),
       message,
     ];
-    return { message, audience: "none", notifiedAgentIds: [] };
+    return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
   },
   listSubagents() {
     return delay([]);

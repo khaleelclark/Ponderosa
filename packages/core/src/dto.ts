@@ -149,6 +149,14 @@ export interface CreateMasterChatMessageRequest {
   attachments?: ImageAttachmentDto[];
 }
 
+/** POST /api/master-chats/:id/collaboration/messages body. */
+export interface CreateCollaborationMessageRequest {
+  text: string;
+  /** Stable IDs resolved by the client; display handles are never routing input. */
+  recipientAgentIds: string[];
+  replyToMessageId?: string;
+}
+
 /** POST collaboration message response; recipients are the immutable resolved audience. */
 export interface CreateCollaborationMessageResponse {
   message: MasterChatMessageDto;

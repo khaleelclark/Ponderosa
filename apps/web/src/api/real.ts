@@ -1,6 +1,7 @@
 import type {
   ArtifactContentDto,
   CollaborationChatDetailDto,
+  CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
@@ -113,7 +114,7 @@ export const realApi: PonderosaApi = {
   async sendCollaborationMessage(masterChatId, request) {
     return requestJson<CreateCollaborationMessageResponse>("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
       method: "POST",
-      body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
+      body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
   },
   listSubagents(masterChatId) {
