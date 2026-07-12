@@ -1,0 +1,74 @@
+import type { MessageDto } from "@ponderosa/core";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { ChatPane } from "../src/components/panes";
+
+function message(id: string, role: MessageDto["role"], text: string): MessageDto {
+  return {
+    id,
+    threadId: "agent-1",
+    seq: Number(id),
+    role,
+    text,
+    createdAt: "2026-07-11T00:00:00.000Z",
+  };
+}
+
+describe("individual chat sender identity", () => {
+  it("renders each participant as a screen-reader-labelled message article", () => {
+    const html = renderToStaticMarkup(createElement(ChatPane, {
+      agentName: "Great Smoky Mountains",
+      messages: [message("1", "user", "Please review this."), message("2", "assistant", "Review complete.")],
+    }));
+
+    expect(html.match(/<article/g)).toHaveLength(2);
+    expect(html).toMatch(/<article[^>]+aria-label="You message"[^>]*>.*>You<\/div>.*Please review this\./);
+    expect(html).toMatch(/<article[^>]+aria-label="Great Smoky Mountains message"[^>]*>.*>Great Smoky Mountains<\/div>.*Review complete\./);
+    expect(html.indexOf("You</div>")).toBeLessThan(html.indexOf("Please review this."));
+    expect(html.indexOf("Great Smoky Mountains</div>")).toBeLessThan(html.indexOf("Review complete."));
+  });
+
+  it("keeps Unicode titles selectable, direction-aware, and escaped", () => {
+    const html = renderToStaticMarkup(createElement(ChatPane, {
+      agentName: "مراجعة / проверка / 完了 <script>alert(1)</script> & QA",
+      messages: [message("1", "assistant", "Safe content")],
+    }));
+
+    expect(html).toContain("مراجعة / проверка / 完了 &lt;script&gt;alert(1)&lt;/script&gt; &amp; QA");
+    expect(html).toContain('dir="auto"');
+    expect(html).toContain("user-select:text");
+    expect(html).toContain("unicode-bidi:plaintext");
+    expect(html).not.toContain("<script>");
+  });
+
+  it("uses an accessible fallback without disturbing reply, attachment, or timestamp actions", () => {
+    const assistant = {
+      ...message("2", "assistant", "See the attachment."),
+      replyTo: { messageId: "1", text: "Original request" },
+      attachments: [{ id: "attachment-1", name: "result.png", url: "/result.png", mimeType: "image/png", size: 123 }],
+    } satisfies MessageDto;
+    const html = renderToStaticMarkup(createElement(ChatPane, {
+      agentName: "   ",
+      messages: [message("1", "user", "Original request"), assistant],
+      onReply: () => undefined,
+    }));
+
+    expect(html).toContain('aria-label="Agent message"');
+    expect(html).toContain(">Agent</div>");
+    expect(html).toContain('aria-label="Go to replied-to message"');
+    expect(html).toContain('aria-label="Open result.png"');
+    expect(html).toContain('aria-label="Reply to message"');
+    expect(html).toContain("<time");
+  });
+
+  it("keeps the individual-chat self label distinct from the pending master-chat User label", () => {
+    const html = renderToStaticMarkup(createElement(ChatPane, {
+      agentName: "Pinnacles",
+      messages: [message("1", "user", "Manager-authored message")],
+    }));
+
+    expect(html).toContain('aria-label="You message"');
+    expect(html).not.toContain(">User</div>");
+  });
+});

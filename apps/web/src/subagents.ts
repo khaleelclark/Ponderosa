@@ -66,7 +66,7 @@ export function applyCancellationResult(
       status: affected.status,
       version: affected.version,
       updatedAt: affected.updatedAt,
-      canCancel: affected.status === "queued" || affected.status === "running",
+      canCancel: affected.status === "queued" || affected.status === "running" || affected.status === "awaiting_disposition",
     });
   }
   return { ...store, runs };

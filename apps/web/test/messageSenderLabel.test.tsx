@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { MessageSenderLabel } from "../src/components/MessageSenderLabel";
 import { directMessageSender } from "../src/messageSender";
 
 describe("message sender identity", () => {
@@ -12,17 +15,24 @@ describe("message sender identity", () => {
     expect(directMessageSender("assistant", "   ")).toBe("Agent");
   });
 
-  it("renders sender identity as ordinary selectable, screen-reader-visible text", () => {
-    const source = readFileSync(new URL("../src/components/MessageSenderLabel.tsx", import.meta.url), "utf8");
-    expect(source).toContain("data-message-sender");
-    expect(source).toContain('userSelect: "text"');
-    expect(source).toContain('overflowWrap: "anywhere"');
-    expect(source).not.toContain("aria-hidden");
+  it("renders mixed-Unicode sender identity as ordinary selectable, copyable text", () => {
+    const html = renderToStaticMarkup(createElement(MessageSenderLabel, {
+      name: "مراجعة / проверка / 完了 <QA> & test",
+    }));
+
+    expect(html).toContain("data-message-sender");
+    expect(html).toContain('dir="auto"');
+    expect(html).toContain("user-select:text");
+    expect(html).toContain("unicode-bidi:plaintext");
+    expect(html).toContain("مراجعة / проверка / 完了 &lt;QA&gt; &amp; test");
+    expect(html).not.toContain("aria-hidden");
   });
 
   it("keeps team-chat navigation separate from the copyable sender label", () => {
     const source = readFileSync(new URL("../src/components/MasterChatView.tsx", import.meta.url), "utf8");
     expect(source).toContain('<MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorThreadId)} />');
+    expect(source).toContain('component="article"');
+    expect(source).toContain('aria-label={`${fromManager ? "You" : agentTitle(message.authorThreadId)} message`}');
     expect(source).toContain("aria-label={`Open agent ${agentTitle(message.authorThreadId)}`}");
     expect(source).toContain("minWidth: 44, minHeight: 44");
   });

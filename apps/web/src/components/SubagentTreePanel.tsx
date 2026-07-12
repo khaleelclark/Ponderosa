@@ -15,7 +15,7 @@ import type { SubagentRunDto } from "@ponderosa/core";
 const statusColor = (status: SubagentStatus): "default" | "info" | "success" | "error" => {
   if (status === "running") return "info";
   if (status === "completed") return "success";
-  if (status === "failed") return "error";
+  if (status === "failed" || status === "blocked") return "error";
   return "default";
 };
 
@@ -32,7 +32,7 @@ function RunNode({
   onCancel(run: SubagentRunDto): void;
   onOpenAgent(agentId: string): void;
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(node.status === "running");
+  const [expanded, setExpanded] = useState(node.status === "running" || node.status === "awaiting_disposition");
   const detailId = `subagent-detail-${node.id}`;
   const canExpand = Boolean(node.delegationSummary || node.failure || node.completionDelivery);
 
@@ -59,7 +59,7 @@ function RunNode({
           <Typography variant="caption" color="text.secondary">Depth {node.depth}</Typography>
         </Box>
         <Chip size="small" label={node.status} color={statusColor(node.status)} />
-        {node.canCancel && (node.status === "queued" || node.status === "running") ? (
+        {node.canCancel && (node.status === "queued" || node.status === "running" || node.status === "awaiting_disposition") ? (
           <IconButton
             size="small"
             color="warning"
@@ -74,6 +74,8 @@ function RunNode({
       <Collapse in={expanded} unmountOnExit>
         <Stack id={detailId} spacing={1} sx={{ p: 1.25, bgcolor: "action.hover" }}>
           {node.delegationSummary ? <Typography variant="body2">{node.delegationSummary}</Typography> : null}
+          {node.status === "awaiting_disposition" ? <Alert severity="info">Runtime turn finished; awaiting an explicit objective disposition.</Alert> : null}
+          {node.disposition?.message ? <Alert severity={node.status === "blocked" ? "warning" : "success"}>{node.disposition.message}</Alert> : null}
           {node.completionDelivery ? (
             <Typography variant="caption" color={node.completionDelivery.status === "failed" ? "error.main" : "text.secondary"}>
               Parent completion delivery: {node.completionDelivery.status}

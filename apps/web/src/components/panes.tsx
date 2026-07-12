@@ -38,8 +38,8 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
-import { directMessageSender } from "../messageSender";
 import { MessageSenderLabel } from "./MessageSenderLabel";
+import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -122,6 +122,13 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
 
 export function replyFallbackText(text: string): string {
   return text.trim() || "Original message unavailable";
+}
+
+export function individualChatSenderLabel(
+  role: MessageDto["role"],
+  agentName: string,
+): string {
+  return role === "user" ? "You" : agentName.trim() || "Agent";
 }
 
 export function codeBlockText(children: ReactNode): string {
@@ -218,7 +225,15 @@ export function ChatMarkdown({ children }: { children: string }): JSX.Element {
   );
 }
 
-export function ChatPane({ messages, agentName, onReply }: { messages: MessageDto[]; agentName: string; onReply?(message: MessageDto): void }): JSX.Element {
+export function ChatPane({
+  messages,
+  agentName,
+  onReply,
+}: {
+  messages: MessageDto[];
+  agentName: string;
+  onReply?(message: MessageDto): void;
+}): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
@@ -247,10 +262,14 @@ export function ChatPane({ messages, agentName, onReply }: { messages: MessageDt
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
-      {chatMessages.map((message) => (
+      {chatMessages.map((message) => {
+        const senderLabel = individualChatSenderLabel(message.role, agentName);
+        return (
         <Box
           key={message.id}
           id={`message-${message.id}`}
+          component="article"
+          aria-label={`${senderLabel} message`}
           tabIndex={-1}
           sx={{
             alignSelf: message.role === "user" ? "flex-end" : "flex-start",
@@ -267,7 +286,7 @@ export function ChatPane({ messages, agentName, onReply }: { messages: MessageDt
             userSelect: "text",
           }}
         >
-          <MessageSenderLabel name={directMessageSender(message.role, agentName)} />
+          <MessageSenderLabel name={senderLabel} />
           {message.replyTo ? (
             <Box
               component="button"
@@ -283,15 +302,18 @@ export function ChatPane({ messages, agentName, onReply }: { messages: MessageDt
             </Box>
           ) : null}
           <ChatMarkdown>{message.text}</ChatMarkdown>
-          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
           {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
             {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.url} target="_blank" rel="noreferrer" aria-label={`Open ${attachment.name}`}>
               <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
             </Box>)}
           </Stack> : null}
-          {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+          <MessageActionsAndTimestamp
+            value={message.createdAt}
+            actions={onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit", mt: 0.5 }}><ReplyIcon fontSize="inherit" /></IconButton> : undefined}
+          />
         </Box>
-      ))}
+        );
+      })}
     </Stack>
   );
 }
@@ -632,6 +654,7 @@ export function Composer({
   onCancel,
   replyTo,
   onCancelReply,
+  replyLabel,
 }: {
   disabled: boolean;
   running: boolean;
@@ -646,6 +669,7 @@ export function Composer({
   onCancel?(): void;
   replyTo?: { text: string };
   onCancelReply?(): void;
+  replyLabel?: string;
 }): JSX.Element {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Array<{ file: File; preview: string }>>([]);
@@ -730,7 +754,7 @@ export function Composer({
       {replyTo ? (
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5 }}>
           <Box sx={{ minWidth: 0, flex: 1, borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
-            <Typography variant="caption" color="text.secondary">Replying to</Typography>
+            <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
             <Typography variant="body2" noWrap>{replyTo.text}</Typography>
           </Box>
           <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
@@ -820,7 +844,9 @@ export function Composer({
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
               {mentionedBusyHandles.length > 0
                 ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} busy — your message will be queued.`
-                : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
+                : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
+                  ? "Notifying every eligible agent in this collaboration room"
+                  : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
             </Typography>
           ) : null}
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
