@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { EmojiReactionPicker, isSingleEmoji, userReactionDirectMessage, userReactionMessage } from "../src/components/EmojiReactionPicker";
+import { EmojiReactionPicker, isSingleEmoji, userReactionMessage } from "../src/components/EmojiReactionPicker";
 import { MasterChatMessage } from "../src/components/MasterChatView";
 
 const renderMessage = (authorThreadId?: string) => renderToStaticMarkup(<MasterChatMessage
@@ -11,6 +11,7 @@ const renderMessage = (authorThreadId?: string) => renderToStaticMarkup(<MasterC
     text: "Result",
     createdAt: "2026-07-12T00:00:00.000Z",
     authorThreadId,
+    communicationEventId: authorThreadId ? "communication-1" : undefined,
   }}
   conversation="main"
   agentTitle={() => "Olympic"}
@@ -27,21 +28,23 @@ describe("user emoji reactions", () => {
     expect(renderMessage()).not.toContain("with an emoji");
   });
 
-  it("accepts any single emoji grapheme and creates the exact direct-message text", () => {
+  it("accepts any single emoji grapheme and creates the exact private notification text", () => {
     for (const emoji of ["👍", "🧑🏽‍🚀", "🇯🇵", "1️⃣"]) expect(isSingleEmoji(emoji)).toBe(true);
     for (const invalid of ["", "ok", "👍👍", "👍 thanks"]) expect(isSingleEmoji(invalid)).toBe(false);
     expect(userReactionMessage("🧑🏽‍🚀")).toBe("the user reacted with 🧑🏽‍🚀");
-    expect(userReactionDirectMessage("author-agent", "🧑🏽‍🚀", "request-1")).toEqual({
-      text: "the user reacted with 🧑🏽‍🚀",
-      recipients: [{ agentId: "author-agent" }],
-      idempotencyKey: "request-1",
-    });
   });
 
-  it("does not expose reaction state or agent reaction controls", () => {
-    const html = renderToStaticMarkup(<EmojiReactionPicker recipientName="Olympic" onReact={vi.fn()} />);
-    expect(html).not.toContain("aria-pressed");
-    expect(html).not.toContain("reaction count");
-    expect(html).toContain("React to Olympic with an emoji");
+  it("shows the user's emoji on the reacted-to message", () => {
+    const html = renderToStaticMarkup(<MasterChatMessage
+      message={{
+        id: "m1", communicationEventId: "communication-1", masterChatId: "room", role: "assistant",
+        text: "Result", createdAt: "2026-07-12T00:00:00.000Z", authorThreadId: "olympic",
+        reactions: [{ emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] }],
+      }}
+      conversation="main" agentTitle={() => "Olympic"} agentIdForHandle={() => undefined}
+      onOpenAgent={vi.fn()} onReply={vi.fn()} onDirectReply={vi.fn()} onReact={vi.fn()}
+    />);
+    expect(html).toContain('aria-label="Message reactions"');
+    expect(html).toContain("🧑🏽‍🚀");
   });
 });

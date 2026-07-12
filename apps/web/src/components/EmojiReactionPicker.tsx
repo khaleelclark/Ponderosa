@@ -2,6 +2,7 @@ import AddReactionOutlinedIcon from "@mui/icons-material/AddReactionOutlined";
 import {
   Alert,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -13,7 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useState } from "react";
-import type { CreateMultiAgentDirectMessageRequest } from "@ponderosa/core";
+import type { MessageReactionDto } from "@ponderosa/core";
 
 const COMMON_EMOJIS = [
   "👍", "👎", "❤️", "🎉", "😂", "😊", "🙏", "👏",
@@ -24,24 +25,25 @@ export function userReactionMessage(emoji: string): string {
   return `the user reacted with ${emoji}`;
 }
 
-export function userReactionDirectMessage(
-  authorAgentId: string,
-  emoji: string,
-  idempotencyKey: string,
-): CreateMultiAgentDirectMessageRequest {
-  return {
-    text: userReactionMessage(emoji),
-    recipients: [{ agentId: authorAgentId }],
-    idempotencyKey,
-  };
-}
-
 /** Accept one emoji grapheme, including flags, skin tones, and ZWJ sequences. */
 export function isSingleEmoji(input: string): boolean {
   const value = input.trim();
   if (!value) return false;
   const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)];
   return graphemes.length === 1 && /(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]\uFE0F?\u20E3)/u.test(value);
+}
+
+export function MessageReactions({ reactions = [] }: { reactions?: MessageReactionDto[] }): JSX.Element | null {
+  if (reactions.length === 0) return null;
+  return (
+    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" aria-label="Message reactions" sx={{ mt: 0.75 }}>
+      {reactions.map((reaction) => (
+        <Tooltip key={reaction.emoji} title="You">
+          <Chip size="small" label={reaction.count > 1 ? `${reaction.emoji} ${reaction.count}` : reaction.emoji} />
+        </Tooltip>
+      ))}
+    </Stack>
+  );
 }
 
 export function EmojiReactionPicker({
@@ -94,7 +96,7 @@ export function EmojiReactionPicker({
         <DialogTitle id="emoji-reaction-title">React to {recipientName}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            This sends a private message to {recipientName}.
+            This adds the emoji to the message and privately notifies {recipientName} with the original message attached.
           </Typography>
           <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.5} sx={{ mb: 2 }}>
             {COMMON_EMOJIS.map((emoji) => (

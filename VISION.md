@@ -132,9 +132,10 @@ they are visible there.
 
 Emoji reactions are a lightweight user shortcut for sending feedback to the
 specific agent who wrote a message. Only users can react, and only to
-agent-authored messages. Picking any emoji sends the ordinary Direct Message
-`the user reacted with <emoji>` to that author agent; there is no separate
-reaction event, aggregate state, or agent reaction capability.
+agent-authored messages. Picking any emoji displays it on that canonical message
+without adding a new chat entry. The author receives a private notification with
+the original message attached as reply context. Agents cannot create reactions,
+and reaction notifications never become organizational context.
 
 For ordinary conversation, a plain Master Chat request creates shared work. The
 responsible agent can Direct Message the user with a question, private progress,

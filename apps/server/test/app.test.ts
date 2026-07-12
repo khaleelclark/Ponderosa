@@ -129,8 +129,10 @@ class SteerableMockAdapter extends MockAdapter {
   readonly starts: RuntimeTurnInput[] = [];
   readonly steers: RuntimeTurnInput[] = [];
   opened = 0;
+  completeStartedTurns = false;
+  onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
 
-  async openSession(_opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+  async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
     this.opened += 1;
     const queue = new TestEventQueue();
     queue.push({ type: "session", sessionId: "persistent-session" });
@@ -139,6 +141,10 @@ class SteerableMockAdapter extends MockAdapter {
       events: queue,
       startTurn: async (input) => {
         this.starts.push(input);
+        if (this.completeStartedTurns) {
+          await this.onStartedTurn?.(this.starts.length, opts.environment ?? {});
+          queue.push({ type: "turn_done" });
+        }
         return { turnId: "persistent-turn" };
       },
       steer: async (input) => {
@@ -239,6 +245,45 @@ describe("persistent engine steering", () => {
       expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "steered result", completed: true }),
     ]);
     expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
+    await app.close();
+  });
+
+  it("reuses session-scoped capabilities while authorizing only the current turn", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Persistent capabilities", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Dinosaur", engine: "codex", masterChatId: master.id });
+    const statuses: number[] = [];
+    const observedTokens: string[] = [];
+    persistent.onStartedTurn = async (turnNumber, environment) => {
+      observedTokens.push(environment.PONDEROSA_AGENT_MESSAGE_TOKEN!);
+      const sent = await app.inject({
+        method: "POST", url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${environment.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "direct_to_user", text: `reply ${turnNumber}` },
+      });
+      statuses.push(sent.statusCode);
+    };
+
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first" } });
+    await waitForRun(thread.id);
+    const expiredBetweenTurns = await app.inject({
+      method: "POST", url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${observedTokens[0]}` },
+      payload: { intent: "direct_to_user", text: "must fail while idle" },
+    });
+    expect(expiredBetweenTurns.statusCode).toBe(401);
+
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second" } });
+    await waitForRun(thread.id, 2);
+    expect(persistent.opened).toBe(1);
+    expect(observedTokens).toEqual([observedTokens[0], observedTokens[0]]);
+    expect(statuses).toEqual([200, 200]);
+    expect(store.getMasterChatMessages(master.id).filter((message) => message.authorThreadId === thread.id)
+      .map((message) => message.text)).toEqual(["#user reply 1", "#user reply 2"]);
     await app.close();
   });
 });
@@ -606,32 +651,64 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("delivers an emoji reaction as one ordinary direct message to only the author agent", async () => {
+  it("projects a user reaction onto its message and privately notifies only the author with reply context", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "User emoji reaction", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
     const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
     const text = "the user reacted with 🧑🏽‍🚀";
+    const communicationEventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId: communicationEventId, schemaVersion: 2, projectId: project.id, masterChatId: master.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "run-result" },
+      intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+      text: "Original agent result", createdAt: new Date().toISOString(),
+    });
+    const original = store.appendMasterChatMessage(
+      master.id, { role: "assistant", text: "#broadcast Original agent result" }, author.id,
+      "main", undefined, undefined, communicationEventId,
+    )!;
+    store.appendEvent(author.id, {
+      type: "communication_projection", communicationEventId, text: "Original agent result", role: "assistant",
+    });
 
     const sent = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-messages`,
+      url: "/api/user-reactions",
       payload: {
-        text,
-        recipients: [{ agentId: author.id }],
+        projectId: project.id,
+        communicationEventId,
+        emoji: "🧑🏽‍🚀",
         idempotencyKey: "reaction-to-author",
       },
     });
     expect(sent.statusCode, sent.body).toBe(200);
+    const replay = await app.inject({
+      method: "POST", url: "/api/user-reactions",
+      payload: { projectId: project.id, communicationEventId, emoji: "🧑🏽‍🚀", idempotencyKey: "reaction-to-author" },
+    });
+    expect(replay.json()).toMatchObject({ replayed: true, targetAuthorThreadId: author.id });
     await waitForRun(author.id);
 
+    expect(store.getMasterChatMessages(master.id)).toEqual([expect.objectContaining({ id: original.id })]);
+    const detail = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}` });
+    expect(detail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
+      { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
+    ]);
+    const authorDetail = await app.inject({ method: "GET", url: `/api/threads/${author.id}` });
+    expect(authorDetail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
+      { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
+    ]);
     expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text }),
+      expect.objectContaining({ role: "user", text, communicationEventId: undefined }),
     ]));
     expect(store.getMessages(observer.id).some((message) => message.text === text)).toBe(false);
     expect(adapter.seeds.filter((seed) => seed.threadId === author.id)).toHaveLength(1);
+    expect(adapter.seeds[0]?.prompt).toContain(text);
+    expect(adapter.seeds[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Original agent result");
     expect(adapter.seeds.filter((seed) => seed.threadId === observer.id)).toHaveLength(0);
+    expect(store.readCommunicationEvents(project.id).filter((event) => event.text === text)).toHaveLength(0);
     await app.close();
   });
 

@@ -26,6 +26,8 @@ import type {
   ImageAttachmentDto,
   CreateDirectReplyRequest,
   CreateMultiAgentDirectMessageRequest,
+  CreateUserReactionRequest,
+  CreateUserReactionResponse,
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
   SseEventEnvelope,
@@ -49,6 +51,7 @@ import {
   type CollaborationDelivery,
   type CollaborationDeliveryBatch,
 } from "./handoffs.js";
+import { UserReactionStore } from "./user-reactions.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -103,6 +106,14 @@ interface ActiveRun {
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
+}
+
+interface PersistentRuntime {
+  session: RuntimeSession;
+  iterator: AsyncIterator<AgentEvent>;
+  /** Stable secrets injected once into the persistent engine process. */
+  messageCapability: string;
+  delegationCapability: string;
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -273,6 +284,13 @@ function renderScopedMessage(tag: "broadcast" | "user", text: string): string {
   return `#${tag} ${stripLeadingScopeTag(text, tag)}`.trimEnd();
 }
 
+function isSingleEmoji(input: string): boolean {
+  const value = input.trim();
+  if (!value) return false;
+  const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)];
+  return graphemes.length === 1 && /(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]\uFE0F?\u20E3)/u.test(value);
+}
+
 function inboundContext(
   channel: AgentMessageChannel,
   author: string,
@@ -339,7 +357,7 @@ function agentMessagingPrompt(): string[] {
     "If anyone should receive information, you must explicitly use the messaging tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
-    "Agents do not have a reaction capability. Emoji reactions from the user arrive as ordinary Direct Messages and should be handled like any other user message.",
+    "Agents cannot create reactions. A user emoji reaction arrives as a private notification with immutable reply context identifying the message they reacted to.",
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     "Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
@@ -614,9 +632,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const activeRuns = new Map<string, ActiveRun>();
-  const runtimeSessions = new Map<string, { session: RuntimeSession; iterator: AsyncIterator<AgentEvent> }>();
+  const runtimeSessions = new Map<string, PersistentRuntime>();
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
+  const userReactions = new UserReactionStore(opts.dataDir);
   const runLedger = new RunLedger(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineCapabilityCache = new Map<string, { expiresAt: number; value: Promise<ProjectEngineCapabilitiesDto> }>();
@@ -755,22 +774,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return true;
   }
 
+  function withUserReactions<T extends { communicationEventId?: string }>(messages: T[]): T[] {
+    return messages.map((message) => message.communicationEventId ? {
+      ...message,
+      reactions: userReactions.forCommunication(message.communicationEventId),
+    } : message);
+  }
+
   function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
     const detail = store.getMasterChatDetail(masterChatId);
     if (!detail) return detail;
-    return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "main") };
+    return { ...detail, messages: withUserReactions(store.getProjectedMasterChatMessages(masterChatId, "main")) };
   }
 
   function collaborationChatDetail(masterChatId: string): CollaborationChatDetailDto | undefined {
     const detail = store.getCollaborationChatDetail(masterChatId);
     if (!detail) return detail;
-    return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "collaboration") };
+    return { ...detail, messages: withUserReactions(store.getProjectedMasterChatMessages(masterChatId, "collaboration")) };
   }
 
   function threadDetail(threadId: string): import("@ponderosa/core").ThreadDetailDto | undefined {
     const detail = store.getThreadDetail(threadId);
     if (!detail) return detail;
-    return { ...detail, messages: store.getProjectedThreadMessages(threadId) };
+    return { ...detail, messages: withUserReactions(store.getProjectedThreadMessages(threadId)) };
   }
 
   const threadMessages = (threadId: string) => store.getProjectedThreadMessages(threadId);
@@ -836,6 +862,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceAuthorThreadId: delivery.authorThreadId,
       collaborationDeliveryId: delivery.id,
       replyToMessageId: delivery.replyToMessageId,
+      replyTo: delivery.replyTo,
       attachmentIds: delivery.attachmentIds,
     };
   }
@@ -2226,6 +2253,65 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  app.post<{ Body: CreateUserReactionRequest }>("/api/user-reactions", async (request, reply) => {
+    const projectId = request.body?.projectId?.trim() ?? "";
+    const communicationEventId = request.body?.communicationEventId?.trim() ?? "";
+    const emoji = request.body?.emoji?.trim() ?? "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!projectId || !communicationEventId) return reply.code(400).send({ error: "projectId and communicationEventId are required" });
+    if (!isSingleEmoji(emoji)) return reply.code(400).send({ error: "emoji must be one emoji grapheme" });
+    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    const communication = store.getCommunicationEvent(projectId, communicationEventId);
+    if (!communication || communication.sender.kind !== "agent") {
+      return reply.code(404).send({ error: "agent-authored message not found" });
+    }
+    const target = store.getThread(communication.sender.agentId);
+    if (!target || target.archived || target.projectId !== projectId) {
+      return reply.code(404).send({ error: "message author not found" });
+    }
+    let result: ReturnType<UserReactionStore["set"]>;
+    try {
+      result = userReactions.set({
+        idempotencyKey,
+        projectId,
+        communicationEventId,
+        targetAuthorThreadId: target.id,
+        emoji,
+        replyTo: {
+          messageId: communicationEventId,
+          text: communication.text,
+          role: "assistant",
+          authorThreadId: target.id,
+        },
+      });
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "reaction conflict" });
+    }
+    const deliveryMessageId = `reaction:${result.event.id}`;
+    const existingDelivery = collaborationDeliveries.getForMessageTarget(deliveryMessageId, target.id);
+    const wasBusy = activeRuns.has(target.id);
+    const delivery = existingDelivery ?? queueCollaborationDelivery({
+      masterChatId: communication.masterChatId ?? target.masterChatId,
+      messageId: deliveryMessageId,
+      targetThreadId: target.id,
+      text: `the user reacted with ${emoji}`,
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "direct",
+      createdAt: result.event.createdAt,
+      orderKey: store.nextDeliveryOrderKey(result.event.createdAt),
+      replyToMessageId: communicationEventId,
+      replyTo: result.event.replyTo,
+    });
+    if (!delivery) return reply.code(503).send({ error: "reaction notification could not be persisted" });
+    return {
+      replayed: result.replayed,
+      queued: existingDelivery ? existingDelivery.status === "queued" : wasBusy,
+      targetAuthorThreadId: target.id,
+      reactions: userReactions.forCommunication(communicationEventId),
+    } satisfies CreateUserReactionResponse;
+  });
+
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
     "/api/master-chats/:id/direct-replies",
     async (request, reply) => {
@@ -2774,6 +2860,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceMasterChatId?: string;
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
+      /** Server-only immutable context for a delivery that is not itself a chat message. */
+      replyTo?: MessageReferenceDto;
       attachmentIds?: string[];
       /** Server-only link used when one action projects into room and audit timelines. */
       communicationEventId?: string;
@@ -2821,6 +2909,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "shared turns must originate from a Master Chat" });
       }
       const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
+      if (request.body.replyTo && request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey) {
+        return reply.code(403).send({ error: "reply context is server-controlled" });
+      }
       const directReplyTarget = request.body.replyToMessageId
         ? threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId)
         : undefined;
@@ -2832,7 +2923,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? store.getMasterChatMessages(collaborationMasterChatId, "collaboration")
             .find((message) => message.id === request.body.replyToMessageId)
         : undefined;
-      if (request.body.replyToMessageId && !directReplyTarget && !sourceMasterReply && !sourceCollaborationReply) {
+      if (request.body.replyToMessageId && !request.body.replyTo && !directReplyTarget && !sourceMasterReply && !sourceCollaborationReply) {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
       }
       const collaborationDeliveryId = request.body.collaborationDeliveryId;
@@ -2931,12 +3022,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
         sourceAuthorThreadId: request.body.sourceAuthorThreadId,
         replyToMessageId: request.body.replyToMessageId,
-        replyTo: request.body.replyToMessageId
+        replyTo: request.body.replyTo ?? (request.body.replyToMessageId
           ? (() => {
               const replyTarget = directReplyTarget ?? sourceMasterReply ?? sourceCollaborationReply;
               return replyTarget ? { messageId: replyTarget.id, text: replyTarget.text, role: replyTarget.role } : undefined;
             })()
-          : undefined,
+          : undefined),
       };
       const auditText = text;
       const existingRun = activeRuns.get(thread.id);
@@ -3011,8 +3102,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }));
       const runId = randomUUID();
       const controller = new AbortController();
-      const messageCapability = randomUUID();
-      const delegationCapability = randomUUID();
+      const reusablePersistentRuntime = engine.adapter.openSession ? runtimeSessions.get(thread.id) : undefined;
+      const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();
+      const delegationCapability = reusablePersistentRuntime?.delegationCapability ?? randomUUID();
       const delegatedObjective = delegations.findByChildThread(thread.id);
       const resumeSessionId = store.resumeSessionId(thread.id);
       const mode = resumeSessionId ? "continue" : "seed";
@@ -3184,7 +3276,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_DELEGATION_TOKEN: delegationCapability,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
           };
-          let persistentRuntime = engine.adapter.openSession ? runtimeSessions.get(thread.id) : undefined;
+          let persistentRuntime = reusablePersistentRuntime;
           if (engine.adapter.openSession && !persistentRuntime) {
             const session = await engine.adapter.openSession({
               threadId: thread.id,
@@ -3196,7 +3288,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               environment,
               signal: controller.signal,
             });
-            persistentRuntime = { session, iterator: session.events[Symbol.asyncIterator]() };
+            persistentRuntime = {
+              session,
+              iterator: session.events[Symbol.asyncIterator](),
+              messageCapability,
+              delegationCapability,
+            };
             runtimeSessions.set(thread.id, persistentRuntime);
           }
           if (persistentRuntime) activeRun.runtimeSession = persistentRuntime.session;

@@ -53,7 +53,7 @@ import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
-import { EmojiReactionPicker, userReactionDirectMessage } from "./EmojiReactionPicker";
+import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 
 export function MasterChatMessage({
   message,
@@ -132,8 +132,9 @@ export function MasterChatMessage({
               : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
           </Box>)}
         </Stack> : null}
+        <MessageReactions reactions={message.reactions} />
         <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
-          {message.authorThreadId ? <EmojiReactionPicker recipientName={agentTitle(message.authorThreadId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
+          {message.authorThreadId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorThreadId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
           <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
           {conversation === "main" && message.authorThreadId ? (
             <Button
@@ -388,12 +389,12 @@ export function MasterChatView({
   });
 
   const sendReaction = useMutation({
-    mutationFn: ({ targetId, emoji, requestId }: { targetId: string; emoji: string; requestId: string }) =>
-      api.sendMultiAgentDirectMessage(masterChatId, userReactionDirectMessage(targetId, emoji, requestId)),
-    onSuccess: (response, variables) => {
+    mutationFn: ({ communicationEventId, emoji, requestId }: { communicationEventId: string; emoji: string; requestId: string }) =>
+      api.sendUserReaction({ projectId: masterChat!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
+    onSuccess: (response) => {
       invalidate();
-      setQueuedReplyNotice(response.recipients[0]?.queued ? `Queued for ${agentTitle(variables.targetId)}; it will start when the current response finishes.` : undefined);
-      void queryClient.invalidateQueries({ queryKey: ["thread", variables.targetId] });
+      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["thread", response.targetAuthorThreadId] });
     },
   });
 
@@ -773,7 +774,7 @@ export function MasterChatView({
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
                 }}
                 onReact={(selected, emoji) => sendReaction.mutateAsync({
-                  targetId: selected.authorThreadId!,
+                  communicationEventId: selected.communicationEventId!,
                   emoji,
                   requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
                 }).then(() => undefined)}
