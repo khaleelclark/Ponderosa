@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { CollaborationChatDetailDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDetailDto, MasterChatDto, MasterChatMessageDto, MessageReactionDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
+import type { EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -53,11 +53,7 @@ import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
-
-export function reactionTooltipText(reaction: MessageReactionDto | undefined): string {
-  if (!reaction?.reactors.length) return "No reactions yet";
-  return `Reacted by ${reaction.reactors.map((reactor) => reactor.kind === "manager" ? "You" : reactor.label).join(", ")}`;
-}
+import { EmojiReactionPicker, userReactionDirectMessage } from "./EmojiReactionPicker";
 
 export function MasterChatMessage({
   message,
@@ -78,7 +74,7 @@ export function MasterChatMessage({
   onOpenAgent(agentId: string): void;
   onReply(message: MasterChatMessageDto): void;
   onDirectReply(message: MasterChatMessageDto): void;
-  onReact(message: MasterChatMessageDto, emoji: ReactionEmoji, active: boolean): void;
+  onReact(message: MasterChatMessageDto, emoji: string): Promise<void>;
 }): JSX.Element {
   const fromManager = !message.authorThreadId;
   const showUserLabel = fromManager && message.role === "user";
@@ -137,11 +133,7 @@ export function MasterChatMessage({
           </Box>)}
         </Stack> : null}
         <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
-          {(["👍", "❤️", "🎉", "👀"] as ReactionEmoji[]).map((emoji) => {
-            const reaction = message.reactions?.find((item) => item.emoji === emoji);
-            const tooltip = reactionTooltipText(reaction);
-            return <Tooltip key={emoji} title={tooltip} arrow><Button size="small" color="inherit" aria-pressed={reaction?.reactedByCurrentActor ?? false} aria-label={`${reaction?.reactedByCurrentActor ? "Remove" : "Add"} ${emoji} reaction. ${tooltip}`} onClick={() => onReact(message, emoji, !(reaction?.reactedByCurrentActor ?? false))}>{emoji}{reaction?.count ? ` ${reaction.count}` : ""}</Button></Tooltip>;
-          })}
+          {message.authorThreadId ? <EmojiReactionPicker recipientName={agentTitle(message.authorThreadId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
           <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
           {conversation === "main" && message.authorThreadId ? (
             <Button
@@ -193,7 +185,6 @@ export function MasterChatView({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
-  const [reactionError, setReactionError] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
   const [collaborationRecipientIds, setCollaborationRecipientIds] = useState<string[]>([]);
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
@@ -393,6 +384,16 @@ export function MasterChatView({
       invalidate();
       setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
       void queryClient.invalidateQueries({ queryKey: ["thread", response.targetAuthorThreadId] });
+    },
+  });
+
+  const sendReaction = useMutation({
+    mutationFn: ({ targetId, emoji, requestId }: { targetId: string; emoji: string; requestId: string }) =>
+      api.sendMultiAgentDirectMessage(masterChatId, userReactionDirectMessage(targetId, emoji, requestId)),
+    onSuccess: (response, variables) => {
+      invalidate();
+      setQueuedReplyNotice(response.recipients[0]?.queued ? `Queued for ${agentTitle(variables.targetId)}; it will start when the current response finishes.` : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["thread", variables.targetId] });
     },
   });
 
@@ -737,7 +738,6 @@ export function MasterChatView({
           ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
-            {reactionError ? <Alert severity="error" onClose={() => setReactionError(undefined)}>Reaction not saved. {reactionError}</Alert> : null}
             {conversation === "collaboration" && showSubagents && subagentBinding ? (
               <SubagentTreePanel
                 store={subagentBinding.store}
@@ -772,15 +772,11 @@ export function MasterChatView({
                   setDirectReplyTargetId(selected.authorThreadId);
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
                 }}
-                onReact={(selected, emoji, active) => {
-                  setReactionError(undefined);
-                  const queryKey = conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId];
-                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then((response) => {
-                    queryClient.setQueryData<MasterChatDetailDto | CollaborationChatDetailDto>(queryKey, (current) => current
-                      ? { ...current, messages: current.messages.map((message) => message.id === selected.id ? { ...message, reactions: response.reactions } : message) }
-                      : current);
-                  }).catch((error: unknown) => setReactionError(error instanceof Error ? error.message : "Try again."));
-                }}
+                onReact={(selected, emoji) => sendReaction.mutateAsync({
+                  targetId: selected.authorThreadId!,
+                  emoji,
+                  requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+                }).then(() => undefined)}
               />
             ))}
           </Stack>

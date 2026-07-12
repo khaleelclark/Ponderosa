@@ -67,12 +67,12 @@ pay-per-token provider API keys.
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
-   A plain Master Chat request starts shared work. The responsible agent reacts
-   👍 when it accepts the task and its ordinary completed answer or result is a
-   Broadcast rendered as a normal assistant answer without an automatic scope
-   prefix. Questions, private progress, and informational notes to the user are
-   Direct Messages. A user DM receives a DM reply. This inherited response scope
-   is server-enforced; do not rely on rendered labels or model discretion.
+   A plain Master Chat request starts shared work. The responsible agent's
+   ordinary completed answer or result is a Broadcast rendered as a normal
+   assistant answer without an automatic scope prefix. Questions, private
+   progress, and informational notes to the user are Direct Messages. A user DM
+   receives a DM reply. This inherited response scope is server-enforced; do not
+   rely on rendered labels or model discretion.
 
 6. **Master Chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
@@ -89,10 +89,11 @@ pay-per-token provider API keys.
    Agent Chat. Projection alone must never enqueue, steer, or start an agent;
    only explicit recipient delivery (including `#everyone`) may do that.
 
-   Reactions are canonical lightweight social signals. Preserve stable reactor
-   identity in projections so people can see who reacted. Agents should use
-   reactions for approval, acknowledgment, celebration, concern, or attention
-   when prose would be redundant. A reaction never changes scope or starts a run.
+   Emoji reactions are user-authored Direct Messages, not a separate event type.
+   Only the user can react, and only to an agent-authored message. Selecting an
+   emoji sends `the user reacted with <emoji>` exclusively to that message's
+   stable author agent ID through the normal Direct Message path. Agents have no
+   reaction capability, reaction state, or automatic reaction behavior.
 
 8. **Routing uses stable identities.** Store structured recipient agent IDs and
    let the server own routing. Display names and rendered `#labels` are presentation,

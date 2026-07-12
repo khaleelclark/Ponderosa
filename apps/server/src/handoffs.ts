@@ -15,13 +15,11 @@ export interface CollaborationDelivery {
   text: string;
   relayDepth: number;
   mentionTrail: string[];
-  /** A delegated result and reaction are delivered by the server; ordinary messages are tags. */
-  kind: "direct" | "tag" | "delegation_completion" | "reaction";
+  /** A delegated result is delivered by the server; ordinary messages are tags. */
+  kind: "direct" | "tag" | "delegation_completion";
   /** Auditable selector resolved to this recipient at message creation time. */
   audience?: "mention" | "everyone";
   delegatedRunId?: string;
-  /** Durable reaction occurrence completed when the recipient turn acknowledges it. */
-  reactionOccurrenceId?: string;
   model?: string;
   effort?: string;
   sourceChannel?: "main";
