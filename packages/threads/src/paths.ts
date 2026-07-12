@@ -9,7 +9,6 @@
 //         communication-events.jsonl   ← canonical cross-surface communication
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
-//         knowledge-promotions.jsonl   ← provenance-linked shared knowledge
 //         master-chats/
 //           <master-chat-id>/
 //             master-chat.json         ← title, defaults, timestamps
@@ -57,9 +56,6 @@ export function communicationProjectionsPath(dataDir: string, projectId: string)
   return path.join(projectDir(dataDir, projectId), "communication-projections.jsonl");
 }
 
-export function knowledgePromotionsPath(dataDir: string, projectId: string): string {
-  return path.join(projectDir(dataDir, projectId), "knowledge-promotions.jsonl");
-}
 export function agentPresetsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "agent-presets.jsonl");
 }

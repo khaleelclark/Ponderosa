@@ -100,39 +100,14 @@ export interface CommunicationDelivery {
   failure?: { code: string; message: string; retryable: boolean };
 }
 
-export type CommunicationContextPolicy = "local_only" | "organizational_candidate";
+export type CommunicationContextPolicy = "local_only" | "organizational";
 
-/** Context eligibility is explicit and independent of projection visibility. */
+/** Context eligibility is derived once from the event's immutable intent. */
 export interface CommunicationContextClassification {
   eventId: string;
   policy: CommunicationContextPolicy;
   classifiedAt: string;
   classifiedBy: CommunicationActor;
-}
-
-/** Append-only authorization to expose selected local knowledge organizationally. */
-export interface KnowledgePromotion {
-  promotionId: string;
-  sourceEventId: string;
-  organizationId: string;
-  summary: string;
-  promotedBy: CommunicationActor;
-  promotedAt: string;
-  supersedesPromotionId?: string;
-  expiresAt?: string;
-  idempotencyKey?: string;
-}
-
-export interface CreateKnowledgePromotionRequest {
-  sourceEventId: string;
-  summary: string;
-  idempotencyKey: string;
-  expiresAt?: string;
-}
-
-export interface CreateKnowledgePromotionResponse {
-  promotion: KnowledgePromotion;
-  replayed: boolean;
 }
 
 /** Shadow-migration parity report computed from canonical disk records. */

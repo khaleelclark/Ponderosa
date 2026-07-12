@@ -18,7 +18,6 @@ export interface PonderosaConfig {
   communicationMode: "off" | "shadow";
   communicationReadMode: "legacy" | "shadow" | "authoritative";
   legacyRoutingMode: "accept" | "reject";
-  curatedContextEnabled: boolean;
 }
 
 /**
@@ -70,6 +69,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
     communicationMode,
     communicationReadMode,
     legacyRoutingMode,
-    curatedContextEnabled: env.PONDEROSA_CURATED_CONTEXT !== "off",
   };
 }

@@ -7,7 +7,6 @@ describe("communication migration configuration", () => {
       communicationMode: "shadow",
       communicationReadMode: "shadow",
       legacyRoutingMode: "reject",
-      curatedContextEnabled: true,
     });
   });
 

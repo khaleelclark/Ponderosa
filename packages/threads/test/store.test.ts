@@ -138,7 +138,7 @@ describe("ThreadStore — canonical communication events", () => {
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
   });
 
-  it("promotes local knowledge with provenance and idempotency", () => {
+  it("keeps a communication event's scope immutable", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const event: CommunicationEvent = {
       eventId: "event-local", schemaVersion: 1, projectId: project.id,
@@ -147,16 +147,15 @@ describe("ThreadStore — canonical communication events", () => {
       createdAt: "2026-07-12T00:00:00.000Z",
     };
     store.appendCommunicationEvent(event);
-    const promotion = {
-      promotionId: "promotion-1", sourceEventId: event.eventId, organizationId: project.id,
-      summary: "Durable finding", promotedBy: { kind: "user" as const, userId: "local-operator" },
-      promotedAt: "2026-07-12T00:01:00.000Z", idempotencyKey: "promote-local",
-    };
-    expect(store.promoteKnowledge(promotion)).toEqual({ promotion, replayed: false });
-    expect(store.promoteKnowledge({ ...promotion, promotionId: "retry-id" })).toEqual({ promotion, replayed: true });
-    expect(store.readKnowledgePromotions(project.id)).toEqual([promotion]);
-    expect(() => store.promoteKnowledge({ ...promotion, promotionId: "bad", summary: "Different" }))
-      .toThrow("idempotency collision");
+    expect(() => store.appendCommunicationEvent({
+      ...event,
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+    })).toThrow("communication event ID collision");
+    expect(store.readCommunicationEvents(project.id)).toEqual([event]);
+    expect(store.readContextClassifications(project.id)).toEqual([
+      expect.objectContaining({ eventId: event.eventId, policy: "local_only" }),
+    ]);
   });
 
   it("accepts one event on multiple surfaces while deduplicating each projection tuple", () => {

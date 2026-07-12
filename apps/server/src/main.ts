@@ -17,7 +17,6 @@ const app = createServer({
   communicationMode: config.communicationMode,
   communicationReadMode: config.communicationReadMode,
   legacyRoutingMode: config.legacyRoutingMode,
-  curatedContextEnabled: config.curatedContextEnabled,
 });
 
 try {

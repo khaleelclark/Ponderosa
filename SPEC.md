@@ -273,13 +273,15 @@ the collaboration projection. A temporary compatibility path accepts the former
 channel-and-mention request from runtime sessions seeded before this contract was
 deployed; it is not advertised and is removed after the session migration window.
 
-The target persistence contract is one versioned, immutable, project-level
+The persistence contract is one versioned, immutable, project-level
 `CommunicationEvent`. Master Chat, Collaboration Chat, Direct Agent audit,
 agent inbox, and user inbox entries are rebuildable projections referencing its
 globally unique event ID. Delivery attempts and receipts are mutable operational
-records outside that event. Context classification and knowledge promotion are
-append-only records referencing the same ID, so being visible in a projection
-never implicitly makes local conversation shared organizational context.
+records outside that event. Intent fixes visibility and future-context eligibility
+when the event is created: broadcasts are organizational context; direct messages
+and collaborations remain local to their participants. Scope never changes. To
+share a local finding organizationally, create a new broadcast summary and leave
+the original event unchanged.
 
 The reserved, case-insensitive `@everyone` collaboration handle resolves once,
 at message creation, to every non-archived agent that is currently a member of
@@ -444,13 +446,10 @@ is simpler and reuses what the runtimes already do.
 > the minimal highest-value context) but not a v1 dependency. Keeping the event log
 > clean and queryable leaves the door open without betting the MVP on it.
 
-Communication curation does not replace repository knowledge. A promoted
-communication summary is an append-only, provenance-linked project event used at
-fresh session boundaries; it is not a mutable fact database and never includes
-the source local message implicitly. Durable engineering standards and project
-instructions still belong in the repository's own markdown files. Promotions
-may expire or be superseded and are scoped organizational history, not timeless
-project truth.
+Communication history does not replace repository knowledge. Broadcasts provide
+shared conversational context at fresh session boundaries. Durable engineering
+standards and project instructions still belong in the repository's own markdown
+files. Direct messages and collaborations are never added to future-agent context.
 
 ---
 

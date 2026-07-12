@@ -78,9 +78,9 @@ v2 (501-stubbed) `SwitchEngineRequest`, `SearchResultDto`, `SearchResponse`.
 `CommunicationEvent` is the one immutable project-level record behind chat,
 audit, and inbox projections. Its intent determines its structurally typed
 audience; collaboration uses a non-empty tuple of stable agent IDs. Projection,
-delivery, context-classification, and knowledge-promotion records reference the
-event ID and never mutate the original communication. Projection visibility and
-future-context eligibility are deliberately independent.
+delivery, and context-classification records reference the event ID and never
+mutate the original communication. The immutable intent determines projection
+visibility and future-context eligibility at creation: only broadcasts are shared.
 
 ## `config.ts` / `logger.ts` — Node-only (subpath exports)
 

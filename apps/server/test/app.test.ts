@@ -11,6 +11,17 @@ import { DelegationStore } from "../src/delegations.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function appendBroadcast(store: ThreadStore, projectId: string, masterChatId: string, text: string): void {
+  const eventId = randomUUID();
+  store.appendCommunicationEvent({
+    eventId, schemaVersion: 1, projectId, masterChatId,
+    sender: { kind: "user", userId: "local-operator" },
+    intent: "broadcast", audience: { kind: "organization", organizationId: projectId },
+    text, createdAt: new Date().toISOString(),
+  });
+  store.appendMasterChatMessage(masterChatId, { text }, undefined, "main", undefined, undefined, eventId);
+}
+
 class MockAdapter implements Adapter {
   id = "codex";
   displayName = "Mock Codex";
@@ -623,7 +634,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Release room" });
-    store.appendMasterChatMessage(master.id, { text: "Ship the API change." });
+    appendBroadcast(store, project.id, master.id, "Ship the API change.");
     const thread = store.createThread(project.id, {
       title: "Aspen",
       engine: "codex",
@@ -648,7 +659,7 @@ describe("server chunk F", () => {
       "never write routing @mentions into message text",
     );
 
-    store.appendMasterChatMessage(master.id, { text: "@Aspen Is it tested?" });
+    appendBroadcast(store, project.id, master.id, "@Aspen Is it tested?");
     await app.inject({
       method: "POST",
       url: `/api/threads/${thread.id}/messages`,
@@ -676,7 +687,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Incremental room" });
-    store.appendMasterChatMessage(master.id, { text: "seed-only marker" });
+    appendBroadcast(store, project.id, master.id, "seed-only marker");
     const thread = store.createThread(project.id, { title: "Delta", engine: "codex", masterChatId: master.id });
 
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
@@ -684,7 +695,7 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("seed-only marker");
     expect(adapter.seeds[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=16");
 
-    store.appendMasterChatMessage(master.id, { text: "delta marker" });
+    appendBroadcast(store, project.id, master.id, "delta marker");
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delta", sourceChannel: "main" } });
     await waitForRun(thread.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("delta marker");
@@ -703,12 +714,12 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Retry room" });
-    store.appendMasterChatMessage(master.id, { text: "original context" });
+    appendBroadcast(store, project.id, master.id, "original context");
     const thread = store.createThread(project.id, { title: "Retry", engine: "codex", masterChatId: master.id });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
     await waitForRun(thread.id);
 
-    store.appendMasterChatMessage(master.id, { text: "must redeliver" });
+    appendBroadcast(store, project.id, master.id, "must redeliver");
     adapter.failNextTurn = true;
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "fails", sourceChannel: "main" } });
     await waitForRun(thread.id, 2);
@@ -731,8 +742,8 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const first = store.createMasterChat(project.id, { title: "First" });
     const second = store.createMasterChat(project.id, { title: "Second" });
-    store.appendMasterChatMessage(first.id, { text: "first-room secret" });
-    store.appendMasterChatMessage(second.id, { text: "second-room secret" });
+    appendBroadcast(store, project.id, first.id, "first-room secret");
+    appendBroadcast(store, project.id, second.id, "second-room secret");
     const thread = store.createThread(project.id, { title: "Rooms", engine: "codex", masterChatId: first.id });
     store.updateThreadMasterChatMemberships(thread.id, { masterChatIds: [first.id, second.id], primaryMasterChatId: first.id });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceMasterChatId: first.id } });
@@ -749,14 +760,14 @@ describe("server chunk F", () => {
     const firstApp = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Restart room" });
-    store.appendMasterChatMessage(master.id, { text: "before-restart marker" });
+    appendBroadcast(store, project.id, master.id, "before-restart marker");
     const thread = store.createThread(project.id, { title: "Restart", engine: "codex", masterChatId: master.id });
     await firstApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
     await waitForRun(thread.id);
     await firstApp.close();
 
     store = new ThreadStore(dataDir);
-    store.appendMasterChatMessage(master.id, { text: "after-restart marker" });
+    appendBroadcast(store, project.id, master.id, "after-restart marker");
     const secondApp = createServer({ dataDir, store, engines, logger: false });
     await secondApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "resume", sourceChannel: "main" } });
     await waitForRun(thread.id, 2);
@@ -1055,48 +1066,52 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("seeds only promoted summaries from local communication into future agent context", async () => {
+  it("inherits broadcasts but not direct messages or collaboration in a newly spawned agent", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    store.appendCommunicationEvent({
-      eventId: "private-source", schemaVersion: 1, projectId: project.id,
-      sender: { kind: "agent", agentId: "source-agent" }, intent: "direct_to_user",
-      audience: { kind: "user", userId: "local-operator" },
-      text: "raw local secret must not be seeded", createdAt: "2026-07-12T00:00:00.000Z",
-    });
-    store.promoteKnowledge({
-      promotionId: "promotion-1", sourceEventId: "private-source", organizationId: project.id,
-      summary: "Use the reviewed deployment invariant.", promotedBy: { kind: "user", userId: "local-operator" },
-      promotedAt: "2026-07-12T00:01:00.000Z",
-    });
-    const thread = store.createThread(project.id, { title: "Future Agent", engine: "codex" });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin." } });
-    await waitForRun(thread.id);
+    const project = store.createProject({ label: "Immutable scope", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Scope room" });
+    const participant = store.createThread(project.id, { title: "Participant", engine: "codex", masterChatId: master.id });
 
-    expect(adapter.seeds[0]?.prompt).toContain("Curated organizational knowledge");
-    expect(adapter.seeds[0]?.prompt).toContain("[source private-source] Use the reviewed deployment invariant.");
-    expect(adapter.seeds[0]?.prompt).not.toContain("raw local secret must not be seeded");
+    appendBroadcast(store, project.id, master.id, "shared project finding");
+    const directId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId: directId, schemaVersion: 1, projectId: project.id, masterChatId: master.id,
+      sender: { kind: "agent", agentId: participant.id }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" }, text: "private manager note",
+      createdAt: new Date().toISOString(),
+    });
+    store.appendMasterChatMessage(master.id, { text: "@User private manager note" }, participant.id, "main", undefined, undefined, directId);
+    const collaborationId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId: collaborationId, schemaVersion: 1, projectId: project.id, masterChatId: master.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [participant.id] }, text: "participant-only review",
+      createdAt: new Date().toISOString(),
+    });
+    store.appendMasterChatMessage(master.id, { text: "participant-only review" }, undefined, "collaboration", undefined, undefined, collaborationId);
+
+    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: "@User private manager note", communicationEventId: directId }),
+    ]));
+    const future = store.createThread(project.id, { title: "Future", engine: "codex", masterChatId: master.id });
+    await app.inject({
+      method: "POST", url: `/api/threads/${future.id}/messages`,
+      payload: { text: "Start", sourceChannel: "main" },
+    });
+    await waitForRun(future.id);
+    const prompt = adapter.seeds[0]?.prompt ?? "";
+    expect(prompt).toContain("shared project finding");
+    expect(prompt).not.toContain("private manager note");
+    expect(prompt).not.toContain("participant-only review");
     await app.close();
   });
 
-  it("rolls communication and curated context back independently", async () => {
+  it("rolls canonical communication capture back independently", async () => {
     const project = store.createProject({ label: "Rollback", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Room" });
-    const source = {
-      eventId: "existing-local", schemaVersion: 1 as const, projectId: project.id,
-      sender: { kind: "agent" as const, agentId: "source" }, intent: "direct_to_user" as const,
-      audience: { kind: "user" as const, userId: "local-operator" }, text: "raw local",
-      createdAt: "2026-07-12T00:00:00.000Z",
-    };
-    store.appendCommunicationEvent(source);
-    store.promoteKnowledge({
-      promotionId: "existing-promotion", sourceEventId: source.eventId, organizationId: project.id,
-      summary: "Must be disabled", promotedBy: { kind: "user", userId: "local-operator" },
-      promotedAt: "2026-07-12T00:01:00.000Z",
-    });
     const baseline = store.readCommunicationEvents(project.id).length;
     const app = createServer({
-      dataDir, store, engines, logger: false, communicationMode: "off", curatedContextEnabled: false,
+      dataDir, store, engines, logger: false, communicationMode: "off",
     });
     const message = await app.inject({
       method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Legacy-only message" },
@@ -1106,10 +1121,9 @@ describe("server chunk F", () => {
     const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin" } });
     await waitForRun(thread.id);
-    expect(adapter.seeds[0]?.prompt).not.toContain("Must be disabled");
     expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
     expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; curated_context=off; parity=disabled" } } });
+      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; parity=disabled" } } });
     await app.close();
   });
 
@@ -1303,7 +1317,7 @@ describe("server chunk F", () => {
     ]));
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 4,
-      linkedProjections: 7,
+      linkedProjections: 8,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -1318,22 +1332,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 7 });
-    const promotionPayload = {
-      sourceEventId: direct.json<{ eventId: string }>().eventId,
-      summary: "The private implementation note is now project-level guidance.",
-      idempotencyKey: "promote-private-note",
-    };
-    const promoted = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/knowledge-promotions`, payload: promotionPayload,
-    });
-    const promotionRetry = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/knowledge-promotions`, payload: promotionPayload,
-    });
-    expect(promoted.statusCode).toBe(201);
-    expect(promoted.json()).toMatchObject({ replayed: false, promotion: { sourceEventId: promotionPayload.sourceEventId } });
-    expect(promotionRetry.statusCode).toBe(200);
-    expect(promotionRetry.json()).toMatchObject({ replayed: true, promotion: { promotionId: promoted.json<{ promotion: { promotionId: string } }>().promotion.promotionId } });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 8 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });
