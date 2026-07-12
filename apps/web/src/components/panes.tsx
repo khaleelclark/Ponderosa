@@ -733,6 +733,7 @@ export function Composer({
   const [files, setFiles] = useState<Array<{ file: File; preview: string }>>([]);
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const filesOnUnmount = useRef(files);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -758,12 +759,21 @@ export function Composer({
   };
 
   const addFiles = (candidates: File[]) => {
-    const selection = selectComposerFiles(files.map((item) => item.file), candidates);
-    setSendError(selection.error);
-    if (selection.accepted.length > 0) {
-      setFiles((current) => [...current, ...selection.accepted.map((file) => ({ file, preview: URL.createObjectURL(file) }))]);
-    }
+    setFiles((current) => {
+      const selection = selectComposerFiles(current.map((item) => item.file), candidates);
+      setSendError(selection.error);
+      return selection.accepted.length > 0
+        ? [...current, ...selection.accepted.map((file) => ({ file, preview: URL.createObjectURL(file) }))]
+        : current;
+    });
   };
+
+  useLayoutEffect(() => {
+    filesOnUnmount.current = files;
+  }, [files]);
+  useLayoutEffect(() => () => {
+    filesOnUnmount.current.forEach((item) => URL.revokeObjectURL(item.preview));
+  }, []);
 
   // The `@partial` token immediately left of the caret, if any.
   const mentionMatch = /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
