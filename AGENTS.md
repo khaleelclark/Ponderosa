@@ -161,6 +161,11 @@ committing, or pushing.
 
 ### Branches, worktrees, and pull requests
 
+- On the Ponderosa host, run GitHub CLI commands with
+  `GH_CONFIG_DIR=/home/phoenix/.config/gh-khaleel`. This is the persisted
+  `khaleelclark` repository profile. Check it with
+  `GH_CONFIG_DIR=/home/phoenix/.config/gh-khaleel gh auth status` before starting
+  a new login flow; do not print or copy tokens from `hosts.yml`.
 - Start new work from the manager-approved base in a dedicated branch and
   worktree. Never share a writable worktree between agents.
 - Inspect `git status`, branch/HEAD, upstream, and relevant worktree registrations
