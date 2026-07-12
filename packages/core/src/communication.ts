@@ -144,25 +144,3 @@ export interface CommunicationReconciliationReport {
   projectionReadMismatchMessageIds: string[];
   ok: boolean;
 }
-
-/** @internal Removed from the V1 HTTP contract; retained until the store sweep lands. */
-export interface LegacyCommunicationBackfillRequest {
-  dryRun?: boolean;
-  collaborationRecipientsByMessageId?: Record<string, string[]>;
-}
-
-/** @internal */
-export interface LegacyCommunicationBackfillBlockedItem {
-  source: "master_chat" | "collaboration_chat";
-  sourceId: string;
-  reason: "ambiguous_scope" | "explicit_recipients_required" | "recipient_not_room_member";
-}
-
-/** @internal */
-export interface LegacyCommunicationBackfillResponse {
-  dryRun: boolean;
-  candidates: number;
-  migrated: number;
-  alreadyLinked: number;
-  blocked: LegacyCommunicationBackfillBlockedItem[];
-}

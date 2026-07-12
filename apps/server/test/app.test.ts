@@ -209,7 +209,14 @@ describe("message reactions", () => {
     const project = store.createProject({ label: "Reaction room", hostPath: repoDir });
     const room = store.createMasterChat(project.id, { title: "Room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
-    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Result" }, author.id)!;
+    const eventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId, schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "agent", agentId: author.id }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: author.id },
+      text: "Result", createdAt: new Date().toISOString(),
+    });
+    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Result" }, author.id, "main", [], undefined, eventId)!;
     const app = createServer({ dataDir, store, engines, logger: false });
     const request = { emoji: "👍", active: true, idempotencyKey: "manager-global" };
     const first = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
@@ -1111,9 +1118,7 @@ describe("server chunk F", () => {
   });
 
   it("isolates three-agent collaboration context by canonical recipient audience", async () => {
-    const app = createServer({
-      dataDir, store, engines, logger: false, communicationReadMode: "authoritative",
-    });
+    const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Three-agent room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
@@ -1269,42 +1274,8 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rolls canonical communication capture back independently", async () => {
-    const project = store.createProject({ label: "Rollback", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const baseline = store.readCommunicationEvents(project.id).length;
-    const app = createServer({
-      dataDir, store, engines, logger: false, communicationMode: "off",
-    });
-    const message = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Legacy-only message" },
-    });
-    expect(message.statusCode).toBe(200);
-    expect(message.json()).not.toHaveProperty("communicationEventId");
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin" } });
-    await waitForRun(thread.id);
-    expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
-    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; reads=shadow; legacy_routing=accept; parity=disabled" } } });
-    await app.close();
-  });
-
-  it("fails readiness when authoritative reads are combined with disabled canonical capture", async () => {
-    const app = createServer({
-      dataDir, store, engines, logger: false, communicationMode: "off", communicationReadMode: "authoritative",
-    });
-    const ready = await app.inject({ method: "GET", url: "/api/ready" });
-    expect(ready.statusCode).toBe(503);
-    expect(ready.json()).toMatchObject({
-      status: "not_ready",
-      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=disabled") } },
-    });
-    await app.close();
-  });
-
-  it("serves room timelines from canonical projections in authoritative read mode", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
+  it("serves every room timeline from canonical projections", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Cutover", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Canonical room" });
     const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
@@ -1336,65 +1307,6 @@ describe("server chunk F", () => {
     expect(readiness, JSON.stringify({ readiness, reconciliation: store.reconcileCommunicationEvents(project.id) }))
       .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
     await app.close();
-  });
-
-  it("fails authoritative readiness when legacy room history is not canonical", async () => {
-    const project = store.createProject({ label: "Drift", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Pre-cutover room" });
-    const legacy = store.appendMasterChatMessage(master.id, { text: "Unmigrated history" })!;
-    const app = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
-
-    const ready = await app.inject({ method: "GET", url: "/api/ready" });
-    expect(ready.statusCode).toBe(503);
-    expect(ready.json()).toMatchObject({
-      status: "not_ready",
-      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("parity=drift") } },
-    });
-    expect(store.reconcileCommunicationEvents(project.id).unlinkedLegacyMessageIds).toEqual([legacy.id]);
-    const dryRun = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: true },
-    });
-    expect(dryRun.json()).toMatchObject({
-      dryRun: true, candidates: 1, migrated: 0,
-      blocked: [{ source: "master_chat", sourceId: legacy.id, reason: "ambiguous_scope" }],
-    });
-    const applied = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/communication-backfill`, payload: { dryRun: false },
-    });
-    expect(applied.json()).toMatchObject({
-      dryRun: false, candidates: 1, migrated: 0,
-      blocked: [{ source: "master_chat", sourceId: legacy.id, reason: "ambiguous_scope" }],
-    });
-    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
-      .toMatchObject({ status: "not_ready", checks: { communicationMigration: { ok: false } } });
-    await app.close();
-  });
-
-  it.each(["first", "second"])("rehearses authoritative cutover and legacy read rollback without data mutation (%s pass)", async (pass) => {
-    const project = store.createProject({ label: `Rehearsal ${pass}`, hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Rollback room" });
-    const shadow = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "shadow" });
-    const created = await shadow.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Durable checkpoint" },
-    });
-    expect(created.statusCode).toBe(200);
-    const eventId = created.json<{ communicationEventId: string }>().communicationEventId;
-    await shadow.close();
-    store = new ThreadStore(dataDir);
-
-    const authoritative = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "authoritative" });
-    const canonical = (await authoritative.inject({ method: "GET", url: `/api/master-chats/${master.id}` }))
-      .json<{ messages: MasterChatMessageDto[] }>().messages;
-    expect(canonical).toEqual([expect.objectContaining({ communicationEventId: eventId, text: "Durable checkpoint" })]);
-    await authoritative.close();
-    store = new ThreadStore(dataDir);
-
-    const rollback = createServer({ dataDir, store, engines, logger: false, communicationReadMode: "legacy" });
-    const legacy = (await rollback.inject({ method: "GET", url: `/api/master-chats/${master.id}` }))
-      .json<{ messages: MasterChatMessageDto[] }>().messages;
-    expect(legacy).toEqual(canonical);
-    expect(store.readCommunicationEvents(project.id).map((event) => event.eventId)).toEqual([eventId]);
-    await rollback.close();
   });
 
   it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
@@ -1540,8 +1452,8 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("retires mention routing while preserving explicit intents behind the rollback flag", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false, legacyRoutingMode: "reject" });
+  it("rejects retired routing syntax and preserves explicit intents", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Retirement", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Explicit room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
