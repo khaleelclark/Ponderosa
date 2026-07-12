@@ -1421,7 +1421,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       occurrenceId: result.event.occurrenceId,
       replayed: result.replayed,
       persistence: "recorded",
-      notification: result.event.notifyAuthorThreadId ? "queued" : "not_applicable",
+      notification: result.notification === "pending" ? "queued" : result.notification,
       reactions: result.reactions,
     };
   };

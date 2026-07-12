@@ -124,6 +124,39 @@ describe("ThreadStore — canonical message reactions", () => {
     expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{ emoji: "🎉", count: 1, reactedByCurrentActor: true }]);
     store.updateThread(author.id, { archived: true });
     expect(store.getReactionNotificationOutbox()).toEqual([]);
+    expect(store.completeReactionNotification(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" }).event.occurrenceId, "delivered")).toBe("suppressed");
+  });
+
+  it("makes add/remove notification outcomes occurrence-correct and terminal retries idempotent", async () => {
+    const { room, message } = seedReactionRoom();
+    const add = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "add" });
+    await new Promise((resolve) => setTimeout(resolve, 510));
+    const remove = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: false, idempotencyKey: "remove" });
+    expect(store.getReactionNotificationOutbox().map((item) => item.occurrenceId)).toEqual([remove.event.occurrenceId]);
+    expect(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "add" }).notification).toBe("suppressed");
+    expect(store.completeReactionNotification(remove.event.occurrenceId, "delivered")).toBe("delivered");
+    expect(store.completeReactionNotification(remove.event.occurrenceId, "suppressed")).toBe("delivered");
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+  });
+
+  it("repairs only a torn final record and fails closed on non-tail corruption", () => {
+    const { room, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "👀" as const, active: true, idempotencyKey: "durable" };
+    const first = store.setMasterChatReaction(input);
+    const file = join(dir, "reaction-events.jsonl");
+    writeFileSync(file, readFileSync(file, "utf8") + '{"kind":"occurrence"', "utf8");
+    expect(store.setMasterChatReaction(input).event.occurrenceId).toBe(first.event.occurrenceId);
+    expect(readFileSync(file, "utf8")).not.toContain('{"kind":"occurrence"\n');
+    writeFileSync(file, readFileSync(file, "utf8") + "not-json\n", "utf8");
+    expect(() => store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toThrow("non-tail corruption");
+  });
+
+  it("suppresses pending work when its room/message is deleted", () => {
+    const { room, message } = seedReactionRoom();
+    const occurrence = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "❤️", active: true, idempotencyKey: "deleted" }).event;
+    store.deleteMasterChat(room.id);
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+    expect(store.completeReactionNotification(occurrence.occurrenceId, "delivered")).toBe("suppressed");
   });
 
   it("rejects archived/non-member actors before writing and has zero thread events", () => {

@@ -111,7 +111,7 @@ export interface SetMessageReactionResponse {
   occurrenceId: string;
   replayed: boolean;
   persistence: "recorded";
-  notification: "queued" | "not_applicable";
+  notification: "queued" | "delivered" | "suppressed" | "not_applicable";
   reactions: MessageReactionDto[];
 }
 
