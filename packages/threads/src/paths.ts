@@ -31,10 +31,6 @@ export function projectsDir(dataDir: string): string {
   return path.join(dataDir, "projects");
 }
 
-export function reactionEventsPath(dataDir: string): string {
-  return path.join(dataDir, "reaction-events.jsonl");
-}
-
 export function projectDir(dataDir: string, projectId: string): string {
   return path.join(projectsDir(dataDir), projectId);
 }

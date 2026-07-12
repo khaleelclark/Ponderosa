@@ -34,10 +34,7 @@ import type {
   SubagentRunDto,
   ThreadDto,
   MessageReferenceDto,
-  ReactionActor,
   RuntimeSession,
-  SetMessageReactionRequest,
-  SetMessageReactionResponse,
 } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
@@ -342,10 +339,7 @@ function agentMessagingPrompt(): string[] {
     "If anyone should receive information, you must explicitly use the messaging tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
-    "Reactions are lightweight social signals, not messages. When a visible Master Chat or Collaboration message includes a message ID, prefer a reaction for approval, acknowledgment, celebration, concern, or watching instead of sending redundant prose.",
-    'curl -sS -X POST "$PONDEROSA_AGENT_REACTION_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"masterChatId":"ROOM_ID","channel":"main","messageId":"MESSAGE_ID","emoji":"👍","active":true,"idempotencyKey":"stable-reaction-key"}\'',
-    "Reaction emoji: 👍 approval/acknowledgment, 👎 disagreement, ❤️ appreciation, 🎉 celebration, 👀 watching/attention, 🚀 strong support or launch readiness. Reacting never changes message scope and never wakes an agent. Do not add a prose message that merely repeats the reaction.",
-    "The server already adds your 👍 when you start a plain shared task; do not submit a duplicate start reaction.",
+    "Agents do not have a reaction capability. Emoji reactions from the user arrive as ordinary Direct Messages and should be handled like any other user message.",
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     "Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
@@ -836,7 +830,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort: delivery.effort,
       agentMentionDepth: delivery.relayDepth,
       agentMentionTrail: delivery.mentionTrail,
-      collaborationMasterChatId: delivery.kind === "direct" || delivery.kind === "reaction" ? undefined : delivery.masterChatId,
+      collaborationMasterChatId: delivery.kind === "direct" ? undefined : delivery.masterChatId,
       sourceChannel: delivery.sourceChannel,
       sourceMasterChatId: delivery.sourceChannel === "main" ? delivery.masterChatId : undefined,
       sourceAuthorThreadId: delivery.authorThreadId,
@@ -847,8 +841,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function canShareCollaborationBatch(first: CollaborationDelivery, candidate: CollaborationDelivery): boolean {
-    return first.kind !== "direct" && first.kind !== "reaction" &&
-      candidate.kind !== "direct" && candidate.kind !== "reaction" &&
+    return first.kind !== "direct" && candidate.kind !== "direct" &&
       !first.replyToMessageId && !candidate.replyToMessageId;
   }
 
@@ -887,7 +880,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
     const first = pending[0];
     if (!first) return [];
-    if (first.kind === "direct" || first.kind === "reaction" || first.replyToMessageId) return [first];
+    if (first.kind === "direct" || first.replyToMessageId) return [first];
     const batch: CollaborationDelivery[] = [];
     for (const candidate of pending) {
       if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
@@ -946,34 +939,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     scheduleDeliveryDispatch(queued.delivery.targetThreadId);
     return queued.delivery;
-  }
-
-  function dispatchReactionNotifications(): void {
-    for (const notification of store.getReactionNotificationOutbox()) {
-      const message = store.getMasterChatMessages(notification.masterChatId, notification.channel)
-        .find((candidate) => candidate.id === notification.messageId);
-      if (!message) {
-        store.completeReactionNotification(notification.occurrenceId, "suppressed", "message_unavailable");
-        continue;
-      }
-      const actor = notification.actor.kind === "manager"
-        ? "The user"
-        : store.getThread(notification.actor.threadId)?.title ?? "Another agent";
-      const action = notification.active ? "reacted" : "removed their reaction";
-      const quoted = message.text.length > 500 ? `${message.text.slice(0, 499)}…` : message.text;
-      const delivery = queueCollaborationDelivery({
-        masterChatId: notification.masterChatId,
-        messageId: `reaction:${notification.occurrenceId}`,
-        targetThreadId: notification.targetThreadId,
-        text: `${actor} ${action} ${notification.emoji} on your message:\n\n${quoted}\n\nTreat this as feedback. You do not need to reply unless a response would be useful.`,
-        relayDepth: 0,
-        mentionTrail: [],
-        kind: "reaction",
-        reactionOccurrenceId: notification.occurrenceId,
-        createdAt: notification.createdAt,
-      });
-      if (!delivery) store.completeReactionNotification(notification.occurrenceId, "suppressed", "server_closing");
-    }
   }
 
   async function dispatchNextTurn(threadId: string): Promise<void> {
@@ -1128,7 +1093,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-reactions" || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -1168,7 +1133,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       .flatMap((claim) => claim.deliveryIds ?? []));
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged(interruptedDeliveryIds));
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
-    dispatchReactionNotifications();
     for (const threadId of recipients) {
       scheduleDeliveryDispatch(threadId);
     }
@@ -1428,19 +1392,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   }
 
-  function syncReactionNotification(deliveryId: string): void {
-    const delivery = collaborationDeliveries.get(deliveryId);
-    if (!delivery?.reactionOccurrenceId) return;
-    if (delivery.status === "acknowledged") {
-      store.completeReactionNotification(delivery.reactionOccurrenceId, "delivered", "recipient_turn_acknowledged");
-    } else if (delivery.status === "failed") {
-      store.completeReactionNotification(delivery.reactionOccurrenceId, "suppressed", delivery.failure ?? "delivery_failed");
-    }
-  }
-
   function syncDeliveryOutcome(deliveryId: string): void {
     syncDelegatedCompletion(deliveryId);
-    syncReactionNotification(deliveryId);
   }
 
   /** Completion is first-class: it is recorded and delivered even if a child never tags its parent. */
@@ -1751,7 +1704,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
-            PONDEROSA_AGENT_REACTION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-reactions`,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
             PONDEROSA_DELEGATION_OUTCOME_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegation-outcomes`,
@@ -2134,50 +2086,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
     return message ?? reply.code(404).send({ error: "master chat not found" });
   });
-
-  const recordReaction = (input: {
-    masterChatId: string; channel: "main" | "collaboration"; messageId: string;
-    actor: ReactionActor; body: SetMessageReactionRequest;
-  }): SetMessageReactionResponse => {
-    const result = store.setMasterChatReaction({ ...input, ...input.body });
-    dispatchReactionNotifications();
-    return {
-      occurrenceId: result.event.occurrenceId,
-      replayed: result.replayed,
-      persistence: "recorded",
-      notification: result.notification === "pending" ? "queued" : result.notification,
-      reactions: result.reactions,
-    };
-  };
-
-  app.put<{ Params: { id: string; channel: "main" | "collaboration"; messageId: string }; Body: SetMessageReactionRequest }>(
-    "/api/master-chats/:id/:channel/messages/:messageId/reaction",
-    async (request, reply) => {
-      if (request.params.channel !== "main" && request.params.channel !== "collaboration") return reply.code(400).send({ error: "invalid conversation" });
-      try {
-        return recordReaction({ masterChatId: request.params.id, channel: request.params.channel, messageId: request.params.messageId, actor: { kind: "manager" }, body: request.body });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "reaction failed";
-        return reply.code(message.includes("cooldown") || message.includes("idempotency") ? 409 : message.includes("not found") ? 404 : 400).send({ error: message });
-      }
-    },
-  );
-
-  app.post<{ Body: SetMessageReactionRequest & { masterChatId: string; channel: "main" | "collaboration"; messageId: string } }>(
-    "/api/agent-reactions",
-    async (request, reply) => {
-      const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-      const capability = token ? agentMessageCapabilities.get(token) : undefined;
-      const active = capability ? activeRuns.get(capability.threadId) : undefined;
-      if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token) return reply.code(401).send({ error: "invalid or expired agent capability" });
-      try {
-        return recordReaction({ masterChatId: request.body.masterChatId, channel: request.body.channel, messageId: request.body.messageId, actor: { kind: "agent", threadId: capability.threadId }, body: request.body });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "reaction failed";
-        return reply.code(message.includes("member") ? 403 : message.includes("cooldown") || message.includes("idempotency") ? 409 : message.includes("not found") ? 404 : 400).send({ error: message });
-      }
-    },
-  );
 
   app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(
     "/api/master-chats/:id/direct-messages",
@@ -2936,7 +2844,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
           inboxDeliveries.some((delivery) => delivery?.targetThreadId !== thread.id || delivery.status !== "delivered") ||
-          (inboxDelivery?.kind !== "direct" && inboxDelivery?.kind !== "reaction" && !collaborationMasterChatId))
+          (inboxDelivery?.kind !== "direct" && !collaborationMasterChatId))
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
@@ -3031,33 +2939,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : undefined,
       };
       const auditText = text;
-      const acknowledgeSharedTaskStart = (): void => {
-        if (!sharedCommunication || !sourceMasterMessage) return;
-        store.setMasterChatReaction({
-          masterChatId: sharedCommunication.masterChatId!,
-          channel: "main",
-          messageId: sourceMasterMessage.id,
-          actor: { kind: "agent", threadId: thread.id },
-          emoji: "👍",
-          active: true,
-          idempotencyKey: `task-start:${sharedCommunication.eventId}`,
-        });
-      };
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
         if (existingRun.runtimeSession) {
           const steered = await existingRun.runtimeSession.steer({
             prompt: `${text}${replyContext(pendingTurn.replyTo)}`,
-            kind: requestedDeliveryIds.length > 0
-              ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
-              : "user_message",
+            kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
             model: request.body.model,
             effort: request.body.effort,
             clientMessageId: communicationEventId,
           });
           if (steered.status === "accepted") {
-            acknowledgeSharedTaskStart();
             const stored = store.appendEvent(thread.id, {
               type: "user_message",
               text: auditText,
@@ -3258,7 +3151,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ownershipState: "running",
       };
       claimActiveRun(thread.id, activeRun);
-      acknowledgeSharedTaskStart();
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: routingMasterChatId,
@@ -3286,7 +3178,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
-            PONDEROSA_AGENT_REACTION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-reactions`,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
             PONDEROSA_DELEGATION_OUTCOME_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegation-outcomes`,
@@ -3317,9 +3208,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     if (!persistentTurnStarted) {
                       await persistentRuntime!.session.startTurn({
                         prompt,
-                        kind: requestedDeliveryIds.length > 0
-                          ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
-                          : "user_message",
+                        kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
                         model: request.body.model,
                         effort: request.body.effort,
                         clientMessageId: communicationEventId,
@@ -3354,9 +3243,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     if (!persistentTurnStarted) {
                       await persistentRuntime!.session.startTurn({
                         prompt,
-                        kind: requestedDeliveryIds.length > 0
-                          ? inboxDelivery?.kind === "reaction" ? "reaction" : "collaboration"
-                          : "user_message",
+                        kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
                         model: request.body.model,
                         effort: request.body.effort,
                         clientMessageId: communicationEventId,

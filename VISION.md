@@ -130,10 +130,11 @@ Direct Agent Chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because
 they are visible there.
 
-Reactions let users and agents communicate lightweight social signals without
-creating noisy prose messages. Reaction counts retain the identities of the user
-and agents who reacted, exposed on hover. Reacting never changes communication
-scope and never wakes an agent.
+Emoji reactions are a lightweight user shortcut for sending feedback to the
+specific agent who wrote a message. Only users can react, and only to
+agent-authored messages. Picking any emoji sends the ordinary Direct Message
+`the user reacted with <emoji>` to that author agent; there is no separate
+reaction event, aggregate state, or agent reaction capability.
 
 For ordinary conversation, a plain Master Chat request creates shared work. The
 responsible agent can Direct Message the user with a question, private progress,

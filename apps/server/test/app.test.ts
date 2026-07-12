@@ -208,83 +208,6 @@ async function waitForSeedCount(expected: number): Promise<void> {
   throw new Error(`timed out waiting for ${expected} seeded runs`);
 }
 
-describe("message reactions", () => {
-  it("persists, replays, and delivers reaction feedback to the message author", async () => {
-    const project = store.createProject({ label: "Reaction room", hostPath: repoDir });
-    const room = store.createMasterChat(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
-    const eventId = randomUUID();
-    store.appendCommunicationEvent({
-      eventId, schemaVersion: 2, projectId: project.id, masterChatId: room.id,
-      sender: { kind: "agent", agentId: author.id }, intent: "user_dm",
-      audience: { kind: "user_agent", userId: "local-operator", agentId: author.id },
-      text: "Result", createdAt: new Date().toISOString(),
-    });
-    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Result" }, author.id, "main", [], undefined, eventId)!;
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const request = { emoji: "👍", active: true, idempotencyKey: "manager-global" };
-    const first = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
-    expect(first.statusCode).toBe(200);
-    expect(first.json()).toMatchObject({ replayed: false, persistence: "recorded", notification: "queued", reactions: [{ emoji: "👍", count: 1, reactedByCurrentActor: true }] });
-    const replay = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
-    expect(replay.json()).toMatchObject({ occurrenceId: first.json<{ occurrenceId: string }>().occurrenceId, replayed: true });
-    await waitForSeedCount(1);
-    expect(adapter.seeds[0]?.threadId).toBe(author.id);
-    expect(adapter.seeds[0]?.prompt).toContain("The user reacted 👍 on your message");
-    expect(adapter.seeds[0]?.prompt).toContain("Result");
-    expect(adapter.continues).toHaveLength(0);
-    await waitForRun(author.id);
-    expect(store.getReactionNotificationOutbox()).toEqual([]);
-    const detail = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}` });
-    expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] }]);
-    await app.close();
-  });
-
-  it("teaches an active agent to react and returns reactor identity", async () => {
-    const project = store.createProject({ label: "Agent reactions", hostPath: repoDir });
-    const room = store.createMasterChat(project.id, { title: "Room" });
-    const reactor = store.createThread(project.id, { title: "Olympic", engine: "codex", masterChatId: room.id });
-    appendBroadcast(store, project.id, room.id, "Decision ready for review");
-    const target = store.getMasterChatMessages(room.id).find((message) => message.text === "Decision ready for review")!;
-    adapter.mode = "hang";
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const turn = await app.inject({
-      method: "POST", url: `/api/threads/${reactor.id}/messages`,
-      payload: { text: "#Olympic review the decision", sourceChannel: "main", sourceMasterChatId: room.id },
-    });
-    expect(turn.statusCode, turn.body).toBe(200);
-    await waitForSeedCount(1);
-    const seed = adapter.seeds[0]!;
-    expect(seed.environment?.PONDEROSA_AGENT_REACTION_URL).toBe("http://127.0.0.1:8787/api/agent-reactions");
-    expect(seed.prompt).toContain("Reactions are lightweight social signals, not messages");
-    expect(seed.prompt).toContain(`Decision ready for review [message id: ${target.id}]`);
-    const reaction = await app.inject({
-      method: "POST",
-      url: "/api/agent-reactions",
-      headers: { authorization: `Bearer ${seed.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-      payload: {
-        masterChatId: room.id,
-        channel: "main",
-        messageId: target.id,
-        emoji: "👀",
-        active: true,
-        idempotencyKey: "watch-decision",
-      },
-    });
-    expect(reaction.statusCode, reaction.body).toBe(200);
-    expect(reaction.json()).toMatchObject({ reactions: [{
-      emoji: "👀", count: 1, reactedByCurrentActor: true,
-      reactors: [{ kind: "agent", threadId: reactor.id, label: "Olympic" }],
-    }] });
-    expect(store.getMasterChatMessages(room.id).find((message) => message.id === target.id)?.reactions).toEqual([{
-      emoji: "👀", count: 1, reactedByCurrentActor: false,
-      reactors: [{ kind: "agent", threadId: reactor.id, label: "Olympic" }],
-    }]);
-    await cancelAndWait(app, reactor.id);
-    await app.close();
-  });
-});
-
 describe("persistent engine steering", () => {
   it("steers an active agent immediately instead of adding a FIFO delivery", async () => {
     const steerable = new SteerableMockAdapter();
@@ -582,10 +505,6 @@ describe("server chunk F", () => {
       expect.objectContaining({
         role: "user",
         text: "Fix the onboarding flow",
-        reactions: [expect.objectContaining({
-          emoji: "👍", count: 1,
-          reactors: [expect.objectContaining({ kind: "agent", threadId: responsible.id, label: "Responsible" })],
-        })],
       }),
     ]);
     expect(store.getMasterChatMessages(master.id)
@@ -687,6 +606,35 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("delivers an emoji reaction as one ordinary direct message to only the author agent", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "User emoji reaction", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
+    const text = "the user reacted with 🧑🏽‍🚀";
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/master-chats/${master.id}/direct-messages`,
+      payload: {
+        text,
+        recipients: [{ agentId: author.id }],
+        idempotencyKey: "reaction-to-author",
+      },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    await waitForRun(author.id);
+
+    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text }),
+    ]));
+    expect(store.getMessages(observer.id).some((message) => message.text === text)).toBe(false);
+    expect(adapter.seeds.filter((seed) => seed.threadId === author.id)).toHaveLength(1);
+    expect(adapter.seeds.filter((seed) => seed.threadId === observer.id)).toHaveLength(0);
+    await app.close();
+  });
+
   it("lets a shared-task agent DM a question without publishing an accidental completion", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Question flow", hostPath: repoDir });
@@ -723,7 +671,7 @@ describe("server chunk F", () => {
     expect(dmStatus).toBe(200);
     const messages = store.getMasterChatMessages(master.id);
     expect(messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text: "Plan my trip", reactions: [expect.objectContaining({ emoji: "👍", count: 1 })] }),
+      expect.objectContaining({ role: "user", text: "Plan my trip" }),
       expect.objectContaining({ text: "#user Which dates should I use?", authorThreadId: agent.id }),
     ]));
     expect(messages.some((message) => message.text.includes("This ordinary response must be suppressed"))).toBe(false);
