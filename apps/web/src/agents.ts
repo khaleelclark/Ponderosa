@@ -2,13 +2,13 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains ThreadDto/ThreadDetailDto.
 
-import type { TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentLifecycleStatus, TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 
 export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {
   return agent.masterChatIds.includes(masterChatId);
 }
 
-export type AgentStatus = "running" | "waiting" | "completed" | "error" | "idle";
+export type AgentStatus = AgentLifecycleStatus;
 
 export interface AgentLiveHints {
   /** Live SSE run in progress for this agent. */
@@ -37,7 +37,7 @@ export function deriveAgentStatus(
     return "waiting";
   }
   if (hints.error) {
-    return "error";
+    return "failed";
   }
   if (tasks.length > 0 && tasks.every((task) => task.status === "done")) {
     return "completed";
@@ -53,8 +53,14 @@ export function agentStatusLabel(status: AgentStatus): string {
       return "Waiting";
     case "completed":
       return "Completed";
-    case "error":
-      return "Error";
+    case "blocked":
+      return "Blocked";
+    case "compacting":
+      return "Compacting";
+    case "cancelled":
+      return "Cancelled";
+    case "failed":
+      return "Failed";
     default:
       return "Idle";
   }
@@ -65,12 +71,14 @@ export function agentStatusColor(
 ): "success" | "warning" | "info" | "error" | "default" {
   switch (status) {
     case "running":
+    case "compacting":
       return "info";
     case "waiting":
       return "warning";
     case "completed":
       return "success";
-    case "error":
+    case "blocked":
+    case "failed":
       return "error";
     default:
       return "default";

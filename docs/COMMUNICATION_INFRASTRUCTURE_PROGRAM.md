@@ -94,6 +94,11 @@ from repairable disk logs by the single authoritative daemon, then updated in O(
 on append. Restart still reconstructs them from canonical files. Tests exercise
 sustained indexed writes and a 1,000-agent health projection without per-agent
 polling.
+Manager surfaces consume the server-owned project health projection instead of
+deriving status from each agent's task rows. One aggregate refresh runs every
+5 seconds only while work is active and backs off to 30 seconds otherwise;
+per-agent detail polling was removed. All eight lifecycle states retain distinct
+labels and exception counts in the roster.
 
 Initial values are tuning ranges, not schema constants. Phase 0 measurements set
 production values.

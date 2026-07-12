@@ -1,5 +1,6 @@
 import type {
   ArtifactContentDto,
+  AgentHealthProjectionDto,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   CollaborationChatDetailDto,
   CreateCollaborationMessageRequest,
@@ -68,6 +69,7 @@ export class ApiRequestError extends Error {
 export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
+  getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
   listMasterChats(projectId: string): Promise<MasterChatDto[]>;
   createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
   getMasterChat(masterChatId: string): Promise<MasterChatDetailDto>;

@@ -9,7 +9,7 @@ import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { isSubagentUiEnabled } from "../subagents";
-import { useAgentPresets, useMasterChats, useThreads } from "../hooks/queries";
+import { useAgentHealth, useAgentPresets, useMasterChats, useThreads } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
@@ -46,6 +46,7 @@ export function ProjectShell({
   const masterChats = masterChatsQuery.data ?? [];
   const agents = threadsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
+  const healthQuery = useAgentHealth(projectId);
   const presets = presetsQuery.data ?? [];
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const showSubagents = isSubagentUiEnabled(env);
@@ -72,8 +73,7 @@ export function ProjectShell({
     queries: agents.map((agent) => ({
       queryKey: ["thread", agent.id],
       queryFn: () => api.getThread(agent.id),
-      staleTime: 8_000,
-      refetchInterval: 8_000,
+      staleTime: 30_000,
     })),
   });
 
@@ -85,9 +85,10 @@ export function ProjectShell({
 
   const statusByAgentId = useMemo(() => {
     const map = new Map<string, AgentStatus>();
-    agents.forEach((agent) => map.set(agent.id, deriveAgentStatus(detailByAgentId.get(agent.id))));
+    const healthById = new Map((healthQuery.data?.agents ?? []).map((agent) => [agent.agentId, agent.status]));
+    agents.forEach((agent) => map.set(agent.id, healthById.get(agent.id) ?? deriveAgentStatus(detailByAgentId.get(agent.id))));
     return map;
-  }, [agents, detailByAgentId]);
+  }, [agents, detailByAgentId, healthQuery.data]);
 
   const createMasterChat = useMutation({
     mutationFn: (input: CreateMasterChatInput) => api.createMasterChat(projectId, input),

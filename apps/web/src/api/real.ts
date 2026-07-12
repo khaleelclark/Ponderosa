@@ -1,5 +1,6 @@
 import type {
   ArtifactContentDto,
+  AgentHealthProjectionDto,
   CollaborationChatDetailDto,
   CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
@@ -67,6 +68,9 @@ export const realApi: PonderosaApi = {
       method: "POST",
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
+  },
+  getAgentHealth(projectId) {
+    return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
   listMasterChats(projectId) {
     return requestJson<MasterChatDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/master-chats");
