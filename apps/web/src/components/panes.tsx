@@ -286,6 +286,7 @@ export function ChatPane({
           <Typography
             component="div"
             variant="caption"
+            dir="auto"
             sx={{
               mb: 0.5,
               maxWidth: "100%",
@@ -294,7 +295,6 @@ export function ChatPane({
               userSelect: "text",
               fontWeight: 700,
               lineHeight: 1.35,
-              opacity: message.role === "user" ? 0.9 : 0.72,
             }}
           >
             {senderLabel}
