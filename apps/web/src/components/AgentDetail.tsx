@@ -39,7 +39,7 @@ import type { EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, Mess
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { agentStatusColor, agentStatusLabel, deriveAgentStatus } from "../agents";
+import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
 import { useThread } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
@@ -52,6 +52,7 @@ export function AgentDetail({
   agentId,
   engines,
   engineCapabilities,
+  projectedStatus,
   masterChats,
   subagent,
   onBack,
@@ -62,6 +63,7 @@ export function AgentDetail({
   agentId: string;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
+  projectedStatus?: AgentStatus;
   masterChats: MasterChatDto[];
   subagent?: SubagentRunDto;
   onBack(): void;
@@ -91,11 +93,12 @@ export function AgentDetail({
   const detail = threadQuery.data;
   const engine =
     engines.find((candidate) => candidate.id === detail?.thread.activeEngine) ?? engines[0];
+  const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = [
     { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
     { name: "compact", description: "Compact this agent session", source: "ponderosa", acceptsArguments: false },
     { name: "status", description: "Show this agent's runtime status", source: "ponderosa", acceptsArguments: false },
-    ...(engineCapabilities.find((item) => item.engineId === engine?.id)?.commands ?? []),
+    ...(engineCapability?.commands ?? []),
   ];
 
   useEffect(() => {
@@ -114,7 +117,9 @@ export function AgentDetail({
     () => stream.timeline.at(-1)?.event.type === "error",
     [stream.timeline],
   );
-  const status = deriveAgentStatus(detail, { running: stream.running, error: errorHint });
+  const status = stream.running ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
+  const connectedMcps = engineCapability?.mcpServers.filter((server) => server.status === "connected") ?? [];
+  const mcpSummary = engineCapability?.mcpServers.map((server) => `${server.name}: ${server.status}`).join("\n") || "No inherited MCP servers reported by this engine.";
 
   const cancelRun = useMutation({
     mutationFn: () => api.cancelRun(agentId),
@@ -250,6 +255,16 @@ export function AgentDetail({
             </Typography>
           </Box>
           <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} aria-label={`Agent status: ${agentStatusLabel(status)}`} />
+          {engineCapability?.steering ? <Chip size="small" color="info" variant="outlined" label="Steerable" /> : null}
+          <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}>
+            <Chip
+              size="small"
+              variant="outlined"
+              color={connectedMcps.length > 0 ? "success" : "default"}
+              label={`${connectedMcps.length}/${engineCapability?.mcpServers.length ?? 0} MCPs`}
+              aria-label={`${connectedMcps.length} of ${engineCapability?.mcpServers.length ?? 0} inherited MCP servers connected`}
+            />
+          </Tooltip>
           {subagent ? (
             <Chip
               size="small"

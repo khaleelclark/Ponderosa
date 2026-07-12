@@ -201,6 +201,7 @@ export function ProjectShell({
         agentId={route.agentId}
         engines={engines}
         engineCapabilities={engineCapabilities}
+        projectedStatus={statusByAgentId.get(route.agentId)}
         masterChats={masterChats}
         subagent={subagents.find((run) => run.childThreadId === route.agentId)}
         onBack={() => navigate({ kind: "agents", projectId })}
