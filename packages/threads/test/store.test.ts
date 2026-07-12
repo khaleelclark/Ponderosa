@@ -129,6 +129,30 @@ describe("ThreadStore — append + projection", () => {
     // The public surface has no update/delete of events (append-only by design).
     expect((store as unknown as Record<string, unknown>)["deleteEvent"]).toBeUndefined();
   });
+
+  it("clears only the resumable engine session for fresh-session rollover", () => {
+    const { threadId } = seedThread();
+    store.appendEvent(threadId, { type: "session", sessionId: "stale-session" });
+    const before = store.getThread(threadId);
+    const eventsBefore = store.readEvents(threadId);
+
+    expect(store.clearResumeSession(threadId, "explicit_compaction")).toBe(true);
+    expect(store.resumeSessionId(threadId)).toBeUndefined();
+    expect(store.getThread(threadId)).toMatchObject({
+      id: before?.id,
+      projectId: before?.projectId,
+      masterChatId: before?.masterChatId,
+      masterChatIds: before?.masterChatIds,
+    });
+    expect(store.readEvents(threadId).slice(0, -1)).toEqual(eventsBefore);
+    expect(store.readEvents(threadId).at(-1)?.event).toEqual({
+      type: "session_reset",
+      reason: "explicit_compaction",
+    });
+    store.rebuildProjections();
+    expect(store.resumeSessionId(threadId)).toBeUndefined();
+    expect(store.clearResumeSession("missing-thread", "explicit_compaction")).toBe(false);
+  });
 });
 
 describe("ThreadStore — rebuild is byte-identical (the property)", () => {

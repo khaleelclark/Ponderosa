@@ -17,8 +17,14 @@ export interface UserMessageEvent {
   attachments?: ImageAttachmentDto[];
 }
 
+/** Clear a provider session while retaining the canonical thread history. */
+export interface SessionResetEvent {
+  type: "session_reset";
+  reason: "explicit_compaction" | "resume_compaction_failed";
+}
+
 /** Anything that can be appended to a thread's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | AgentEvent;
+export type LogEvent = UserMessageEvent | SessionResetEvent | AgentEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-thread seq + ts. */
 export interface StoredLogEvent {

@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type {
   Adapter,
   AgentDelegationRequest,
+  AgentDelegationDispositionRequest,
   AgentMessageChannel,
   AgentEvent,
   ArtifactContentDto,
@@ -24,9 +25,15 @@ import type {
   MessageReferenceDto,
 } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { DelegationError, DelegationStore } from "./delegations.js";
-import { CollaborationDeliveryStore, type CollaborationDelivery } from "./handoffs.js";
+import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
+import {
+  CollaborationDeliveryStore,
+  type CollaborationDelivery,
+  type CollaborationDeliveryBatch,
+} from "./handoffs.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -63,6 +70,8 @@ interface PendingTurn {
   sourceAuthorThreadId?: string;
   /** Set only by the server's persisted collaboration delivery dispatcher. */
   collaborationDeliveryId?: string;
+  /** Fixed snapshot; deliveries queued after dispatch begins are excluded. */
+  collaborationDeliveryIds?: string[];
   replyTo?: MessageReferenceDto;
   replyToMessageId?: string;
 }
@@ -212,6 +221,38 @@ function messageContextPrompt(context: InboundMessageContext): string[] {
   ];
 }
 
+const MAX_SEED_HISTORY_CHARS = 24_000;
+const MAX_SEED_HISTORY_MESSAGES = 40;
+
+/**
+ * Runtime sessions retain their own context. This budget applies only when a
+ * session boundary forces Ponderosa to seed again; canonical history remains on
+ * disk and can still be queried explicitly.
+ */
+export function boundedSeedHistory<T extends { text: string }>(
+  messages: T[],
+  maxChars = MAX_SEED_HISTORY_CHARS,
+  maxMessages = MAX_SEED_HISTORY_MESSAGES,
+): T[] {
+  const selected: T[] = [];
+  let remaining = maxChars;
+  for (let index = messages.length - 1; index >= 0 && selected.length < maxMessages && remaining > 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.text.length <= remaining) {
+      selected.push(message);
+      remaining -= message.text.length;
+      continue;
+    }
+    const marker = "[Earlier content omitted at session boundary]\n";
+    const clipped = remaining > marker.length
+      ? `${marker}${message.text.slice(-(remaining - marker.length))}`
+      : message.text.slice(-remaining);
+    selected.push({ ...message, text: clipped });
+    remaining = 0;
+  }
+  return selected.reverse();
+}
+
 function agentMessagingPrompt(): string[] {
   return [
     "You can send an additional message to any Ponderosa channel with your shell tool:",
@@ -222,8 +263,9 @@ function agentMessagingPrompt(): string[] {
     "A valid collaboration @mention is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After delegating work, end your turn. Do not poll, sleep, or remain active waiting for results. Delegated agents run asynchronously; their completion automatically queues a parent follow-up, and explicit collaboration tags do the same.",
     "Each valid tag is a separate FIFO delivery (not coalesced). If a tag arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued tags remain queued; a cancelled delivery turn itself is retried.",
-    "Track expected work in delegated-agent status/lineage: queued/running/completed/failed plus completion-delivery state. A child does not need to tag you for its terminal result—the server notifies you automatically—but it should tag you for interim findings or questions.",
+    "Track expected work in delegated-agent status/lineage: queued/running/awaiting_disposition/completed/blocked/failed/cancelled plus terminal-delivery state. A child does not need to tag you for its declared terminal result; it should tag you only for interim findings or questions.",
     "Accumulate results across those notification turns and update the manager once every expected task has reported.",
+    'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
   ];
 }
 
@@ -234,6 +276,15 @@ function agentDelegationPrompt(): string[] {
     'curl -sS -X POST "$PONDEROSA_DELEGATION_URL" -H "Authorization: Bearer $PONDEROSA_DELEGATION_TOKEN" -H "Content-Type: application/json" --data \'{"displayLabel":"Safe short summary","delegationPrompt":"Full private task","runtime":"codex","idempotencyKey":"stable-key"}\'',
     "Do not send parentRunId, threadId, masterChatId, rootRunId, or registration credentials. Ponderosa binds ownership and launches the child server-side.",
     "If delegation fails, report the error; never fall back to an internal spawning tool.",
+  ];
+}
+
+function delegatedOutcomePrompt(): string[] {
+  return [
+    "Before ending a delegated objective, declare its truthful outcome directly (this replaces any extra summarization/model call):",
+    'curl -sS -X POST "$PONDEROSA_DELEGATION_OUTCOME_URL" -H "Authorization: Bearer $PONDEROSA_DELEGATION_TOKEN" -H "Content-Type: application/json" --data \'{"outcome":"completed","message":"Concise result","idempotencyKey":"stable-outcome-key"}\'',
+    'Use outcome "completed" only when the delegated objective is genuinely satisfied. Use "blocked" with the concrete blocker when it cannot proceed.',
+    "A normal response ending or engine turn_done only means runtime idle; it never completes the objective or notifies the parent.",
   ];
 }
 
@@ -257,6 +308,8 @@ function masterChatPrompt(
   threads: ThreadDto[],
   currentRequest: string,
   context: InboundMessageContext,
+  incremental = false,
+  routingMetadata?: string,
 ): string {
   const names = new Map(threads.map((thread) => [thread.id, thread.title]));
   const transcript = messages
@@ -271,7 +324,7 @@ function masterChatPrompt(
     })
     .join("\n");
 
-  return [
+  const staticInstructions = incremental ? [] : [
     "You are replying as a teammate in a shared master chat.",
     "Respond directly to the latest message addressed to you, whether it came from the manager or a teammate.",
     "The main chat is manager-facing: do not use @mentions here to coordinate with teammates, because they are plain text and do not notify anyone.",
@@ -280,12 +333,17 @@ function masterChatPrompt(
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only your new update or result in a natural, conversational tone.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
-    ...messageContextPrompt(context),
     ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
+  ];
+  return [
+    ...staticInstructions,
+    ...(routingMetadata ? [routingMetadata] : []),
+    ...messageContextPrompt(context),
     "",
-    "Current master chat history:",
-    transcript || "(No earlier messages.)",
+    incremental ? "New master chat messages since the last accepted turn:" : "Current master chat history:",
+    transcript || (incremental ? "(No new room messages.)" : "(No earlier messages.)"),
+    `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
     "",
     "Latest message for you:",
     currentRequest,
@@ -298,6 +356,8 @@ function collaborationChatPrompt(
   threads: ThreadDto[],
   currentRequest: string,
   context: InboundMessageContext,
+  incremental = false,
+  routingMetadata?: string,
 ): string {
   const names = new Map(threads.map((thread) => [thread.id, thread.title]));
   const transcript = messages
@@ -311,19 +371,24 @@ function collaborationChatPrompt(
       return `${speaker}${quoted}: ${message.text}`;
     })
     .join("\n");
-  return [
+  const staticInstructions = incremental ? [] : [
     "You are collaborating with teammates in Ponderosa's opt-in collaboration chat.",
     "You received this context because you were successfully @mentioned.",
     "This is the only chat for agent-to-agent coordination. Respond directly to the latest request here.",
     "To involve a teammate, @mention their full hyphenated handle; a valid mention provides this collaboration context and starts their turn.",
     "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
     "Do not claim to have seen the main chat.",
-    ...messageContextPrompt(context),
     ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
+  ];
+  return [
+    ...staticInstructions,
+    ...(routingMetadata ? [routingMetadata] : []),
+    ...messageContextPrompt(context),
     "",
-    "Collaboration chat history:",
-    transcript || "(No earlier collaboration messages.)",
+    incremental ? "New collaboration messages since the last accepted turn:" : "Collaboration chat history:",
+    transcript || (incremental ? "(No new room messages.)" : "(No earlier collaboration messages.)"),
+    `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
     "",
     "Latest message for you:",
     currentRequest,
@@ -337,6 +402,21 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
     ...agentMessagingPrompt(),
     ...agentDelegationPrompt(),
     "",
+    "Latest message for you:",
+    currentRequest,
+  ].join("\n");
+}
+
+/** Minimal turn prompt for a session that already received the full protocol. */
+function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
+  const channelRule = context.channel === "collaboration"
+    ? "Reply in Collaboration; use a full @handle only when another agent must act."
+    : context.channel === "main"
+      ? "Reply with only the new manager-facing update or result."
+      : "Reply in your individual agent chat.";
+  return [
+    ...messageContextPrompt(context),
+    channelRule,
     "Latest message for you:",
     currentRequest,
   ].join("\n");
@@ -445,7 +525,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const delegations = new DelegationStore(opts.dataDir);
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
+  const contextCursors = new ContextCursorStore(opts.dataDir);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
+  // An agent can request rollover while its capability is live. The reset is
+  // applied only after the turn ends, so it never destroys an in-flight session.
+  const scheduledSessionRollovers = new Set<string>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
   const dispatchingTurns = new Set<string>();
   // Capability used only by this server's queue dispatcher. It prevents a client
@@ -494,6 +578,41 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
+  function canShareCollaborationBatch(first: CollaborationDelivery, candidate: CollaborationDelivery): boolean {
+    return first.kind !== "direct" && candidate.kind !== "direct";
+  }
+
+  function formatDeliveryBatch(batch: CollaborationDeliveryBatch): string {
+    const entries = batch.deliveries.map((delivery, index) => {
+      const authorThread = delivery.authorThreadId ? store.getThread(delivery.authorThreadId) : undefined;
+      const author = authorThread
+        ? `${authorThread.title} (@${agentMentionHandle(authorThread.title)}, thread ${authorThread.id})`
+        : "Manager";
+      return [
+        `--- Entry ${index + 1} ---`,
+        `Author: ${author}`,
+        `UTC timestamp: ${delivery.createdAt}`,
+        "Original message (exact):",
+        delivery.text,
+      ].join("\n");
+    });
+    return [
+      `CollaborationDeliveryBatch (${batch.deliveries.length} deliveries; canonical server order)`,
+      ...entries,
+    ].join("\n\n");
+  }
+
+  function pendingTurnFromBatch(deliveries: CollaborationDelivery[]): PendingTurn {
+    const first = deliveries[0]!;
+    return {
+      ...pendingTurnFromDelivery(first),
+      text: formatDeliveryBatch({ deliveries }),
+      sourceAuthorThreadId: undefined,
+      collaborationDeliveryId: undefined,
+      collaborationDeliveryIds: deliveries.map((delivery) => delivery.id),
+    };
+  }
+
   /**
    * Persist before enqueueing. A tag therefore survives cancellation, process
    * restart, and dispatch races instead of existing only in collaboration history.
@@ -513,18 +632,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (dispatchingTurns.has(threadId)) return;
     dispatchingTurns.add(threadId);
     try {
-    const delivery = collaborationDeliveries.pending(threadId)[0];
+    const pending = collaborationDeliveries.pending(threadId);
+    const delivery = pending[0];
     if (!delivery) return;
-    const next = pendingTurnFromDelivery(delivery);
+    // Direct follow-ups retain their exact existing behavior and remain FIFO
+    // barriers. Every consecutive collaboration delivery for this recipient is
+    // one fixed snapshot, regardless of author or relay metadata.
+    const boundary = pending.findIndex((item) => !canShareCollaborationBatch(delivery, item));
+    const batch = delivery.kind === "direct"
+      ? [delivery]
+      : pending.slice(0, boundary < 0 ? pending.length : boundary);
+    const next = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
+    const deliveryIds = batch.map((item) => item.id);
 
-    if (next.collaborationDeliveryId) collaborationDeliveries.markDelivered(next.collaborationDeliveryId);
-    if (next.collaborationDeliveryId) syncDelegatedCompletion(next.collaborationDeliveryId);
+    collaborationDeliveries.markBatchDelivered(deliveryIds);
+    for (const id of deliveryIds) syncDelegatedCompletion(id);
     const response = await app.inject({
       method: "POST",
       url: `/api/threads/${threadId}/messages`,
       headers: {
         ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
-        ...(next.collaborationDeliveryId
+        ...(deliveryIds.length
           ? { "x-ponderosa-collaboration-dispatch": collaborationDispatchKey }
           : {}),
         "x-ponderosa-turn-dispatch": turnDispatchKey,
@@ -537,18 +665,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     // Another request may have claimed the agent between our check and the
     // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
-      if (next.collaborationDeliveryId) {
-        collaborationDeliveries.requeue(next.collaborationDeliveryId);
-        syncDelegatedCompletion(next.collaborationDeliveryId);
-      }
-    } else if ((response.statusCode === 429 || response.statusCode >= 500) && next.collaborationDeliveryId) {
-      collaborationDeliveries.requeue(next.collaborationDeliveryId);
-      syncDelegatedCompletion(next.collaborationDeliveryId);
+      collaborationDeliveries.requeueBatch(deliveryIds);
+      for (const id of deliveryIds) syncDelegatedCompletion(id);
+    } else if (response.statusCode === 429 || response.statusCode >= 500) {
+      collaborationDeliveries.requeueBatch(deliveryIds);
+      for (const id of deliveryIds) syncDelegatedCompletion(id);
       setTimeout(() => void dispatchNextTurn(threadId), 250).unref?.();
-    } else if (response.statusCode >= 300 && next.collaborationDeliveryId) {
-      collaborationDeliveries.fail(next.collaborationDeliveryId, `delivery dispatch rejected (${response.statusCode})`);
-      syncDelegatedCompletion(next.collaborationDeliveryId);
-      const delivery = collaborationDeliveries.get(next.collaborationDeliveryId);
+    } else if (response.statusCode >= 300) {
+      collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
+      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      const delivery = collaborationDeliveries.get(deliveryIds[0]!);
       const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
       if (delivery?.masterChatId && target) {
         store.appendMasterChatMessage(
@@ -607,7 +733,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     for (const run of delegations.all()) {
       if (
-        (run.status === "completed" || run.status === "failed") &&
+        (run.status === "completed" || run.status === "blocked" || run.status === "failed") &&
         !run.completionDelivery &&
         !completionMessages.has(run.id) &&
         run.finishedAt && run.finishedAt >= boundary
@@ -620,7 +746,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -670,7 +796,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           launchDelegatedRun(queued.id, `${callbackBase}/api/agent-messages`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          notifyParentOfDelegatedCompletion(delegations.settle(queued.id, "failed", message));
+          notifyParentOfDelegatedCompletion(delegations.finishRuntime(queued.id, message));
         }
       });
     }
@@ -792,7 +918,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   /** Completion is first-class: it is recorded and delivered even if a child never tags its parent. */
   function notifyParentOfDelegatedCompletion(run: SubagentRunDto): void {
     if (closed) return;
-    if ((run.status !== "completed" && run.status !== "failed") || !run.parentThreadId) return;
+    if ((run.status !== "completed" && run.status !== "blocked" && run.status !== "failed") || !run.parentThreadId || run.completionDelivery) return;
     const parent = store.getThread(run.parentThreadId);
     if (!parent) {
       delegations.setCompletionDelivery(run.id, {
@@ -807,8 +933,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       {
         role: "system",
         text: run.status === "completed"
-          ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.`
-          : `⚠️ Delegated task “${run.delegationSummary}” failed. @${agentMentionHandle(parent.title)}, review the failure.`,
+          ? `✅ Delegated task “${run.delegationSummary}” completed. @${agentMentionHandle(parent.title)}, the result is ready.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+          : run.status === "blocked"
+            ? `⏸️ Delegated task “${run.delegationSummary}” is blocked. @${agentMentionHandle(parent.title)}, review the blocker.${run.disposition?.message ? ` ${run.disposition.message}` : ""}`
+            : `⚠️ Delegated task “${run.delegationSummary}” failed at runtime. @${agentMentionHandle(parent.title)}, review the failure.`,
       },
       run.childThreadId,
       "collaboration",
@@ -899,6 +1027,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { channel, messageId: message.id, replayed: false };
   });
 
+  app.post("/api/agent-session/rollover", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    if (!capability) return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    const active = activeRuns.get(capability.threadId);
+    if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    scheduledSessionRollovers.add(capability.threadId);
+    return { scheduled: true, afterRunId: capability.runId };
+  });
+
   /**
    * The sole delegated launch path. Ownership has already been derived from the
    * active run capability; no HTTP caller can provide or replay launch proofs.
@@ -956,6 +1096,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
             ...agentMessagingPrompt(),
             ...agentDelegationPrompt(),
+            ...delegatedOutcomePrompt(),
           ].join("\n"),
           history: context.history,
           model: context.model,
@@ -963,7 +1104,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
+            PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+            PONDEROSA_DELEGATION_OUTCOME_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegation-outcomes`,
             PONDEROSA_DELEGATION_TOKEN: delegationCapabilityToken,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
           },
@@ -976,14 +1119,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (event.type === "error") runtimeError = event.message;
         }
         if (closed) return;
-        if (controller.signal.aborted) notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", "delegated runtime aborted"));
-        else if (runtimeError) notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", runtimeError));
-        else notifyParentOfDelegatedCompletion(delegations.settle(runId, "completed"));
+        if (controller.signal.aborted) return;
+        if (runtimeError) notifyParentOfDelegatedCompletion(delegations.finishRuntime(runId, runtimeError));
+        else delegations.finishRuntime(runId);
       } catch (error) {
         if (closed) return;
         runtimeError = error instanceof Error ? error.message : String(error);
-        notifyParentOfDelegatedCompletion(delegations.settle(runId, "failed", runtimeError));
+        notifyParentOfDelegatedCompletion(delegations.finishRuntime(runId, runtimeError));
       } finally {
+        if (scheduledSessionRollovers.delete(childThread.id)) {
+          store.clearResumeSession(childThread.id, "explicit_compaction");
+        }
         if (activeRuns.get(childThread.id)?.controller === controller) activeRuns.delete(childThread.id);
         agentMessageCapabilities.delete(messageCapabilityToken);
         delegationCapabilities.delete(delegationCapabilityToken);
@@ -1063,11 +1209,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             launchDelegatedRun(spawned.run.id, agentMessageEndpoint(request, opts.agentBaseUrl));
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            notifyParentOfDelegatedCompletion(delegations.settle(spawned.run.id, "failed", message));
+            notifyParentOfDelegatedCompletion(delegations.finishRuntime(spawned.run.id, message));
             throw error;
           }
         }
         return reply.code(202).send({ run: delegations.get(spawned.run.id), accepted: true, replayed: spawned.replayed });
+      } catch (error) {
+        return delegationFailure(error, reply);
+      }
+    },
+  );
+
+  app.post<{ Body: AgentDelegationDispositionRequest & Record<string, unknown> }>(
+    "/api/agent-delegation-outcomes",
+    async (request, reply) => {
+      const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+      const capability = token ? delegationCapabilities.get(token) : undefined;
+      if (!capability || capability.controller.signal.aborted) {
+        return reply.code(401).send({ error: { code: "forbidden", message: "invalid or expired delegation capability", retryable: false } });
+      }
+      const input = request.body;
+      if ((input?.outcome !== "completed" && input?.outcome !== "blocked") || !input.idempotencyKey?.trim() || (input.message?.length ?? 0) > MAX_TEXT_LENGTH || input.idempotencyKey.length > 200) {
+        return reply.code(400).send({ error: { code: "invalid_disposition", message: "outcome, bounded message, and idempotencyKey are required", retryable: false } });
+      }
+      try {
+        const run = delegations.declareDisposition(capability.parentRunId, input);
+        notifyParentOfDelegatedCompletion(run);
+        return reply.send({ run });
       } catch (error) {
         return delegationFailure(error, reply);
       }
@@ -1430,7 +1598,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       activeRuns.delete(id);
     }
     const delegated = delegations.findByChildThread(id);
-    if (delegated && (delegated.status === "queued" || delegated.status === "running")) {
+    if (delegated && (delegated.status === "queued" || delegated.status === "running" || delegated.status === "awaiting_disposition")) {
       const cancelled = delegations.cancel(delegated.id, `thread-delete-${randomUUID()}`);
       for (const affected of cancelled.affected) {
         const childThreadId = delegations.get(affected.runId)?.childThreadId;
@@ -1526,6 +1694,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agentMentionTrail?: string[];
       collaborationMasterChatId?: string;
       collaborationDeliveryId?: string;
+      collaborationDeliveryIds?: string[];
       sourceChannel?: "main";
       sourceMasterChatId?: string;
       sourceAuthorThreadId?: string;
@@ -1570,14 +1739,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       const collaborationDeliveryId = request.body.collaborationDeliveryId;
-      const inboxDelivery = collaborationDeliveryId
-        ? collaborationDeliveries.get(collaborationDeliveryId)
-        : undefined;
+      const collaborationDeliveryIds = request.body.collaborationDeliveryIds;
+      const requestedDeliveryIds = collaborationDeliveryIds ?? (collaborationDeliveryId ? [collaborationDeliveryId] : []);
+      const inboxDeliveries = requestedDeliveryIds.map((id) => collaborationDeliveries.get(id));
+      const inboxDelivery = inboxDeliveries[0];
       if (
-        collaborationDeliveryId !== undefined &&
+        requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
-          inboxDelivery?.targetThreadId !== thread.id ||
-          (inboxDelivery.kind !== "direct" && !collaborationMasterChatId))
+          inboxDeliveries.some((delivery) => delivery?.targetThreadId !== thread.id || delivery.status !== "delivered") ||
+          (inboxDelivery?.kind !== "direct" && !collaborationMasterChatId))
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
@@ -1607,6 +1777,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         agentMentionTrail: mentionTrail,
         collaborationMasterChatId,
         collaborationDeliveryId,
+        collaborationDeliveryIds,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
         sourceAuthorThreadId: request.body.sourceAuthorThreadId,
         replyToMessageId: request.body.replyToMessageId,
@@ -1649,7 +1820,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(202).send({ queued: true, position });
       }
 
-      const history: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
+      const fullHistory: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
@@ -1665,8 +1836,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const controller = new AbortController();
       const messageCapability = randomUUID();
       const delegationCapability = randomUUID();
+      const delegatedObjective = delegations.findByChildThread(thread.id);
       const resumeSessionId = store.resumeSessionId(thread.id);
       const mode = resumeSessionId ? "continue" : "seed";
+      const history = boundedSeedHistory(fullHistory);
 
       // Main-chat turns receive the manager-facing room. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
@@ -1688,22 +1861,63 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? contextThreads.find((candidate) => candidate.id === request.body.sourceAuthorThreadId)?.title ?? "Agent"
         : "Manager";
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextThreads, thread.id);
+      const cursorChannel = sourceChannel === "main" || sourceChannel === "collaboration" ? sourceChannel : undefined;
+      const cursorMasterChatId = cursorChannel ? routingMasterChatId : undefined;
+      const cursorModel = request.body.model ?? "(default)";
+      const routingMetadata = cursorMasterChatId && cursorChannel
+        ? [
+            "Current room routing and membership:",
+            `- room: ${cursorMasterChatId}`,
+            `- channel: ${cursorChannel}`,
+            `- primary room: ${thread.masterChatId ?? "none"}`,
+            `- room memberships: ${thread.masterChatIds.join(", ") || "none"}`,
+            `- visible agents: ${contextThreads.map((candidate) => `${candidate.title} (${candidate.id})`).join(", ") || "none"}`,
+          ].join("\n")
+        : undefined;
+      const routingHash = createHash("sha256").update(routingMetadata ?? "").digest("hex");
+      const cursorScope = resumeSessionId && cursorMasterChatId && cursorChannel
+        ? {
+            threadId: thread.id,
+            engine: thread.activeEngine,
+            model: cursorModel,
+            sessionId: resumeSessionId,
+            masterChatId: cursorMasterChatId,
+            channel: cursorChannel,
+          }
+        : undefined;
+      const latestSessionCursor = resumeSessionId ? contextCursors.latestForSession(thread.id, resumeSessionId) : undefined;
+      const sameEngineModelEpoch = !latestSessionCursor ||
+        (latestSessionCursor.engine === thread.activeEngine && latestSessionCursor.model === cursorModel);
+      const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
+      const allRoomMessages = collaboration?.messages ?? (masterChat && sourceChannel === "main" ? masterChat.messages : []);
+      const previousIndex = previousCursor?.lastMessageId
+        ? allRoomMessages.findIndex((message) => message.id === previousCursor.lastMessageId)
+        : -1;
+      // A missing cursor target means canonical history was cleared or replaced;
+      // reseed rather than assuming that later rows were already delivered.
+      const incremental = previousCursor !== undefined && (!previousCursor.lastMessageId || previousIndex >= 0);
+      const roomMessages = incremental
+        ? allRoomMessages.slice(previousCursor?.lastMessageId ? previousIndex + 1 : 0)
+        : boundedSeedHistory(allRoomMessages);
+      const changedRoutingMetadata = !previousCursor || previousCursor.routingHash !== routingHash
+        ? routingMetadata
+        : undefined;
       const basePrompt = collaboration
-        ? collaborationChatPrompt(collaboration.messages, collaboration.threads, text, context)
+        ? collaborationChatPrompt(roomMessages, collaboration.threads, text, context, incremental, changedRoutingMetadata)
         : masterChat && sourceChannel === "main"
-          ? masterChatPrompt(masterChat.messages, masterChat.threads, text, context)
-          : individualChatPrompt(text, context);
+          ? masterChatPrompt(roomMessages, masterChat.threads, text, context, incremental, changedRoutingMetadata)
+          : resumeSessionId ? continuationPrompt(text, context) : individualChatPrompt(text, context);
       const guidedPrompt = thread.presetSnapshot?.guidance
         ? `Agent preset snapshot (${thread.presetSnapshot.name}):\n${thread.presetSnapshot.guidance}\n\n${basePrompt}`
         : basePrompt;
       const attachmentContext = messageAttachments.length ? `\n\nAttached images (validated local files scoped to this thread):\n${messageAttachments.map((item) => `- ${item.name} (${item.mediaType}, ${item.width}x${item.height}, ${item.size} bytes): ${attachmentPath(opts.dataDir, thread.projectId, thread.id, `${item.id}.${item.mediaType === "image/jpeg" ? "jpg" : item.mediaType.slice(6)}`)}`).join("\n")}` : "";
-      const prompt = `${guidedPrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${guidedPrompt}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt().join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo, attachments: messageAttachments });
       publish(thread.id, userStored);
 
-      activeRuns.set(thread.id, { runId, controller, messageCapability });
+      activeRuns.set(thread.id, { runId, controller, messageCapability, ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}) });
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: thread.masterChatId,
@@ -1713,7 +1927,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
       if (thread.masterChatId) {
         delegationCapabilities.set(delegationCapability, {
-          parentRunId: runId,
+          parentRunId: delegatedObjective?.id ?? runId,
           threadId: thread.id,
           masterChatId: thread.masterChatId,
           controller,
@@ -1728,21 +1942,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let sawWaiting = false;
         let finalText = "";
         try {
-          const stream = resumeSessionId
+          const environment = {
+            PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+            PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
+            PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
+            PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
+            PONDEROSA_DELEGATION_OUTCOME_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegation-outcomes`,
+            PONDEROSA_DELEGATION_TOKEN: delegationCapability,
+            PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
+          };
+          const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
             ? engine.adapter.continue({
                   threadId: thread.id,
                   cwd: project.hostPath,
                   prompt,
-                  resumeSessionId,
+                  resumeSessionId: sessionId,
                   model: request.body.model,
                   effort: request.body.effort,
-                  environment: {
-                    PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
-                    PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
-                    PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
-                    PONDEROSA_DELEGATION_TOKEN: delegationCapability,
-                    PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
-                  },
+                  environment,
                   signal: controller.signal,
                 })
             : engine.adapter.seed({
@@ -1752,23 +1969,51 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   history,
                   model: request.body.model,
                   effort: request.body.effort,
-                  environment: {
-                    PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
-                    PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
-                    PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
-                    PONDEROSA_DELEGATION_TOKEN: delegationCapability,
-                    PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
-                  },
+                  environment,
                   signal: controller.signal,
                 });
 
-          for await (const event of stream) {
-            if (closed) break;
-            const stored = store.appendEvent(thread.id, event);
-            publish(thread.id, stored);
-            if (event.type === "text") finalText += event.delta;
-            if (event.type === "error") runError = event.message;
-            if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
+          let sessionId = resumeSessionId;
+          let rolloverAttempted = false;
+          let sawMaterialRuntimeEvent = false;
+          while (true) {
+            const bufferedSessionEvents: AgentEvent[] = [];
+            let retryFresh = false;
+            for await (const event of startStream(sessionId)) {
+              if (closed) break;
+              // Codex can emit its session id immediately before a resume-time
+              // compaction failure. Hold only those initial session events so a
+              // failed resume does not restore the stale id after we clear it.
+              if (sessionId && event.type === "session") {
+                bufferedSessionEvents.push(event);
+                continue;
+              }
+              if (
+                sessionId &&
+                !rolloverAttempted &&
+                !sawMaterialRuntimeEvent &&
+                event.type === "error" &&
+                shouldRolloverEngineSession(engine.adapter.id, event.message)
+              ) {
+                store.clearResumeSession(thread.id, "resume_compaction_failed");
+                sessionId = undefined;
+                rolloverAttempted = true;
+                retryFresh = true;
+                break;
+              }
+
+              for (const buffered of bufferedSessionEvents.splice(0)) {
+                const stored = store.appendEvent(thread.id, buffered);
+                publish(thread.id, stored);
+              }
+              if (event.type !== "error") sawMaterialRuntimeEvent = true;
+              const stored = store.appendEvent(thread.id, event);
+              publish(thread.id, stored);
+              if (event.type === "text") finalText += event.delta;
+              if (event.type === "error") runError = event.message;
+              if (event.type === "task_update" && event.status === "waiting_approval") sawWaiting = true;
+            }
+            if (!retryFresh) break;
           }
         } catch (err) {
           if (closed) return;
@@ -1777,6 +2022,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           publish(thread.id, stored);
           runError = message;
         } finally {
+          if (scheduledSessionRollovers.delete(thread.id)) {
+            store.clearResumeSession(thread.id, "explicit_compaction");
+          }
+          if (delegatedObjective && !controller.signal.aborted) {
+            const settled = delegations.finishRuntime(delegatedObjective.id, runError);
+            if (settled.status === "failed") notifyParentOfDelegatedCompletion(settled);
+          }
           if (activeRuns.get(thread.id)?.controller === controller) activeRuns.delete(thread.id);
           agentMessageCapabilities.delete(messageCapability);
           delegationCapabilities.delete(delegationCapability);
@@ -1817,12 +2069,30 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // Master chat may have been deleted mid-run; ignore.
             }
           }
-          if (!closed && collaborationDeliveryId) {
+          if (!closed && requestedDeliveryIds.length) {
             // A cancelled delivery turn is not an acknowledgement. Put it back
             // into the durable queue; ordinary pending deliveries remain queued.
-            if (controller.signal.aborted) collaborationDeliveries.requeue(collaborationDeliveryId);
-            else collaborationDeliveries.acknowledge(collaborationDeliveryId);
-            syncDelegatedCompletion(collaborationDeliveryId);
+            if (controller.signal.aborted) collaborationDeliveries.requeueBatch(requestedDeliveryIds);
+            else if (runError) {
+              for (const id of requestedDeliveryIds) collaborationDeliveries.retryFailedTurn(id, runError);
+            }
+            else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
+            for (const id of requestedDeliveryIds) syncDelegatedCompletion(id);
+          }
+          if (!closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
+            const acceptedSessionId = store.resumeSessionId(thread.id);
+            if (acceptedSessionId) {
+              contextCursors.commit({
+                threadId: thread.id,
+                engine: thread.activeEngine,
+                model: cursorModel,
+                sessionId: acceptedSessionId,
+                masterChatId: cursorMasterChatId,
+                channel: cursorChannel,
+                lastMessageId: allRoomMessages.at(-1)?.id,
+                routingHash,
+              });
+            }
           }
           // Mentions received while this agent was working are never dropped.
           // Start the oldest queued follow-up as soon as its current turn closes.
@@ -1896,6 +2166,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       delegations.cancel(run.delegatedRunId, `thread-cancel-${randomUUID()}`);
     }
     return { cancelled: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/threads/:id/compact", async (request, reply) => {
+    if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
+    if (activeRuns.has(request.params.id)) {
+      return reply.code(409).send({ error: "cannot compact a thread with an active run", retryable: true });
+    }
+    return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
   });
 
   app.get<{ Params: { id: string } }>("/api/threads/:id/tasks", async (request, reply) => {

@@ -116,6 +116,14 @@ describe("projectEvent — routing (SPEC §5)", () => {
     expect(s).toEqual({ kind: "set_session", sessionId: "sess-9" });
   });
 
+  it("session_reset clears the projected provider session", () => {
+    const { ops } = projectEvent(T, initProjectionState("codex"), stored(2, {
+      type: "session_reset",
+      reason: "resume_compaction_failed",
+    }));
+    expect(ops).toContainEqual({ kind: "set_session", sessionId: null });
+  });
+
   it("turn_done → closes the open task as done", () => {
     let state = initProjectionState("codex");
     state = projectEvent(T, state, stored(1, { type: "user_message", text: "go" })).state;
