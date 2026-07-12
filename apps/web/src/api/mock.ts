@@ -489,6 +489,15 @@ export const mockApi: PonderosaApi = {
   listEngines() {
     return delay(engines);
   },
+  getEngineCapabilities(_projectId) {
+    return delay(engines.map((engine) => ({
+      engineId: engine.id,
+      steering: engine.id === "codex" || engine.id === "claude",
+      persistentSessions: engine.id === "codex" || engine.id === "claude",
+      commands: [],
+      mcpServers: [],
+    })));
+  },
   getArtifact(_threadId, artifactId) {
     const content = artifactContent[artifactId];
     if (!content) {
@@ -518,6 +527,7 @@ export const mockApi: PonderosaApi = {
     emit(threadId, { type: "turn_done" });
     await delay(undefined, 80);
   },
+  compactSession() { return delay({ compacted: true }); },
   subscribeThread(threadId, lastSeenSeq, handlers): StreamSubscription {
     const handlersForThread = subscribers.get(threadId) ?? new Set<StreamHandlers>();
     handlersForThread.add(handlers);

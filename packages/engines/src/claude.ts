@@ -6,10 +6,13 @@
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { homedir } from "node:os";
+import path from "node:path";
 import type {
   Adapter,
   AgentEvent,
   ContinueOptions,
+  EngineCapabilities,
   EffortOption,
   ModelOption,
   SeedOptions,
@@ -17,6 +20,7 @@ import type {
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./codex.js";
 import { streamProcess, type SpawnFn } from "./process.js";
+import { discoverCliMcps, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
 
 export interface ClaudeAdapterOptions {
   /** Path/name of the claude binary. Default: "claude". */
@@ -74,6 +78,22 @@ export class ClaudeAdapter implements Adapter {
 
   listEfforts(): EffortOption[] {
     return DEFAULT_EFFORTS;
+  }
+
+  async capabilities(cwd: string): Promise<EngineCapabilities> {
+    const claudeHome = path.join(homedir(), ".claude");
+    const commands = discoverMarkdownCommands([
+      { path: path.join(cwd, ".claude", "commands"), source: "engine" },
+      { path: path.join(cwd, ".claude", "skills"), source: "skill", skillFilesOnly: true },
+      { path: path.join(claudeHome, "commands"), source: "engine" },
+      { path: path.join(claudeHome, "skills"), source: "skill", skillFilesOnly: true },
+    ]);
+    return {
+      steering: false,
+      persistentSessions: false,
+      commands,
+      mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList),
+    };
   }
 
   /** Flags shared by seed + continue. */

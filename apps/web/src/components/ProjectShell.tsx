@@ -2,8 +2,8 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { EngineDto, MasterChatDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
-import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import type { EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
@@ -47,6 +47,12 @@ export function ProjectShell({
   const agents = threadsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
+  const capabilitiesQuery = useQuery({
+    queryKey: ["engine-capabilities", projectId],
+    queryFn: () => api.getEngineCapabilities(projectId),
+    staleTime: 60_000,
+  });
+  const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const presets = presetsQuery.data ?? [];
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
   const showSubagents = isSubagentUiEnabled(env);
@@ -180,6 +186,7 @@ export function ProjectShell({
         key={route.masterChatId}
         masterChatId={route.masterChatId}
         engines={engines}
+        engineCapabilities={engineCapabilities}
         statusByAgentId={statusByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={openNewAgentFromMaster}
@@ -193,6 +200,7 @@ export function ProjectShell({
         key={route.agentId}
         agentId={route.agentId}
         engines={engines}
+        engineCapabilities={engineCapabilities}
         masterChats={masterChats}
         subagent={subagents.find((run) => run.childThreadId === route.agentId)}
         onBack={() => navigate({ kind: "agents", projectId })}

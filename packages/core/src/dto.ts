@@ -532,6 +532,14 @@ export interface EngineDto {
   authDetail?: string;
 }
 
+export interface ProjectEngineCapabilitiesDto {
+  engineId: EngineId;
+  steering: boolean;
+  persistentSessions: boolean;
+  commands: import("./adapter.js").EngineCommand[];
+  mcpServers: import("./adapter.js").EngineMcpServer[];
+}
+
 // ─── Files (scoped file browser, SPEC §8/§11) ────────────────────────────────
 
 /** One entry in a directory listing. */

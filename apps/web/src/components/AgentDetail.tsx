@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -51,6 +51,7 @@ type AgentTab = "chat" | "log" | "tasks" | "artifacts";
 export function AgentDetail({
   agentId,
   engines,
+  engineCapabilities,
   masterChats,
   subagent,
   onBack,
@@ -60,6 +61,7 @@ export function AgentDetail({
 }: {
   agentId: string;
   engines: EngineDto[];
+  engineCapabilities: ProjectEngineCapabilitiesDto[];
   masterChats: MasterChatDto[];
   subagent?: SubagentRunDto;
   onBack(): void;
@@ -89,6 +91,12 @@ export function AgentDetail({
   const detail = threadQuery.data;
   const engine =
     engines.find((candidate) => candidate.id === detail?.thread.activeEngine) ?? engines[0];
+  const commands: EngineCommand[] = [
+    { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
+    { name: "compact", description: "Compact this agent session", source: "ponderosa", acceptsArguments: false },
+    { name: "status", description: "Show this agent's runtime status", source: "ponderosa", acceptsArguments: false },
+    ...(engineCapabilities.find((item) => item.engineId === engine?.id)?.commands ?? []),
+  ];
 
   useEffect(() => {
     if (!engine) {
@@ -385,10 +393,23 @@ export function AgentDetail({
           </Alert>
         ) : null}
         <Composer
+          commands={commands}
           disabled={sendMessage.isPending}
           running={false}
           placeholder={stream.running ? "Queue a follow-up for this agent" : "Message this agent directly"}
           onSend={(text, files) => {
+            if (files.length === 0 && text === "/cancel") {
+              setQueuedMessageNotice("Cancelling the active turn…");
+              return cancelRun.mutateAsync().then(() => setQueuedMessageNotice("Active turn cancelled."));
+            }
+            if (files.length === 0 && text === "/compact") {
+              setQueuedMessageNotice("Compacting this agent session…");
+              return api.compactSession(agentId).then(() => setQueuedMessageNotice("Agent session compacted."));
+            }
+            if (files.length === 0 && text === "/status") {
+              setQueuedMessageNotice(`${detail.thread.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
+              return Promise.resolve();
+            }
             const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
               try {
                 return await sendMessage.mutateAsync(

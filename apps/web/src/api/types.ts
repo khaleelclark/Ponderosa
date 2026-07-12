@@ -19,6 +19,7 @@ import type {
   DirectReplyResponse,
   ImageAttachmentDto,
   ProjectDto,
+  ProjectEngineCapabilitiesDto,
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
@@ -96,10 +97,12 @@ export interface PonderosaApi {
   deleteThread(threadId: string): Promise<void>;
   getThread(threadId: string): Promise<ThreadDetailDto>;
   listEngines(): Promise<EngineDto[]>;
+  getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;
   getArtifact(threadId: string, artifactId: string): Promise<ArtifactContentDto>;
   sendMessage(threadId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
   uploadAttachment(threadId: string, file: File): Promise<ImageAttachmentDto>;
   deleteAttachment(threadId: string, attachmentId: string): Promise<void>;
   cancelRun(threadId: string): Promise<void>;
+  compactSession(threadId: string): Promise<{ compacted: boolean }>;
   subscribeThread(threadId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
 }

@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   EngineAuthStatus,
   EngineDto,
+  ProjectEngineCapabilitiesDto,
   FilesResponse,
   HealthDto,
   ReadinessDto,
@@ -3393,6 +3394,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }),
     );
   });
+
+  app.get<{ Params: { id: string } }>(
+    "/api/projects/:id/engine-capabilities",
+    async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
+      const project = store.getProject(request.params.id);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      return Promise.all([...engines.values()].map(async ({ adapter }) => {
+        const capabilities = adapter.capabilities
+          ? await adapter.capabilities(project.hostPath)
+          : { steering: false, persistentSessions: false, commands: [], mcpServers: [] };
+        return { engineId: adapter.id, ...capabilities };
+      }));
+    },
+  );
 
   if (opts.webDist) {
     app.get("/*", async (request, reply) => {

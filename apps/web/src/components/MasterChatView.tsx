@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
+import type { EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -155,6 +155,7 @@ export function MasterChatMessage({
 export function MasterChatView({
   masterChatId,
   engines,
+  engineCapabilities,
   statusByAgentId,
   onOpenAgent,
   onNewAgent,
@@ -164,6 +165,7 @@ export function MasterChatView({
 }: {
   masterChatId: string;
   engines: EngineDto[];
+  engineCapabilities: ProjectEngineCapabilitiesDto[];
   statusByAgentId: Map<string, AgentStatus>;
   onOpenAgent(agentId: string): void;
   onNewAgent(master: MasterChatDto): void;
@@ -452,6 +454,9 @@ export function MasterChatView({
   }
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
+  const commands: EngineCommand[] = [
+    ...(engineCapabilities.find((item) => item.engineId === activeEngine?.id)?.commands ?? []),
+  ];
   const models = activeEngine?.models ?? [];
   const efforts = activeEngine?.efforts ?? [];
   const engineReady = Boolean(activeEngine?.authenticated);
@@ -861,6 +866,7 @@ export function MasterChatView({
           disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
+          commands={commands}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={conversation === "collaboration" ? collaborationRecipientIds.length > 0 : engineReady}
           placeholder={
