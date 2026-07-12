@@ -67,6 +67,14 @@ export interface CreateServerOptions {
   legacyRoutingMode?: "accept" | "reject";
   /** Independent context-plane rollback switch. */
   curatedContextEnabled?: boolean;
+  /** Deterministic scheduling seams for retry tests; production uses host timers and randomness. */
+  deliveryScheduling?: {
+    now?: () => number;
+    random?: () => number;
+    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+    /** Test-only internal claim response override. */
+    claimStatus?: () => number | undefined;
+  };
 }
 
 interface ActiveRun {
@@ -78,6 +86,15 @@ interface ActiveRun {
   messageCapability: string;
   delegatedRunId?: string;
 }
+
+export const COLLABORATION_DISPATCH_LIMITS = {
+  maxBatchDeliveries: 20,
+  maxBatchUtf8Bytes: 224 * 1024,
+  maxDispatchAttempts: 5,
+  baseRetryMs: 250,
+  maxRetryMs: 30_000,
+  jitterRatio: 0.2,
+} as const;
 
 /**
  * Collaboration room projections are a display timeline, not an authorization
@@ -564,6 +581,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const scheduledSessionRollovers = new Map<string, string>();
   const delegationCapabilities = new Map<string, DelegationCapability>();
   const dispatchingTurns = new Set<string>();
+  const deliveryRetryTimers = new Map<string, NodeJS.Timeout>();
+  const deliveryDispatches = new Set<Promise<void>>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct thread request.
   const collaborationDispatchKey = randomUUID();
@@ -588,6 +607,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const active = activeRuns.get(threadId);
     if (active) active.leaseExpiresAt = leaseExpiry();
   };
+  const deliveryNow = opts.deliveryScheduling?.now ?? Date.now;
+  const deliveryRandom = opts.deliveryScheduling?.random ?? Math.random;
+  const setDeliveryTimer = opts.deliveryScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
 
   function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
     const detail = store.getMasterChatDetail(masterChatId);
@@ -698,6 +720,46 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
+  function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
+    const first = pending[0];
+    if (!first) return [];
+    if (first.kind === "direct") return [first];
+    const batch: CollaborationDelivery[] = [];
+    for (const candidate of pending) {
+      if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
+      const proposed = [...batch, candidate];
+      const bytes = Buffer.byteLength(formatDeliveryBatch({ deliveries: proposed }), "utf8");
+      if (bytes > COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes) break;
+      batch.push(candidate);
+    }
+    return batch;
+  }
+
+  function dispatchRetryDelay(attempt: number): number {
+    const exponential = Math.min(
+      COLLABORATION_DISPATCH_LIMITS.maxRetryMs,
+      COLLABORATION_DISPATCH_LIMITS.baseRetryMs * (2 ** Math.max(0, attempt - 1)),
+    );
+    const jitter = exponential * COLLABORATION_DISPATCH_LIMITS.jitterRatio * ((deliveryRandom() * 2) - 1);
+    return Math.max(0, Math.round(exponential + jitter));
+  }
+
+  function scheduleDeliveryDispatch(threadId: string, delayMs = 0): void {
+    if (closed || activeRuns.has(threadId) || deliveryRetryTimers.has(threadId)) return;
+    const timer = setDeliveryTimer(() => {
+      deliveryRetryTimers.delete(threadId);
+      runDeliveryDispatch(threadId);
+    }, delayMs);
+    timer.unref?.();
+    deliveryRetryTimers.set(threadId, timer);
+  }
+
+  function runDeliveryDispatch(threadId: string): void {
+    const dispatch = dispatchNextTurn(threadId);
+    deliveryDispatches.add(dispatch);
+    void dispatch.finally(() => deliveryDispatches.delete(dispatch));
+  }
+
   /**
    * Persist before enqueueing. A tag therefore survives cancellation, process
    * restart, and dispatch races instead of existing only in collaboration history.
@@ -718,7 +780,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
       }
     }
-    void dispatchNextTurn(queued.delivery.targetThreadId);
+    scheduleDeliveryDispatch(queued.delivery.targetThreadId);
     return queued.delivery;
   }
 
@@ -727,23 +789,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (activeRuns.has(threadId)) return;
     if (dispatchingTurns.has(threadId)) return;
     dispatchingTurns.add(threadId);
+    let retryScheduled = false;
     try {
     const pending = collaborationDeliveries.pending(threadId);
     const delivery = pending[0];
     if (!delivery) return;
+    const eligibleAt = delivery.nextDispatchAt ? Date.parse(delivery.nextDispatchAt) : 0;
+    if (eligibleAt > deliveryNow()) {
+      scheduleDeliveryDispatch(threadId, eligibleAt - deliveryNow());
+      return;
+    }
     // Direct follow-ups retain their exact existing behavior and remain FIFO
     // barriers. Every consecutive collaboration delivery for this recipient is
     // one fixed snapshot, regardless of author or relay metadata.
-    const boundary = pending.findIndex((item) => !canShareCollaborationBatch(delivery, item));
-    const batch = delivery.kind === "direct"
-      ? [delivery]
-      : pending.slice(0, boundary < 0 ? pending.length : boundary);
+    const batch = boundedDeliveryBatch(pending);
+    if (batch.length === 0) {
+      collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
+      syncDelegatedCompletion(delivery.id);
+      return;
+    }
     const next = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
     const deliveryIds = batch.map((item) => item.id);
 
     collaborationDeliveries.markBatchDelivered(deliveryIds);
     for (const id of deliveryIds) syncDelegatedCompletion(id);
-    const response = await app.inject({
+    const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
+    const response = injectedStatus === undefined ? await app.inject({
       method: "POST",
       url: `/api/threads/${threadId}/messages`,
       headers: {
@@ -754,19 +825,40 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         "x-ponderosa-turn-dispatch": turnDispatchKey,
       },
       payload: next,
-    });
+    }) : { statusCode: injectedStatus };
     // `app.close()` may have run while the internal injection was in flight.
     // Never mutate a delivery ledger after shutdown has revoked its data dir.
     if (closed) return;
     // Another request may have claimed the agent between our check and the
     // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
-      collaborationDeliveries.requeueBatch(deliveryIds);
+      collaborationDeliveries.requeueBatch(deliveryIds, true);
       for (const id of deliveryIds) syncDelegatedCompletion(id);
     } else if (response.statusCode === 429 || response.statusCode >= 500) {
-      collaborationDeliveries.requeueBatch(deliveryIds);
+      const attempt = Math.max(...deliveryIds.map((id) => collaborationDeliveries.get(id)?.dispatchAttempts ?? 0)) + 1;
+      const delay = dispatchRetryDelay(attempt);
+      const nextDispatchAt = new Date(deliveryNow() + delay).toISOString();
+      const retried = collaborationDeliveries.retryDispatchBatch(
+        deliveryIds,
+        `delivery dispatch rejected (${response.statusCode})`,
+        nextDispatchAt,
+        COLLABORATION_DISPATCH_LIMITS.maxDispatchAttempts,
+      );
       for (const id of deliveryIds) syncDelegatedCompletion(id);
-      setTimeout(() => void dispatchNextTurn(threadId), 250).unref?.();
+      if (retried.some((item) => item.status === "queued")) {
+        scheduleDeliveryDispatch(threadId, delay);
+        retryScheduled = true;
+      } else {
+        const failed = retried[0];
+        const target = failed ? store.getThread(failed.targetThreadId) : undefined;
+        if (failed?.masterChatId && target) {
+          appendCollaborationSystemNotice(
+            failed.masterChatId,
+            `⚠️ @${agentMentionHandle(target.title)} was not notified because their follow-up delivery exhausted bounded retries. The handoff is retained as failed; retry manually or contact the manager.`,
+            `delivery-failure:${failed.id}`,
+          );
+        }
+      }
     } else if (response.statusCode >= 300) {
       collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
       for (const id of deliveryIds) syncDelegatedCompletion(id);
@@ -782,8 +874,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     } finally {
       dispatchingTurns.delete(threadId);
-      if (!closed && !activeRuns.has(threadId) && collaborationDeliveries.pendingCount(threadId) > 0) {
-        setImmediate(() => void dispatchNextTurn(threadId));
+      if (!closed && !retryScheduled && !activeRuns.has(threadId) && collaborationDeliveries.pendingCount(threadId) > 0) {
+        scheduleDeliveryDispatch(threadId);
       }
     }
   }
@@ -882,7 +974,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged());
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
     for (const threadId of recipients) {
-      setImmediate(() => void dispatchNextTurn(threadId));
+      scheduleDeliveryDispatch(threadId);
     }
     for (const interrupted of delegations.reconcileInterrupted()) {
       notifyParentOfDelegatedCompletion(interrupted);
@@ -913,8 +1005,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     closed = true;
+    for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
+    deliveryRetryTimers.clear();
     if (assetSweep) clearInterval(assetSweep);
     for (const run of activeRuns.values()) run.controller.abort();
+    await Promise.allSettled([...deliveryDispatches]);
     assets.close();
     store.close();
   });
@@ -1440,7 +1535,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (activeRuns.get(childThread.id)?.controller === controller) activeRuns.delete(childThread.id);
         agentMessageCapabilities.delete(messageCapabilityToken);
         delegationCapabilities.delete(delegationCapabilityToken);
-        void dispatchNextTurn(childThread.id);
+        runDeliveryDispatch(childThread.id);
       }
     })();
 
@@ -2906,7 +3001,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           // Mentions received while this agent was working are never dropped.
           // Start the oldest queued follow-up as soon as its current turn closes.
-          void dispatchNextTurn(thread.id);
+          runDeliveryDispatch(thread.id);
         }
       })();
 

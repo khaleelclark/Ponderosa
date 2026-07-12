@@ -1742,7 +1742,7 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
     expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(prompt.indexOf("@Parent interrupted first result")).toBeLessThan(prompt.indexOf("@Parent queued second result"));
+    expect(prompt.lastIndexOf("@Parent interrupted first result")).toBeLessThan(prompt.lastIndexOf("@Parent queued second result"));
     await app.close();
   });
 
@@ -2260,10 +2260,10 @@ describe("server chunk F", () => {
     );
 
     await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id);
+    await waitForRun(reviewer.id, 3);
     const reviewerTurns = adapter.continues.filter((turn) => turn.threadId === reviewer.id);
-    expect(reviewerTurns).toHaveLength(1);
-    expect(reviewerTurns[0]?.prompt).toContain("CollaborationDeliveryBatch (51 deliveries; canonical server order)");
+    expect(reviewerTurns).toHaveLength(3);
+    expect(reviewerTurns.map((turn) => turn.prompt.match(/CollaborationDeliveryBatch \((\d+) deliveries/)?.[1])).toEqual(["20", "20", "11"]);
     await app.close();
   });
 
