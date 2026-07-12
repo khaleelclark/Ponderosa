@@ -48,6 +48,7 @@ import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterCha
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
+import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
 
 export function MasterChatView({
@@ -638,7 +639,7 @@ export function MasterChatView({
                         <Box component="img" src={attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
                       </Box>)}
                     </Stack> : null}
-                    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
+                    <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
                       <Button size="small" color="inherit" onClick={() => {
                         clearReply();
                         setReplyTo(message);
@@ -659,7 +660,7 @@ export function MasterChatView({
                           Reply Directly
                         </Button>
                       ) : null}
-                    </Stack>
+                    </Stack>} />
                   </Box>
                 </Box>
               );
