@@ -539,7 +539,7 @@ describe("server chunk F", () => {
       }),
     ]);
     const completion = store.getMasterChatMessages(master.id)
-      .find((message) => message.authorThreadId === responsible.id && message.text === "#broadcast done");
+      .find((message) => message.authorThreadId === responsible.id && message.text === "done");
     expect(store.getCommunicationEvent(project.id, completion!.communicationEventId!)).toMatchObject({
       intent: "broadcast",
       audience: { kind: "organization", organizationId: project.id },
@@ -1450,7 +1450,7 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds.find((turn) => turn.threadId === next.id)?.prompt ?? "";
     expect(prompt).toContain("Manager: Help me plan a trip");
-    expect(prompt).toContain("First: #broadcast Here are three trip options");
+    expect(prompt).toContain("First: Here are three trip options");
     expect(prompt).not.toContain("Inspect a private issue");
     expect(prompt).not.toContain("Private implementation detail");
     expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);

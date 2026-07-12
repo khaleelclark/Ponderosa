@@ -3373,7 +3373,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
-              const renderedStatusText = renderScopedMessage(broadcastCompletion ? "broadcast" : "user", statusText);
+              const renderedStatusText = broadcastCompletion ? statusText : renderScopedMessage("user", statusText);
               const reportMessage = store.appendMasterChatMessage(
                 routingMasterChatId,
                 { role: "assistant", text: renderedStatusText },
