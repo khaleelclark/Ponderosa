@@ -46,10 +46,94 @@ import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
-import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
+import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
+
+export function MasterChatMessage({
+  message,
+  conversation,
+  agentTitle,
+  compactViewport = false,
+  onOpenAgent,
+  onReply,
+  onDirectReply,
+}: {
+  message: MasterChatMessageDto;
+  conversation: "main" | "collaboration";
+  agentTitle(threadId: string | undefined): string;
+  compactViewport?: boolean;
+  onOpenAgent(agentId: string): void;
+  onReply(message: MasterChatMessageDto): void;
+  onDirectReply(message: MasterChatMessageDto): void;
+}): JSX.Element {
+  const fromManager = !message.authorThreadId;
+  const showUserLabel = fromManager && message.role === "user";
+
+  return (
+    <Box
+      id={`master-message-${message.id}`}
+      tabIndex={-1}
+      sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
+    >
+      {message.authorThreadId ? (
+        <Link
+          component="button"
+          variant="caption"
+          onClick={() => onOpenAgent(message.authorThreadId!)}
+          sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
+        >
+          {agentTitle(message.authorThreadId)}
+        </Link>
+      ) : showUserLabel ? <UserMessageLabel /> : null}
+      <Box
+        data-message-bubble="true"
+        sx={{
+          px: 1.5,
+          py: 1,
+          borderRadius: 2,
+          bgcolor: fromManager ? "primary.main" : "background.paper",
+          color: fromManager ? "primary.contrastText" : "text.primary",
+          border: fromManager ? 0 : 1,
+          borderColor: "divider",
+        }}
+      >
+        {message.replyTo ? (
+          <Box component="button" aria-label="Go to replied-to message" onClick={() => {
+            const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
+            target?.scrollIntoView({ behavior: "smooth", block: "center" });
+            target?.focus({ preventScroll: true });
+          }} sx={{ display: "block", width: "100%", mb: .75, p: .75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}>
+            <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
+          </Box>
+        ) : null}
+        <ChatMarkdown>{message.text}</ChatMarkdown>
+        {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
+          {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
+            {attachment.previewUrl || attachment.mediaType.startsWith("image/")
+              ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+              : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
+          </Box>)}
+        </Stack> : null}
+        <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
+          <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
+          {conversation === "main" && message.authorThreadId ? (
+            <Button
+              size="small"
+              color="inherit"
+              aria-label={`Reply directly to ${agentTitle(message.authorThreadId)}`}
+              onClick={() => onDirectReply(message)}
+              sx={{ minHeight: compactViewport ? 44 : undefined }}
+            >
+              Reply Directly
+            </Button>
+          ) : null}
+        </Stack>} />
+      </Box>
+    </Box>
+  );
+}
 
 export function MasterChatView({
   masterChatId,
@@ -594,79 +678,26 @@ export function MasterChatView({
                   : "No messages yet. Send a task to spawn your first agent — it reports back here when it finishes or gets stuck."}
               </Typography>
             ) : null}
-            {(conversation === "collaboration" ? collaborationMessages : messages).map((message) => {
-              const fromManager = !message.authorThreadId;
-              return (
-                <Box
-                  key={message.id}
-                  id={`master-message-${message.id}`}
-                  tabIndex={-1}
-                  sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
-                >
-                  {message.authorThreadId ? (
-                    <Link
-                      component="button"
-                      variant="caption"
-                      onClick={() => onOpenAgent(message.authorThreadId!)}
-                      sx={{ display: "block", mb: 0.25, ml: 0.5, fontWeight: 700 }}
-                    >
-                      {agentTitle(message.authorThreadId)}
-                    </Link>
-                  ) : null}
-                  <Box
-                    sx={{
-                      px: 1.5,
-                      py: 1,
-                      borderRadius: 2,
-                      bgcolor: fromManager ? "primary.main" : "background.paper",
-                      color: fromManager ? "primary.contrastText" : "text.primary",
-                      border: fromManager ? 0 : 1,
-                      borderColor: "divider",
-                    }}
-                  >
-                    {message.replyTo ? (
-                      <Box component="button" aria-label="Go to replied-to message" onClick={() => {
-                        const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
-                        target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                        target?.focus({ preventScroll: true });
-                      }} sx={{ display: "block", width: "100%", mb: .75, p: .75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}>
-                        <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
-                      </Box>
-                    ) : null}
-                    <ChatMarkdown>{message.text}</ChatMarkdown>
-                    {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-                      {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
-                        {attachment.previewUrl || attachment.mediaType.startsWith("image/")
-                          ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-                          : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
-                      </Box>)}
-                    </Stack> : null}
-                    <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
-                      <Button size="small" color="inherit" onClick={() => {
-                        clearReply();
-                        setReplyTo(message);
-                      }}>Reply</Button>
-                      {conversation === "main" && message.authorThreadId ? (
-                        <Button
-                          size="small"
-                          color="inherit"
-                          aria-label={`Reply directly to ${agentTitle(message.authorThreadId)}`}
-                          onClick={() => {
-                            clearReply();
-                            setReplyTo(message);
-                          setDirectReplyTargetId(message.authorThreadId);
-                          setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
-                        }}
-                          sx={{ minHeight: compactViewport ? 44 : undefined }}
-                        >
-                          Reply Directly
-                        </Button>
-                      ) : null}
-                    </Stack>} />
-                  </Box>
-                </Box>
-              );
-            })}
+            {(conversation === "collaboration" ? collaborationMessages : messages).map((message) => (
+              <MasterChatMessage
+                key={message.id}
+                message={message}
+                conversation={conversation}
+                agentTitle={agentTitle}
+                compactViewport={compactViewport}
+                onOpenAgent={onOpenAgent}
+                onReply={(selected) => {
+                  clearReply();
+                  setReplyTo(selected);
+                }}
+                onDirectReply={(selected) => {
+                  clearReply();
+                  setReplyTo(selected);
+                  setDirectReplyTargetId(selected.authorThreadId);
+                  setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+                }}
+              />
+            ))}
           </Stack>
 
         </Box>
