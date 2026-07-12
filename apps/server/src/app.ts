@@ -2836,9 +2836,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
         store.appendMasterChatMessage(directMessageMasterChatId, {
           role: "user",
-          text: sharedCommunication
-            ? renderScopedMessage("broadcast", text)
-            : `#${agentMentionHandle(thread.title)} ${text}`,
+          text: sharedCommunication ? text : `#${agentMentionHandle(thread.title)} ${text}`,
           attachments: messageAttachments,
           replyToMessageId: sourceMasterReply?.id,
         }, undefined, "main", undefined, undefined, communicationEventId);
@@ -2882,7 +2880,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             })()
           : undefined,
       };
-      const auditText = sharedCommunication ? renderScopedMessage("broadcast", text) : text;
+      const auditText = text;
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });

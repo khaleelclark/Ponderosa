@@ -60,10 +60,12 @@ Two message scopes appear in Master Chat:
 A plain user message in Master Chat is a Broadcast and starts a fresh agent to
 handle it. This is the familiar default chat workflow: the request remains part
 of the shared project story while Ponderosa handles assignment behind the
-scenes. Starting a message with `#broadcast` records shared informational context
-without starting an agent. Starting with an agent's `#name` creates a Direct
-Message to that agent. Only an explicit `#everyone` action may wake every agent;
-passively projecting a Broadcast into audit timelines never starts a run.
+scenes. It is rendered exactly as the user typed it, without an automatic scope
+prefix. Starting a message with `#broadcast` records shared informational
+context without starting an agent and retains that visible prefix. Starting with
+an agent's `#name` creates a Direct Message to that agent. Only an explicit
+`#everyone` action may wake every agent; passively projecting a Broadcast into
+audit timelines never starts a run.
 
 Important collaboration results do not automatically become Broadcasts. An agent
 must deliberately publish durable knowledge or deliberately tell the user. This

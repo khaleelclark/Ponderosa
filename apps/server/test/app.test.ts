@@ -528,13 +528,13 @@ describe("server chunk F", () => {
       text: "Fix the onboarding flow",
     });
     expect(store.getMasterChatMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
-      expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow" }),
+      expect.objectContaining({ role: "user", text: "Fix the onboarding flow" }),
     ]);
     expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
     ]));
     expect(store.getMessages(responsible.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
+      expect.objectContaining({ role: "user", text: "Fix the onboarding flow", communicationEventId: eventId }),
     ]));
     expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
     const responsiblePrompt = adapter.seeds.find((turn) => turn.threadId === responsible.id)?.prompt ?? "";
@@ -546,6 +546,9 @@ describe("server chunk F", () => {
       payload: { text: "#broadcast Release window is Friday" },
     });
     expect(passive.statusCode).toBe(200);
+    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
+    ]));
     expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
     expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
