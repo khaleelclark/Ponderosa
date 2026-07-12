@@ -23,7 +23,9 @@ foreign, expired, corrupt, and deleted objects return the same `404` shape.
   General downloads use `application/octet-stream`, `nosniff`, RFC 5987 filename
   disposition, `private, no-store`, and no range support.
 - The original is SHA-256 checked before download or runtime use. Files and metadata
-  use opaque UUID names and mode `0600`; the asset directory must not be a symlink.
+  use server-derived UUID names and mode `0600`; metadata filenames are validated
+  against the ID rather than trusted. Every file operation is confined through an
+  opened `O_DIRECTORY|O_NOFOLLOW` descriptor after realpath and ancestor checks.
 - Display filenames are NFKC-normalized, byte-bounded, stripped of path/control/bidi
   characters, and never included in the agent prompt. Prompts identify an asset by
   server ID, validated media type, size, and server-generated local path only.
@@ -34,7 +36,11 @@ The server enforces 8 MiB per file/request, four assets and 24 MiB per message, 
 or associated storage per thread, two simultaneous uploads per thread, and twenty
 uploads per thread per minute. Audit JSONL records state transitions using IDs,
 ownership, type, size, and timestamps; it never records host paths, bearer tokens,
-file contents, or filenames.
+file contents, or filenames. Upload slots and the accounting lock are durable files,
+rate reservations are reconstructed from the audit log after restart, and aggregate
+quota is calculated from canonical raw bytes (including metadata-less half-writes).
+The reconciler expires abandoned slots and aged raw/temp orphans without deleting
+associated assets.
 
 The product remains single-operator bearer-authenticated. These controls provide
 object scoping; they are not a claim of user-level ACLs or multi-tenant isolation.

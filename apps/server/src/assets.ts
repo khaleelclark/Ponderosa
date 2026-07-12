@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { appendFile, lstat, mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import type { AssetDto, AssetLimitsDto } from "@ponderosa/core";
@@ -22,7 +22,9 @@ export const ASSET_LIMITS: AssetLimitsDto = {
 
 const MAX_PIXELS = 25_000_000;
 const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
+const UPLOAD_LEASE_MS = 5 * 60 * 1000;
 const ID = /^[a-f0-9-]{36}$/;
+const OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const BIDI_AND_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 
 export interface StoredAsset extends AssetDto {
@@ -102,6 +104,25 @@ async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
   try { await rename(temporary, file); } catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
 }
 
+function canonicalFiles(id: string): { originalFile: string; previewFile: string } {
+  return { originalFile: `${id}.bin`, previewFile: `${id}.preview.png` };
+}
+
+function validateStoredAsset(value: unknown, projectId: string, threadId: string, id: string): StoredAsset | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const asset = value as Partial<StoredAsset>;
+  const names = canonicalFiles(id);
+  if (asset.id !== id || asset.projectId !== projectId || asset.threadId !== threadId) return undefined;
+  if (!OWNER_ID.test(projectId) || !OWNER_ID.test(threadId) || !ID.test(id)) return undefined;
+  if (asset.originalFile !== names.originalFile || (asset.previewFile !== undefined && asset.previewFile !== names.previewFile)) return undefined;
+  if (typeof asset.name !== "string" || typeof asset.size !== "number" || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > ASSET_LIMITS.maxFileBytes) return undefined;
+  if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sha256)) return undefined;
+  if (asset.state !== "staged" && asset.state !== "associated") return undefined;
+  if (typeof asset.createdAt !== "string" || !Number.isFinite(Date.parse(asset.createdAt))) return undefined;
+  if (!ASSET_LIMITS.acceptedMediaTypes.includes(asset.mediaType as AssetDto["mediaType"])) return undefined;
+  return asset as StoredAsset;
+}
+
 async function readNoFollow(file: string, maxBytes: number): Promise<Buffer> {
   const handle = await open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   try {
@@ -117,21 +138,102 @@ function publicDto(asset: StoredAsset): AssetDto {
 }
 
 export class AssetStore {
-  private activeUploads = new Map<string, number>();
-  private recentUploads = new Map<string, number[]>();
+  private root?: string;
 
   constructor(private dataDir: string) {}
 
-  private dir(projectId: string, threadId: string): string { return attachmentsDir(this.dataDir, projectId, threadId); }
-  private metadataFile(projectId: string, threadId: string, id: string): string { return path.join(this.dir(projectId, threadId), `${id}.json`); }
+  private validateOwner(projectId: string, threadId: string): void {
+    if (!OWNER_ID.test(projectId) || !OWNER_ID.test(threadId)) throw new AssetError(404, "asset storage is unavailable");
+  }
+  private dir(projectId: string, threadId: string): string { this.validateOwner(projectId, threadId); return attachmentsDir(this.dataDir, projectId, threadId); }
+  private async safeDirectory(projectId: string, threadId: string, create = false): Promise<{ path: string; handle: FileHandle }> {
+    const directory = this.dir(projectId, threadId);
+    for (const ancestor of [
+      path.join(this.dataDir, "projects"),
+      path.join(this.dataDir, "projects", projectId),
+      path.join(this.dataDir, "projects", projectId, "threads"),
+      path.join(this.dataDir, "projects", projectId, "threads", threadId),
+    ]) {
+      const info = await lstat(ancestor).catch(() => undefined);
+      if (info?.isSymbolicLink() || (info && !info.isDirectory())) throw new AssetError(409, "asset storage is unavailable");
+    }
+    if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
+    const root = this.root ??= await realpath(this.dataDir);
+    const actual = await realpath(directory);
+    if (actual !== path.join(root, "projects", projectId, "threads", threadId, "attachments")) throw new AssetError(409, "asset storage is unavailable");
+    let cursor = directory;
+    while (cursor !== this.dataDir) {
+      const info = await lstat(cursor);
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new AssetError(409, "asset storage is unavailable");
+      cursor = path.dirname(cursor);
+    }
+    const handle = await open(directory, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    const descriptorPath = `/proc/self/fd/${handle.fd}`;
+    const descriptorRealpath = await realpath(descriptorPath);
+    if (descriptorRealpath !== actual) { await handle.close(); throw new AssetError(409, "asset storage is unavailable"); }
+    return { path: descriptorPath, handle };
+  }
+
+  private async acquireUploadSlot(directory: string, now: number): Promise<() => Promise<void>> {
+    for (let slot = 0; slot < 2; slot++) {
+      const file = path.join(directory, `.upload-${slot}`);
+      try {
+        const handle = await open(file, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+        await handle.writeFile(JSON.stringify({ createdAt: now, nonce: randomUUID() })); await handle.sync(); await handle.close();
+        return async () => { await unlink(file).catch(() => undefined); };
+      } catch (error) {
+        const age = now - await stat(file).then((item) => item.mtimeMs).catch(() => now);
+        if (age > UPLOAD_LEASE_MS) { await unlink(file).catch(() => undefined); slot--; }
+      }
+    }
+    throw new AssetError(429, "too many concurrent asset uploads");
+  }
+
+  private async recentUploadCount(directory: string, now: number): Promise<number> {
+    const audit = await (async () => {
+      const handle = await open(path.join(directory, "audit.jsonl"), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => undefined);
+      if (!handle) return "";
+      try {
+        const size = (await handle.stat()).size;
+        const length = Math.min(size, 1024 * 1024);
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, size - length);
+        const text = buffer.toString("utf8");
+        return size > length ? text.slice(text.indexOf("\n") + 1) : text;
+      } finally { await handle.close(); }
+    })();
+    return audit.split("\n").reduce((count, line) => {
+      try { const record = JSON.parse(line) as { action?: string; at?: string }; return count + (record.action === "upload_reserved" && now - Date.parse(record.at ?? "") < 60_000 ? 1 : 0); }
+      catch { return count; }
+    }, 0);
+  }
+
+  private async acquireAccountingLock(directory: string, now: number): Promise<() => Promise<void>> {
+    const file = path.join(directory, ".accounting-lock");
+    const token = randomUUID();
+    for (let attempt = 0; attempt < 500; attempt++) {
+      try {
+        const handle = await open(file, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+        await handle.writeFile(JSON.stringify({ token, createdAt: now })); await handle.sync(); await handle.close();
+        return async () => {
+          const current = await readNoFollow(file, 1024).then((body) => JSON.parse(body.toString("utf8")) as { token?: string }).catch(() => undefined);
+          if (current?.token === token) await unlink(file).catch(() => undefined);
+        };
+      } catch {
+        const age = Date.now() - await stat(file).then((item) => item.mtimeMs).catch(() => Date.now());
+        if (age > UPLOAD_LEASE_MS) await unlink(file).catch(() => undefined);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    throw new AssetError(429, "asset accounting is busy");
+  }
 
   async read(projectId: string, threadId: string, id: string): Promise<StoredAsset | undefined> {
     if (!ID.test(id)) return undefined;
     try {
-      const asset = JSON.parse((await readNoFollow(this.metadataFile(projectId, threadId, id), 32 * 1024)).toString("utf8")) as StoredAsset;
-      if (asset.id !== id || asset.projectId !== projectId || asset.threadId !== threadId) return undefined;
-      if (!ASSET_LIMITS.acceptedMediaTypes.includes(asset.mediaType)) return undefined;
-      return asset;
+      const directory = await this.safeDirectory(projectId, threadId);
+      try { return validateStoredAsset(JSON.parse((await readNoFollow(path.join(directory.path, `${id}.json`), 32 * 1024)).toString("utf8")), projectId, threadId, id); }
+      finally { await directory.handle.close(); }
     } catch { return undefined; }
   }
 
@@ -148,19 +250,17 @@ export class AssetStore {
       throw new AssetError(415, "image container is truncated or contains trailing data");
     }
     const now = Date.now();
-    const recent = (this.recentUploads.get(threadId) ?? []).filter((time) => now - time < 60_000);
-    if (recent.length >= 20) throw new AssetError(429, "asset upload rate limit exceeded");
-    if ((this.activeUploads.get(threadId) ?? 0) >= 2) throw new AssetError(429, "too many concurrent asset uploads");
-    this.activeUploads.set(threadId, (this.activeUploads.get(threadId) ?? 0) + 1);
+    const openedDirectory = await this.safeDirectory(projectId, threadId, true);
+    const directory = openedDirectory.path;
+    const releaseSlot = await this.acquireUploadSlot(directory, now).catch(async (error) => { await openedDirectory.handle.close(); throw error; });
+    const releaseAccounting = await this.acquireAccountingLock(directory, now).catch(async (error) => { await releaseSlot(); await openedDirectory.handle.close(); throw error; });
     try {
-      const directory = this.dir(projectId, threadId);
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      const directoryInfo = await lstat(directory);
-      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new AssetError(409, "asset storage is unavailable");
+      if (await this.recentUploadCount(directory, now) >= 20) throw new AssetError(429, "asset upload rate limit exceeded");
+      await this.audit(directory, { action: "upload_reserved", threadId, projectId, at: new Date(now).toISOString() });
       let total = 0;
       for (const entry of await readdir(directory)) {
-        if (!entry.endsWith(".json")) continue;
-        try { total += (JSON.parse(await readFile(path.join(directory, entry), "utf8")) as StoredAsset).size ?? 0; } catch { /* reconciler handles invalid entries */ }
+        if (!/^[a-f0-9-]{36}\.bin$/.test(entry)) continue;
+        total += await stat(path.join(directory, entry)).then((item) => item.isFile() ? item.size : ASSET_LIMITS.maxThreadBytes).catch(() => ASSET_LIMITS.maxThreadBytes);
       }
       if (total + body.length > ASSET_LIMITS.maxThreadBytes) throw new AssetError(413, "thread asset quota exceeded");
 
@@ -177,8 +277,8 @@ export class AssetStore {
       }
 
       const id = randomUUID();
-      const originalFile = `${id}.bin`;
-      const previewFile = preview ? `${id}.preview.png` : undefined;
+      const { originalFile, previewFile: canonicalPreview } = canonicalFiles(id);
+      const previewFile = preview ? canonicalPreview : undefined;
       const createdAt = new Date().toISOString();
       const asset: StoredAsset = {
         id, projectId, threadId, name, mediaType, size: body.length, width, height,
@@ -191,17 +291,17 @@ export class AssetStore {
       await writeAtomic(path.join(directory, originalFile), body);
       try {
         if (preview && previewFile) await writeAtomic(path.join(directory, previewFile), preview);
-        await writeAtomic(this.metadataFile(projectId, threadId, id), JSON.stringify(asset));
+        await writeAtomic(path.join(directory, `${id}.json`), JSON.stringify(asset));
       } catch (error) {
         await Promise.allSettled([unlink(path.join(directory, originalFile)), previewFile ? unlink(path.join(directory, previewFile)) : Promise.resolve()]);
         throw error;
       }
       await this.audit(directory, { action: "staged", id, threadId, projectId, size: body.length, mediaType, at: createdAt });
-      this.recentUploads.set(threadId, [...recent, now]);
       return publicDto(asset);
     } finally {
-      const next = (this.activeUploads.get(threadId) ?? 1) - 1;
-      if (next) this.activeUploads.set(threadId, next); else this.activeUploads.delete(threadId);
+      await releaseAccounting();
+      await releaseSlot();
+      await openedDirectory.handle.close();
     }
   }
 
@@ -215,7 +315,9 @@ export class AssetStore {
     await Promise.all(associated.map(async (asset) => {
       if (asset.state === "associated") return;
       const updated = { ...asset, state: "associated" as const, associatedAt: now };
-      await writeAtomic(this.metadataFile(projectId, threadId, asset.id), JSON.stringify(updated));
+      const directory = await this.safeDirectory(projectId, threadId);
+      try { await writeAtomic(path.join(directory.path, `${asset.id}.json`), JSON.stringify(updated)); }
+      finally { await directory.handle.close(); }
       Object.assign(asset, updated);
     }));
     return associated.map(publicDto);
@@ -226,8 +328,8 @@ export class AssetStore {
     const file = preview ? asset?.previewFile : asset?.originalFile;
     if (!asset || !file) return undefined;
     try {
-      const target = path.join(this.dir(projectId, threadId), file);
-      const body = await readNoFollow(target, ASSET_LIMITS.maxFileBytes);
+      const directory = await this.safeDirectory(projectId, threadId);
+      const body = await readNoFollow(path.join(directory.path, file), ASSET_LIMITS.maxFileBytes).finally(() => directory.handle.close());
       if (!preview && createHash("sha256").update(body).digest("hex") !== asset.sha256) return undefined;
       return { asset, body };
     } catch { return undefined; }
@@ -236,15 +338,36 @@ export class AssetStore {
   async remove(projectId: string, threadId: string, id: string): Promise<boolean> {
     const asset = await this.read(projectId, threadId, id);
     if (!asset || asset.state !== "staged") return false;
-    await Promise.allSettled([unlink(path.join(this.dir(projectId, threadId), asset.originalFile)), asset.previewFile ? unlink(path.join(this.dir(projectId, threadId), asset.previewFile)) : Promise.resolve(), unlink(this.metadataFile(projectId, threadId, id))]);
-    await this.audit(this.dir(projectId, threadId), { action: "deleted", id, threadId, projectId, at: new Date().toISOString() });
+    const openedDirectory = await this.safeDirectory(projectId, threadId);
+    const directory = openedDirectory.path;
+    try {
+      await Promise.allSettled([unlink(path.join(directory, asset.originalFile)), asset.previewFile ? unlink(path.join(directory, asset.previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
+      await this.audit(directory, { action: "deleted", id, threadId, projectId, at: new Date().toISOString() });
+    } finally { await openedDirectory.handle.close(); }
     return true;
   }
 
   async reconcile(projectId: string, threadId: string, associatedIds: Set<string>, now = Date.now()): Promise<number> {
-    const directory = this.dir(projectId, threadId);
+    const openedDirectory = await this.safeDirectory(projectId, threadId).catch(() => undefined);
+    if (!openedDirectory) return 0;
+    const directory = openedDirectory.path;
     let removed = 0;
-    for (const entry of await readdir(directory).catch(() => [])) {
+    const entries = await readdir(directory).catch(() => []);
+    const metadataIds = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.endsWith(".json") || !ID.test(entry.slice(0, -5))) continue;
+      const id = entry.slice(0, -5);
+      if (await this.read(projectId, threadId, id)) metadataIds.add(id);
+    }
+    for (const entry of entries) {
+      const raw = entry.match(/^([a-f0-9-]{36})\.(bin|preview\.png)$/);
+      const temporary = entry.endsWith(".tmp");
+      if ((raw && !metadataIds.has(raw[1]!)) || temporary) {
+        const target = path.join(directory, entry);
+        const old = now - await lstat(target).then((item) => item.mtimeMs).catch(() => now) > STAGED_TTL_MS;
+        if (old) { await rm(target, { force: true }); removed++; }
+        continue;
+      }
       if (!entry.endsWith(".json") || entry === "audit.jsonl") continue;
       const id = entry.slice(0, -5);
       const asset = await this.read(projectId, threadId, id);
@@ -252,11 +375,13 @@ export class AssetStore {
       if (associatedIds.has(id) && asset.state !== "associated") await this.associate(projectId, threadId, [id]).catch(() => undefined);
       else if (asset.state === "staged" && now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, threadId, id)) removed++;
     }
+    await openedDirectory.handle.close();
     return removed;
   }
 
   private async audit(directory: string, record: Record<string, unknown>): Promise<void> {
-    await appendFile(path.join(directory, "audit.jsonl"), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    const handle = await open(path.join(directory, "audit.jsonl"), fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+    try { await handle.writeFile(`${JSON.stringify(record)}\n`); await handle.sync(); } finally { await handle.close(); }
   }
 }
 

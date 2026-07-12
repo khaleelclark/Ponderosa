@@ -34,7 +34,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, MasterChatDto, MasterChatMessageDto, ThreadDto } from "@ponderosa/core";
+import type { EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -44,9 +44,11 @@ import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
+import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
+import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
 
 export function MasterChatView({
@@ -81,7 +83,20 @@ export function MasterChatView({
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
+  const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
+  const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
+  const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
   const [runSetupOpen, setRunSetupOpen] = useState(false);
+  const clearReply = () => {
+    if (directReplyRequestId && directReplyTargetId) {
+      const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
+      directReplyUploads.current.delete(directReplyRequestId);
+      void Promise.allSettled(uploaded.map((item) => api.deleteAttachment(directReplyTargetId, item.id)));
+    }
+    setReplyTo(undefined);
+    setDirectReplyTargetId(undefined);
+    setDirectReplyRequestId(undefined);
+  };
 
   // The engine/model/effort currently selected for this master chat. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
@@ -184,7 +199,7 @@ export function MasterChatView({
       return agent;
     },
     onSuccess: () => {
-      setReplyTo(undefined);
+      clearReply();
       invalidate();
     },
   });
@@ -206,7 +221,7 @@ export function MasterChatView({
       })));
     },
     onSuccess: (responses, variables) => {
-      setReplyTo(undefined);
+      clearReply();
       invalidate();
       const queuedTitles = variables.agentIds
         .filter((_, index) => responses[index]?.queued)
@@ -222,10 +237,38 @@ export function MasterChatView({
     },
   });
 
+  const directReply = useMutation({
+    mutationFn: async ({ targetId, text, files, replyToMessageId, requestId }: { targetId: string; text: string; files: File[]; replyToMessageId: string; requestId: string }) => {
+      let attachments = directReplyUploads.current.get(requestId);
+      if (!attachments) {
+        attachments = await uploadDirectReplyFiles(
+          files,
+          (file) => api.uploadAttachment(targetId, file),
+          (item) => api.deleteAttachment(targetId, item.id),
+        );
+        directReplyUploads.current.set(requestId, attachments);
+      }
+      return api.sendDirectReply(masterChatId, {
+        text,
+        replyToMessageId,
+        targetAuthorThreadId: targetId,
+        attachmentIds: attachments.map((item) => item.id),
+        idempotencyKey: requestId,
+      });
+    },
+    onSuccess: (response, variables) => {
+      directReplyUploads.current.delete(variables.requestId);
+      clearReply();
+      invalidate();
+      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["thread", response.targetAuthorThreadId] });
+    },
+  });
+
   const collaborate = useMutation({
     mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) => api.sendCollaborationMessage(masterChatId, { text, replyToMessageId }),
     onSuccess: () => {
-      setReplyTo(undefined);
+      clearReply();
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
       if (masterChat) void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
     },
@@ -308,13 +351,15 @@ export function MasterChatView({
 
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
-  const mentionHandles = threads.map((thread) => agentMentionHandle(thread.title));
+  const mentionHandles = conversation === "collaboration"
+    ? ["everyone", ...threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title))]
+    : threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title));
   const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
   const busyMentionHandles = threads
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
     .map((agent) => agentMentionHandle(agent.title));
-  const busy = spawn.isPending || reply.isPending || collaborate.isPending;
+  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending;
 
   const submit = async (text: string, files: File[]) => {
     if (conversation === "collaboration") {
@@ -323,8 +368,21 @@ export function MasterChatView({
       return;
     }
     const targets = findMentioned(text);
-    if (targets.length > 0) {
-      await reply.mutateAsync({ agentIds: targets.map((target) => target.id), text, files, replyToMessageId: replyTo?.id });
+    const route = resolveMasterChatSendRoute(directReplyTargetId, targets.map((target) => target.id));
+    if (route.kind === "direct-reply") {
+      if (!replyTo) throw new Error("The direct reply target is no longer available. Cancel the reply and try again.");
+      if (!directReplyRequestId) throw new Error("The direct reply receipt is no longer available. Cancel the reply and try again.");
+      await directReply.mutateAsync({
+        targetId: route.agentIds[0],
+        text,
+        files,
+        replyToMessageId: replyTo.id,
+        requestId: directReplyRequestId,
+      });
+      return;
+    }
+    if (route.kind === "mentioned-reply") {
+      await reply.mutateAsync({ agentIds: route.agentIds, text, files, replyToMessageId: replyTo?.id });
     } else {
       await spawn.mutateAsync({ text, files });
     }
@@ -386,7 +444,7 @@ export function MasterChatView({
             size="small"
             startIcon={<ForumOutlinedIcon />}
             onClick={() => {
-              setReplyTo(undefined);
+              clearReply();
               setConversation((current) => current === "main" ? "collaboration" : "main");
             }}
             aria-pressed={conversation === "collaboration"}
@@ -508,7 +566,7 @@ export function MasterChatView({
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {conversation === "collaboration" ? (
-              <>This is a separate, opt-in agent collaboration chat. Only agents with a valid <Box component="strong">@mention</Box> receive this chat's context; untagged messages stay here.</>
+              <>This is a separate, opt-in agent collaboration chat. A valid <Box component="strong">@mention</Box> notifies one agent; <Box component="strong">@everyone</Box> queues one notification for every active room member. Interrupted delivery turns may retry. Untagged messages stay here.</>
             ) : (
               <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies to busy agents queue automatically.</>
             )}
@@ -583,7 +641,28 @@ export function MasterChatView({
                           : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
                       </Box>)}
                     </Stack> : null}
-                    <Button size="small" color="inherit" onClick={() => setReplyTo(message)} sx={{ mt: .5 }}>Reply</Button>
+                    <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
+                      <Button size="small" color="inherit" onClick={() => {
+                        clearReply();
+                        setReplyTo(message);
+                      }}>Reply</Button>
+                      {conversation === "main" && message.authorThreadId ? (
+                        <Button
+                          size="small"
+                          color="inherit"
+                          aria-label={`Reply directly to ${agentTitle(message.authorThreadId)}`}
+                          onClick={() => {
+                            clearReply();
+                            setReplyTo(message);
+                          setDirectReplyTargetId(message.authorThreadId);
+                          setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+                        }}
+                          sx={{ minHeight: compactViewport ? 44 : undefined }}
+                        >
+                          Reply Directly
+                        </Button>
+                      ) : null}
+                    </Stack>} />
                   </Box>
                 </Box>
               );
@@ -666,16 +745,16 @@ export function MasterChatView({
 
       <Box>
         {queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
-        {spawn.isError || reply.isError || collaborate.isError ? (
+        {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String((spawn.error ?? reply.error ?? collaborate.error) as Error)}
+            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
         {threads.length > 0 ? (
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
-                Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context.
+                Only valid <Box component="strong">@mentions</Box> receive this collaboration chat's context. Use <Box component="strong">@everyone</Box> to notify every active room member.
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
@@ -699,7 +778,10 @@ export function MasterChatView({
           }
           onSend={submit}
           replyTo={replyTo}
-          onCancelReply={() => setReplyTo(undefined)}
+          replyLabel={directReplyTargetId ? `Replying directly to @${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
+          onCancelReply={() => {
+            clearReply();
+          }}
         />
       </Box>
 

@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AssetError, AssetStore, contentDisposition } from "../src/assets.js";
+import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "../src/assets.js";
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 
@@ -33,6 +33,35 @@ describe("secure staged assets", () => {
     expect(await assets.content("p", "t", staged.id, false)).toBeUndefined();
   });
 
+  it("rejects malformed, polyglot, animated, and excessive-pixel raster inputs", async () => {
+    const highPixels = Buffer.from(PNG);
+    highPixels.writeUInt32BE(100_000, 16); highPixels.writeUInt32BE(100_000, 20);
+    const animatedWebp = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WEBPVP8X"), Buffer.from([0x02]), Buffer.alloc(9)]);
+    animatedWebp.writeUInt32LE(animatedWebp.length - 8, 4);
+    for (const [body, name, type] of [
+      [Buffer.from("\x89PNG\r\n\x1a\nmalformed"), "bad.png", "image/png"],
+      [Buffer.concat([PNG, Buffer.from("PK\x03\x04polyglot")]), "poly.png", "image/png"],
+      [highPixels, "huge.png", "image/png"],
+      [animatedWebp, "animated.webp", "image/webp"],
+    ] as const) await expect(assets.stage({ projectId: "p", threadId: "t", body, name, declaredType: type })).rejects.toMatchObject({ statusCode: 415 });
+  });
+
+  it("confines canonical metadata filenames and rejects symlinked ownership parents", async () => {
+    const staged = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "safe.png", declaredType: "image/png" });
+    const directory = path.join(dataDir, "projects", "p", "threads", "t", "attachments");
+    const metadata = JSON.parse(readFileSync(path.join(directory, `${staged.id}.json`), "utf8"));
+    metadata.originalFile = "../../outside";
+    writeFileSync(path.join(directory, `${staged.id}.json`), JSON.stringify(metadata));
+    expect(await assets.read("p", "t", staged.id)).toBeUndefined();
+
+    const outside = mkdtempSync(path.join(tmpdir(), "pond-assets-outside-"));
+    rmSync(path.join(dataDir, "projects", "p", "threads", "t"), { recursive: true });
+    symlinkSync(outside, path.join(dataDir, "projects", "p", "threads", "t"));
+    await expect(assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "escape.png", declaredType: "image/png" })).rejects.toMatchObject({ statusCode: 409 });
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
   it("reconciles a crash after canonical message association and expires only old staged assets", async () => {
     const associated = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "a.png", declaredType: "image/png" });
     const orphan = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "b.png", declaredType: "image/png" });
@@ -42,6 +71,54 @@ describe("secure staged assets", () => {
     expect(await assets.read("p", "t", orphan.id)).toBeUndefined();
     const audit = readFileSync(path.join(dataDir, "projects", "p", "threads", "t", "attachments", "audit.jsonl"), "utf8");
     expect(audit).not.toContain(dataDir);
+  });
+
+  it("reconciles raw half-write orphans and survives backup/restore", async () => {
+    const staged = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "a.png", declaredType: "image/png" });
+    const directory = path.join(dataDir, "projects", "p", "threads", "t", "attachments");
+    const orphan = "00000000-0000-4000-8000-000000000000.bin";
+    writeFileSync(path.join(directory, orphan), PNG);
+    utimesSync(path.join(directory, orphan), new Date(0), new Date(0));
+    expect(await assets.reconcile("p", "t", new Set(), Date.now())).toBe(1);
+    expect(() => readFileSync(path.join(directory, orphan))).toThrow();
+
+    const restored = mkdtempSync(path.join(tmpdir(), "pond-assets-restore-"));
+    const restoredDir = path.join(restored, "projects", "p", "threads", "t", "attachments");
+    mkdirSync(restoredDir, { recursive: true });
+    for (const suffix of ["bin", "preview.png", "json"]) copyFileSync(path.join(directory, `${staged.id}.${suffix}`), path.join(restoredDir, `${staged.id}.${suffix}`));
+    expect((await new AssetStore(restored).content("p", "t", staged.id, false))?.body.equals(PNG)).toBe(true);
+    rmSync(restored, { recursive: true, force: true });
+  });
+
+  it("persists rate limits across store restarts", async () => {
+    for (let index = 0; index < 20; index++) await assets.stage({ projectId: "p", threadId: "t", body: Buffer.from(JSON.stringify({ index })), name: `${index}.json`, declaredType: "application/json" });
+    await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "blocked.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("accounts raw bytes durably for aggregate quota and persists concurrency slots across restart", async () => {
+    const first = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "seed.png", declaredType: "image/png" });
+    const directory = path.join(dataDir, "projects", "p", "threads", "t", "attachments");
+    await assets.remove("p", "t", first.id);
+    const block = Buffer.alloc(ASSET_LIMITS.maxFileBytes, 0x61);
+    for (let index = 0; index < ASSET_LIMITS.maxThreadBytes / ASSET_LIMITS.maxFileBytes; index++) {
+      writeFileSync(path.join(directory, `00000000-0000-4000-8000-${String(index).padStart(12, "0")}.bin`), block);
+    }
+    await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "over.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 413 });
+    for (const entry of readdirSync(directory)) if (entry.endsWith(".bin")) rmSync(path.join(directory, entry));
+
+    writeFileSync(path.join(directory, ".upload-0"), "live");
+    writeFileSync(path.join(directory, ".upload-1"), "live");
+    await expect(new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "busy.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 429 });
+    utimesSync(path.join(directory, ".upload-0"), new Date(0), new Date(0));
+    expect((await new AssetStore(dataDir).stage({ projectId: "p", threadId: "t", body: Buffer.from("{}"), name: "recovered.json", declaredType: "application/json" })).state).toBe("staged");
+  });
+
+  it("does not recreate asset storage after whole-thread deletion", async () => {
+    const staged = await assets.stage({ projectId: "p", threadId: "t", body: PNG, name: "gone.png", declaredType: "image/png" });
+    const threadDirectory = path.join(dataDir, "projects", "p", "threads", "t");
+    rmSync(threadDirectory, { recursive: true });
+    expect(await new AssetStore(dataDir).read("p", "t", staged.id)).toBeUndefined();
+    expect(() => readFileSync(threadDirectory)).toThrow();
   });
 
   it("emits a bounded RFC 5987 download name without header injection", () => {

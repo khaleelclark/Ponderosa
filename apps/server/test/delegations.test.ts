@@ -53,4 +53,38 @@ describe("DelegationStore concurrency", () => {
       retryable: true,
     }));
   });
+
+  it("persists blocked dispositions, replays duplicates, and keeps runtime failure and cancellation distinct", () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-delegation-outcomes-"));
+    dataDirs.push(dataDir);
+    const store = new DelegationStore(dataDir);
+    const spawn = (key: string) => store.spawn("master-chat", {
+      parentRunId: "parent-run",
+      displayLabel: key,
+      delegationPrompt: "work",
+      runtime: "codex",
+      idempotencyKey: key,
+    }, true, []).run;
+
+    const blocked = spawn("blocked");
+    store.claim(blocked.id);
+    const disposition = { outcome: "blocked" as const, message: "Waiting for credentials.", idempotencyKey: "blocked-outcome" };
+    expect(store.declareDisposition(blocked.id, disposition).status).toBe("blocked");
+    expect(store.declareDisposition(blocked.id, disposition).version).toBe(3);
+    expect(new DelegationStore(dataDir).get(blocked.id)).toEqual(expect.objectContaining({
+      status: "blocked",
+      disposition: expect.objectContaining({ message: "Waiting for credentials." }),
+    }));
+
+    const failed = spawn("failed");
+    store.claim(failed.id);
+    expect(store.finishRuntime(failed.id, "engine crashed")).toEqual(expect.objectContaining({ status: "failed", failure: expect.objectContaining({ code: "runtime_error" }) }));
+    const cancelled = spawn("cancelled");
+    store.claim(cancelled.id);
+    store.cancel(cancelled.id, "cancel-once");
+    const cancelledRun = store.get(cancelled.id)!;
+    expect(cancelledRun.status).toBe("cancelled");
+    expect(cancelledRun).not.toHaveProperty("failure");
+    expect(cancelledRun).not.toHaveProperty("disposition");
+  });
 });
