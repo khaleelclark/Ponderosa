@@ -19,7 +19,7 @@ export function findMentionedHandles(text: string, handles: Iterable<string>): s
   );
   const mentioned = new Map<string, string>();
 
-  for (const match of text.matchAll(/(?:^|\s)@([\p{L}\p{N}_-]+)/gu)) {
+  for (const match of text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
     const handle = byHandle.get(match[1]!.toLocaleLowerCase());
     if (handle) mentioned.set(handle.toLocaleLowerCase(), handle);
   }
@@ -29,13 +29,16 @@ export function findMentionedHandles(text: string, handles: Iterable<string>): s
 
 /** Whether the reserved collaboration-only broadcast handle is present. */
 export function hasEveryoneMention(text: string): boolean {
-  return /(?:^|\s)@everyone(?=$|\s|[.,!?;:])/iu.test(text);
+  return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
 }
 
-/** Resolve every distinct @mention against the agents currently in a master chat. */
+/** Resolve every distinct #tag against the agents currently in a master chat. */
 export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
+  const reserved = new Set(["broadcast", "user", "everyone"]);
   const byHandle = new Map(
-    threads.map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread]),
+    threads
+      .map((thread) => [agentMentionHandle(thread.title).toLocaleLowerCase(), thread] as const)
+      .filter(([handle]) => !reserved.has(handle)),
   );
   return findMentionedHandles(text, byHandle.keys())
     .map((handle) => byHandle.get(handle.toLocaleLowerCase()))

@@ -409,6 +409,7 @@ export function AgentDetail({
         ) : null}
         <Composer
           commands={commands}
+          projectId={detail.thread.projectId}
           disabled={sendMessage.isPending}
           running={false}
           placeholder={stream.running ? "Steer this agent's active turn" : "Message this agent directly"}
@@ -483,7 +484,7 @@ export function AgentDetail({
             fullWidth
             value={renameValue}
             onChange={(event) => setRenameValue(event.target.value)}
-            helperText="Spaces are supported; mention multi-word names with hyphens (for example, @Grand-Teton)."
+            helperText="Spaces are supported; tag multi-word names with hyphens (for example, #Grand-Teton)."
             sx={{ mt: 1 }}
           />
           {rename.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(rename.error)}</Alert> : null}

@@ -28,7 +28,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ArtifactContentDto, ArtifactDto, EngineCommand, MessageDto, TaskDto } from "@ponderosa/core";
+import type { ArtifactContentDto, ArtifactDto, EngineCommand, FileEntryDto, MessageDto, TaskDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -746,6 +746,7 @@ export function Composer({
   disabled,
   running,
   placeholder,
+  projectId,
   mentionHandles,
   commands,
   busyMentionHandles,
@@ -759,7 +760,9 @@ export function Composer({
   disabled: boolean;
   running: boolean;
   placeholder?: string;
-  /** When provided, typing `@` autocompletes these agent handles (group chat). */
+  /** Project scope used by `@` file/folder reference autocomplete. */
+  projectId?: string;
+  /** When provided, typing `#` autocompletes these agent handles (group chat). */
   mentionHandles?: string[];
   /** Engine/system capabilities shown when the composer starts with `/`. */
   commands?: EngineCommand[];
@@ -807,26 +810,55 @@ export function Composer({
     dispatchAttachments({ type: "add", candidates });
   };
 
-  // The `@partial` token immediately left of the caret, if any.
-  const mentionMatch = /(?:^|\s)@([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
+  // Agent routing uses #; @ is reserved for project file/folder references.
+  const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
   const suggestions =
     mentionMatch && mentionHandles && mentionHandles.length > 0
       ? mentionHandles
           .filter((handle) => handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()))
           .slice(0, 6)
       : [];
+  const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
+  const fileToken = fileMatch?.[1] ?? "";
+  const fileSlash = fileToken.lastIndexOf("/");
+  const fileDirectory = fileSlash >= 0 ? fileToken.slice(0, fileSlash) : "";
+  const filePrefix = fileSlash >= 0 ? fileToken.slice(fileSlash + 1) : fileToken;
+  const [fileEntries, setFileEntries] = useState<FileEntryDto[]>([]);
+  const fileReferenceActive = Boolean(fileMatch);
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId || !fileReferenceActive) {
+      setFileEntries([]);
+      return () => { cancelled = true; };
+    }
+    void api.getFiles(projectId, fileDirectory)
+      .then((response) => {
+        if (!cancelled) setFileEntries(response.kind === "dir" ? response.entries : []);
+      })
+      .catch(() => {
+        if (!cancelled) setFileEntries([]);
+      });
+    return () => { cancelled = true; };
+  }, [fileDirectory, fileReferenceActive, projectId]);
+  const fileSuggestions = fileMatch
+    ? fileEntries
+        .filter((entry) => entry.name.toLocaleLowerCase().startsWith(filePrefix.toLocaleLowerCase()))
+        .slice(0, 8)
+    : [];
   const slashMatch = /^\/([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
   const commandSuggestions = slashMatch && commands
     ? commands.filter((command) => command.name.toLocaleLowerCase().startsWith(slashMatch[1]!.toLocaleLowerCase())).slice(0, 8)
     : [];
   const menuSuggestions = commandSuggestions.length > 0
     ? commandSuggestions.map((command) => ({ kind: "command" as const, command }))
-    : suggestions.map((handle) => ({ kind: "mention" as const, handle }));
+    : suggestions.length > 0
+      ? suggestions.map((handle) => ({ kind: "mention" as const, handle }))
+      : fileSuggestions.map((entry) => ({ kind: "file" as const, entry }));
   const menuOpen = menuSuggestions.length > 0 && !suppressMenu;
 
   const applyMention = (handle: string) => {
-    const start = caret - mentionMatch![0].length + mentionMatch![0].indexOf("@");
-    const next = `${text.slice(0, start)}@${handle} ${text.slice(caret)}`;
+    const start = caret - mentionMatch![0].length + mentionMatch![0].indexOf("#");
+    const next = `${text.slice(0, start)}#${handle} ${text.slice(caret)}`;
     update(next);
     setHighlighted(0);
     // Restore focus and place the caret after the inserted handle.
@@ -838,6 +870,23 @@ export function Composer({
         el.setSelectionRange(nextCaret, nextCaret);
         setCaret(nextCaret);
       }
+    });
+  };
+
+  const applyFileReference = (entry: { path: string; kind: "file" | "dir" }) => {
+    const start = caret - fileMatch![0].length + fileMatch![0].indexOf("@");
+    const suffix = entry.kind === "dir" ? "/" : " ";
+    const next = `${text.slice(0, start)}@${entry.path}${suffix}${text.slice(caret)}`;
+    update(next);
+    setHighlighted(0);
+    const nextCaret = start + entry.path.length + 1 + suffix.length;
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(nextCaret, nextCaret);
+      setCaret(nextCaret);
+      setSuppressMenu(false);
     });
   };
 
@@ -915,9 +964,9 @@ export function Composer({
             inputProps={{
               "aria-label": "Message",
               enterKeyHint: "send",
-              role: mentionHandles || commands?.length ? "combobox" : undefined,
-              "aria-autocomplete": mentionHandles || commands?.length ? "list" : undefined,
-              "aria-expanded": mentionHandles || commands?.length ? menuOpen : undefined,
+              role: mentionHandles || commands?.length || projectId ? "combobox" : undefined,
+              "aria-autocomplete": mentionHandles || commands?.length || projectId ? "list" : undefined,
+              "aria-expanded": mentionHandles || commands?.length || projectId ? menuOpen : undefined,
               "aria-controls": menuOpen ? mentionListId : undefined,
               "aria-activedescendant": menuOpen ? `${mentionListId}-option-${highlighted}` : undefined,
             }}
@@ -954,6 +1003,7 @@ export function Composer({
                 event.preventDefault();
                 const selected = menuSuggestions[highlighted]!;
                 if (selected.kind === "mention") applyMention(selected.handle);
+                else if (selected.kind === "file") applyFileReference(selected.entry);
                 else applyCommand(selected.command);
                 return;
               }
@@ -975,20 +1025,22 @@ export function Composer({
           />
           {mentionedHandles.length > 0 ? (
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
-              {mentionedBusyHandles.length > 0
-                ? `${mentionedBusyHandles.map((handle) => `@${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
+              {mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "broadcast")
+                ? "Adding durable shared context without starting an agent"
+                : mentionedBusyHandles.length > 0
+                ? `${mentionedBusyHandles.map((handle) => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
                   ? "Notifying every eligible agent in this collaboration room"
-                  : `Replying to ${mentionedHandles.map((handle) => `@${handle}`).join(", ")}`}
+                  : `Replying to ${mentionedHandles.map((handle) => `#${handle}`).join(", ")}`}
             </Typography>
           ) : null}
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
             <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
               <Paper elevation={4} sx={{ mb: 0.5, minWidth: 180 }}>
-                <MenuList dense id={mentionListId} role="listbox" aria-label={commandSuggestions.length ? "Commands" : "Agent mentions"}>
+                <MenuList dense id={mentionListId} role="listbox" aria-label={commandSuggestions.length ? "Commands" : suggestions.length ? "Agent tags" : "Project files and folders"}>
                   {menuSuggestions.map((suggestion, index) => (
                     <MenuItem
-                      key={suggestion.kind === "mention" ? suggestion.handle : suggestion.command.name}
+                      key={suggestion.kind === "mention" ? suggestion.handle : suggestion.kind === "file" ? suggestion.entry.path : suggestion.command.name}
                       id={`${mentionListId}-option-${index}`}
                       role="option"
                       aria-selected={index === highlighted}
@@ -996,12 +1048,15 @@ export function Composer({
                       onMouseDown={(event) => {
                         event.preventDefault();
                         if (suggestion.kind === "mention") applyMention(suggestion.handle);
+                        else if (suggestion.kind === "file") applyFileReference(suggestion.entry);
                         else applyCommand(suggestion.command);
                       }}
                     >
                       {suggestion.kind === "mention"
-                        ? `@${suggestion.handle}`
-                        : <Box><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary">{suggestion.command.description}</Typography></Box>}
+                        ? `#${suggestion.handle}`
+                        : suggestion.kind === "file"
+                          ? <Box><Typography variant="body2">@{suggestion.entry.path}{suggestion.entry.kind === "dir" ? "/" : ""}</Typography><Typography variant="caption" color="text.secondary">{suggestion.entry.kind === "dir" ? "Folder" : "File"}</Typography></Box>
+                          : <Box><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary">{suggestion.command.description}</Typography></Box>}
                     </MenuItem>
                   ))}
                 </MenuList>

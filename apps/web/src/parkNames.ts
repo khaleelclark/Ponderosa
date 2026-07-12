@@ -1,6 +1,6 @@
 // US National Parks and National Monuments used as memorable agent names.
 // Keep the complete place name: multi-word names remain easy to mention because
-// agentMentionHandle renders their spaces as hyphens (for example, @Bryce-Canyon).
+// agentMentionHandle renders their spaces as hyphens (for example, #Bryce-Canyon).
 
 const PARK_NAMES = [
   "Acadia",

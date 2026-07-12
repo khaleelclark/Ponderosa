@@ -46,7 +46,7 @@ import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentMentionHandle, findMentionedAgents } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
+import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
 import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
@@ -299,8 +299,13 @@ export function MasterChatView({
       });
       try {
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agent.id, file)));
-        await api.sendMasterChatMessage(masterChatId, { text, attachments, replyToMessageId: replyTo?.id });
-        await api.sendMessage(agent.id, { text, attachmentIds: attachments.map((item) => item.id), sourceChannel: "main" });
+        await api.sendMessage(agent.id, {
+          text,
+          attachmentIds: attachments.map((item) => item.id),
+          sourceChannel: "main",
+          sourceMasterChatId: masterChatId,
+          replyToMessageId: replyTo?.id,
+        });
       } catch (error) {
         await api.deleteThread(agent.id).catch(() => undefined);
         throw error;
@@ -321,12 +326,12 @@ export function MasterChatView({
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agentId, file)));
         return { agentId, attachments };
       }));
-      await api.sendMasterChatMessage(masterChatId, { text, attachments: perAgent[0]?.attachments, replyToMessageId });
       return Promise.all(perAgent.map(({ agentId, attachments }) => api.sendMessage(agentId, {
         text,
         attachmentIds: attachments.map((item) => item.id),
         sourceChannel: "main",
         sourceMasterChatId: masterChatId,
+        replyToMessageId,
       })));
     },
     onSuccess: (responses, variables) => {
@@ -343,6 +348,15 @@ export function MasterChatView({
       for (const agentId of variables.agentIds) {
         void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
       }
+    },
+  });
+
+  const broadcast = useMutation({
+    mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) =>
+      api.sendMasterChatMessage(masterChatId, { text, replyToMessageId }),
+    onSuccess: () => {
+      clearReply();
+      invalidate();
     },
   });
 
@@ -467,13 +481,19 @@ export function MasterChatView({
   const activeCollaborationAgents = activeCollaborationRecipients(threads);
   const mentionHandles = conversation === "collaboration"
     ? undefined
-    : threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title));
+    : [
+        "broadcast",
+        ...threads
+          .filter((thread) => !thread.archived)
+          .map((thread) => agentMentionHandle(thread.title))
+          .filter((handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase())),
+      ];
   const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
 
   const busyMentionHandles = threads
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
     .map((agent) => agentMentionHandle(agent.title));
-  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending;
+  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
 
   const submit = async (text: string, files: File[]) => {
     if (conversation === "collaboration") {
@@ -481,6 +501,13 @@ export function MasterChatView({
       const recipientAgentIds = retainActiveRecipientIds(collaborationRecipientIds, threads);
       if (recipientAgentIds.length === 0) throw new Error("Select at least one active recipient.");
       await collaborate.mutateAsync({ text, recipientAgentIds: [...recipientAgentIds], replyToMessageId: replyTo?.id });
+      return;
+    }
+    const broadcastText = managerBroadcastText(text);
+    if (broadcastText !== undefined) {
+      if (!broadcastText) throw new Error("Add informational context after #broadcast.");
+      if (files.length) throw new Error("#broadcast does not currently support attachments.");
+      await broadcast.mutateAsync({ text: broadcastText, replyToMessageId: replyTo?.id });
       return;
     }
     const targets = findMentioned(text);
@@ -684,7 +711,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message spawns a new agent on the selected engine; <Box component="strong">@mention</Box> an agent to reply to it instead. Replies steer active agents when supported and otherwise wait durably.</>
+              <>This is your team's group chat. A plain message spawns a new agent; <Box component="strong">#tag</Box> an agent to message it, or start with <Box component="strong">#broadcast</Box> to add shared context without starting an agent. Use <Box component="strong">@</Box> to reference a project file or folder.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (
@@ -827,7 +854,7 @@ export function MasterChatView({
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
-                Recipients are routed by stable identity. Names and @mentions in message text are display-only.
+                Recipients are routed by stable identity. Agent #tags in message text are display-only.
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
@@ -880,11 +907,12 @@ export function MasterChatView({
               ? collaborationRecipientIds.length > 0 ? "Message selected recipients" : "Select at least one active recipient"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
-                : "@mention an agent, or select a signed-in engine to spawn one"
+                : "#tag an agent or use #broadcast for shared context"
           }
           onSend={submit}
           replyTo={replyTo}
-          replyLabel={directReplyTargetId ? `Replying directly to @${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
+          replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
+          projectId={masterChat.projectId}
           onCancelReply={() => {
             clearReply();
           }}

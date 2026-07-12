@@ -3,6 +3,12 @@ export type MasterChatSendRoute =
   | { kind: "mentioned-reply"; agentIds: string[] }
   | { kind: "spawn" };
 
+/** A leading #broadcast is a scope directive, not an agent tag. */
+export function managerBroadcastText(text: string): string | undefined {
+  if (!/^#broadcast(?=$|\s)/iu.test(text.trimStart())) return undefined;
+  return text.trimStart().replace(/^#broadcast(?=$|\s)\s*/iu, "").trim();
+}
+
 /** Direct-reply state takes precedence over message text and can never spawn. */
 export function resolveMasterChatSendRoute(
   directReplyTargetId: string | undefined,

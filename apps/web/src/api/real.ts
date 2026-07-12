@@ -17,6 +17,7 @@ import type {
   ImageAttachmentDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
+  FilesResponse,
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
@@ -190,6 +191,9 @@ export const realApi: PonderosaApi = {
   },
   getEngineCapabilities(projectId) {
     return requestJson<ProjectEngineCapabilitiesDto[]>(`/api/projects/${encodeURIComponent(projectId)}/engine-capabilities`);
+  },
+  getFiles(projectId, path) {
+    return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
   },
   getArtifact(threadId, artifactId) {
     return requestJson<ArtifactContentDto>(
