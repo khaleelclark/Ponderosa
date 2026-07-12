@@ -3,7 +3,7 @@
 // from packages/engines except AgentEvent (re-exported through core).
 
 export { ThreadStore } from "./store.js";
-export type { MasterChatDeliveryIntent } from "./store.js";
+export type { MasterChatDeliveryIntent, CommunicationReconciliationReport } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { openDb } from "./db.js";
 export { artifactContentPath, artifactsDir, attachmentPath, attachmentsDir, reactionEventsPath, communicationEventsPath } from "./paths.js";
@@ -16,7 +16,7 @@ export {
 } from "./projectors.js";
 export type { ProjectionOp, ProjectionState } from "./projectors.js";
 
-export type { LogEvent, UserMessageEvent, StoredLogEvent } from "./log-event.js";
+export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, StoredLogEvent } from "./log-event.js";
 export * as schema from "./schema.js";
 export type {
   ProjectRow,

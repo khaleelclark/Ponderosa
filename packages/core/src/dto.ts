@@ -77,6 +77,8 @@ export interface UpdateMasterChatRequest {
 /** A message in the project-level master chat (a team group chat). */
 export interface MasterChatMessageDto {
   id: string;
+  /** Canonical cross-surface event identity, absent only on pre-migration history. */
+  communicationEventId?: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -230,6 +232,8 @@ export interface UpdateThreadMasterChatMembershipsRequest {
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
   id: string;
+  /** Canonical cross-surface event identity, absent only on pre-migration history. */
+  communicationEventId?: string;
   threadId: string;
   seq: number;
   role: "user" | "assistant";

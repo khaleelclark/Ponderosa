@@ -33,6 +33,9 @@ is accepted temporarily for already-running sessions and is not advertised.
 Agent-originated intents are now shadow-written once to the project's fsynced
 `communication-events.jsonl`; existing room and thread logs remain authoritative
 until reconciliation and projection rebuild gates are satisfied.
+New projection records carry `communicationEventId`. The store can reconcile each
+project for missing, duplicate, and orphan links entirely from canonical disk
+records, and linked Direct Agent audit projections survive a SQLite rebuild.
 
 ## Delivery phases and gates
 

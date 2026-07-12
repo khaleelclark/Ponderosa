@@ -1062,7 +1062,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       }).event;
-      const stored = store.appendEvent(capability.threadId, { type: "text", delta: text });
+      const stored = store.appendEvent(capability.threadId, {
+        type: "communication_projection",
+        communicationEventId: communication.eventId,
+        text,
+      });
       publish(capability.threadId, stored);
       const messageId = `thread-event-${stored.seq}`;
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
@@ -1133,6 +1137,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       channel,
       routing.intents,
       receiptKey,
+      communication.eventId,
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);

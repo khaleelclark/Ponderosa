@@ -23,8 +23,15 @@ export interface SessionResetEvent {
   reason: "explicit_compaction" | "resume_compaction_failed";
 }
 
+/** Direct Agent audit projection of one canonical communication event. */
+export interface CommunicationProjectionEvent {
+  type: "communication_projection";
+  communicationEventId: string;
+  text: string;
+}
+
 /** Anything that can be appended to a thread's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | AgentEvent;
+export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-thread seq + ts. */
 export interface StoredLogEvent {

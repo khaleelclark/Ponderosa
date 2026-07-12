@@ -243,8 +243,19 @@ export interface MasterChatDeliveryIntent {
   delegatedRunId?: string;
 }
 
+export interface CommunicationReconciliationReport {
+  projectId: string;
+  canonicalEvents: number;
+  linkedProjections: number;
+  missingProjectionEventIds: string[];
+  duplicateProjectionEventIds: string[];
+  orphanProjectionEventIds: string[];
+  ok: boolean;
+}
+
 interface MasterChatMessageJson {
   id: string;
+  communicationEventId?: string;
   masterChatId: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -384,6 +395,46 @@ export class ThreadStore {
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return readCommunicationLog(communicationEventsPath(this.dataDir, projectId));
+  }
+
+  /** Compare canonical events with legacy disk projections during shadow mode. */
+  reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
+    const canonical = this.readCommunicationEvents(projectId);
+    const canonicalIds = new Set(canonical.map((event) => event.eventId));
+    const projectionIds: string[] = [];
+    for (const master of this.listMasterChats(projectId)) {
+      for (const file of [
+        masterChatMessagesPath(this.dataDir, projectId, master.id),
+        collaborationChatMessagesPath(this.dataDir, projectId, master.id),
+      ]) {
+        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+          if (message.communicationEventId) projectionIds.push(message.communicationEventId);
+        }
+      }
+    }
+    for (const thread of this.listThreads(projectId)) {
+      for (const stored of this.readEvents(thread.id)) {
+        if (stored.event.type === "communication_projection") {
+          projectionIds.push(stored.event.communicationEventId);
+        }
+      }
+    }
+    const counts = new Map<string, number>();
+    for (const id of projectionIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const missingProjectionEventIds = canonical
+      .filter((event) => !counts.has(event.eventId)).map((event) => event.eventId);
+    const duplicateProjectionEventIds = [...counts]
+      .filter(([id, count]) => canonicalIds.has(id) && count > 1).map(([id]) => id);
+    const orphanProjectionEventIds = [...counts.keys()].filter((id) => !canonicalIds.has(id));
+    return {
+      projectId,
+      canonicalEvents: canonical.length,
+      linkedProjections: projectionIds.length,
+      missingProjectionEventIds,
+      duplicateProjectionEventIds,
+      orphanProjectionEventIds,
+      ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 && orphanProjectionEventIds.length === 0,
+    };
   }
 
   /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
@@ -598,6 +649,7 @@ export class ThreadStore {
     channel: MasterChatChannel = "main",
     deliveryIntents?: MasterChatDeliveryIntent[],
     messageReceiptKey?: string,
+    communicationEventId?: string,
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
@@ -619,6 +671,7 @@ export class ThreadStore {
     }
     const message: MasterChatMessageJson = {
       id: randomUUID(),
+      ...(communicationEventId ? { communicationEventId } : {}),
       masterChatId,
       role: input.role ?? "user",
       text: input.text,
@@ -642,6 +695,7 @@ export class ThreadStore {
     );
     this.db.insert(masterChatMessages).values({
       id: message.id,
+      communicationEventId: message.communicationEventId ?? null,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -661,6 +715,7 @@ export class ThreadStore {
     writeJson(jsonPath, { ...json, updatedAt: now });
     return {
       id: message.id,
+      communicationEventId: message.communicationEventId,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -686,6 +741,7 @@ export class ThreadStore {
     return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
       message: {
         id: message.id,
+        communicationEventId: message.communicationEventId,
         masterChatId: message.masterChatId,
         role: message.role,
         text: message.text,
@@ -708,6 +764,7 @@ export class ThreadStore {
     ).find((candidate) => candidate.messageReceiptKey === receiptKey);
     return message ? {
       id: message.id,
+      communicationEventId: message.communicationEventId,
       masterChatId: message.masterChatId,
       role: message.role,
       text: message.text,
@@ -868,6 +925,7 @@ export class ThreadStore {
       .filter((row) => row.channel === channel)
       .map((row) => ({
         id: row.id,
+        communicationEventId: row.communicationEventId ?? undefined,
         masterChatId: row.masterChatId,
         role:
           row.role === "assistant" || row.role === "system"
@@ -1044,6 +1102,7 @@ export class ThreadStore {
       .all()
       .map((r) => ({
         id: r.id,
+        communicationEventId: r.communicationEventId ?? undefined,
         threadId: r.threadId,
         seq: r.seq,
         role: r.role === "user" ? "user" : "assistant",
@@ -1210,6 +1269,7 @@ export class ThreadStore {
             for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
               this.db.insert(masterChatMessages).values({
                 id: message.id,
+                communicationEventId: message.communicationEventId ?? null,
                 masterChatId: message.masterChatId,
                 role: message.role,
                 text: message.text,

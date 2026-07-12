@@ -107,6 +107,25 @@ describe("ThreadStore — canonical communication events", () => {
     writeFileSync(file, `{not-json}\n${JSON.stringify(event)}\n`, "utf8");
     expect(() => store.readCommunicationEvents(project.id)).toThrow("non-tail corruption");
   });
+
+  it("reconciles and rebuilds a direct-agent projection by canonical event ID", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const event: CommunicationEvent = {
+      eventId: "event-direct", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "agent", agentId: thread.id }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" }, text: "Audit note",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendEvent(thread.id, { type: "communication_projection", communicationEventId: event.eventId, text: event.text });
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 1, linkedProjections: 1 });
+    expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
+
+    store.rebuildProjections();
+    expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
+  });
 });
 
 describe("ThreadStore — multi-master-chat membership", () => {

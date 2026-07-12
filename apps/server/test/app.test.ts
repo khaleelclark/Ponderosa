@@ -937,6 +937,26 @@ describe("server chunk F", () => {
       expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
       expect.objectContaining({ intent: "collaboration", audience: { kind: "agents", agentIds: [reviewer.id] } }),
     ]));
+    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        communicationEventId: direct.json<{ eventId: string }>().eventId,
+        text: "Private implementation note.",
+      }),
+    ]));
+    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
+    ]));
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
+    ]));
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      canonicalEvents: 3,
+      linkedProjections: 3,
+      missingProjectionEventIds: [],
+      duplicateProjectionEventIds: [],
+      orphanProjectionEventIds: [],
+      ok: true,
+    });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });
