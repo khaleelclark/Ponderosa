@@ -118,6 +118,12 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request),
     });
   },
+  sendUserReaction(request) {
+    return requestJson("/api/user-reactions", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
   async sendCollaborationMessage(masterChatId, request) {
     return requestJson<CreateCollaborationMessageResponse>("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
       method: "POST",

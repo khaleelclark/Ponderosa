@@ -40,7 +40,7 @@ import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
-import { EmojiReactionPicker } from "./EmojiReactionPicker";
+import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -397,7 +397,7 @@ export function ChatPane({
   agentName?: string;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
-  onReact?(emoji: string): Promise<void>;
+  onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
 }): JSX.Element {
   const chatMessages = messages.filter(
@@ -480,10 +480,11 @@ export function ChatPane({
                   : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
               </Box>)}
             </Stack> : null}
+            <MessageReactions reactions={message.reactions} />
             <MessageActionsAndTimestamp
               value={message.createdAt}
               actions={message.role === "assistant" || onReply ? <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
-                {message.role === "assistant" && onReact ? <EmojiReactionPicker recipientName={agentName} onReact={onReact} /> : null}
+                {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={agentName} onReact={(emoji) => onReact(message, emoji)} /> : null}
                 {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit" }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
               </Stack> : undefined}
             />

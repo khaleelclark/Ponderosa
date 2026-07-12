@@ -395,6 +395,23 @@ export const mockApi: PonderosaApi = {
       recipients: request.recipients.map((recipient) => ({ agentId: recipient.agentId, queued: false })),
     };
   },
+  async sendUserReaction(request) {
+    const reaction = { emoji: request.emoji, count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" as const }] };
+    let targetAuthorThreadId: string | undefined;
+    for (const roomMessages of [...Object.values(masterMessages), ...Object.values(collaborationMessages)]) {
+      const message = roomMessages.find((candidate) => candidate.communicationEventId === request.communicationEventId);
+      if (message?.authorThreadId) {
+        message.reactions = [...(message.reactions ?? []).filter((item) => item.emoji !== request.emoji), reaction];
+        targetAuthorThreadId = message.authorThreadId;
+      }
+    }
+    for (const threadMessages of Object.values(messages)) {
+      const message = threadMessages.find((candidate) => candidate.communicationEventId === request.communicationEventId);
+      if (message) message.reactions = [...(message.reactions ?? []).filter((item) => item.emoji !== request.emoji), reaction];
+    }
+    if (!targetAuthorThreadId) throw new Error("Agent-authored message not found");
+    return { replayed: false, queued: false, targetAuthorThreadId, reactions: [reaction] };
+  },
   async sendCollaborationMessage(masterChatId, request) {
     if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
     if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");

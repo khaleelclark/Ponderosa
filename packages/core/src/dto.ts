@@ -92,6 +92,30 @@ export interface MasterChatMessageDto {
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
+  reactions?: MessageReactionDto[];
+}
+
+/** User-authored emoji state projected onto one canonical agent communication. */
+export interface MessageReactionDto {
+  emoji: string;
+  count: number;
+  reactedByCurrentActor: boolean;
+  reactors: Array<{ kind: "manager" }>;
+}
+
+/** POST /api/user-reactions body. */
+export interface CreateUserReactionRequest {
+  projectId: string;
+  communicationEventId: string;
+  emoji: string;
+  idempotencyKey: string;
+}
+
+export interface CreateUserReactionResponse {
+  replayed: boolean;
+  queued: boolean;
+  targetAuthorThreadId: string;
+  reactions: MessageReactionDto[];
 }
 
 export interface MessageReferenceDto {
@@ -239,6 +263,7 @@ export interface MessageDto {
   createdAt: string;
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
+  reactions?: MessageReactionDto[];
 }
 
 export type AssetMediaType =

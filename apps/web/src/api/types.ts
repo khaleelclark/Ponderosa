@@ -9,6 +9,8 @@ import type {
   CreateMultiAgentDirectMessageRequest,
   CreateMasterChatMessageRequest,
   CreateMasterChatRequest,
+  CreateUserReactionRequest,
+  CreateUserReactionResponse,
   CreateProjectRequest,
   CreateThreadRequest,
   MasterChatDetailDto,
@@ -82,6 +84,7 @@ export interface PonderosaApi {
   sendCollaborationMessage(masterChatId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
   sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   sendMultiAgentDirectMessage(masterChatId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
+  sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;
   listSubagents(masterChatId: string): Promise<SubagentRunDto[]>;
   cancelSubagent(runId: string, request: CancelSubagentRequest): Promise<CancelSubagentResponse>;
   subscribeSubagents(masterChatId: string, lastSeenSeq: number | undefined, handlers: SubagentStreamHandlers): StreamSubscription;

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
+import type { MessageReferenceDto } from "@ponderosa/core";
 
 export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
 
@@ -24,6 +25,8 @@ export interface CollaborationDelivery {
   effort?: string;
   sourceChannel?: "main";
   replyToMessageId?: string;
+  /** Server-captured immutable context for non-chat signals such as reactions. */
+  replyTo?: MessageReferenceDto;
   attachmentIds?: string[];
   /** Canonical total-order key for messages sharing the same millisecond. */
   orderKey?: string;

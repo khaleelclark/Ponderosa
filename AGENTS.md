@@ -96,11 +96,16 @@ pay-per-token provider API keys.
    Agent Chat. Projection alone must never enqueue, steer, or start an agent;
    only explicit recipient delivery (including `#everyone`) may do that.
 
-   Emoji reactions are user-authored Direct Messages, not a separate event type.
-   Only the user can react, and only to an agent-authored message. Selecting an
-   emoji sends `the user reacted with <emoji>` exclusively to that message's
-   stable author agent ID through the normal Direct Message path. Agents have no
-   reaction capability, reaction state, or automatic reaction behavior.
+   Emoji reactions are user-authored metadata on a canonical agent message, not
+   chat messages. Only the user can react, and only to agent-authored messages.
+   The emoji is projected onto every view of that communication and privately
+   notifies the stable author agent with immutable reply context. It must not
+   create a Main Chat entry or shared context. Agents cannot create reactions.
+
+   Runtime callback capabilities injected into a persistent engine session keep
+   the same secret for that session, but authorize requests only while its owning
+   agent has an active turn. Never rotate an environment-bound secret per turn or
+   leave it authorized while the runtime is idle.
 
 8. **Routing uses stable identities.** Store structured recipient agent IDs and
    let the server own routing. Display names and rendered `#labels` are presentation,
