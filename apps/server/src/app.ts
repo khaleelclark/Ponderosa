@@ -26,6 +26,9 @@ import type {
   SubagentRunDto,
   ThreadDto,
   MessageReferenceDto,
+  ReactionActor,
+  SetMessageReactionRequest,
+  SetMessageReactionResponse,
 } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
@@ -729,7 +732,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-reactions" || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -1408,6 +1411,49 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }));
     return message ?? reply.code(404).send({ error: "master chat not found" });
   });
+
+  const recordReaction = (input: {
+    masterChatId: string; channel: "main" | "collaboration"; messageId: string;
+    actor: ReactionActor; body: SetMessageReactionRequest;
+  }): SetMessageReactionResponse => {
+    const result = store.setMasterChatReaction({ ...input, ...input.body });
+    return {
+      occurrenceId: result.event.occurrenceId,
+      replayed: result.replayed,
+      persistence: "recorded",
+      notification: result.notification === "pending" ? "queued" : result.notification,
+      reactions: result.reactions,
+    };
+  };
+
+  app.put<{ Params: { id: string; channel: "main" | "collaboration"; messageId: string }; Body: SetMessageReactionRequest }>(
+    "/api/master-chats/:id/:channel/messages/:messageId/reaction",
+    async (request, reply) => {
+      if (request.params.channel !== "main" && request.params.channel !== "collaboration") return reply.code(400).send({ error: "invalid conversation" });
+      try {
+        return recordReaction({ masterChatId: request.params.id, channel: request.params.channel, messageId: request.params.messageId, actor: { kind: "manager" }, body: request.body });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "reaction failed";
+        return reply.code(message.includes("cooldown") || message.includes("idempotency") ? 409 : message.includes("not found") ? 404 : 400).send({ error: message });
+      }
+    },
+  );
+
+  app.post<{ Body: SetMessageReactionRequest & { masterChatId: string; channel: "main" | "collaboration"; messageId: string } }>(
+    "/api/agent-reactions",
+    async (request, reply) => {
+      const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+      const capability = token ? agentMessageCapabilities.get(token) : undefined;
+      const active = capability ? activeRuns.get(capability.threadId) : undefined;
+      if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token) return reply.code(401).send({ error: "invalid or expired agent capability" });
+      try {
+        return recordReaction({ masterChatId: request.body.masterChatId, channel: request.body.channel, messageId: request.body.messageId, actor: { kind: "agent", threadId: capability.threadId }, body: request.body });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "reaction failed";
+        return reply.code(message.includes("member") ? 403 : message.includes("cooldown") || message.includes("idempotency") ? 409 : message.includes("not found") ? 404 : 400).send({ error: message });
+      }
+    },
+  );
 
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
     "/api/master-chats/:id/direct-replies",

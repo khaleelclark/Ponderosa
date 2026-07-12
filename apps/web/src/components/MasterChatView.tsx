@@ -34,7 +34,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ThreadDto } from "@ponderosa/core";
+import type { EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ReactionEmoji, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -60,6 +60,7 @@ export function MasterChatMessage({
   onOpenAgent,
   onReply,
   onDirectReply,
+  onReact,
 }: {
   message: MasterChatMessageDto;
   conversation: "main" | "collaboration";
@@ -68,6 +69,7 @@ export function MasterChatMessage({
   onOpenAgent(agentId: string): void;
   onReply(message: MasterChatMessageDto): void;
   onDirectReply(message: MasterChatMessageDto): void;
+  onReact(message: MasterChatMessageDto, emoji: ReactionEmoji, active: boolean): void;
 }): JSX.Element {
   const fromManager = !message.authorThreadId;
   const showUserLabel = fromManager && message.role === "user";
@@ -126,6 +128,10 @@ export function MasterChatMessage({
           </Box>)}
         </Stack> : null}
         <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
+          {(["👍", "❤️", "🎉", "👀"] as ReactionEmoji[]).map((emoji) => {
+            const reaction = message.reactions?.find((item) => item.emoji === emoji);
+            return <Button key={emoji} size="small" color="inherit" aria-pressed={reaction?.reactedByCurrentActor ?? false} aria-label={`${reaction?.reactedByCurrentActor ? "Remove" : "Add"} ${emoji} reaction`} onClick={() => onReact(message, emoji, !(reaction?.reactedByCurrentActor ?? false))}>{emoji}{reaction?.count ? ` ${reaction.count}` : ""}</Button>;
+          })}
           <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
           {conversation === "main" && message.authorThreadId ? (
             <Button
@@ -704,6 +710,11 @@ export function MasterChatView({
                   setReplyTo(selected);
                   setDirectReplyTargetId(selected.authorThreadId);
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+                }}
+                onReact={(selected, emoji, active) => {
+                  void api.setMessageReaction(masterChatId, conversation, selected.id, emoji, active, globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`).then(() => {
+                    void queryClient.invalidateQueries({ queryKey: conversation === "main" ? ["master-chat", masterChatId] : ["collaboration-chat", masterChatId] });
+                  });
                 }}
               />
             ))}

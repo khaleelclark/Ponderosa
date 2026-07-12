@@ -89,6 +89,30 @@ export interface MasterChatMessageDto {
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
+  reactions?: MessageReactionDto[];
+}
+
+export type ReactionEmoji = "👍" | "👎" | "❤️" | "🎉" | "👀" | "🚀";
+export type ReactionActor = { kind: "manager" } | { kind: "agent"; threadId: string };
+
+export interface MessageReactionDto {
+  emoji: ReactionEmoji;
+  count: number;
+  reactedByCurrentActor: boolean;
+}
+
+export interface SetMessageReactionRequest {
+  emoji: ReactionEmoji;
+  active: boolean;
+  idempotencyKey: string;
+}
+
+export interface SetMessageReactionResponse {
+  occurrenceId: string;
+  replayed: boolean;
+  persistence: "recorded";
+  notification: "queued" | "delivered" | "suppressed" | "not_applicable";
+  reactions: MessageReactionDto[];
 }
 
 export interface MessageReferenceDto {

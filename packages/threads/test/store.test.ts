@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { LogEvent } from "../src/log-event.js";
@@ -71,6 +72,125 @@ describe("ThreadStore — multi-master-chat membership", () => {
     const thread = store.createThread(one.id, { title: "Agent", engine: "codex" });
     const foreign = store.createMasterChat(two.id, { title: "Foreign" });
     expect(() => store.updateThreadMasterChatMemberships(thread.id, { masterChatIds: [foreign.id], primaryMasterChatId: foreign.id })).toThrow("does not belong");
+  });
+});
+
+describe("ThreadStore — canonical message reactions", () => {
+  function seedReactionRoom() {
+    const project = store.createProject({ label: "Reactions", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
+    const reactor = store.createThread(project.id, { title: "Reactor", engine: "codex", masterChatId: room.id });
+    const message = store.appendMasterChatMessage(room.id, { role: "assistant", text: "Done" }, author.id)!;
+    return { room, author, reactor, message };
+  }
+
+  it("replays actor-global idempotency without duplicate persistence or notification", () => {
+    const { room, author, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "👍" as const, active: true, idempotencyKey: "global-1" };
+    const first = store.setMasterChatReaction(input);
+    const replay = store.setMasterChatReaction(input);
+    expect(replay).toMatchObject({ replayed: true, event: { occurrenceId: first.event.occurrenceId } });
+    expect(store.getReactionNotificationOutbox()).toEqual([{ occurrenceId: first.event.occurrenceId, targetThreadId: author.id, messageId: message.id, emoji: "👍" }]);
+    expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("serializes pre-opened store instances on one durable idempotency occurrence", () => {
+    const { room, message } = seedReactionRoom();
+    const peer = new ThreadStore(dir);
+    try {
+      const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "❤️" as const, active: true, idempotencyKey: "cross-process-shape" };
+      const first = store.setMasterChatReaction(input);
+      const second = peer.setMasterChatReaction(input);
+      expect(second.event.occurrenceId).toBe(first.event.occurrenceId);
+      expect(second.replayed).toBe(true);
+      expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+    } finally {
+      peer.close();
+    }
+  });
+
+  it("rejects actor-global key reuse and cooldown by the exact occurrence tuple", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👀", active: true, idempotencyKey: "same" });
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "❤️", active: true, idempotencyKey: "same" })).toThrow("another reaction");
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "👀", active: false, idempotencyKey: "next" })).toThrow("cooldown");
+  });
+
+  it("rebuilds aggregate and outbox from the canonical log and revalidates membership", () => {
+    const { room, author, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" });
+    store.close();
+    store = new ThreadStore(dir);
+    expect(store.getMasterChatMessages(room.id)[0]?.reactions).toEqual([{ emoji: "🎉", count: 1, reactedByCurrentActor: true }]);
+    store.updateThread(author.id, { archived: true });
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+    expect(store.completeReactionNotification(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "🎉", active: true, idempotencyKey: "persist" }).event.occurrenceId, "delivered")).toBe("suppressed");
+  });
+
+  it("makes add/remove notification outcomes occurrence-correct and terminal retries idempotent", async () => {
+    const { room, message } = seedReactionRoom();
+    const add = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "add" });
+    await new Promise((resolve) => setTimeout(resolve, 510));
+    const remove = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: false, idempotencyKey: "remove" });
+    expect(store.getReactionNotificationOutbox().map((item) => item.occurrenceId)).toEqual([remove.event.occurrenceId]);
+    expect(store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "add" }).notification).toBe("suppressed");
+    expect(store.completeReactionNotification(remove.event.occurrenceId, "delivered")).toBe("delivered");
+    expect(store.completeReactionNotification(remove.event.occurrenceId, "suppressed")).toBe("delivered");
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+  });
+
+  it("repairs only a torn final record and fails closed on non-tail corruption", () => {
+    const { room, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "👀" as const, active: true, idempotencyKey: "durable" };
+    const first = store.setMasterChatReaction(input);
+    const file = join(dir, "reaction-events.jsonl");
+    writeFileSync(file, readFileSync(file, "utf8") + '{"kind":"occurrence"', "utf8");
+    expect(store.setMasterChatReaction(input).event.occurrenceId).toBe(first.event.occurrenceId);
+    expect(readFileSync(file, "utf8")).not.toContain('{"kind":"occurrence"\n');
+    writeFileSync(file, readFileSync(file, "utf8") + "not-json\n", "utf8");
+    expect(() => store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toThrow("non-tail corruption");
+  });
+
+  it.each(["valid unterminated", "torn"])("keeps an unlocked %s reader non-mutating before a serialized writer", (shape) => {
+    const { room, message } = seedReactionRoom();
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "👍", active: true, idempotencyKey: "first" });
+    const file = join(dir, "reaction-events.jsonl");
+    const original = readFileSync(file, "utf8");
+    writeFileSync(file, shape === "valid unterminated" ? original.trimEnd() : original + '{"kind":"occurrence"', "utf8");
+    const beforeRead = readFileSync(file);
+    expect(store.getMessageReactions(room.id, "main", message.id, { kind: "manager" })).toHaveLength(1);
+    expect(readFileSync(file)).toEqual(beforeRead);
+    store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "❤️", active: true, idempotencyKey: `second-${shape}` });
+    const lines = readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { idempotencyKey?: string });
+    expect(lines.filter((line) => line.idempotencyKey).map((line) => line.idempotencyKey)).toEqual(["first", `second-${shape}`]);
+  });
+
+  it("recovers a real child SIGKILL torn append without losing or duplicating acknowledged records", () => {
+    const { room, message } = seedReactionRoom();
+    const input = { masterChatId: room.id, channel: "main" as const, messageId: message.id, actor: { kind: "manager" as const }, emoji: "🎉" as const, active: true, idempotencyKey: "acknowledged" };
+    const first = store.setMasterChatReaction(input);
+    const file = join(dir, "reaction-events.jsonl");
+    const child = spawnSync(process.execPath, ["-e", "const fs=require('fs');const f=process.argv[1];const fd=fs.openSync(f,'a');fs.writeSync(fd,'{\\\"kind\\\":\\\"occurrence\\\"');process.kill(process.pid,'SIGKILL')", file]);
+    expect(child.signal).toBe("SIGKILL");
+    expect(store.setMasterChatReaction(input).event.occurrenceId).toBe(first.event.occurrenceId);
+    expect(readFileSync(file, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("suppresses pending work when its room/message is deleted", () => {
+    const { room, message } = seedReactionRoom();
+    const occurrence = store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "manager" }, emoji: "❤️", active: true, idempotencyKey: "deleted" }).event;
+    store.deleteMasterChat(room.id);
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
+    expect(store.completeReactionNotification(occurrence.occurrenceId, "delivered")).toBe("suppressed");
+  });
+
+  it("rejects archived/non-member actors before writing and has zero thread events", () => {
+    const { room, reactor, message } = seedReactionRoom();
+    store.updateThreadMasterChatMemberships(reactor.id, { masterChatIds: [] });
+    expect(() => store.setMasterChatReaction({ masterChatId: room.id, channel: "main", messageId: message.id, actor: { kind: "agent", threadId: reactor.id }, emoji: "🚀", active: true, idempotencyKey: "denied" })).toThrow("active member");
+    expect(existsSync(join(dir, "reaction-events.jsonl"))).toBe(false);
+    expect((store.sqlite.prepare("SELECT count(*) AS count FROM events WHERE thread_id = ?").get(reactor.id) as { count: number }).count).toBe(0);
   });
 });
 
