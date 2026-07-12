@@ -1,5 +1,7 @@
 /** Canonical communication contracts shared by persistence, routing, and UI. */
 
+import type { ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
+
 export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration";
 
 export type CommunicationActor =
@@ -52,9 +54,14 @@ export interface CommunicationProjection {
     /** Server-rendered text may add display handles without changing event text. */
     renderedText?: string;
     createdAt: string;
+    /** Direct-audit ordering key from the canonical thread log. */
+    sequence?: number;
     authorAgentId?: string;
     replyToLegacyMessageId?: string;
     attachmentIds?: string[];
+    /** Immutable snapshots required to retire legacy chat storage reads. */
+    replyTo?: MessageReferenceDto;
+    attachments?: ImageAttachmentDto[];
   };
 }
 
@@ -66,9 +73,12 @@ export interface ProjectedCommunicationMessage {
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
+  sequence?: number;
   authorAgentId?: string;
   replyToLegacyMessageId?: string;
   attachmentIds?: string[];
+  replyTo?: MessageReferenceDto;
+  attachments?: ImageAttachmentDto[];
 }
 
 export type CommunicationDeliveryStatus =

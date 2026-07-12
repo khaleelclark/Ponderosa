@@ -207,6 +207,27 @@ describe("ThreadStore — canonical communication events", () => {
     });
   });
 
+  it("serves authoritative reply and attachment snapshots without reading the legacy room log", () => {
+    const project = store.createProject({ label: "Snapshots", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const firstEvent: CommunicationEvent = {
+      eventId: "snapshot-first", schemaVersion: 1, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "First", createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(firstEvent);
+    const first = store.appendMasterChatMessage(room.id, { text: "First" }, undefined, "main", undefined, undefined, firstEvent.eventId)!;
+    const secondEvent = { ...firstEvent, eventId: "snapshot-second", text: "Reply", createdAt: "2026-07-12T00:01:00.000Z" };
+    store.appendCommunicationEvent(secondEvent);
+    store.appendMasterChatMessage(room.id, {
+      text: "Reply", replyToMessageId: first.id,
+      attachments: [{ id: "asset-1", threadId: "manager", name: "diagram.png", mediaType: "image/png", size: 42, url: "/api/assets/asset-1" }],
+    }, undefined, "main", undefined, undefined, secondEvent.eventId);
+    const expected = store.getMasterChatMessages(room.id);
+    writeFileSync(masterChatMessagesPath(dir, project.id, room.id), "", "utf8");
+    expect(store.getProjectedMasterChatMessages(room.id)).toEqual(expected);
+  });
+
   it("backfills legacy timelines deterministically and blocks ambiguous collaboration", () => {
     const project = store.createProject({ label: "Legacy", hostPath: "/repo" });
     const room = store.createMasterChat(project.id, { title: "Room" });

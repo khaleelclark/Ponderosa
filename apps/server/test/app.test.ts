@@ -761,7 +761,7 @@ describe("server chunk F", () => {
     expect(response.statusCode).toBe(200);
     await waitForRun(yosemite.id);
     expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(adapter.seeds[0]?.prompt).toContain("This is the only chat for agent-to-agent coordination.");
     expect(adapter.seeds[0]?.prompt).toContain("Do not move collaboration discussion to the main chat");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n@Yosemite can you review this?");
@@ -846,7 +846,7 @@ describe("server chunk F", () => {
 
     expect(response.statusCode).toBe(200);
     await waitForRun(wrangell.id);
-    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were successfully @mentioned.");
+    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(store.getMessages(wrangell.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "@Wrangell-St-Elias can you review this?" })]),
     );
@@ -2116,7 +2116,7 @@ describe("server chunk F", () => {
       },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: "collaboration context must be delivered by a successful @mention" });
+    expect(response.json()).toEqual({ error: "collaboration context must be delivered by an explicit recipient event" });
     expect(adapter.seeds).toHaveLength(0);
     await app.close();
   });

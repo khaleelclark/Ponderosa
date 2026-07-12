@@ -292,15 +292,17 @@ function readJsonLines<T>(file: string): T[] {
 function communicationMessageProjection(threadId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
   const event = stored.event;
   if (event.type === "user_message") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts,
+    messageId: projectedMessageId(threadId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
     ...(event.replyTo ? { replyToLegacyMessageId: event.replyTo.messageId } : {}),
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
+    ...(event.replyTo ? { replyTo: event.replyTo } : {}),
+    ...(event.attachments?.length ? { attachments: event.attachments } : {}),
   };
   if (event.type === "text") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts,
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts, sequence: stored.seq,
   };
   if (event.type === "communication_projection") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.text, createdAt: stored.ts,
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
   };
   return undefined;
 }
@@ -478,6 +480,35 @@ export class ThreadStore {
         index.byTuple.set(tuple, enriched);
         return { projection: enriched, replayed: false };
       }
+      if (existing.message && projection.message) {
+        const enrichedMessage = {
+          ...existing.message,
+          ...(existing.message.sequence === undefined && projection.message.sequence !== undefined
+            ? { sequence: projection.message.sequence }
+            : {}),
+          ...(!existing.message.authorAgentId && projection.message.authorAgentId
+            ? { authorAgentId: projection.message.authorAgentId }
+            : {}),
+          ...(!existing.message.replyToLegacyMessageId && projection.message.replyToLegacyMessageId
+            ? { replyToLegacyMessageId: projection.message.replyToLegacyMessageId }
+            : {}),
+          ...(!existing.message.attachmentIds?.length && projection.message.attachmentIds?.length
+            ? { attachmentIds: projection.message.attachmentIds }
+            : {}),
+          ...(!existing.message.replyTo && projection.message.replyTo ? { replyTo: projection.message.replyTo } : {}),
+          ...(!existing.message.attachments?.length && projection.message.attachments?.length
+            ? { attachments: projection.message.attachments }
+            : {}),
+        };
+        if (JSON.stringify(enrichedMessage) !== JSON.stringify(existing.message)) {
+          const enriched = { ...existing, revision: (existing.revision ?? 1) + 1, message: enrichedMessage };
+          appendFsyncedJsonl(file, [enriched]);
+          const position = index.projections.findIndex((candidate) => candidate === existing);
+          if (position >= 0) index.projections[position] = enriched;
+          index.byTuple.set(tuple, enriched);
+          return { projection: enriched, replayed: false };
+        }
+      }
       const sameMaterialization = existing.message && projection.message
         && existing.message.role === projection.message.role
         && (existing.message.renderedText ?? "") === (projection.message.renderedText ?? "");
@@ -514,9 +545,12 @@ export class ThreadStore {
         return [{
           eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
           role: message.role, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
           ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
           ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         }];
       })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
@@ -539,6 +573,8 @@ export class ThreadStore {
                 ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
                 ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
                 ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+                ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+                ...(message.attachments?.length ? { attachments: message.attachments } : {}),
               },
             });
           }
@@ -766,6 +802,8 @@ export class ThreadStore {
               ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
               ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
               ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+              ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+              ...(message.attachments?.length ? { attachments: message.attachments } : {}),
             },
           };
           this.appendCommunicationProjection(projectId, projection);
@@ -1131,6 +1169,8 @@ export class ThreadStore {
           ...(authorThreadId ? { authorAgentId: authorThreadId } : {}),
           ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
           ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         },
       });
     }
@@ -1385,9 +1425,7 @@ export class ThreadStore {
     const master = this.getMasterChat(masterChatId);
     if (!master) return [];
     const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
-    const legacy = new Map(this.getMasterChatMessages(masterChatId, channel, currentActor).map((message) => [message.id, message]));
     return this.readProjectedCommunicationMessages(master.projectId, surface, masterChatId).map((message) => {
-      const ancillary = legacy.get(message.messageId);
       return {
         id: message.messageId,
         communicationEventId: message.eventId,
@@ -1396,8 +1434,8 @@ export class ThreadStore {
         text: message.text,
         createdAt: message.createdAt,
         ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
-        ...(ancillary?.replyTo ? { replyTo: ancillary.replyTo } : {}),
-        ...(ancillary?.attachments?.length ? { attachments: ancillary.attachments } : {}),
+        ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         reactions: this.getMessageReactions(masterChatId, channel, message.messageId, currentActor),
       };
     });
@@ -1588,21 +1626,19 @@ export class ThreadStore {
   getProjectedThreadMessages(threadId: string): MessageDto[] {
     const thread = this.getThread(threadId);
     if (!thread) return [];
-    const legacy = new Map(this.getMessages(threadId).map((message) => [message.id, message]));
     return this.readProjectedCommunicationMessages(thread.projectId, "direct_agent_audit", threadId)
       .flatMap((message) => {
-        const ancillary = legacy.get(message.messageId);
-        if (!ancillary || message.role === "system") return [];
+        if (message.sequence === undefined || message.role === "system") return [];
         return [{
           id: message.messageId,
           communicationEventId: message.eventId,
           threadId,
-          seq: ancillary.seq,
+          seq: message.sequence,
           role: message.role,
           text: message.text,
           createdAt: message.createdAt,
-          ...(ancillary.replyTo ? { replyTo: ancillary.replyTo } : {}),
-          ...(ancillary.attachments?.length ? { attachments: ancillary.attachments } : {}),
+          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         } satisfies MessageDto];
       });
   }
