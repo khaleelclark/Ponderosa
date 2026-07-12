@@ -778,6 +778,7 @@ export function Composer({
   const files = attachments.files;
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -855,12 +856,15 @@ export function Composer({
   };
 
   const send = () => {
+    if (sendingRef.current || !canSend) return;
+    sendingRef.current = true;
     setSendError(undefined);
     void Promise.resolve(onSend(text.trim(), files)).then(() => {
       update("");
       dispatchAttachments({ type: "clear" });
       setCaret(0);
-    }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."));
+    }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
+      .finally(() => { sendingRef.current = false; });
   };
 
   return (
