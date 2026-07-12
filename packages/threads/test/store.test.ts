@@ -179,6 +179,32 @@ describe("ThreadStore — canonical communication events", () => {
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 1, linkedProjections: 2, duplicateProjectionEventIds: [], ok: true,
     });
+    expect(store.readProjectedCommunicationMessages(project.id, "collaboration_chat", room.id))
+      .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", thread.id))
+      .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
+  });
+
+  it("append-only enriches placement-only migration records for authoritative reads", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const event: CommunicationEvent = {
+      eventId: "event-enrich", schemaVersion: 1, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Canonical",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendCommunicationProjection(project.id, {
+      eventId: event.eventId, surface: "master_chat", projectionKey: room.id, projectedAt: event.createdAt,
+    });
+    store.appendMasterChatMessage(room.id, { text: event.text }, undefined, "main", undefined, undefined, event.eventId);
+    expect(store.readCommunicationProjections(project.id)).toEqual([
+      expect.objectContaining({ eventId: event.eventId, revision: 2, message: expect.objectContaining({ renderedText: event.text }) }),
+    ]);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      linkedProjections: 1, duplicateProjectionEventIds: [], missingProjectionMetadataEventIds: [], ok: true,
+    });
   });
 
   it("indexes sustained canonical writes without rescanning prior history", () => {
@@ -193,6 +219,7 @@ describe("ThreadStore — canonical communication events", () => {
       store.appendCommunicationEvent(event);
       store.appendCommunicationProjection(project.id, {
         eventId: event.eventId, surface: "master_chat", projectionKey: "scale-room", projectedAt: event.createdAt,
+        message: { messageId: `message-${index}`, role: "system", createdAt: event.createdAt },
       });
     }
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({

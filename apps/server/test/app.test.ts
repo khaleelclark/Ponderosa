@@ -1078,6 +1078,7 @@ describe("server chunk F", () => {
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
       missingClassificationEventIds: [],
+      missingProjectionMetadataEventIds: [],
       ok: true,
     });
     const reconciliation = await app.inject({

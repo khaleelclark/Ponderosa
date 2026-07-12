@@ -43,6 +43,32 @@ export interface CommunicationProjection {
   surface: CommunicationProjectionSurface;
   projectionKey: string;
   projectedAt: string;
+  /** Later append-only revisions may enrich pre-cutover placement-only records. */
+  revision?: number;
+  /** Deterministic materialization metadata; the canonical event still owns text. */
+  message?: {
+    messageId: string;
+    role: "user" | "assistant" | "system";
+    /** Server-rendered text may add display handles without changing event text. */
+    renderedText?: string;
+    createdAt: string;
+    authorAgentId?: string;
+    replyToLegacyMessageId?: string;
+    attachmentIds?: string[];
+  };
+}
+
+export interface ProjectedCommunicationMessage {
+  eventId: string;
+  surface: CommunicationProjectionSurface;
+  projectionKey: string;
+  messageId: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  createdAt: string;
+  authorAgentId?: string;
+  replyToLegacyMessageId?: string;
+  attachmentIds?: string[];
 }
 
 export type CommunicationDeliveryStatus =
@@ -108,5 +134,6 @@ export interface CommunicationReconciliationReport {
   duplicateProjectionEventIds: string[];
   orphanProjectionEventIds: string[];
   missingClassificationEventIds: string[];
+  missingProjectionMetadataEventIds: string[];
   ok: boolean;
 }

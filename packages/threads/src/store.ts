@@ -28,6 +28,7 @@ import type {
   CommunicationProjection,
   CommunicationReconciliationReport,
   KnowledgePromotion,
+  ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
   CollaborationChatDetailDto,
@@ -56,6 +57,7 @@ import type {
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
+import { messageId as projectedMessageId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
@@ -285,6 +287,22 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
+function communicationMessageProjection(threadId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
+  const event = stored.event;
+  if (event.type === "user_message") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts,
+    ...(event.replyTo ? { replyToLegacyMessageId: event.replyTo.messageId } : {}),
+    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
+  };
+  if (event.type === "text") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.delta, createdAt: stored.ts,
+  };
+  if (event.type === "communication_projection") return {
+    messageId: projectedMessageId(threadId, stored.seq), role: "assistant", renderedText: event.text, createdAt: stored.ts,
+  };
+  return undefined;
+}
+
 export class ThreadStore {
   private readonly db: Db;
   private readonly client: Database.Database;
@@ -352,11 +370,11 @@ export class ThreadStore {
   private projectionIndex(projectId: string) {
     let cached = this.communicationProjectionCache.get(projectId);
     if (cached) return cached;
-    const projections = readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log", true);
-    const byTuple = new Map(projections.map((projection) => [
+    const records = readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log", true);
+    const byTuple = new Map(records.map((projection) => [
       `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`, projection,
     ]));
-    cached = { projections, byTuple };
+    cached = { projections: [...byTuple.values()], byTuple };
     this.communicationProjectionCache.set(projectId, cached);
     return cached;
   }
@@ -444,7 +462,25 @@ export class ThreadStore {
     const index = this.projectionIndex(projectId);
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
     const existing = index.byTuple.get(tuple);
-    if (existing) return { projection: existing, replayed: true };
+    if (existing) {
+      if (!existing.message && projection.message) {
+        const enriched = { ...projection, revision: (existing.revision ?? 1) + 1 };
+        appendFsyncedJsonl(file, [enriched]);
+        const position = index.projections.findIndex((candidate) => candidate === existing);
+        if (position >= 0) index.projections[position] = enriched;
+        index.byTuple.set(tuple, enriched);
+        return { projection: enriched, replayed: false };
+      }
+      const sameMaterialization = existing.message && projection.message
+        && existing.message.role === projection.message.role
+        && (existing.message.renderedText ?? "") === (projection.message.renderedText ?? "");
+      if (projection.message && JSON.stringify(existing.message) !== JSON.stringify(projection.message) && !sameMaterialization) {
+        throw new Error("communication projection metadata collision");
+      }
+      // Delivery retries may create new runtime-local IDs and timestamps. Keep
+      // the first placement when the visible role and text are identical.
+      return { projection: existing, replayed: true };
+    }
     appendFsyncedJsonl(file, [projection]);
     index.projections.push(projection);
     index.byTuple.set(tuple, projection);
@@ -454,6 +490,29 @@ export class ThreadStore {
   readCommunicationProjections(projectId: string): CommunicationProjection[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return [...this.projectionIndex(projectId).projections];
+  }
+
+  readProjectedCommunicationMessages(
+    projectId: string,
+    surface: CommunicationProjection["surface"],
+    projectionKey: string,
+  ): ProjectedCommunicationMessage[] {
+    const events = this.communicationIndex(projectId).byId;
+    return this.projectionIndex(projectId).projections
+      .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey && projection.message)
+      .flatMap((projection) => {
+        const event = events.get(projection.eventId);
+        const message = projection.message;
+        if (!event || !message) return [];
+        return [{
+          eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
+          role: message.role, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
+          ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
+          ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
+        }];
+      })
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
   }
 
   private repairCommunicationProjectionLedger(projectId: string): void {
@@ -468,6 +527,12 @@ export class ThreadStore {
           if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
             this.appendCommunicationProjection(projectId, {
               eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
+              message: {
+                messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+                ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
+                ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+                ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+              },
             });
           }
         }
@@ -477,9 +542,11 @@ export class ThreadStore {
       for (const stored of this.readEvents(thread.id)) {
         const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message" || stored.event.type === "text"
           ? stored.event.communicationEventId : undefined;
-        if (eventId && canonicalIds.has(eventId)) {
+        const message = communicationMessageProjection(thread.id, stored);
+        if (eventId && message && canonicalIds.has(eventId)) {
           this.appendCommunicationProjection(projectId, {
             eventId, surface: "direct_agent_audit", projectionKey: thread.id, projectedAt: stored.ts,
+            message,
           });
         }
       }
@@ -554,6 +621,9 @@ export class ThreadStore {
     const classifiedIds = new Set(this.readContextClassifications(projectId).map((item) => item.eventId));
     const missingClassificationEventIds = canonical
       .filter((event) => !classifiedIds.has(event.eventId)).map((event) => event.eventId);
+    const missingProjectionMetadataEventIds = [...new Set(projections
+      .filter((projection) => (projection.surface === "master_chat" || projection.surface === "collaboration_chat" || projection.surface === "direct_agent_audit") && !projection.message)
+      .map((projection) => projection.eventId))];
     return {
       projectId,
       canonicalEvents: canonical.length,
@@ -562,8 +632,10 @@ export class ThreadStore {
       duplicateProjectionEventIds,
       orphanProjectionEventIds,
       missingClassificationEventIds,
+      missingProjectionMetadataEventIds,
       ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
-        orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0,
+        orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
+        missingProjectionMetadataEventIds.length === 0,
     };
   }
 
@@ -849,6 +921,12 @@ export class ThreadStore {
         surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
         projectionKey: masterChatId,
         projectedAt: now,
+        message: {
+          messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
+          ...(authorThreadId ? { authorAgentId: authorThreadId } : {}),
+          ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
+          ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
+        },
       });
     }
     return {
@@ -1324,12 +1402,14 @@ export class ThreadStore {
     this.applyOps(threadId, projectId, ops);
     const communicationEventId = event.type === "communication_projection" || event.type === "user_message" || event.type === "text"
       ? event.communicationEventId : undefined;
-    if (communicationEventId) {
+    const message = communicationMessageProjection(threadId, stored);
+    if (communicationEventId && message) {
       this.appendCommunicationProjection(projectId, {
         eventId: communicationEventId,
         surface: "direct_agent_audit",
         projectionKey: threadId,
         projectedAt: stored.ts,
+        message,
       });
     }
     return stored;
