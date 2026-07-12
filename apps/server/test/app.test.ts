@@ -861,6 +861,30 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("seeds only promoted summaries from local communication into future agent context", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    store.appendCommunicationEvent({
+      eventId: "private-source", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "agent", agentId: "source-agent" }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" },
+      text: "raw local secret must not be seeded", createdAt: "2026-07-12T00:00:00.000Z",
+    });
+    store.promoteKnowledge({
+      promotionId: "promotion-1", sourceEventId: "private-source", organizationId: project.id,
+      summary: "Use the reviewed deployment invariant.", promotedBy: { kind: "user", userId: "local-operator" },
+      promotedAt: "2026-07-12T00:01:00.000Z",
+    });
+    const thread = store.createThread(project.id, { title: "Future Agent", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin." } });
+    await waitForRun(thread.id);
+
+    expect(adapter.seeds[0]?.prompt).toContain("Curated organizational knowledge");
+    expect(adapter.seeds[0]?.prompt).toContain("[source private-source] Use the reviewed deployment invariant.");
+    expect(adapter.seeds[0]?.prompt).not.toContain("raw local secret must not be seeded");
+    await app.close();
+  });
+
   it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

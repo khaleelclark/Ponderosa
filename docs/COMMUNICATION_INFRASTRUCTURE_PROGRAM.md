@@ -40,6 +40,9 @@ Every new canonical event also receives an explicit context classification:
 broadcasts are organizational candidates, while collaboration and direct-user
 events are local-only. Local knowledge becomes organizational only through an
 idempotent, provenance-linked promotion record created by the operator endpoint.
+Active, non-superseded promotion summaries are injected only when seeding a fresh
+runtime. The underlying local text is never injected, and resumed sessions do not
+receive repeated context packets.
 
 ## Delivery phases and gates
 

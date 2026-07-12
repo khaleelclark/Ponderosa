@@ -398,6 +398,14 @@ export class ThreadStore {
     return readRepairableJsonl<KnowledgePromotion>(knowledgePromotionsPath(this.dataDir, projectId), "knowledge promotion log");
   }
 
+  activeKnowledgePromotions(projectId: string, at = new Date().toISOString()): KnowledgePromotion[] {
+    const all = this.readKnowledgePromotions(projectId);
+    const superseded = new Set(all.flatMap((promotion) => promotion.supersedesPromotionId ? [promotion.supersedesPromotionId] : []));
+    const now = Date.parse(at);
+    return all.filter((promotion) => !superseded.has(promotion.promotionId) &&
+      (!promotion.expiresAt || Date.parse(promotion.expiresAt) > now));
+  }
+
   /** Compare canonical events with legacy disk projections during shadow mode. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
     const canonical = this.readCommunicationEvents(projectId);

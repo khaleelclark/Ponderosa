@@ -422,6 +422,14 @@ is simpler and reuses what the runtimes already do.
 > the minimal highest-value context) but not a v1 dependency. Keeping the event log
 > clean and queryable leaves the door open without betting the MVP on it.
 
+Communication curation does not replace repository knowledge. A promoted
+communication summary is an append-only, provenance-linked project event used at
+fresh session boundaries; it is not a mutable fact database and never includes
+the source local message implicitly. Durable engineering standards and project
+instructions still belong in the repository's own markdown files. Promotions
+may expire or be superseded and are scoped organizational history, not timeless
+project truth.
+
 ---
 
 ## 5. The Adapter (Engine) Abstraction
