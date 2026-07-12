@@ -1314,7 +1314,42 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           JSON.stringify(existing.attachments?.map((item) => item.id) ?? []) === JSON.stringify(attachmentIds);
         if (!sameRequest) return reply.code(409).send({ error: "idempotency key was used with another direct reply" });
         collaborationDeliveries.rememberMessageReceipt(receiptKey, existing.id);
-        const delivery = collaborationDeliveries.getForMessageTarget(existing.id, targetAuthorThreadId);
+        let delivery = collaborationDeliveries.getForMessageTarget(existing.id, targetAuthorThreadId);
+        if (!delivery) {
+          const persisted = store.getMasterChatDeliveryIntents(master.id).find(({ message, intent, messageReceiptKey }) =>
+            message.id === existing.id && messageReceiptKey === receiptKey &&
+            intent.kind === "direct" && intent.targetThreadId === targetAuthorThreadId,
+          );
+          if (!persisted) {
+            return reply.code(503).send({
+              error: "direct reply delivery intent is unavailable; retry after recovery",
+              retryable: true,
+            });
+          }
+          try {
+            delivery = queueCollaborationDelivery({
+              masterChatId: master.id,
+              messageId: existing.id,
+              targetThreadId: persisted.intent.targetThreadId,
+              text: existing.text,
+              relayDepth: persisted.intent.relayDepth,
+              mentionTrail: persisted.intent.mentionTrail,
+              kind: "direct",
+              createdAt: existing.createdAt,
+              orderKey: persisted.deliveryOrderKey,
+              sourceChannel: "main",
+              attachmentIds: existing.attachments?.map((item) => item.id),
+            });
+          } catch {
+            delivery = undefined;
+          }
+          if (!delivery) {
+            return reply.code(503).send({
+              error: "direct reply delivery could not be persisted; retry is safe",
+              retryable: true,
+            });
+          }
+        }
         return {
           messageId: existing.id,
           targetAuthorThreadId,

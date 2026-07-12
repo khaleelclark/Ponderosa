@@ -1947,48 +1947,71 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("recovers the direct-reply crash window from the canonical intent without duplicates", async () => {
+  it("repairs a same-process direct-reply crash window and double replay without duplicates or spawning", async () => {
     const { app, project } = await createProjectAndThread();
     const master = store.createMasterChat(project.id, { title: "Recovery room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
     const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/threads/${author.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "recovered.png" },
+      payload: png,
+    });
+    const attachmentId = upload.json<{ id: string }>().id;
     const receiptKey = `direct-reply:${master.id}:crash-window`;
     const canonical = store.appendMasterChatMessage(
       master.id,
-      { text: "Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
+      { text: "Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id, attachments: [upload.json()] },
       undefined,
       "main",
       [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
       receiptKey,
     )!;
-    await app.close();
-
-    store = new ThreadStore(dataDir);
-    const restarted = createServer({ dataDir, store, engines, logger: false });
-    await restarted.ready();
-    await waitForRun(author.id);
-    const replay = await restarted.inject({
+    const threadCount = store.listThreads(project.id).length;
+    const payload = { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "crash-window" };
+    const replay = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/direct-replies`,
-      payload: { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "crash-window" },
+      payload,
     });
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    const secondReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    await waitForRun(author.id);
     expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
-    await restarted.close();
+    expect(store.getMessages(author.id).find((message) => message.text === "Recovered follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    expect(store.listThreads(project.id)).toHaveLength(threadCount);
+    await app.close();
+  });
 
-    store = new ThreadStore(dataDir);
-    const restartedAgain = createServer({ dataDir, store, engines, logger: false });
-    await restartedAgain.ready();
-    const secondReplay = await restartedAgain.inject({
+  it("returns a truthful retryable failure when a canonical direct reply has no persisted delivery intent", async () => {
+    const { app, project } = await createProjectAndThread();
+    const master = store.createMasterChat(project.id, { title: "Incomplete recovery room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    store.appendMasterChatMessage(
+      master.id,
+      { text: "Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
+      undefined,
+      "main",
+      undefined,
+      `direct-reply:${master.id}:missing-intent`,
+    );
+
+    const replay = await app.inject({
       method: "POST",
       url: `/api/master-chats/${master.id}/direct-replies`,
-      payload: { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "crash-window" },
+      payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "missing-intent" },
     });
-    expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
-    expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
-    await restartedAgain.close();
+    expect(replay.statusCode).toBe(503);
+    expect(replay.json()).toMatchObject({ retryable: true, error: expect.stringMatching(/intent is unavailable/) });
+    expect(replay.json()).not.toHaveProperty("replayed");
+    expect(store.getMessages(author.id).filter((message) => message.text === "Incomplete follow up")).toHaveLength(0);
+    await app.close();
   });
 
   it("queues one direct reply for a busy author and deduplicates retries", async () => {
