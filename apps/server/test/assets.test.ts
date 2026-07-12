@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -216,6 +216,25 @@ describe("secure staged assets", () => {
     const directory = path.join(dataDir, "projects", "p", "threads", "dup", "attachments"); mkdirSync(directory, { recursive: true });
     writeFileSync(path.join(directory, "audit.jsonl"), '{"event_id":"same","action":"a"}\n{"event_id":"same","action":"b"}\n');
     await expect(assets.stage({ projectId: "p", threadId: "dup", body: Buffer.from("{}"), name: "x.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("never follows or mutates symlinked, hardlinked, or non-regular audit leaves", async () => {
+    for (const kind of ["symlink", "hardlink", "directory"] as const) {
+      const threadId = `unsafe-${kind}`; const directory = path.join(dataDir, "projects", "p", "threads", threadId, "attachments"); mkdirSync(directory, { recursive: true });
+      const leaf = path.join(directory, "audit.jsonl"); const outside = path.join(dataDir, `${kind}-outside`); const original = '{"event_id":"old","action":"staged"}\n{"torn":';
+      if (kind === "directory") mkdirSync(leaf); else { writeFileSync(outside, original, { mode: 0o600 }); kind === "symlink" ? symlinkSync(outside, leaf) : linkSync(outside, leaf); }
+      await expect(assets.stage({ projectId: "p", threadId, body: Buffer.from("{}"), name: "x.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 409 });
+      if (kind !== "directory") expect(readFileSync(outside, "utf8")).toBe(original);
+    }
+  });
+
+  it("keeps audit repair bound to its opened inode across leaf replacement", () => {
+    const directory = path.join(dataDir, "replacement"); mkdirSync(directory); const leaf = path.join(directory, "audit.jsonl"); const saved = path.join(directory, "opened.jsonl"); const outside = path.join(dataDir, "replacement-outside");
+    writeFileSync(leaf, '{"action":"legacy"}\n{"torn":', { mode: 0o600 }); writeFileSync(outside, "outside", { mode: 0o600 });
+    const authority = new AssetAuthority(dataDir, { afterAuditOpen: () => { renameSync(leaf, saved); symlinkSync(outside, leaf); } });
+    authority.recordAudit(leaf, "p", "t", { action: "new" });
+    expect(readFileSync(outside, "utf8")).toBe("outside"); expect(readFileSync(saved, "utf8")).toContain('"action":"new"');
+    authority.close();
   });
 
   it("does not recreate asset storage after whole-thread deletion", async () => {

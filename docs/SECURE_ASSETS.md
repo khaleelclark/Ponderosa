@@ -51,7 +51,9 @@ final record is repaired before append, while non-tail corruption fails visibly.
 SQLite imports and deduplicates that history and acts only as a serialized outbox,
 so rebuilding the DB cannot erase or duplicate restored evidence. New events carry
 UUID `event_id` values; legacy rows receive deterministic internal identities
-without being rewritten. The reconciler
+without being rewritten. Audit repair and append use one `O_NOFOLLOW` descriptor
+opened through the attachments-directory descriptor; regular-file ownership,
+link-count, and mode are validated before any truncation. The reconciler
 expires aged raw/temp orphans without deleting associated assets.
 
 The product remains single-operator bearer-authenticated. These controls provide

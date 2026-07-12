@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -44,7 +44,7 @@ export class AssetError extends Error {
 
 export class AssetAuthority {
   private db: Database.Database;
-  constructor(dataDir: string) {
+  constructor(dataDir: string, private testHooks?: { afterAuditOpen?(file: string): void }) {
     try {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
@@ -135,9 +135,22 @@ export class AssetAuthority {
   finishDelete(assetId: string): void { try { this.db.exec("BEGIN IMMEDIATE"); this.db.prepare("DELETE FROM asset_committed WHERE asset_id=?").run(assetId); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); } }
   removeCommitted(assetId: string): void { this.finishDelete(assetId); }
   recordAudit(file: string, projectId: string, threadId: string, record: Record<string, unknown>): void {
+    let fd: number | undefined;
     try {
       this.db.exec("BEGIN IMMEDIATE");
-      let text = existsSync(file) ? readFileSync(file, "utf8") : "";
+      try { fd = openSync(file, fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        try { fd = openSync(file, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW, 0o600); }
+        catch (createError) {
+          if ((createError as NodeJS.ErrnoException).code !== "EEXIST") throw createError;
+          fd = openSync(file, fsConstants.O_RDWR | fsConstants.O_APPEND | fsConstants.O_NOFOLLOW);
+        }
+      }
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.nlink !== 1 || (typeof process.getuid === "function" && info.uid !== process.getuid()) || (info.mode & 0o022) !== 0) throw new AssetError(409, "asset audit leaf is unsafe");
+      this.testHooks?.afterAuditOpen?.(file);
+      let text = readFileSync(fd, "utf8");
       const rawLines = text.split("\n"); const fileIds = new Map<string, string>(); let validBytes = 0;
       for (let index = 0; index < rawLines.length; index++) {
         const line = rawLines[index]!; if (!line) { if (index < rawLines.length - 1) validBytes++; continue; }
@@ -151,14 +164,16 @@ export class AssetAuthority {
         if (existing && existing.json !== line) throw new AssetError(409, "asset audit event ID conflicts");
         if (!existing) this.db.prepare("INSERT INTO asset_audit(event_id,project_id,thread_id,record_json) VALUES (?,?,?,?)").run(eventId, projectId, threadId, line);
       }
-      if (existsSync(file) && readFileSync(file).length !== Buffer.byteLength(text)) { const fd = openSync(file, "r+"); ftruncateSync(fd, Buffer.byteLength(text)); fsyncSync(fd); closeSync(fd); }
+      if (info.size !== Buffer.byteLength(text)) { ftruncateSync(fd, Buffer.byteLength(text)); fsyncSync(fd); }
       const eventId = randomUUID(); const withId = JSON.stringify({ ...record, event_id: eventId });
       this.db.prepare("INSERT INTO asset_audit(event_id,project_id,thread_id,record_json) VALUES (?,?,?,?)").run(eventId, projectId, threadId, withId);
       const rows = this.db.prepare("SELECT event_id eventId,record_json json FROM asset_audit WHERE project_id=? AND thread_id=? ORDER BY seq").all(projectId, threadId) as Array<{ eventId: string; json: string }>;
-      const fd = openSync(file, fsConstants.O_CREAT | fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
-      try { if (text && !text.endsWith("\n")) writeFileSync(fd, "\n"); for (const row of rows) if (!fileIds.has(row.eventId)) { writeFileSync(fd, `${row.json}\n`); fileIds.set(row.eventId, row.json); } fsyncSync(fd); } finally { closeSync(fd); }
+      if (text && !text.endsWith("\n")) writeSync(fd, "\n");
+      for (const row of rows) if (!fileIds.has(row.eventId)) { writeSync(fd, `${row.json}\n`); fileIds.set(row.eventId, row.json); }
+      fsyncSync(fd);
       this.db.exec("COMMIT");
     } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
+    finally { if (fd !== undefined) closeSync(fd); }
   }
   assertOwned(id: string): void {
     try { this.db.exec("BEGIN IMMEDIATE"); const now = this.now(); const result = this.db.prepare("DELETE FROM asset_reservations WHERE id=? AND created_at <= ?").run(id, now - UPLOAD_LEASE_MS); if (result.changes || !this.db.prepare("SELECT 1 FROM asset_reservations WHERE id=?").get(id)) throw new AssetError(409, "upload reservation expired"); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
