@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
+import { artifactContentPath, collaborationChatMessagesPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -136,6 +136,17 @@ describe("ThreadStore — canonical communication events", () => {
     expect(() => store.appendCommunicationProjection(project.id, {
       eventId: dm.eventId, surface: "user_inbox", projectionKey: "another-user", projectedAt: dm.createdAt,
     })).toThrow("scope cannot project");
+    expect(() => store.appendMasterChatMessage(
+      room.id,
+      { role: "user", text: dm.text },
+      undefined,
+      "collaboration",
+      undefined,
+      undefined,
+      dm.eventId,
+    )).toThrow("scope cannot project");
+    expect(store.getMasterChatMessages(room.id, "collaboration")).toEqual([]);
+    expect(existsSync(collaborationChatMessagesPath(dir, project.id, room.id))).toBe(false);
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "unknown", audience: { ...dm.audience, agentId: "missing" } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "foreign", audience: { ...dm.audience, agentId: foreign.id } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "wrong-room", masterChatId: otherRoom.id })).toThrow("belong to its master chat");
@@ -470,7 +481,14 @@ describe("ThreadStore — canonical message reactions", () => {
     const first = store.setMasterChatReaction(input);
     const replay = store.setMasterChatReaction(input);
     expect(replay).toMatchObject({ replayed: true, event: { occurrenceId: first.event.occurrenceId } });
-    expect(store.getReactionNotificationOutbox()).toEqual([{ occurrenceId: first.event.occurrenceId, targetThreadId: author.id, messageId: message.id, emoji: "👍" }]);
+    expect(store.getReactionNotificationOutbox()).toEqual([expect.objectContaining({
+      occurrenceId: first.event.occurrenceId,
+      targetThreadId: author.id,
+      messageId: message.id,
+      emoji: "👍",
+      active: true,
+      actor: { kind: "manager" },
+    })]);
     expect(readFileSync(join(dir, "reaction-events.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
   });
 

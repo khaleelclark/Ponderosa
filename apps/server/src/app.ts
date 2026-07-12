@@ -728,7 +728,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (run.deliveryIds?.length) {
       for (const id of run.deliveryIds) {
         collaborationDeliveries.retryFailedTurn(id, "execution lease expired");
-        syncDelegatedCompletion(id);
+        syncDeliveryOutcome(id);
       }
     }
     run.controller.abort();
@@ -834,7 +834,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort: delivery.effort,
       agentMentionDepth: delivery.relayDepth,
       agentMentionTrail: delivery.mentionTrail,
-      collaborationMasterChatId: delivery.kind === "direct" ? undefined : delivery.masterChatId,
+      collaborationMasterChatId: delivery.kind === "direct" || delivery.kind === "reaction" ? undefined : delivery.masterChatId,
       sourceChannel: delivery.sourceChannel,
       sourceMasterChatId: delivery.sourceChannel === "main" ? delivery.masterChatId : undefined,
       sourceAuthorThreadId: delivery.authorThreadId,
@@ -845,7 +845,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function canShareCollaborationBatch(first: CollaborationDelivery, candidate: CollaborationDelivery): boolean {
-    return first.kind !== "direct" && candidate.kind !== "direct";
+    return first.kind !== "direct" && first.kind !== "reaction" &&
+      candidate.kind !== "direct" && candidate.kind !== "reaction";
   }
 
   function formatDeliveryBatch(batch: CollaborationDeliveryBatch): string {
@@ -883,7 +884,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
     const first = pending[0];
     if (!first) return [];
-    if (first.kind === "direct") return [first];
+    if (first.kind === "direct" || first.kind === "reaction") return [first];
     const batch: CollaborationDelivery[] = [];
     for (const candidate of pending) {
       if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
@@ -944,6 +945,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return queued.delivery;
   }
 
+  function dispatchReactionNotifications(): void {
+    for (const notification of store.getReactionNotificationOutbox()) {
+      const message = store.getMasterChatMessages(notification.masterChatId, notification.channel)
+        .find((candidate) => candidate.id === notification.messageId);
+      if (!message) {
+        store.completeReactionNotification(notification.occurrenceId, "suppressed", "message_unavailable");
+        continue;
+      }
+      const actor = notification.actor.kind === "manager"
+        ? "The user"
+        : store.getThread(notification.actor.threadId)?.title ?? "Another agent";
+      const action = notification.active ? "reacted" : "removed their reaction";
+      const quoted = message.text.length > 500 ? `${message.text.slice(0, 499)}…` : message.text;
+      const delivery = queueCollaborationDelivery({
+        masterChatId: notification.masterChatId,
+        messageId: `reaction:${notification.occurrenceId}`,
+        targetThreadId: notification.targetThreadId,
+        text: `${actor} ${action} ${notification.emoji} on your message:\n\n${quoted}\n\nTreat this as feedback. You do not need to reply unless a response would be useful.`,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "reaction",
+        reactionOccurrenceId: notification.occurrenceId,
+        createdAt: notification.createdAt,
+      });
+      if (!delivery) store.completeReactionNotification(notification.occurrenceId, "suppressed", "server_closing");
+    }
+  }
+
   async function dispatchNextTurn(threadId: string): Promise<void> {
     if (closed) return;
     if (activeRuns.has(threadId)) return;
@@ -965,14 +994,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const batch = boundedDeliveryBatch(pending);
     if (batch.length === 0) {
       collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
-      syncDelegatedCompletion(delivery.id);
+      syncDeliveryOutcome(delivery.id);
       return;
     }
     const next = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
     const deliveryIds = batch.map((item) => item.id);
 
     collaborationDeliveries.markBatchDelivered(deliveryIds);
-    for (const id of deliveryIds) syncDelegatedCompletion(id);
+    for (const id of deliveryIds) syncDeliveryOutcome(id);
     const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
     const response = injectedStatus === undefined ? await app.inject({
       method: "POST",
@@ -993,7 +1022,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     // injected request. Put this turn back at the head without changing order.
     if (response.statusCode === 409) {
       collaborationDeliveries.requeueBatch(deliveryIds, true);
-      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      for (const id of deliveryIds) syncDeliveryOutcome(id);
     } else if (response.statusCode === 429 || response.statusCode >= 500) {
       const attempt = Math.max(...deliveryIds.map((id) => collaborationDeliveries.get(id)?.dispatchAttempts ?? 0)) + 1;
       const delay = dispatchRetryDelay(attempt);
@@ -1004,7 +1033,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         nextDispatchAt,
         COLLABORATION_DISPATCH_LIMITS.maxDispatchAttempts,
       );
-      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      for (const id of deliveryIds) syncDeliveryOutcome(id);
       if (retried.some((item) => item.status === "queued")) {
         scheduleDeliveryDispatch(threadId, delay);
         retryScheduled = true;
@@ -1021,7 +1050,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
     } else if (response.statusCode >= 300) {
       collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
-      for (const id of deliveryIds) syncDelegatedCompletion(id);
+      for (const id of deliveryIds) syncDeliveryOutcome(id);
       const delivery = collaborationDeliveries.get(deliveryIds[0]!);
       const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
       if (delivery?.masterChatId && target) {
@@ -1076,7 +1105,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           recipients.add(intent.targetThreadId);
           if (intent.delegatedRunId) {
             completionMessages.add(intent.delegatedRunId);
-            syncDelegatedCompletion(queued.delivery.id);
+            syncDeliveryOutcome(queued.delivery.id);
           }
         }
       }
@@ -1136,6 +1165,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       .flatMap((claim) => claim.deliveryIds ?? []));
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged(interruptedDeliveryIds));
     for (const threadId of reconcileCanonicalInbox()) recipients.add(threadId);
+    dispatchReactionNotifications();
     for (const threadId of recipients) {
       scheduleDeliveryDispatch(threadId);
     }
@@ -1352,6 +1382,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   }
 
+  function syncReactionNotification(deliveryId: string): void {
+    const delivery = collaborationDeliveries.get(deliveryId);
+    if (!delivery?.reactionOccurrenceId) return;
+    if (delivery.status === "acknowledged") {
+      store.completeReactionNotification(delivery.reactionOccurrenceId, "delivered", "recipient_turn_acknowledged");
+    } else if (delivery.status === "failed") {
+      store.completeReactionNotification(delivery.reactionOccurrenceId, "suppressed", delivery.failure ?? "delivery_failed");
+    }
+  }
+
+  function syncDeliveryOutcome(deliveryId: string): void {
+    syncDelegatedCompletion(deliveryId);
+    syncReactionNotification(deliveryId);
+  }
+
   /** Completion is first-class: it is recorded and delivered even if a child never tags its parent. */
   function notifyParentOfDelegatedCompletion(run: SubagentRunDto): void {
     if (closed) return;
@@ -1414,7 +1459,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       orderKey: store.getMasterChatMessageDeliveryOrderKey(run.masterChatId, message.id),
     });
     if (!delivery) return;
-    syncDelegatedCompletion(delivery.id);
+    syncDeliveryOutcome(delivery.id);
   }
 
   app.post<{
@@ -1481,7 +1526,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         projectedAt: communication.createdAt,
       });
       if (communication && capability.masterChatId) {
-        const masterMessage = store.appendMasterChatMessage(
+        store.appendMasterChatMessage(
           capability.masterChatId,
           { text: `@User ${text}` },
           capability.threadId,
@@ -1490,19 +1535,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           undefined,
           communication.eventId,
         );
-        if (masterMessage) store.appendCommunicationProjection(currentAuthor.projectId, {
-          eventId: communication.eventId,
-          surface: "master_chat",
-          projectionKey: capability.masterChatId,
-          projectedAt: masterMessage.createdAt,
-          message: {
-            messageId: masterMessage.id,
-            role: masterMessage.role,
-            renderedText: masterMessage.text,
-            createdAt: masterMessage.createdAt,
-            authorAgentId: capability.threadId,
-          },
-        });
       }
       const stored = store.appendEvent(capability.threadId, communication ? {
         type: "communication_projection", communicationEventId: communication.eventId, text,
@@ -2081,6 +2113,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     actor: ReactionActor; body: SetMessageReactionRequest;
   }): SetMessageReactionResponse => {
     const result = store.setMasterChatReaction({ ...input, ...input.body });
+    dispatchReactionNotifications();
     return {
       occurrenceId: result.event.occurrenceId,
       replayed: result.replayed,
@@ -2711,7 +2744,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
           inboxDeliveries.some((delivery) => delivery?.targetThreadId !== thread.id || delivery.status !== "delivered") ||
-          (inboxDelivery?.kind !== "direct" && !collaborationMasterChatId))
+          (inboxDelivery?.kind !== "direct" && inboxDelivery?.kind !== "reaction" && !collaborationMasterChatId))
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
@@ -3196,7 +3229,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               for (const id of requestedDeliveryIds) collaborationDeliveries.retryFailedTurn(id, runError);
             }
             else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
-            for (const id of requestedDeliveryIds) syncDelegatedCompletion(id);
+            for (const id of requestedDeliveryIds) syncDeliveryOutcome(id);
           }
           if (released && !closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
             const acceptedSessionId = store.resumeSessionId(thread.id);

@@ -162,7 +162,7 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("message reactions", () => {
-  it("persists/replays separately from notification and causes zero runtime side effects", async () => {
+  it("persists, replays, and delivers reaction feedback to the message author", async () => {
     const project = store.createProject({ label: "Reaction room", hostPath: repoDir });
     const room = store.createMasterChat(project.id, { title: "Room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
@@ -174,9 +174,13 @@ describe("message reactions", () => {
     expect(first.json()).toMatchObject({ replayed: false, persistence: "recorded", notification: "queued", reactions: [{ emoji: "👍", count: 1, reactedByCurrentActor: true }] });
     const replay = await app.inject({ method: "PUT", url: `/api/master-chats/${room.id}/main/messages/${message.id}/reaction`, payload: request });
     expect(replay.json()).toMatchObject({ occurrenceId: first.json<{ occurrenceId: string }>().occurrenceId, replayed: true });
-    expect(adapter.seeds).toHaveLength(0);
+    await waitForSeedCount(1);
+    expect(adapter.seeds[0]?.threadId).toBe(author.id);
+    expect(adapter.seeds[0]?.prompt).toContain("The user reacted 👍 on your message");
+    expect(adapter.seeds[0]?.prompt).toContain("Result");
     expect(adapter.continues).toHaveLength(0);
-    expect(store.readEvents(author.id)).toHaveLength(0);
+    await waitForRun(author.id);
+    expect(store.getReactionNotificationOutbox()).toEqual([]);
     const detail = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}` });
     expect(detail.json<{ messages: Array<{ reactions: unknown[] }> }>().messages[0]?.reactions).toEqual([{ emoji: "👍", count: 1, reactedByCurrentActor: true }]);
     await app.close();

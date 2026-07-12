@@ -509,35 +509,41 @@ export class ThreadStore {
     return [...this.contextIndex(projectId).values()];
   }
 
-  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+  private communicationProjectionAllowed(
+    projectId: string,
+    projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey">,
+  ): boolean {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!event) throw new Error("communication projection source event not found");
     const roomKeyAllowed = event.masterChatId === projection.projectionKey && (() => {
       const room = this.getMasterChat(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
     })();
-    const allowed = (() => {
-      if (projection.surface === "master_chat") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
-        (event.schemaVersion === 2 && event.intent === "user_dm"));
-      if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
-        (event.schemaVersion === 1 && event.intent === "direct_to_user"));
-      if (projection.surface === "direct_agent_audit") {
-        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
-        if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
-          (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
-        return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
-      }
-      if (projection.surface === "agent_inbox") {
-        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
-        return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
-      }
-      if (projection.surface === "user_inbox") {
-        if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
-        return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
-      }
-      return false;
-    })();
-    if (!allowed) throw new Error("communication scope cannot project to requested surface");
+    if (projection.surface === "master_chat") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
+      (event.schemaVersion === 2 && event.intent === "user_dm"));
+    if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
+      (event.schemaVersion === 1 && event.intent === "direct_to_user"));
+    if (projection.surface === "direct_agent_audit") {
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+      if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
+        (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
+      return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
+    }
+    if (projection.surface === "agent_inbox") {
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.agentId;
+      return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
+    }
+    if (projection.surface === "user_inbox") {
+      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
+      return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
+    }
+    return false;
+  }
+
+  appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    if (!this.communicationProjectionAllowed(projectId, projection)) {
+      throw new Error("communication scope cannot project to requested surface");
+    }
     const file = communicationProjectionsPath(this.dataDir, projectId);
     const index = this.projectionIndex(projectId);
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
@@ -1120,6 +1126,16 @@ export class ThreadStore {
   ): MasterChatMessageDto | undefined {
     const masterChat = this.getMasterChat(masterChatId);
     if (!masterChat) return undefined;
+    if (communicationEventId && !this.communicationProjectionAllowed(masterChat.projectId, {
+      eventId: communicationEventId,
+      surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
+      projectionKey: masterChatId,
+    })) {
+      // Validate the canonical communication before writing a legacy placement.
+      // A failed projection must never leave a chat row that startup repair will
+      // later reinterpret or reject.
+      throw new Error("communication scope cannot project to requested surface");
+    }
     const now = new Date().toISOString();
     const messagePath = channel === "collaboration"
       ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
@@ -1356,7 +1372,17 @@ export class ThreadStore {
   }
 
   /** Rebuildable notification outbox. Reading revalidates current membership. */
-  getReactionNotificationOutbox(): Array<{ occurrenceId: string; targetThreadId: string; messageId: string; emoji: ReactionEmoji }> {
+  getReactionNotificationOutbox(): Array<{
+    occurrenceId: string;
+    targetThreadId: string;
+    masterChatId: string;
+    channel: MasterChatChannel;
+    messageId: string;
+    emoji: ReactionEmoji;
+    active: boolean;
+    actor: ReactionActor;
+    createdAt: string;
+  }> {
     const records = readReactionLog(reactionEventsPath(this.dataDir));
     const states = notificationStates(records);
     const invalid: string[] = [];
@@ -1369,7 +1395,17 @@ export class ThreadStore {
         invalid.push(event.occurrenceId);
         return [];
       }
-      return [{ occurrenceId: event.occurrenceId, targetThreadId: target.id, messageId: event.messageId, emoji: event.emoji }];
+      return [{
+        occurrenceId: event.occurrenceId,
+        targetThreadId: target.id,
+        masterChatId: event.masterChatId,
+        channel: event.channel,
+        messageId: event.messageId,
+        emoji: event.emoji,
+        active: event.active,
+        actor: event.actor,
+        createdAt: event.createdAt,
+      }];
     });
     for (const occurrenceId of invalid) this.completeReactionNotification(occurrenceId, "suppressed", "membership_or_message_unavailable");
     return pending;
