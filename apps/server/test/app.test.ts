@@ -684,6 +684,38 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("keeps agent-tagged master-chat messages out of other agents' runtime context", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Scoped room" });
+    const aspen = store.createThread(project.id, { title: "Aspen", engine: "codex", masterChatId: master.id });
+    const birch = store.createThread(project.id, { title: "Birch", engine: "codex", masterChatId: master.id });
+    appendBroadcast(store, project.id, master.id, "Shared release context.");
+    appendBroadcast(store, project.id, master.id, "@Aspen private assignment marker");
+
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${birch.id}/messages`,
+      payload: { text: "Birch task", sourceChannel: "main" },
+    });
+    await waitForRun(birch.id);
+
+    expect(adapter.seeds[0]?.prompt).toContain("Shared release context.");
+    expect(adapter.seeds[0]?.prompt).not.toContain("private assignment marker");
+    expect(adapter.seeds[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=23");
+
+    await app.inject({
+      method: "POST",
+      url: `/api/threads/${aspen.id}/messages`,
+      payload: { text: "Aspen task", sourceChannel: "main" },
+    });
+    await waitForRun(aspen.id);
+
+    expect(adapter.seeds[1]?.prompt).toContain("Shared release context.");
+    expect(adapter.seeds[1]?.prompt).toContain("@Aspen private assignment marker");
+    await app.close();
+  });
+
   it("delivers only accepted-session room deltas and does not replay unchanged history", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

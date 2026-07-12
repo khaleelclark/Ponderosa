@@ -145,17 +145,27 @@ function recipientCollaborationMessages(
   });
 }
 
-/** Future room context contains only events created as organizational broadcasts. */
+/**
+ * Future room context contains only events created as organizational broadcasts.
+ * A manager-authored broadcast with explicit agent mentions is scoped to those
+ * agents for runtime context, even though the rendered message remains visible
+ * in the room. Untagged broadcasts and @everyone remain shared context.
+ */
 function organizationalMasterMessages(
   messages: MasterChatMessageDto[],
   events: CommunicationEvent[],
   projectId: string,
+  recipientAgentId: string,
+  threads: ThreadDto[],
 ): MasterChatMessageDto[] {
   const eventsById = new Map(events.map((event) => [event.eventId, event]));
   return messages.filter((message) => {
     if (!message.communicationEventId) return false;
     const event = eventsById.get(message.communicationEventId);
-    return event?.intent === "broadcast" && event.audience.organizationId === projectId;
+    if (event?.intent !== "broadcast" || event.audience.organizationId !== projectId) return false;
+    if (hasEveryoneMention(message.text)) return true;
+    const mentioned = mentionedAgentThreads(message.text, threads, "");
+    return mentioned.length === 0 || mentioned.some((thread) => thread.id === recipientAgentId);
   });
 }
 
@@ -2862,7 +2872,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             thread.id,
           )
         : masterChat && sourceChannel === "main"
-          ? organizationalMasterMessages(masterChat.messages, store.readCommunicationEvents(project.id), project.id)
+          ? organizationalMasterMessages(
+              masterChat.messages,
+              store.readCommunicationEvents(project.id),
+              project.id,
+              thread.id,
+              masterChat.threads,
+            )
           : [];
       const previousIndex = previousCursor?.lastMessageId
         ? allRoomMessages.findIndex((message) => message.id === previousCursor.lastMessageId)
