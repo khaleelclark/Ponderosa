@@ -54,6 +54,7 @@ deliverables, dependencies, risks, testing, migration/rollback, staffing, and ga
   `apps/web/src` with `collaborationRecipients`, `agentStatus`, routing, responsive,
   sender-label, and interaction tests.
 - Operator migration, backup, restore, and rollback instructions: `deploy/README.md`.
+- Per-cohort executable gate and evidence checklist: `deploy/COMMUNICATION_CUTOVER.md`.
 
 Repository gates required on the final SHA:
 

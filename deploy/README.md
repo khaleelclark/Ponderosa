@@ -102,6 +102,8 @@ endpoint with `{ "dryRun": true }`. Apply only after every blocked historical
 Collaboration row has an operator-supplied `collaborationRecipientsByMessageId`
 mapping. Re-run reconciliation and require HTTP 200; HTTP 409 or not-ready status
 is a cutover stop. Backfill is deterministic and safe to retry after interruption.
+Use [COMMUNICATION_CUTOVER.md](./COMMUNICATION_CUTOVER.md) as the required
+per-cohort evidence and rollback checklist.
 
 ## 4. Install the systemd service
 
