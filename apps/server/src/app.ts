@@ -103,6 +103,9 @@ interface ActiveRun {
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
+  completionScope: "broadcast" | "direct_to_user";
+  /** Explicit manager-facing communication already emitted during this run. */
+  userFacingIntent?: "direct_to_user" | "broadcast";
 }
 
 export const COLLABORATION_DISPATCH_LIMITS = {
@@ -165,48 +168,6 @@ function organizationalMasterMessages(
     if (hasEveryoneMention(message.text)) return true;
     const mentioned = mentionedAgentThreads(message.text, threads, "");
     return mentioned.length === 0 || mentioned.some((thread) => thread.id === recipientAgentId);
-  });
-}
-
-/**
- * A fresh responder to an unscoped Master Chat turn receives the visible
- * conversational replies caused by earlier unscoped turns. Those replies stay
- * private user DMs: this is recipient-only continuation context, not shared
- * organizational knowledge available to arbitrary agents.
- */
-function casualMasterMessages(
-  messages: MasterChatMessageDto[],
-  events: CommunicationEvent[],
-  projectId: string,
-  recipientAgentId: string,
-  threads: ThreadDto[],
-): MasterChatMessageDto[] {
-  const shared = new Set(organizationalMasterMessages(messages, events, projectId, recipientAgentId, threads)
-    .map((message) => message.id));
-  const eventsById = new Map(events.map((event) => [event.eventId, event]));
-  const descendsFromSharedTurn = (event: CommunicationEvent): boolean => {
-    const visited = new Set<string>();
-    let causeId = event.causationId;
-    while (causeId && !visited.has(causeId)) {
-      visited.add(causeId);
-      const cause = eventsById.get(causeId);
-      if (!cause) return false;
-      if (cause.intent === "broadcast" && cause.audience.organizationId === projectId) return true;
-      causeId = cause.causationId;
-    }
-    return false;
-  };
-  return messages.filter((message) => {
-    if (shared.has(message.id)) return true;
-    if (!message.communicationEventId) return false;
-    const event = eventsById.get(message.communicationEventId);
-    return Boolean(
-      event?.schemaVersion === 2 &&
-      event.intent === "user_dm" &&
-      event.sender.kind === "agent" &&
-      event.audience.userId === "local-operator" &&
-      descendsFromSharedTurn(event),
-    );
   });
 }
 
@@ -386,18 +347,22 @@ export function boundedSeedHistory<T extends { text: string }>(
   return selected.reverse();
 }
 
-function agentMessagingPrompt(replyScope: "direct_to_user" | "collaboration"): string[] {
+function agentMessagingPrompt(replyScope: "broadcast" | "direct_to_user" | "collaboration"): string[] {
   return [
     "Communication scope is immutable. Choose the scope when creating a message; never try to promote or re-scope an existing message.",
     replyScope === "collaboration"
       ? "Your ordinary final response stays in this Collaboration with its existing participants and is not inherited by future agents."
+      : replyScope === "broadcast"
+        ? "Your ordinary final response is the completed answer or task result and the server publishes it as a Broadcast for the organization."
       : "Your ordinary final response is a Direct Message to the manager. It is visible as a DM but is not inherited by future agents.",
-    "Use the messaging tool only when you need to create a Broadcast or send Collaboration:",
+    replyScope === "broadcast"
+      ? "Use direct_to_user when you need to ask the manager a question or send private progress/information before completion. After any explicit user DM, the server suppresses the ordinary final response to avoid duplicates; explicitly Broadcast the completed result if you also finish during that turn."
+      : "Use the messaging tool only when you need to create a Broadcast or send Collaboration:",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
-    "Broadcast only durable organizational knowledge that future agents should inherit: decisions, verified findings, completed outcomes, or material blockers.",
-    "Never Broadcast acknowledgments, thanks, conversational replies, routine progress, promises to act, or duplicate confirmations.",
+    "Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
+    "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
     "Use Collaboration for agent-to-agent coordination and direct_to_user for an additional private manager note. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After delegating work, end your turn. Do not poll, sleep, or remain active waiting for results. Delegated agents run asynchronously; their completion automatically queues a parent follow-up, and explicit collaboration tags do the same.",
@@ -447,6 +412,7 @@ function masterChatPrompt(
   threads: ThreadDto[],
   currentRequest: string,
   context: InboundMessageContext,
+  replyScope: "broadcast" | "direct_to_user",
   incremental = false,
   routingMetadata?: string,
 ): string {
@@ -465,15 +431,15 @@ function masterChatPrompt(
 
   const staticInstructions = incremental ? [] : [
     "You are handling a manager request that originated in Master Chat.",
-    "Respond to the latest request, but do not treat presence in Master Chat as permission to Broadcast.",
-    "Your normal response is a Direct Message to the manager. It is not organizational knowledge; a future fresh Master Chat responder may receive it only to continue the user's visible conversation.",
-    "Create a Broadcast explicitly only when the response contains durable organizational knowledge worth adding to future-agent context.",
+    replyScope === "broadcast"
+      ? "The latest plain Master Chat request is shared work. The server acknowledges its start with 👍 and publishes your ordinary completed answer or result as a Broadcast."
+      : "The latest request is a Direct Message. Reply privately unless you deliberately publish a separate durable Broadcast.",
     "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only the new direct update or result. Do not repeat a Broadcast or Collaboration message you already sent.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
-    ...agentMessagingPrompt("direct_to_user"),
+    ...agentMessagingPrompt(replyScope),
     ...agentDelegationPrompt(),
   ];
   return [
@@ -1621,6 +1587,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         type: "communication_projection", communicationEventId: communication.eventId, text,
       } : { type: "text", delta: text });
       publish(capability.threadId, stored);
+      active.userFacingIntent = "direct_to_user";
       const messageId = `thread-event-${stored.seq}`;
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
       return { intent, eventId: communication?.eventId, messageId, replayed: false };
@@ -1694,6 +1661,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
     if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication, [], message.attachments);
+    if (intent === "broadcast") active.userFacingIntent = "broadcast";
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (intent === "collaboration") {
       queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
@@ -1755,6 +1723,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       delegatedRunId: run.id,
       generation: durableClaim.generation,
       ownershipState: "running",
+      completionScope: "direct_to_user",
     };
     claimActiveRun(childThread.id, activeRun);
     agentMessageCapabilities.set(messageCapabilityToken, {
@@ -2865,6 +2834,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? store.getCommunicationEvent(project.id, communicationEventId)
         : undefined;
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
+      const sharedTaskTurn = Boolean(sharedCommunication && (shareWithOrganization || serverCommunicationEventId));
+      let sourceMasterMessage: MasterChatMessageDto | undefined;
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
         if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
           store.appendCommunicationProjection(project.id, {
@@ -2876,13 +2847,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
-        store.appendMasterChatMessage(directMessageMasterChatId, {
+        sourceMasterMessage = store.appendMasterChatMessage(directMessageMasterChatId, {
           role: "user",
           text: sharedCommunication ? text : `#${agentMentionHandle(thread.title)} ${text}`,
           attachments: messageAttachments,
           replyToMessageId: sourceMasterReply?.id,
         }, undefined, "main", undefined, undefined, communicationEventId);
         if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [thread.id], messageAttachments);
+      }
+      if (!sourceMasterMessage && sharedCommunication && directMessageMasterChatId) {
+        sourceMasterMessage = store.getMasterChatMessages(directMessageMasterChatId, "main")
+          .find((message) => message.communicationEventId === sharedCommunication.eventId);
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (
@@ -2923,6 +2898,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : undefined,
       };
       const auditText = text;
+      const acknowledgeSharedTaskStart = (): void => {
+        if (!sharedCommunication || !sourceMasterMessage) return;
+        store.setMasterChatReaction({
+          masterChatId: sharedCommunication.masterChatId!,
+          channel: "main",
+          messageId: sourceMasterMessage.id,
+          actor: { kind: "agent", threadId: thread.id },
+          emoji: "👍",
+          active: true,
+          idempotencyKey: `task-start:${sharedCommunication.eventId}`,
+        });
+      };
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
@@ -2937,6 +2924,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             clientMessageId: communicationEventId,
           });
           if (steered.status === "accepted") {
+            existingRun.completionScope = sharedTaskTurn ? "broadcast" : "direct_to_user";
+            existingRun.userFacingIntent = undefined;
+            acknowledgeSharedTaskStart();
             const stored = store.appendEvent(thread.id, {
               type: "user_message",
               text: auditText,
@@ -3060,7 +3050,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             thread.id,
           )
         : masterChat && sourceChannel === "main"
-          ? (shareWithOrganization ? casualMasterMessages : organizationalMasterMessages)(
+          ? organizationalMasterMessages(
               masterChat.messages,
               store.readCommunicationEvents(project.id),
               project.id,
@@ -3086,7 +3076,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const basePrompt = collaboration
         ? collaborationChatPrompt(roomMessages, collaboration.threads, text, context, incremental, changedRoutingMetadata)
         : masterChat && sourceChannel === "main"
-          ? masterChatPrompt(roomMessages, masterChat.threads, text, context, incremental, changedRoutingMetadata)
+          ? masterChatPrompt(
+              roomMessages,
+              masterChat.threads,
+              text,
+              context,
+              sharedTaskTurn ? "broadcast" : "direct_to_user",
+              incremental,
+              changedRoutingMetadata,
+            )
           : resumeSessionId ? continuationPrompt(text, context) : individualChatPrompt(text, context);
       const guidedPrompt = thread.presetSnapshot?.guidance
         ? `Agent preset snapshot (${thread.presetSnapshot.name}):\n${thread.presetSnapshot.guidance}\n\n${basePrompt}`
@@ -3126,8 +3124,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...(delegatedObjective ? { delegatedRunId: delegatedObjective.id } : {}),
         generation: durableClaim.generation,
         ownershipState: "running",
+        completionScope: sharedTaskTurn ? "broadcast" : "direct_to_user",
       };
       claimActiveRun(thread.id, activeRun);
+      acknowledgeSharedTaskStart();
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
         masterChatId: routingMasterChatId,
@@ -3348,13 +3348,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           // Post a group-chat status unless the run was cancelled/aborted (cancel or
           // thread deletion), in which case a report-back would be misleading.
-          if (released && routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted) {
+          const explicitSharedTaskMessage = activeRun.completionScope === "broadcast" && activeRun.userFacingIntent !== undefined;
+          if (released && routingMasterChatId && sourceChannel !== "individual" && !controller.signal.aborted && !explicitSharedTaskMessage) {
             const statusText = runError
               ? `⚠️ Stuck — ${runError.slice(0, 200)}`
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
-              const reportCommunication = recordCommunication({
+              const broadcastCompletion = activeRun.completionScope === "broadcast" && !runError;
+              const reportCommunication = recordCommunication(broadcastCompletion ? {
+                eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
+                masterChatId: routingMasterChatId,
+                sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+                text: statusText, createdAt: new Date().toISOString(),
+                ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+              } : {
                 eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
                 masterChatId: routingMasterChatId,
                 sender: { kind: "agent", agentId: thread.id, executionId: runId },
@@ -3364,8 +3373,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
-              const renderedStatusText = renderScopedMessage("user", statusText);
-              store.appendMasterChatMessage(
+              const renderedStatusText = renderScopedMessage(broadcastCompletion ? "broadcast" : "user", statusText);
+              const reportMessage = store.appendMasterChatMessage(
                 routingMasterChatId,
                 { role: "assistant", text: renderedStatusText },
                 thread.id,
@@ -3374,7 +3383,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 undefined,
                 reportCommunication?.eventId,
               );
-              if (reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm") {
+              if (reportCommunication?.intent === "broadcast" && reportMessage) {
+                projectBroadcastToAgentAudits(reportCommunication, [], reportMessage.attachments);
+              } else if (reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm") {
                 store.appendCommunicationProjection(project.id, {
                   eventId: reportCommunication.eventId,
                   surface: "user_inbox",

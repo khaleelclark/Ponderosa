@@ -65,10 +65,11 @@ pay-per-token provider API keys.
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
-   A fresh agent started by the next plain Master Chat turn receives prior
-   agent-to-user replies that were caused by earlier plain turns, solely as
-   recipient-specific conversation continuation. Those replies remain Direct
-   Messages and are not organizational knowledge available to arbitrary agents.
+   A plain Master Chat request starts shared work. The responsible agent reacts
+   👍 when it accepts the task and its ordinary completed answer or result is a
+   Broadcast. Questions, private progress, and informational notes to the user
+   are Direct Messages. A user DM receives a DM reply. This inherited response
+   scope is server-enforced; do not rely on rendered labels or model discretion.
 
 6. **Master Chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
@@ -137,7 +138,7 @@ deploy/          systemd unit
 
 No general transcript-as-memory layer: shared organizational knowledge comes from
 intentional Broadcasts, while project instructions and code remain in the managed
-repository. The narrow Master Chat continuation view does not change DM scope.
+repository.
 ```
 
 `packages/core` types (esp. `AgentEvent` and API DTOs) are imported by **both**
