@@ -15,6 +15,8 @@ export interface PonderosaConfig {
   host: string;
   /** NODE_ENV passthrough. */
   nodeEnv: string;
+  communicationMode: "off" | "shadow";
+  curatedContextEnabled: boolean;
 }
 
 /**
@@ -42,11 +44,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): PonderosaConfi
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`Invalid PONDEROSA_PORT: ${env.PONDEROSA_PORT}`);
   }
+  const communicationMode = env.PONDEROSA_COMMUNICATION_MODE ?? "shadow";
+  if (communicationMode !== "off" && communicationMode !== "shadow") {
+    throw new Error(`Invalid PONDEROSA_COMMUNICATION_MODE: ${communicationMode}`);
+  }
 
   return {
     dataDir,
     port,
     host: env.PONDEROSA_HOST ?? "0.0.0.0",
     nodeEnv: env.NODE_ENV ?? "development",
+    communicationMode,
+    curatedContextEnabled: env.PONDEROSA_CURATED_CONTEXT !== "off",
   };
 }

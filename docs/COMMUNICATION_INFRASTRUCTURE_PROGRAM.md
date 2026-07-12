@@ -99,6 +99,11 @@ deriving status from each agent's task rows. One aggregate refresh runs every
 5 seconds only while work is active and backs off to 30 seconds otherwise;
 per-agent detail polling was removed. All eight lifecycle states retain distinct
 labels and exception counts in the roster.
+Two independent rollback controls are available at daemon start:
+`PONDEROSA_COMMUNICATION_MODE=off` preserves legacy writes while skipping the
+canonical shadow plane, and `PONDEROSA_CURATED_CONTEXT=off` stops promotion
+injection without disabling event capture. `/api/ready` reports both effective
+modes so operators can verify rollback state.
 
 Initial values are tuning ranges, not schema constants. Phase 0 measurements set
 production values.

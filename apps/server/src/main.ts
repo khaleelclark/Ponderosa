@@ -14,6 +14,8 @@ const app = createServer({
   webDist,
   authToken: process.env.PONDEROSA_AUTH_TOKEN,
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? `http://127.0.0.1:${config.port}`,
+  communicationMode: config.communicationMode,
+  curatedContextEnabled: config.curatedContextEnabled,
 });
 
 try {

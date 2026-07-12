@@ -949,6 +949,40 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("rolls communication and curated context back independently", async () => {
+    const project = store.createProject({ label: "Rollback", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const source = {
+      eventId: "existing-local", schemaVersion: 1 as const, projectId: project.id,
+      sender: { kind: "agent" as const, agentId: "source" }, intent: "direct_to_user" as const,
+      audience: { kind: "user" as const, userId: "local-operator" }, text: "raw local",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(source);
+    store.promoteKnowledge({
+      promotionId: "existing-promotion", sourceEventId: source.eventId, organizationId: project.id,
+      summary: "Must be disabled", promotedBy: { kind: "user", userId: "local-operator" },
+      promotedAt: "2026-07-12T00:01:00.000Z",
+    });
+    const baseline = store.readCommunicationEvents(project.id).length;
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationMode: "off", curatedContextEnabled: false,
+    });
+    const message = await app.inject({
+      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Legacy-only message" },
+    });
+    expect(message.statusCode).toBe(200);
+    expect(message.json()).not.toHaveProperty("communicationEventId");
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Begin" } });
+    await waitForRun(thread.id);
+    expect(adapter.seeds[0]?.prompt).not.toContain("Must be disabled");
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(baseline);
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json())
+      .toMatchObject({ checks: { communicationMigration: { ok: true, detail: "communication=off; curated_context=off" } } });
+    await app.close();
+  });
+
   it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

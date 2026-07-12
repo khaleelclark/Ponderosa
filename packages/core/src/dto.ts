@@ -603,6 +603,7 @@ export interface ReadinessDto {
     dataDirectory: ReadinessCheckDto;
     projections: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
+    communicationMigration: ReadinessCheckDto;
   };
   runtimes: Array<{ id: string; authenticated: boolean; detail?: string }>;
 }
