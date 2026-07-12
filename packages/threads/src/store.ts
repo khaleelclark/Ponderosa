@@ -424,7 +424,7 @@ export class ThreadStore {
     }
     for (const thread of this.listThreads(projectId)) {
       for (const stored of this.readEvents(thread.id)) {
-        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
+        const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message" || stored.event.type === "text"
           ? stored.event.communicationEventId : undefined;
         if (eventId && canonicalIds.has(eventId)) {
           this.appendCommunicationProjection(projectId, {
@@ -1261,7 +1261,7 @@ export class ThreadStore {
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
     this.applyOps(threadId, projectId, ops);
-    const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
+    const communicationEventId = event.type === "communication_projection" || event.type === "user_message" || event.type === "text"
       ? event.communicationEventId : undefined;
     if (communicationEventId) {
       this.appendCommunicationProjection(projectId, {

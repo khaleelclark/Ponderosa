@@ -31,8 +31,12 @@ export interface CommunicationProjectionEvent {
   text: string;
 }
 
+/** Engine text may carry canonical persistence identity after edge normalization. */
+export type AgentTextLogEvent = Extract<AgentEvent, { type: "text" }> & { communicationEventId?: string };
+
 /** Anything that can be appended to a thread's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentEvent;
+export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent |
+  Exclude<AgentEvent, { type: "text" }> | AgentTextLogEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-thread seq + ts. */
 export interface StoredLogEvent {

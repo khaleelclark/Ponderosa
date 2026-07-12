@@ -359,6 +359,7 @@ export interface StartedMessageResponse {
   runId: string;
   /** Which path started: fresh session (`seed`) or resumed (`continue`). */
   mode: "seed" | "continue";
+  communicationEventId?: string;
 }
 
 /** POST /api/threads/:id/messages response when another turn is still active. */
@@ -366,6 +367,7 @@ export interface QueuedMessageResponse {
   queued: true;
   /** One-based position among follow-ups waiting for this agent. */
   position: number;
+  communicationEventId?: string;
 }
 
 /** A message either starts now or is accepted into the per-agent FIFO queue. */

@@ -51,6 +51,10 @@ Projection identity is recorded separately from events and delivery state.
 Multiple surfaces for one event are valid; only repeated
 `(eventId, surface, projectionKey)` tuples are duplicates. Startup repairs the
 ledger from linked canonical room/thread records before reporting migration parity.
+Direct manager turns, queued turns, delivered Collaboration entries, normal agent
+text, and agent report-backs now retain canonical causation and project into the
+appropriate Direct Agent audit, agent inbox, user inbox, Master, or Collaboration
+surfaces without creating another underlying communication record.
 
 ## Delivery phases and gates
 

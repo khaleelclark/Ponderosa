@@ -397,6 +397,17 @@ describe("server chunk F", () => {
     expect(first.statusCode).toBe(200);
     expect(first.json()).toMatchObject({ mode: "seed" });
     await waitForRun(thread.id);
+    const firstEventId = first.json<{ communicationEventId: string }>().communicationEventId;
+    expect(firstEventId).toBeTruthy();
+    expect(store.getMessages(thread.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "first", communicationEventId: firstEventId }),
+    ]));
+    expect(store.getMessages(thread.id).filter((message) => message.role === "assistant"))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ communicationEventId: expect.any(String) })]));
+    expect(store.readCommunicationEvents(store.getThread(thread.id)!.projectId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sender: expect.objectContaining({ kind: "agent", agentId: thread.id }), causationId: firstEventId }),
+    ]));
+    expect(store.reconcileCommunicationEvents(store.getThread(thread.id)!.projectId)).toMatchObject({ ok: true });
 
     const second = await app.inject({
       method: "POST",
@@ -961,12 +972,12 @@ describe("server chunk F", () => {
     expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
     const communicationEvents = store.readCommunicationEvents(project.id);
-    expect(communicationEvents).toHaveLength(3);
-    expect(communicationEvents.map((event) => event.eventId)).toEqual([
+    expect(communicationEvents).toHaveLength(4);
+    expect(communicationEvents.map((event) => event.eventId)).toEqual(expect.arrayContaining([
       direct.json<{ eventId: string }>().eventId,
       broadcast.json<{ eventId: string }>().eventId,
       collaboration.json<{ eventId: string }>().eventId,
-    ]);
+    ]));
     expect(communicationEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({ intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" } }),
       expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
@@ -985,8 +996,8 @@ describe("server chunk F", () => {
       expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
     ]));
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
-      canonicalEvents: 3,
-      linkedProjections: 3,
+      canonicalEvents: 4,
+      linkedProjections: 7,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -998,7 +1009,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 3, linkedProjections: 3 });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 7 });
     const promotionPayload = {
       sourceEventId: direct.json<{ eventId: string }>().eventId,
       summary: "The private implementation note is now project-level guidance.",
@@ -1974,7 +1985,7 @@ describe("server chunk F", () => {
       payload: { text: "again" },
     });
     expect(concurrent.statusCode).toBe(202);
-    expect(concurrent.json()).toEqual({ queued: true, position: 1 });
+    expect(concurrent.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
     const cancel = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` });
     expect(cancel.json()).toEqual({ cancelled: true });

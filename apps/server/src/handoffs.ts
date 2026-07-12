@@ -8,6 +8,8 @@ export interface CollaborationDelivery {
   id: string;
   masterChatId?: string;
   messageId: string;
+  /** Canonical communication identity shared by every resulting projection. */
+  communicationEventId?: string;
   targetThreadId: string;
   authorThreadId?: string;
   text: string;

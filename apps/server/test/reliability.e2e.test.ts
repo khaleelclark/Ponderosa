@@ -74,7 +74,7 @@ describe("V1 reliability safety net", () => {
 
     const queued = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second turn" } });
     expect(queued.statusCode).toBe(202);
-    expect(queued.json()).toEqual({ queued: true, position: 1 });
+    expect(queued.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
     expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` })).json()).toEqual({ cancelled: true });
     await adapter.seedAborted.promise;

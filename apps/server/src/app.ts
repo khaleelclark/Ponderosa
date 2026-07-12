@@ -30,7 +30,7 @@ import type {
   SetMessageReactionRequest,
   SetMessageReactionResponse,
 } from "@ponderosa/core";
-import { artifactContentPath, attachmentPath, attachmentsDir, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { DelegationError, DelegationStore } from "./delegations.js";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
@@ -68,6 +68,7 @@ interface ActiveRun {
 /** A deferred user or agent turn.  Queues are per-thread and FIFO. */
 interface PendingTurn {
   text: string;
+  communicationEventId?: string;
   model?: string;
   effort?: string;
   agentMentionDepth: number;
@@ -554,6 +555,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function pendingTurnFromDelivery(delivery: CollaborationDelivery): PendingTurn {
     return {
       text: delivery.text,
+      communicationEventId: delivery.communicationEventId,
       model: delivery.model,
       effort: delivery.effort,
       agentMentionDepth: delivery.relayDepth,
@@ -596,6 +598,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return {
       ...pendingTurnFromDelivery(first),
       text: formatDeliveryBatch({ deliveries }),
+      communicationEventId: undefined,
       sourceAuthorThreadId: undefined,
       collaborationDeliveryId: undefined,
       collaborationDeliveryIds: deliveries.map((delivery) => delivery.id),
@@ -611,6 +614,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   ): CollaborationDelivery | undefined {
     if (closed) return undefined;
     const queued = collaborationDeliveries.queue(input);
+    if (queued.delivery.communicationEventId) {
+      const target = store.getThread(queued.delivery.targetThreadId);
+      if (target) {
+        store.appendCommunicationProjection(target.projectId, {
+          eventId: queued.delivery.communicationEventId,
+          surface: "agent_inbox",
+          projectionKey: target.id,
+          projectedAt: queued.delivery.createdAt,
+        });
+      }
+    }
     void dispatchNextTurn(queued.delivery.targetThreadId);
     return queued.delivery;
   }
@@ -704,6 +718,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const queued = collaborationDeliveries.queue({
             masterChatId: master.id,
             messageId: message.id,
+            communicationEventId: message.communicationEventId,
             targetThreadId: intent.targetThreadId,
             authorThreadId: message.authorThreadId,
             text: message.text,
@@ -919,6 +934,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       queueCollaborationDelivery({
         masterChatId,
         messageId: message.id,
+        communicationEventId: message.communicationEventId,
         targetThreadId: intent.targetThreadId,
         authorThreadId,
         text: message.text,
@@ -1003,7 +1019,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!message) return;
     const delivery = queueCollaborationDelivery({
       masterChatId: run.masterChatId,
-      messageId: message.id,
+            messageId: message.id,
+            communicationEventId: message.communicationEventId,
       targetThreadId: parent.id,
       authorThreadId: run.childThreadId,
       text: message.text,
@@ -1071,6 +1088,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       }).event;
+      store.appendCommunicationProjection(currentAuthor.projectId, {
+        eventId: communication.eventId,
+        surface: "user_inbox",
+        projectionKey: "local-operator",
+        projectedAt: communication.createdAt,
+      });
       const stored = store.appendEvent(capability.threadId, {
         type: "communication_projection",
         communicationEventId: communication.eventId,
@@ -1669,6 +1692,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             delivery = queueCollaborationDelivery({
               masterChatId: master.id,
               messageId: existing.id,
+              communicationEventId: existing.communicationEventId,
               targetThreadId: persisted.intent.targetThreadId,
               text: existing.text,
               relayDepth: persisted.intent.relayDepth,
@@ -1744,6 +1768,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const delivery = queueCollaborationDelivery({
         masterChatId: master.id,
         messageId: message.id,
+        communicationEventId: message.communicationEventId,
         targetThreadId: target.id,
         text,
         relayDepth: 0,
@@ -2181,6 +2206,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
+      const inheritedCommunicationEventId = requestedDeliveryIds.length === 1
+        ? inboxDelivery?.communicationEventId : undefined;
+      const communicationEventId = requestedDeliveryIds.length === 0
+        ? store.appendCommunicationEvent({
+            eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+            ...(sourceMasterChatId ? { masterChatId: sourceMasterChatId } : {}),
+            sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+            audience: { kind: "agents", agentIds: [thread.id] }, text,
+            createdAt: new Date().toISOString(),
+          }).event.eventId
+        : inheritedCommunicationEventId;
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&
@@ -2201,6 +2237,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const pendingTurn: PendingTurn = {
         text,
+        communicationEventId,
         model: request.body.model,
         effort: request.body.effort,
         agentMentionDepth: mentionDepth ?? 0,
@@ -2233,6 +2270,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const delivery = queueCollaborationDelivery({
           masterChatId: thread.masterChatId,
           messageId: `direct-${randomUUID()}`,
+          communicationEventId,
           targetThreadId: thread.id,
           text,
           relayDepth: mentionDepth ?? 0,
@@ -2247,7 +2285,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
         if (!delivery) return reply.code(503).send({ error: "turn could not be persisted" });
         const position = collaborationDeliveries.pendingCount(thread.id);
-        return reply.code(202).send({ queued: true, position });
+        return reply.code(202).send({ queued: true, position, communicationEventId });
       }
 
       const fullHistory: ChatMessage[] = store.getMessages(thread.id).map((message) => ({
@@ -2349,7 +2387,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const prompt = `${promotedKnowledge}${guidedPrompt}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt().join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
-      const userStored = store.appendEvent(thread.id, { type: "user_message", text, replyTo: pendingTurn.replyTo, attachments: messageAttachments });
+      const userStored = store.appendEvent(thread.id, {
+        type: "user_message", text, communicationEventId: pendingTurn.communicationEventId,
+        replyTo: pendingTurn.replyTo, attachments: messageAttachments,
+      });
       await assets.associate(thread.projectId, thread.id, attachmentIds);
       publish(thread.id, userStored);
 
@@ -2377,6 +2418,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let runError: string | undefined;
         let sawWaiting = false;
         let finalText = "";
+        let lastCommunicationEventId: string | undefined;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -2443,7 +2485,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 publish(thread.id, stored);
               }
               if (event.type !== "error") sawMaterialRuntimeEvent = true;
-              const stored = store.appendEvent(thread.id, event);
+              let logEvent: LogEvent = event;
+              if (event.type === "text" && event.delta.trim()) {
+                const communication = store.appendCommunicationEvent({
+                  eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                  ...(routingMasterChatId ? { masterChatId: routingMasterChatId } : {}),
+                  sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                  intent: "direct_to_user",
+                  audience: { kind: "user", userId: "local-operator" },
+                  text: event.delta,
+                  createdAt: new Date().toISOString(),
+                  ...(pendingTurn.communicationEventId ? { causationId: pendingTurn.communicationEventId } : {}),
+                }).event;
+                store.appendCommunicationProjection(project.id, {
+                  eventId: communication.eventId,
+                  surface: "user_inbox",
+                  projectionKey: "local-operator",
+                  projectedAt: communication.createdAt,
+                });
+                lastCommunicationEventId = communication.eventId;
+                logEvent = { ...event, communicationEventId: communication.eventId };
+              }
+              const stored = store.appendEvent(thread.id, logEvent);
               publish(thread.id, stored);
               if (event.type === "text") finalText += event.delta;
               if (event.type === "error") runError = event.message;
@@ -2485,6 +2548,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     mentionTrail,
                   )
                 : { intents: [], blocked: [] };
+              const reportCommunication = sourceChannel === "main"
+                ? store.appendCommunicationEvent({
+                    eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                    masterChatId: routingMasterChatId,
+                    sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                    intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+                    text: statusText, createdAt: new Date().toISOString(),
+                    ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+                  }).event
+                : routing.intents.length
+                  ? store.appendCommunicationEvent({
+                      eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                      masterChatId: routingMasterChatId,
+                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                      intent: "collaboration",
+                      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
+                      text: statusText, createdAt: new Date().toISOString(),
+                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+                    }).event
+                  : store.appendCommunicationEvent({
+                      eventId: randomUUID(), schemaVersion: 1, projectId: project.id,
+                      masterChatId: routingMasterChatId,
+                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                      intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
+                      text: statusText, createdAt: new Date().toISOString(),
+                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+                    }).event;
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
               const report = store.appendMasterChatMessage(
@@ -2493,7 +2583,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 thread.id,
                 sourceChannel,
                 routing.intents,
+                undefined,
+                reportCommunication.eventId,
               );
+              if (reportCommunication.intent === "direct_to_user") {
+                store.appendCommunicationProjection(project.id, {
+                  eventId: reportCommunication.eventId,
+                  surface: "user_inbox",
+                  projectionKey: "local-operator",
+                  projectedAt: reportCommunication.createdAt,
+                });
+              }
 
               // A tag in a main-chat report is ordinary text. A tag in the
               // collaboration chat is an opt-in handoff and can start a turn.
@@ -2536,7 +2636,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       })();
 
-      return { queued: false, runId, mode };
+      return { queued: false, runId, mode, communicationEventId };
     },
   );
 
