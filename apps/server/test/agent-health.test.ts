@@ -82,6 +82,7 @@ describe("agent health projection", () => {
   it("returns completed work to idle and preserves failures", () => {
     expect(project({ runs: [delegation("agent", "completed")] }).agents[0]).toMatchObject({ status: "idle", reason: "delegation_completed" });
     expect(project({ events: { agent: [event({ type: "turn_done" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
+    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
     expect(project({ events: { agent: [event({ type: "error", message: "boom" })] } }).agents[0]?.status).toBe("failed");
   });
 

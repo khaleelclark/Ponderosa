@@ -64,10 +64,6 @@ export interface CreateServerOptions {
   /** Host-local origin injected into runtime tools; agents run on this server host. */
   agentBaseUrl?: string;
   logger?: boolean;
-  /** Emergency rollback: `off` preserves legacy logs/projections only. */
-  communicationMode?: "off" | "shadow";
-  communicationReadMode?: "legacy" | "shadow" | "authoritative";
-  legacyRoutingMode?: "accept" | "reject";
   /** Deterministic scheduling seams for retry tests; production uses host timers and randomness. */
   deliveryScheduling?: {
     now?: () => number;
@@ -640,13 +636,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const directReplyClaims = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
-  const communicationMode = opts.communicationMode ?? "shadow";
-  const communicationReadMode = opts.communicationReadMode ?? "shadow";
-  // Embedders can opt into the compatibility window; the production config
-  // defaults to reject so newly deployed agents never depend on routing syntax.
-  const legacyRoutingMode = opts.legacyRoutingMode ?? "accept";
-  const recordCommunication = (event: CommunicationEvent): CommunicationEvent | undefined =>
-    communicationMode === "off" ? undefined : store.appendCommunicationEvent(event).event;
+  const recordCommunication = (event: CommunicationEvent): CommunicationEvent =>
+    store.appendCommunicationEvent(event).event;
   const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
   const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
   const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
@@ -763,25 +754,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
     const detail = store.getMasterChatDetail(masterChatId);
-    if (!detail || communicationReadMode !== "authoritative") return detail;
+    if (!detail) return detail;
     return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "main") };
   }
 
   function collaborationChatDetail(masterChatId: string): CollaborationChatDetailDto | undefined {
     const detail = store.getCollaborationChatDetail(masterChatId);
-    if (!detail || communicationReadMode !== "authoritative") return detail;
+    if (!detail) return detail;
     return { ...detail, messages: store.getProjectedMasterChatMessages(masterChatId, "collaboration") };
   }
 
   function threadDetail(threadId: string): import("@ponderosa/core").ThreadDetailDto | undefined {
     const detail = store.getThreadDetail(threadId);
-    if (!detail || communicationReadMode !== "authoritative") return detail;
+    if (!detail) return detail;
     return { ...detail, messages: store.getProjectedThreadMessages(threadId) };
   }
 
-  const threadMessages = (threadId: string) => communicationReadMode === "authoritative"
-    ? store.getProjectedThreadMessages(threadId)
-    : store.getMessages(threadId);
+  const threadMessages = (threadId: string) => store.getProjectedThreadMessages(threadId);
 
   function agentHealth(scope: AgentHealthProjectionDto["scope"], threads: ThreadDto[], scopedDelegations: SubagentRunDto[]): AgentHealthProjectionDto {
     const now = Date.now();
@@ -1478,21 +1467,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    // Active runtime sessions may retain the pre-intent prompt until they roll
-    // over. Accept that wire shape during migration, but never advertise it to
-    // newly seeded sessions.
     const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
     const legacyChannel = legacyBody?.channel;
-    if (legacyChannel && legacyRoutingMode === "reject") {
+    if (legacyChannel) {
       return reply.code(410).send({ error: "legacy channel routing is retired; send an explicit communication intent" });
     }
-    const intent = request.body?.intent ?? (legacyChannel === "individual"
-      ? "direct_to_user"
-      : legacyChannel === "main"
-        ? "broadcast"
-        : legacyChannel === "collaboration"
-          ? "collaboration"
-          : undefined);
+    const intent = request.body?.intent;
     const text = request.body?.text?.trim();
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
       return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
@@ -1934,14 +1914,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? "no runtimes are configured"
         : `${available} of ${engines.size} configured runtimes available`,
     };
-    const communicationReports = communicationMode === "off"
-      ? []
-      : store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
+    const communicationReports = store.listProjects().map((project) => store.reconcileCommunicationEvents(project.id));
     const communicationParity = communicationReports.every((report) => report.ok);
-    const authoritativeSourceAvailable = communicationMode !== "off";
     const communicationMigration = {
-      ok: communicationReadMode !== "authoritative" || (authoritativeSourceAvailable && communicationParity),
-      detail: `communication=${communicationMode}; reads=${communicationReadMode}; legacy_routing=${legacyRoutingMode}; parity=${authoritativeSourceAvailable ? (communicationParity ? "ok" : "drift") : "disabled"}`,
+      ok: communicationParity,
+      detail: `canonical communication projections=${communicationParity ? "ok" : "drift"}`,
     };
     const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok && communicationMigration.ok;
     const body: ReadinessDto = {
@@ -1983,23 +1960,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const report = store.reconcileCommunicationEvents(request.params.id);
     if (!report.ok) reply.code(409);
     return report;
-  });
-
-  app.post<{
-    Params: { id: string };
-    Body: import("@ponderosa/core").LegacyCommunicationBackfillRequest;
-  }>("/api/projects/:id/communication-backfill", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const body = request.body ?? {};
-    if (body.dryRun !== undefined && typeof body.dryRun !== "boolean") {
-      return reply.code(400).send({ error: "dryRun must be boolean" });
-    }
-    const overrides = body.collaborationRecipientsByMessageId;
-    if (overrides && (typeof overrides !== "object" || Array.isArray(overrides) || Object.keys(overrides).length > 10_000 ||
-      Object.values(overrides).some((ids) => !Array.isArray(ids) || ids.length === 0 || ids.length > 100 || ids.some((id) => typeof id !== "string")))) {
-      return reply.code(400).send({ error: "collaboration recipient overrides must contain 1 to 100 stable agent IDs per message" });
-    }
-    return store.backfillLegacyCommunications(request.params.id, body);
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/agent-health", async (request, reply) => {
@@ -2339,11 +2299,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         blocked: [],
       };
     } else {
-      // Compatibility for clients loaded before the recipient-picker contract.
-      if (legacyRoutingMode === "reject") {
-        return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds; mention routing is retired" });
-      }
-      routing = resolveCollaborationIntents(request.params.id, "", text, 0, []);
+      return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds" });
     }
     if (routing.intents.length === 0) {
       return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
@@ -3258,56 +3214,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               : summarizeFinalMessage(finalText) ??
                 (sawWaiting ? "⏸️ Waiting for your input" : "✅ Finished");
             try {
-              const routing = !runError && collaborationMasterChatId && legacyRoutingMode === "accept"
-                ? resolveCollaborationIntents(
-                    collaborationMasterChatId,
-                    thread.id,
-                    statusText,
-                    mentionDepth ?? 0,
-                    mentionTrail,
-                  )
-                : { intents: [], blocked: [] };
-              const reportCommunication = sourceChannel === "main"
-                ? recordCommunication({
-                    eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                    masterChatId: routingMasterChatId,
-                    sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                    intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-                    text: statusText, createdAt: new Date().toISOString(),
-                    ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-                  })
-                : routing.intents.length
-                  ? recordCommunication({
-                      eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                      masterChatId: routingMasterChatId,
-                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                      intent: "collaboration",
-                      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
-                      text: statusText, createdAt: new Date().toISOString(),
-                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-                    })
-                  : recordCommunication({
-                      eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-                      masterChatId: routingMasterChatId,
-                      sender: { kind: "agent", agentId: thread.id, executionId: runId },
-                      intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
-                      text: statusText, createdAt: new Date().toISOString(),
-                      ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
-                    });
+              const reportCommunication = recordCommunication({
+                eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
+                masterChatId: routingMasterChatId,
+                sender: { kind: "agent", agentId: thread.id, executionId: runId },
+                intent: "user_dm", audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
+                text: statusText, createdAt: new Date().toISOString(),
+                ...(lastCommunicationEventId ? { causationId: lastCommunicationEventId } : {}),
+              });
               // The main chat is manager-facing. Agent-to-agent handoffs are
               // emitted only from the separate collaboration chat.
               const renderedStatusText = reportCommunication?.intent === "direct_to_user" || reportCommunication?.intent === "user_dm"
                 ? `@User ${statusText}`
                 : statusText;
-              const reportChannel = reportCommunication?.intent === "user_dm" || reportCommunication?.intent === "direct_to_user"
-                ? "main"
-                : sourceChannel;
-              const report = store.appendMasterChatMessage(
+              store.appendMasterChatMessage(
                 routingMasterChatId,
                 { role: "assistant", text: renderedStatusText },
                 thread.id,
-                reportChannel,
-                routing.intents,
+                "main",
+                [],
                 undefined,
                 reportCommunication?.eventId,
               );
@@ -3318,13 +3243,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   projectionKey: "local-operator",
                   projectedAt: reportCommunication.createdAt,
                 });
-              }
-
-              // A tag in a main-chat report is ordinary text. A tag in the
-              // collaboration chat is an opt-in handoff and can start a turn.
-              if (!runError && collaborationMasterChatId && report) {
-                queueRecordedCollaborationMessage(collaborationMasterChatId, report, thread.id, routing.intents);
-                appendBlockedMentionWarnings(collaborationMasterChatId, routing.blocked);
               }
             } catch {
               // Master chat may have been deleted mid-run; ignore.
