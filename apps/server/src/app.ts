@@ -169,6 +169,7 @@ interface PendingTurn {
   agentMentionTrail: string[];
   collaborationMasterChatId?: string;
   sourceChannel?: "main";
+  sourceMasterChatId?: string;
   sourceAuthorThreadId?: string;
   /** Set only by the server's persisted collaboration delivery dispatcher. */
   collaborationDeliveryId?: string;
@@ -825,6 +826,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agentMentionTrail: delivery.mentionTrail,
       collaborationMasterChatId: delivery.kind === "direct" ? undefined : delivery.masterChatId,
       sourceChannel: delivery.sourceChannel,
+      sourceMasterChatId: delivery.sourceChannel === "main" ? delivery.masterChatId : undefined,
       sourceAuthorThreadId: delivery.authorThreadId,
       collaborationDeliveryId: delivery.id,
       replyToMessageId: delivery.replyToMessageId,
@@ -2664,7 +2666,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
       const collaborationMasterChatId = request.body.collaborationMasterChatId;
-      if (collaborationMasterChatId !== undefined && collaborationMasterChatId !== thread.masterChatId) {
+      if (collaborationMasterChatId !== undefined && !thread.masterChatIds.includes(collaborationMasterChatId)) {
         return reply.code(400).send({ error: "collaboration chat does not belong to thread" });
       }
       if (
@@ -2765,7 +2767,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         const createdAt = new Date().toISOString();
         const delivery = queueCollaborationDelivery({
-          masterChatId: thread.masterChatId,
+          masterChatId: sourceMasterChatId ?? thread.masterChatId,
           messageId: `direct-${randomUUID()}`,
           communicationEventId,
           targetThreadId: thread.id,
@@ -2923,16 +2925,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       claimActiveRun(thread.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
-        masterChatId: thread.masterChatId,
+        masterChatId: routingMasterChatId,
         runId,
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
       });
-      if (thread.masterChatId) {
+      if (routingMasterChatId) {
         delegationCapabilities.set(delegationCapability, {
           parentRunId: delegatedObjective?.id ?? runId,
           threadId: thread.id,
-          masterChatId: thread.masterChatId,
+          masterChatId: routingMasterChatId,
           controller,
         });
       }
