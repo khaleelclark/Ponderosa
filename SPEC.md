@@ -243,6 +243,14 @@ same append. Startup recreates any missing inbox record from those intents,
 closing the crash window between message persistence and inbox persistence
 without replaying blocked mentions or pre-inbox chat history.
 
+Newly seeded agents communicate through semantic intents rather than channel
+names or routing syntax: `broadcast`, `direct_to_user`, and `collaboration`.
+Collaboration requires a non-empty list of stable recipient agent IDs. The server
+validates membership, resolves delivery, and renders mutable display handles into
+the collaboration projection. A temporary compatibility path accepts the former
+channel-and-mention request from runtime sessions seeded before this contract was
+deployed; it is not advertised and is removed after the session migration window.
+
 The reserved, case-insensitive `@everyone` collaboration handle resolves once,
 at message creation, to every non-archived agent that is currently a member of
 that Master Chat. An agent-authored broadcast excludes its author; a manager

@@ -358,16 +358,27 @@ export interface QueuedMessageResponse {
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
 export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
 
-/** Destinations available to an agent through its short-lived run capability. */
+/** Semantic communication requested by an agent. Routing is server-owned. */
+export type AgentCommunicationIntent = "broadcast" | "direct_to_user" | "collaboration";
+/** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
-/** POST /api/agent-messages body. The server derives the author from the capability. */
-export interface SendAgentMessageRequest {
-  channel: AgentMessageChannel;
+interface AgentMessageRequestBase {
   text: string;
-  /** Stable across a transport retry so a collaboration tag is delivered once. */
+  /** Stable across a transport retry so every durable effect occurs once. */
   idempotencyKey?: string;
 }
+
+/** POST /api/agent-messages body. The server derives the author from the capability. */
+export type SendAgentMessageRequest = AgentMessageRequestBase & (
+  | { intent: "broadcast"; recipientAgentIds?: never }
+  | { intent: "direct_to_user"; recipientAgentIds?: never }
+  | {
+      intent: "collaboration";
+      /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
+      recipientAgentIds: string[];
+    }
+);
 
 /** POST /api/threads/:id/cancel response. */
 export interface CancelResponse {

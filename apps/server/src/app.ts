@@ -232,14 +232,13 @@ export function boundedSeedHistory<T extends { text: string }>(
 function agentMessagingPrompt(): string[] {
   return [
     "You can send an additional message to any Ponderosa channel with your shell tool:",
-    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"channel":"collaboration","text":"@Full-Agent-Handle message","idempotencyKey":"stable-retry-key"}\'',
-    "For a collaboration tag, write @Full-Agent-Handle at the start of the message or separate it from preceding text with whitespace.",
-    "In collaboration only, @everyone notifies every non-archived member of your current room except you. It is resolved and deduplicated when the message is recorded.",
-    'Set channel to "individual", "main", or "collaboration". The server supplies your identity; never include or claim another author.',
-    "Use collaboration for teammate coordination, main for manager-facing updates, and individual for notes in your own agent chat.",
-    "A valid collaboration @mention is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
+    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
+    'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders recipient names; never write routing @mentions into message text.',
+    "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
+    "Use collaboration for teammate coordination, broadcast for durable shared organizational knowledge, and direct_to_user for notes in your own agent audit chat.",
+    "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After delegating work, end your turn. Do not poll, sleep, or remain active waiting for results. Delegated agents run asynchronously; their completion automatically queues a parent follow-up, and explicit collaboration tags do the same.",
-    "Each valid tag is a separate FIFO delivery (not coalesced). If a tag arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued tags remain queued; a cancelled delivery turn itself is retried.",
+    "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
     "Track expected work in delegated-agent status/lineage: queued/running/awaiting_disposition/completed/blocked/failed/cancelled plus terminal-delivery state. A child does not need to tag you for its declared terminal result; it should tag you only for interim findings or questions.",
     "Accumulate results across those notification turns and update the manager once every expected task has reported.",
     'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
@@ -864,6 +863,42 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { intents, blocked };
   }
 
+  function resolveExplicitCollaborationIntents(
+    masterChatId: string,
+    authorThreadId: string,
+    recipientAgentIds: string[],
+    text: string,
+    relayDepth: number,
+    mentionTrail: string[],
+  ): { text: string; intents: MasterChatDeliveryIntent[]; error?: string } {
+    const detail = store.getCollaborationChatDetail(masterChatId);
+    const members = new Map((detail?.threads ?? []).map((thread) => [thread.id, thread]));
+    const targetIds = [...new Set(recipientAgentIds)];
+    const targets = targetIds.map((id) => members.get(id));
+    if (targets.some((target) => !target || target.archived || target.id === authorThreadId)) {
+      return { text, intents: [], error: "every collaboration recipient must be a different active agent in this master chat" };
+    }
+    const renderedText = `${targets.map((target) => `@${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+    const intents: MasterChatDeliveryIntent[] = [];
+    for (const target of targets) {
+      const fingerprint = mentionRelayFingerprint(authorThreadId, target!.id, renderedText);
+      if (mentionTrail.includes(fingerprint)) {
+        return { text, intents: [], error: "the same collaboration handoff already occurred in this delivery chain" };
+      }
+      if (relayDepth >= MAX_AGENT_MENTION_RELAYS) {
+        return { text, intents: [], error: "the collaboration reached its 12-handoff safety limit" };
+      }
+      intents.push({
+        targetThreadId: target!.id,
+        relayDepth: relayDepth + 1,
+        mentionTrail: [...mentionTrail, fingerprint],
+        kind: "tag",
+        audience: "mention",
+      });
+    }
+    return { text: renderedText, intents };
+  }
+
   function queueRecordedCollaborationMessage(
     masterChatId: string,
     message: MasterChatMessageDto,
@@ -984,27 +1019,38 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const channel = request.body?.channel;
+    // Active runtime sessions may retain the pre-intent prompt until they roll
+    // over. Accept that wire shape during migration, but never advertise it to
+    // newly seeded sessions.
+    const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
+    const legacyChannel = legacyBody?.channel;
+    const intent = request.body?.intent ?? (legacyChannel === "individual"
+      ? "direct_to_user"
+      : legacyChannel === "main"
+        ? "broadcast"
+        : legacyChannel === "collaboration"
+          ? "collaboration"
+          : undefined);
     const text = request.body?.text?.trim();
-    if (!(["individual", "main", "collaboration"] as const).includes(channel)) {
-      return reply.code(400).send({ error: "channel must be individual, main, or collaboration" });
+    if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
+      return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
     }
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    const receiptKey = idempotencyKey ? `${capability.runId}:${channel}:${idempotencyKey}` : undefined;
+    const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
     if (receiptKey) {
       const previousMessageId = collaborationDeliveries.messageReceipt(receiptKey);
-      if (previousMessageId) return { channel, messageId: previousMessageId, replayed: true };
+      if (previousMessageId) return { intent, messageId: previousMessageId, replayed: true };
     }
 
-    if (channel === "individual") {
+    if (intent === "direct_to_user") {
       const stored = store.appendEvent(capability.threadId, { type: "text", delta: text });
       publish(capability.threadId, stored);
       const messageId = `thread-event-${stored.seq}`;
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
-      return { channel, messageId, replayed: false };
+      return { intent, messageId, replayed: false };
     }
     if (!capability.masterChatId) {
       return reply.code(409).send({ error: "agent is not linked to a master chat" });
@@ -1013,18 +1059,38 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!currentAuthor || currentAuthor.archived || !currentAuthor.masterChatIds.includes(capability.masterChatId)) {
       return reply.code(409).send({ error: "agent is no longer an active member of this master chat" });
     }
-    const routing = channel === "collaboration"
-      ? resolveCollaborationIntents(
-          capability.masterChatId,
-          capability.threadId,
-          text,
-          capability.mentionDepth,
-          capability.mentionTrail,
-        )
-      : { intents: [], blocked: [] };
+    let renderedText = text;
+    let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
+    if (intent === "collaboration" && !legacyChannel) {
+      const recipientAgentIds = request.body.recipientAgentIds;
+      if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
+        return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
+      }
+      if (recipientAgentIds.length > 100) return reply.code(400).send({ error: "collaboration supports at most 100 recipients" });
+      const resolved = resolveExplicitCollaborationIntents(
+        capability.masterChatId,
+        capability.threadId,
+        recipientAgentIds,
+        text,
+        capability.mentionDepth,
+        capability.mentionTrail,
+      );
+      if (resolved.error) return reply.code(400).send({ error: resolved.error });
+      renderedText = resolved.text;
+      routing = { intents: resolved.intents, blocked: [] };
+    } else if (intent === "collaboration") {
+      routing = resolveCollaborationIntents(
+        capability.masterChatId,
+        capability.threadId,
+        text,
+        capability.mentionDepth,
+        capability.mentionTrail,
+      );
+    }
+    const channel = intent === "broadcast" ? "main" : "collaboration";
     const message = store.appendMasterChatMessage(
       capability.masterChatId,
-      { role: "assistant", text },
+      { role: "assistant", text: renderedText },
       capability.threadId,
       channel,
       routing.intents,
@@ -1032,11 +1098,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     if (!message) return reply.code(404).send({ error: "master chat not found" });
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
-    if (channel === "collaboration") {
+    if (intent === "collaboration") {
       queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
       appendBlockedMentionWarnings(capability.masterChatId, routing.blocked);
     }
-    return { channel, messageId: message.id, replayed: false };
+    return { intent, messageId: message.id, replayed: false };
   });
 
   app.post("/api/agent-session/rollover", async (request, reply) => {

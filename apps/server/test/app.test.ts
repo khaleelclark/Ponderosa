@@ -533,7 +533,7 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     expect(adapter.seeds[0]?.prompt).toContain(
-      "separate it from preceding text with whitespace",
+      "never write routing @mentions into message text",
     );
 
     store.appendMasterChatMessage(master.id, { text: "@Aspen Is it tested?" });
@@ -861,7 +861,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("lets an active agent send authenticated messages to all three channels", async () => {
+  it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Routing room" });
@@ -888,17 +888,17 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(token).toBeTruthy();
-    const send = (channel: "individual" | "main" | "collaboration", text: string) =>
+    const send = (payload: Record<string, unknown>) =>
       app.inject({
         method: "POST",
         url: "/api/agent-messages",
         headers: { authorization: `Bearer ${token}` },
-        payload: { channel, text },
+        payload,
       });
 
-    expect((await send("individual", "Private implementation note.")).statusCode).toBe(200);
-    expect((await send("main", "Manager-facing checkpoint.")).statusCode).toBe(200);
-    expect((await send("collaboration", "@Review-Agent Please review the API contract.")).statusCode).toBe(200);
+    expect((await send({ intent: "direct_to_user", text: "Private implementation note." })).statusCode).toBe(200);
+    expect((await send({ intent: "broadcast", text: "Manager-facing checkpoint." })).statusCode).toBe(200);
+    expect((await send({ intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review the API contract." })).statusCode).toBe(200);
     await waitForSeedCount(2);
 
     expect(store.getMessages(author.id)).toEqual(
@@ -923,6 +923,35 @@ describe("server chunk F", () => {
     expect(reviewerPrompt).toContain("- tagged agents: @Review-Agent");
     expect(reviewerPrompt).toContain("- you were tagged: yes");
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
+    await app.close();
+  });
+
+  it("rejects recipient-free and out-of-room collaboration intents before persistence", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Routing room" });
+    const otherMaster = store.createMasterChat(project.id, { title: "Other room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", masterChatId: otherMaster.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await waitForSeedCount(1);
+    const headers = { authorization: `Bearer ${adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` };
+
+    const recipientFree = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "collaboration", recipientAgentIds: [], text: "Unroutable." },
+    });
+    const unauthorized = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Cross-room." },
+    });
+
+    expect(recipientFree.statusCode).toBe(400);
+    expect(unauthorized.statusCode).toBe(400);
+    expect(store.getMasterChatMessages(master.id, "collaboration")).toHaveLength(0);
+    expect(store.getMasterChatDeliveryIntents(master.id)).toHaveLength(0);
+    await cancelAndWait(app, author.id);
     await app.close();
   });
 
