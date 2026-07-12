@@ -1,18 +1,21 @@
 # AGENTS.md — Ponderosa
 
 Rules for any AI agent (or human) working on **this repository**. Read this
-before editing. The full design lives in [SPEC.md](./SPEC.md); this file is the
-short list of invariants that must not be violated.
+before editing. [VISION.md](./VISION.md) defines the current product direction;
+this file translates that vision into working invariants and repository rules.
 
 ---
 
 ## Mission
 
-Ponderosa is a self-hosted coding-agent workbench: a web app served from a home
-Ubuntu box that lets you run AI coding agents on your machine and manage them from
-any device (especially a phone). It is **not** "a chat UI for an AI." It is closer
-to **managing a small remote engineering team** — you send intent, agents do the
-work on the host, and you review structured results.
+Ponderosa is a self-hosted web interface for AI agents running on the user's own
+computer. A casual user should be able to open a Master Chat and interact with it
+like a familiar AI conversation. Ponderosa handles fresh agent runs,
+collaboration, and context boundaries behind that simple surface.
+
+Power users can create and inspect organizations of agents and subagents, follow
+their collaboration, and understand their execution. Advanced orchestration must
+remain available without becoming required knowledge for ordinary use.
 
 The economic premise: agents run off the user's **existing AI subscriptions**
 (ChatGPT Plus/Pro via Codex, Claude Max via the Claude Agent SDK), **never**
@@ -33,47 +36,68 @@ pay-per-token provider API keys.
    engine-specific branching outside `packages/engines`. Adding an engine = adding
    an adapter, nothing else.
 
-3. **The event log is canonical; Chat is human-facing only.** Each thread owns an
-   append-only event log (`events.jsonl`) — the single source of truth. SQLite is
-   a rebuildable projection over it. The **Chat** view holds intent/conversation
-   only; execution detail (commands, file changes, tests) is structured data in
-   **Tasks/Artifacts**, never dumped into Chat.
+3. **The event log is canonical; views are projections.** The append-only event
+   log is the source of truth and SQLite is rebuildable from it. Master Chat,
+   Collaboration Chat, Direct Agent Chat, and output views must project canonical
+   events rather than create duplicate conversations or competing state.
 
-4. **Do not rebuild per-message context.** The active runtime manages its own
-   in-session context (Codex/Claude do their own compaction). The server assembles
-   context **only at boundaries**: `seed()` (a fresh session, given the thread's
-   chat history + the project cwd — *no assembled packet*; the agent reads the
-   repo's md files and git state itself) and historical queries. Continuing an
-   active session = `continue()` = resume by session id + the next message. Never
-   re-send the whole thread on every turn, and never try to out-compact the runtime.
-   Project knowledge = the managed repo's own md files, not a Ponderosa memory store.
+4. **Communication scope is explicit and immutable.** A communication is created
+   as exactly one of:
 
-5. **Threads own the work; agent sessions are ephemeral.** A thread persists
-   forever and stores canonical history. Engine sessions come and go. Switching the
-   active engine is an **explicit event** that seeds a new session from thread
-   history — not a background sync.
+   - **Broadcast:** agent to organization; visible in Master Chat and inherited as
+     shared context by future agents.
+   - **Direct Message:** a private user-agent exchange; visible in Master Chat but
+     excluded from shared organizational context.
+   - **Collaboration:** agent to one or more explicit agent recipients; visible in
+     Collaboration Chat and relevant Direct Agent timelines, but excluded from
+     Master Chat and shared organizational context.
 
-6. **Full host access is intentional and scoped by design.** Agents run as the
+   Scope never changes after creation. To share a private finding more broadly,
+   create a new communication with the intended scope.
+
+5. **Only Broadcasts are shared knowledge.** Visibility does not imply context
+   inheritance. Direct Messages, Collaboration, assignments, tool calls,
+   lifecycle events, and outputs do not become future-agent context merely
+   because they are stored or displayed. Never rebuild context by indiscriminately
+   replaying every recorded interaction.
+
+6. **Master Chat stays human-facing.** It is the user's conversation and the
+   project's curated shared timeline. Do not dump collaboration traffic, tool
+   calls, terminal output, file changes, or lifecycle noise into it. Different
+   responder names may be the only orchestration detail a casual user sees.
+
+7. **Direct Agent Chat is an audit hub, not another conversation.** It projects
+   everything inbound and outbound for one agent: user communication, Broadcasts,
+   Collaboration, assignments, tools, lifecycle, and outputs. User input from
+   this surface creates a Direct Message to that agent; it does not create a
+   second canonical message or gain shared scope.
+
+8. **Routing uses stable identities.** Store structured recipient agent IDs and
+   let the server own routing. Display names and rendered `@labels` are presentation,
+   never routing keys. Agents choose recipients and content; they do not manually
+   construct textual mentions.
+
+9. **Full host access is intentional and scoped by design.** Agents run as the
    host user with real fs/shell access (single-operator box). That is by design.
    But: the *file-browser API* is scoped to registered project paths even though
    the *agent* is not. Don't widen the browsing API to arbitrary host paths.
 
-7. **Network-agnostic; never store sensitive credentials.** Don't couple anything
+10. **Network-agnostic; never store sensitive credentials.** Don't couple anything
    to Tailscale — it's a v1 reachability convenience, not the architecture (public
    domain/Cloudflare must also work). And never build a password/credential store:
-   v1 gates via Tailscale (stores nothing); v2 delegates identity via OAuth over
-   the API. See SPEC §9/§10.
+   early deployments may gate via Tailscale while later deployments can delegate
+   identity via OAuth over the API.
 
 ---
 
 ## Architecture (one screen)
 
 ```
-Project → Thread (feature-scoped) → { Messages, Tasks, Artifacts, State, active engine }
-Thread owns events.jsonl (canonical).  SQLite = projections (rebuildable).
-Adapter.seed()      → fresh runtime session from a task packet (first turn / engine switch)
-Adapter.continue()  → resume active session, next message only
-Runtime events → normalized AgentEvent → routed: text→Chat, exec→Tasks/Artifacts
+Master Chat → Agents → ephemeral runtime sessions
+Canonical event log → rebuildable SQLite projections
+Communication → Broadcast | Direct Message | Collaboration
+Agent activity → Direct Agent Chat audit timeline
+Agent outputs → user-meaningful deliverables
 ```
 
 - **Web (required):** React + TypeScript + MUI, bundled with **Rspack** (via
@@ -98,8 +122,9 @@ packages/threads event log + SQLite projections (Drizzle schema)
 packages/core    shared types (AgentEvent, DTOs), config, logging
 deploy/          systemd unit
 
-No packages/memory (project knowledge = the managed repo's own md files).
-No packet builder (seeding passes chat history + cwd, not an assembled packet).
+No general transcript-as-memory layer: shared organizational knowledge comes from
+intentional Broadcasts, while project instructions and code remain in the managed
+repository.
 ```
 
 `packages/core` types (esp. `AgentEvent` and API DTOs) are imported by **both**
@@ -117,12 +142,14 @@ that way; don't duplicate these types per app.
   foundation; UI comes last.
 - **Normalize at the edge.** Runtime-specific event shapes (Codex JSONL, Claude SDK
   events) are converted to `AgentEvent` inside `packages/engines` and nowhere else.
-- **Everything derives from the log.** If a projection (Messages/Tasks/Artifacts)
-  is wrong, fix the projector — don't write to SQLite as a second source of truth.
+- **Everything derives from the log.** If a communication, audit, or deliverable
+  projection is wrong, fix the projector—do not write to SQLite as a second
+  source of truth.
 - **Keep secrets out of the repo and images:** engine auth token files
   (`~/.codex`, Claude profile), OAuth secrets, `.env`. Never commit them.
-- **Persist `command`/`file_change` events** — they are both the Tasks/Artifacts
-  data and the audit trail.
+- **Persist execution events.** Commands, tool calls, file changes, failures, and
+  lifecycle events belong in the audit trail even when no dedicated task UI
+  presents them.
 
 ---
 
@@ -203,17 +230,24 @@ committing, or pushing.
 
 - ❌ Call a model provider API with an API key (breaks the subscription premise).
 - ❌ Add engine-specific logic outside `packages/engines`.
-- ❌ Dump tool calls / terminal output / diffs into the Chat view.
-- ❌ Re-send full thread history to the runtime on every message.
+- ❌ Dump Collaboration, tool calls, terminal output, diffs, or lifecycle noise
+  into Master Chat.
+- ❌ Treat Direct Agent Chat as a separate conversation or source of shared
+  context.
+- ❌ Route messages by display name or agent-authored textual `@mentions`.
+- ❌ Re-send indiscriminate conversation and audit history to every fresh runtime.
 - ❌ Treat SQLite as the source of truth (it's a rebuildable projection).
 - ❌ Copy JobTracker's Next.js/Docker stack. (Reuse its **OAuth** pattern only.)
-- ❌ Introduce SSR / a Next.js app / a WebSocket transport without a strong reason
-  and updating SPEC.md first.
+- ❌ Introduce SSR / a Next.js app / a WebSocket transport without a strong
+  architectural reason.
 
 ---
 
-## When the design and this file disagree
+## When guidance disagrees
 
-[SPEC.md](./SPEC.md) is the design of record. If you believe an invariant here is
-wrong, update SPEC.md (with reasoning) in the same change — don't silently work
-around it.
+[VISION.md](./VISION.md) is the current product direction. This file governs
+repository work. If code, older documentation, or a proposed plan conflicts with
+either, surface the conflict instead of silently preserving stale behavior. A
+change to product direction should update `VISION.md`; a change to agent working
+rules or architectural invariants should update this file in the same pull
+request.
