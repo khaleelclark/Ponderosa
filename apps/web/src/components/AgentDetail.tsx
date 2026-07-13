@@ -6,6 +6,7 @@ import TaskAltOutlinedIcon from "@mui/icons-material/TaskAltOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import TimelineIcon from "@mui/icons-material/Timeline";
+import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
@@ -49,9 +50,9 @@ import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, TasksPane, ThinkingPane } from "./panes";
+import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, TasksPane, ThinkingPane, WorkspaceReviewPane } from "./panes";
 
-type AgentTab = "chat" | "thinking" | "activity" | "changed_files" | "tasks" | "artifacts";
+type AgentTab = "chat" | "thinking" | "activity" | "changed_files" | "review" | "tasks" | "artifacts";
 
 export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
@@ -81,6 +82,7 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
   { value: "thinking", label: "Thinking", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
+  { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
   { value: "tasks", label: "Tasks", icon: <TaskAltOutlinedIcon /> },
   { value: "artifacts", label: "Artifacts", icon: <Inventory2OutlinedIcon /> },
 ];
@@ -350,8 +352,9 @@ export function AgentDetail({
       void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
     })} onReply={setReplyTo} />,
     thinking: <ThinkingPane entries={detail.thinking} />,
-    activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} />,
+    activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
+    review: <WorkspaceReviewPane projectId={detail.thread.projectId} files={detail.changedFiles} running={stream.running} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={agentId} timeline={stream.timeline} />,
   };

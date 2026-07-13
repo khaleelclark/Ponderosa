@@ -558,6 +558,12 @@ export const mockApi: PonderosaApi = {
   async getFiles(_projectId, path = "") {
     return { kind: "dir" as const, path, entries: [] };
   },
+  getWorkspaceStatus(projectId) {
+    return delay({ projectId, isGitRepository: true, branch: "feature/web-pwa", head: "local", generatedAt: new Date().toISOString(), changes: [] });
+  },
+  getWorkspaceFile(projectId, path) {
+    return delay({ projectId, path, exists: true, content: "", diff: "", stagedDiff: "", unstagedDiff: "", truncated: false });
+  },
   getArtifact(_threadId, artifactId) {
     const content = artifactContent[artifactId];
     if (!content) {

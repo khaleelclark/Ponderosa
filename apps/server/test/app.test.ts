@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
-import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 import { DelegationStore } from "../src/delegations.js";
 
@@ -2934,6 +2935,48 @@ describe("server chunk F", () => {
 
     expect(res.statusCode).toBe(400);
     rmSync(outsideDir, { recursive: true, force: true });
+    await app.close();
+  });
+
+  it("parses staged, unstaged, untracked, and renamed Git status records", () => {
+    expect(parseGitStatus("M  staged.ts\0 M unstaged.ts\0?? new.ts\0R  renamed.ts\0old.ts\0")).toEqual([
+      expect.objectContaining({ path: "new.ts", kind: "create", untracked: true }),
+      expect.objectContaining({ path: "renamed.ts", previousPath: "old.ts", kind: "rename", staged: true }),
+      expect.objectContaining({ path: "staged.ts", kind: "edit", staged: true, unstaged: false }),
+      expect.objectContaining({ path: "unstaged.ts", kind: "edit", staged: false, unstaged: true }),
+    ]);
+  });
+
+  it("serves Git-backed workspace review without exposing credential files", async () => {
+    execFileSync("git", ["init"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repoDir });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: repoDir });
+    execFileSync("git", ["add", "README.md"], { cwd: repoDir });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: repoDir });
+    writeFileSync(path.join(repoDir, "README.md"), "# changed\n", "utf8");
+    writeFileSync(path.join(repoDir, "new.ts"), "export const ready = true;\n", "utf8");
+    writeFileSync(path.join(repoDir, ".env"), "TOKEN=hidden\n", "utf8");
+    const { app, project } = await createProjectAndThread();
+
+    const status = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspace` });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      projectId: project.id,
+      isGitRepository: true,
+      changes: expect.arrayContaining([
+        expect.objectContaining({ path: "README.md", kind: "edit", unstaged: true }),
+        expect.objectContaining({ path: "new.ts", kind: "create", untracked: true }),
+      ]),
+    });
+    expect(status.json<{ changes: Array<{ path: string }> }>().changes.some((change) => change.path === ".env")).toBe(false);
+
+    const review = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspace/file?path=README.md` });
+    expect(review.statusCode).toBe(200);
+    expect(review.json()).toMatchObject({ projectId: project.id, path: "README.md", exists: true, content: "# changed\n" });
+    expect(review.json<{ diff: string }>().diff).toContain("+# changed");
+
+    const hidden = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspace/file?path=.env` });
+    expect(hidden.statusCode).toBe(400);
     await app.close();
   });
 

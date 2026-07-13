@@ -25,6 +25,8 @@ import type {
   ImageAttachmentDto,
   ProjectDto,
   ProjectFolderOptionsDto,
+  WorkspaceFileReviewDto,
+  WorkspaceStatusDto,
   UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
@@ -110,6 +112,8 @@ export interface PonderosaApi {
   listEngines(): Promise<EngineDto[]>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;
   getFiles(projectId: string, path?: string): Promise<FilesResponse>;
+  getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto>;
+  getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto>;
   getArtifact(threadId: string, artifactId: string): Promise<ArtifactContentDto>;
   sendMessage(threadId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
   uploadAttachment(threadId: string, file: File): Promise<ImageAttachmentDto>;
