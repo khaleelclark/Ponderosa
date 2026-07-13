@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
-import { ThreadStore } from "@ponderosa/threads";
+import { AgentStore } from "@ponderosa/agents";
 import { createServer } from "../src/app.js";
 
 function deferred<T = void>() {
@@ -46,7 +46,7 @@ describe("V1 reliability safety net", () => {
     const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-reliability-repo-"));
     cleanup.push(dataDir, repoDir);
     writeFileSync(path.join(repoDir, "README.md"), "fixture\n");
-    const store = new ThreadStore(dataDir);
+    const store = new AgentStore(dataDir);
     const adapter = new ControlledAdapter();
     const app = createServer({
       dataDir,
@@ -61,31 +61,31 @@ describe("V1 reliability safety net", () => {
     const master = (await app.inject({
       method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Control room", defaultEngine: "codex" },
     })).json<{ id: string }>();
-    const thread = (await app.inject({
+    const agent = (await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/threads`,
+      url: `/api/projects/${project.id}/agents`,
       payload: { title: "Reliability Agent", engine: "codex", conversationId: master.id, initialMessage: "first turn" },
     })).json<{ id: string }>();
 
     await adapter.seedStarted.promise;
-    expect(store.readEvents(thread.id).map(({ event }) => event.type)).toEqual(
+    expect(store.readEvents(agent.id).map(({ event }) => event.type)).toEqual(
       expect.arrayContaining(["user_message", "session", "text"]),
     );
 
-    const queued = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second turn" } });
+    const queued = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second turn" } });
     expect(queued.statusCode).toBe(202);
     expect(queued.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
-    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` })).json()).toEqual({ cancelled: true });
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: true });
     await adapter.seedAborted.promise;
     const continued = await adapter.continueStarted.promise;
     expect(continued.prompt).toContain("second turn");
     expect(continued.resumeSessionId).toBe("controlled-session");
-    while (!store.readEvents(thread.id).some(({ event }) => event.type === "agent_output")) {
+    while (!store.readEvents(agent.id).some(({ event }) => event.type === "agent_output")) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
 
-    const detail = (await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{
+    const detail = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}` })).json<{
       messages: Array<{ role: string; text: string }>;
       runOutput: Array<{ executionId: string; kind: string; text: string; completed: boolean }>;
     }>();
@@ -101,7 +101,7 @@ describe("V1 reliability safety net", () => {
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.sender.kind === "agent" && event.text === "queued turn completed")).toBe(false);
-    expect(store.readEvents(thread.id)).toEqual(expect.arrayContaining([
+    expect(store.readEvents(agent.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ event: expect.objectContaining({
         type: "agent_output", executionId: detail.runOutput[0]!.executionId, text: "queued turn completed",
       }) }),

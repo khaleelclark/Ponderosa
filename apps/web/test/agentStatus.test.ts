@@ -1,18 +1,18 @@
-import type { ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { agentStatusLabel, deriveAgentStatus, orderedAgentOrganization } from "../src/agents";
 import { eligibleOrganizationParents } from "../src/components/AgentDetail";
 
-const organizationAgent = (id: string, title: string, parent?: string): ThreadDto => ({
+const organizationAgent = (id: string, title: string, parent?: string): AgentDto => ({
   id, title, projectId: "project", conversationIds: [], activeEngine: "codex", state: {},
   createdAt: "2026-07-12T00:00:00.000Z", updatedAt: "2026-07-12T00:00:00.000Z", archived: false,
   ...(parent ? { managerAgentId: parent } : {}),
 });
 
-function detailWith(statuses: Array<"running" | "waiting_approval" | "done">): ThreadDetailDto {
+function detailWith(statuses: Array<"running" | "waiting_approval" | "done">): AgentDetailDto {
   return {
     tasks: statuses.map((status, index) => ({ id: `task-${index}`, status })),
-  } as ThreadDetailDto;
+  } as AgentDetailDto;
 }
 
 describe("visible agent status", () => {

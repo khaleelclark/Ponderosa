@@ -17,7 +17,7 @@ describe("Claude persistent stream-json runtime", () => {
       return spawn(process.execPath, [fake], opts);
     }) as unknown as typeof spawn;
     const session = new ClaudeStreamSession({
-      threadId: "ponderosa-thread",
+      agentId: "ponderosa-thread",
       cwd: here,
       history: [],
       signal: controller.signal,

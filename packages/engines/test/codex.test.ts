@@ -61,7 +61,7 @@ describe("CodexAdapter.seed (fake codex)", () => {
     } });
     const events: AgentEvent[] = [];
     const consuming = (async () => {
-      for await (const event of adapter.seed({ threadId: "t-live", cwd, prompt: "live", history: [], signal: controller.signal })) events.push(event);
+      for await (const event of adapter.seed({ agentId: "t-live", cwd, prompt: "live", history: [], signal: controller.signal })) events.push(event);
     })();
     await vi.waitFor(() => expect(observed).toBeDefined());
     expect(observed).toMatchObject({ parentPid: process.pid, exitCode: null, stdinOpen: true, stdoutOpen: true, stderrOpen: true });
@@ -76,7 +76,7 @@ describe("CodexAdapter.seed (fake codex)", () => {
     const controller = new AbortController();
     const events = await collect(
       fakeAdapter("seed").seed({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "hello",
         history: [],
@@ -100,7 +100,7 @@ describe("CodexAdapter.seed (fake codex)", () => {
     const controller = new AbortController();
     const events = await collect(
       fakeAdapter("fail").seed({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "hello",
         history: [],
@@ -116,7 +116,7 @@ describe("CodexAdapter.seed (fake codex)", () => {
     const controller = new AbortController();
     const events: AgentEvent[] = [];
     const stream = fakeAdapter("hang").seed({
-      threadId: "t1",
+      agentId: "t1",
       cwd,
       prompt: "hello",
       history: [],
@@ -135,7 +135,7 @@ describe("CodexAdapter.seed (fake codex)", () => {
     controller.abort();
     const events = await collect(
       fakeAdapter("seed").seed({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "hello",
         history: [],
@@ -158,7 +158,7 @@ describe("CodexAdapter.continue transport", () => {
     const adapter = new CodexAdapter({ bin: "codex-test", spawnFn, killGraceMs: 50 });
     await collect(
       adapter.continue({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "second turn only",
         resumeSessionId: "sess-abc",
@@ -193,7 +193,7 @@ describe("CodexAdapter.continue transport", () => {
     const controller = new AbortController();
     const events = await collect(
       fakeAdapter("stdin").continue({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt,
         resumeSessionId: "sess-large",
@@ -219,7 +219,7 @@ describe("CodexAdapter.continue transport", () => {
     const adapter = new CodexAdapter({ spawnFn, killGraceMs: 50 });
     await collect(
       adapter.seed({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "use account defaults",
         history: [],

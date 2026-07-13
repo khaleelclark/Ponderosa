@@ -1,15 +1,15 @@
-import type { ThreadDto } from "@ponderosa/core";
+import type { AgentDto } from "@ponderosa/core";
 
-export function activeCollaborationRecipients(threads: ThreadDto[]): ThreadDto[] {
-  return threads.filter((thread) => !thread.archived);
+export function activeCollaborationRecipients(agents: AgentDto[]): AgentDto[] {
+  return agents.filter((agent) => !agent.archived);
 }
 
-export function retainActiveRecipientIds(selectedIds: Iterable<string>, threads: ThreadDto[]): string[] {
-  const activeIds = new Set(activeCollaborationRecipients(threads).map((thread) => thread.id));
+export function retainActiveRecipientIds(selectedIds: Iterable<string>, agents: AgentDto[]): string[] {
+  const activeIds = new Set(activeCollaborationRecipients(agents).map((agent) => agent.id));
   return [...new Set(selectedIds)].filter((id) => activeIds.has(id));
 }
 
 /** Resolve the #everyone UX into the same immutable stable-ID payload as manual selection. */
-export function allActiveRecipientIds(threads: ThreadDto[]): string[] {
-  return activeCollaborationRecipients(threads).map((thread) => thread.id);
+export function allActiveRecipientIds(agents: AgentDto[]): string[] {
+  return activeCollaborationRecipients(agents).map((agent) => agent.id);
 }

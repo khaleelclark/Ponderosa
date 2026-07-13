@@ -41,7 +41,7 @@ import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { readChatState, readScrollPosition, writeChatState } from "../chatState";
-import type { ExecutionItem } from "../hooks/useThreadStream";
+import type { ExecutionItem } from "../hooks/useAgentStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
@@ -545,8 +545,8 @@ export function ChatPane({
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
       {chatMessages.map((message) => {
-        const visibleAgentName = message.authorThreadId
-          ? agentNameForId?.(message.authorThreadId) ?? "Agent"
+        const visibleAgentName = message.authorAgentId
+          ? agentNameForId?.(message.authorAgentId) ?? "Agent"
           : agentName;
         const senderLabel = individualChatSenderLabel(message.role, visibleAgentName);
         return (
@@ -1074,16 +1074,16 @@ function MarkdownViewer({ content }: { content: string }): JSX.Element {
 
 function ArtifactViewer({
   artifact,
-  threadId,
+  agentId,
   liveContent,
 }: {
   artifact: ArtifactDto | undefined;
-  threadId: string;
+  agentId: string;
   liveContent: string | undefined;
 }): JSX.Element {
   const contentQuery = useQuery({
-    queryKey: ["artifact", threadId, artifact?.id],
-    queryFn: () => api.getArtifact(threadId, artifact?.id ?? ""),
+    queryKey: ["artifact", agentId, artifact?.id],
+    queryFn: () => api.getArtifact(agentId, artifact?.id ?? ""),
     enabled: Boolean(artifact && artifact.kind !== "document" && !artifact.id.startsWith("live-artifact-")),
   });
 
@@ -1149,11 +1149,11 @@ function ArtifactViewer({
 
 export function ArtifactsPane({
   artifacts,
-  threadId,
+  agentId,
   timeline,
 }: {
   artifacts: ArtifactDto[];
-  threadId: string;
+  agentId: string;
   timeline: ExecutionItem[];
 }): JSX.Element {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(artifacts[0]?.id);
@@ -1204,7 +1204,7 @@ export function ArtifactsPane({
           />
         ))}
       </Tabs>
-      <ArtifactViewer artifact={selectedArtifact} threadId={threadId} liveContent={liveContent} />
+      <ArtifactViewer artifact={selectedArtifact} agentId={agentId} liveContent={liveContent} />
     </Box>
   );
 }

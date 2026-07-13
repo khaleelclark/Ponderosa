@@ -104,7 +104,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 ];
 
 /**
- * Render a thread's chat history + the current prompt into a single seed prompt.
+ * Render an agent's chat history + the current prompt into a single seed prompt.
  * Deliberately minimal (SPEC §4/§5): no assembled packet — the agent reads the
  * repo's md files and git state from its cwd. In v1, `seed()` usually fires on the
  * first message, so `history` is empty or a single line.

@@ -40,14 +40,14 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { agentDescendants, agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
-import { useThread } from "../hooks/queries";
+import { useAgent } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
-import { useThreadStream } from "../hooks/useThreadStream";
+import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -90,9 +90,9 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
 
-export function eligibleOrganizationParents(agent: ThreadDto, agents: ThreadDto[]): ThreadDto[] {
+export function eligibleOrganizationParents(agent: AgentDto, agents: AgentDto[]): AgentDto[] {
   const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
-  const isDescendant = (candidate: ThreadDto): boolean => {
+  const isDescendant = (candidate: AgentDto): boolean => {
     const seen = new Set<string>();
     let parentId = candidate.managerAgentId;
     while (parentId && !seen.has(parentId)) {
@@ -126,7 +126,7 @@ export function AgentDetail({
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   projectedStatus?: AgentStatus;
   projectedHealth?: AgentHealthDto;
-  agents: ThreadDto[];
+  agents: AgentDto[];
   conversations: ConversationDto[];
   onBack(): void;
   onOpenAgent(agentId: string): void;
@@ -135,8 +135,8 @@ export function AgentDetail({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const threadQuery = useThread(agentId);
-  const stream = useThreadStream(agentId);
+  const agentQuery = useAgent(agentId);
+  const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
   const [tab, setTab] = useState<AgentTab>(() => {
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -167,9 +167,9 @@ export function AgentDetail({
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
   }, [agentId, tab]);
 
-  const detail = threadQuery.data;
+  const detail = agentQuery.data;
   const engine =
-    engines.find((candidate) => candidate.id === detail?.thread.activeEngine) ?? engines[0];
+    engines.find((candidate) => candidate.id === detail?.agent.activeEngine) ?? engines[0];
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = [
     { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
@@ -201,53 +201,53 @@ export function AgentDetail({
 
   const cancelRun = useMutation({
     mutationFn: () => api.cancelRun(agentId),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["thread", agentId] }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["agent", agentId] }),
   });
 
   const deleteAgent = useMutation({
-    mutationFn: () => api.deleteThread(agentId),
+    mutationFn: () => api.deleteAgent(agentId),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["threads"] });
-      queryClient.removeQueries({ queryKey: ["thread", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.removeQueries({ queryKey: ["agent", agentId] });
       setDeleteOpen(false);
       onDeleted();
     },
   });
 
   const rename = useMutation({
-    mutationFn: (title: string) => api.updateThread(agentId, { title }),
+    mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
-        current ? { ...current, thread: updated } : current,
+      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+        current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<ThreadDto[]>({ queryKey: ["threads"] }, (current) =>
-        current?.map((thread) => (thread.id === updated.id ? updated : thread)),
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+        current?.map((agent) => (agent.id === updated.id ? updated : agent)),
       );
       queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
         current
           ? {
               ...current,
-              threads: current.threads.map((thread) => (thread.id === updated.id ? updated : thread)),
+              agents: current.agents.map((agent) => (agent.id === updated.id ? updated : agent)),
             }
           : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
       void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       setRenameOpen(false);
     },
   });
 
   const updateMemberships = useMutation({
-    mutationFn: () => api.updateThreadConversationMemberships(agentId, {
+    mutationFn: () => api.updateAgentConversationMemberships(agentId, {
       conversationIds: membershipIds,
       primaryConversationId: membershipIds.length ? primaryConversationId : undefined,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
-        current ? { ...current, thread: updated } : current,
+      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+        current ? { ...current, agent: updated } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
       void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       setMembershipOpen(false);
     },
@@ -256,15 +256,15 @@ export function AgentDetail({
   const updateOrganization = useMutation({
     mutationFn: () => api.updateAgentOrganization(agentId, { managerAgentId: organizationParentId || null }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
-        current ? { ...current, thread: updated } : current,
+      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+        current ? { ...current, agent: updated } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["threads", updated.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
       setOrganizationOpen(false);
     },
   });
 
-  if (threadQuery.isLoading) {
+  if (agentQuery.isLoading) {
     return (
       <Box sx={{ p: 3 }} role="status" aria-live="polite">
         <CircularProgress size={24} aria-label="Loading agent" />
@@ -272,13 +272,13 @@ export function AgentDetail({
     );
   }
 
-  if (threadQuery.isError) {
+  if (agentQuery.isError) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
           severity="error"
           action={
-            <Button color="inherit" size="small" onClick={() => void threadQuery.refetch()}>
+            <Button color="inherit" size="small" onClick={() => void agentQuery.refetch()}>
               Retry
             </Button>
           }
@@ -299,19 +299,19 @@ export function AgentDetail({
 
   const models = engine?.models ?? [];
   const efforts = engine?.efforts ?? [];
-  const master = detail.thread.conversationId
-    ? conversations.find((candidate) => candidate.id === detail.thread.conversationId)
+  const master = detail.agent.conversationId
+    ? conversations.find((candidate) => candidate.id === detail.agent.conversationId)
     : undefined;
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
   const agentNameForId = (candidateId: string): string | undefined =>
     agents.find((candidate) => candidate.id === candidateId)?.title;
-  const organizationalParent = detail.thread.managerAgentId
-    ? agents.find((candidate) => candidate.id === detail.thread.managerAgentId)
+  const organizationalParent = detail.agent.managerAgentId
+    ? agents.find((candidate) => candidate.id === detail.agent.managerAgentId)
     : undefined;
-  const spawningAgent = detail.thread.spawnedByAgentId
-    ? agents.find((candidate) => candidate.id === detail.thread.spawnedByAgentId)
+  const spawningAgent = detail.agent.spawnedByAgentId
+    ? agents.find((candidate) => candidate.id === detail.agent.spawnedByAgentId)
     : undefined;
-  const descendantCount = agentDescendants(detail.thread.id, agents).length;
+  const descendantCount = agentDescendants(detail.agent.id, agents).length;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
     (text: string, files: File[]) => {
@@ -336,7 +336,7 @@ export function AgentDetail({
                       ? "Steered into the active turn."
                       : undefined,
                 );
-                void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.thread.projectId] });
+                void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.agent.projectId] });
               },
             },
           );
@@ -350,20 +350,20 @@ export function AgentDetail({
     };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
-      projectId: detail.thread.projectId,
+    chat: <ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
+      projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
       idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
     }).then(() => {
-      void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
     })} onReply={setReplyTo} />,
     runOutput: <WorkLogPane entries={detail.runOutput} />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
-    review: <WorkspaceReviewPane projectId={detail.thread.projectId} files={detail.changedFiles} running={stream.running} />,
+    review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} />,
     tasks: <RunsPane tasks={detail.tasks} runTriggers={detail.runTriggers} messages={detail.messages} timeline={stream.timeline} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={agentId} timeline={stream.timeline} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} />,
   };
 
   return (
@@ -383,7 +383,7 @@ export function AgentDetail({
           </Tooltip>
           <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "calc(100% - 48px)", sm: "auto" } }}>
             <Typography variant="h6" noWrap>
-              {detail.thread.title}
+              {detail.agent.title}
             </Typography>
             <Typography variant="body2" color="text.secondary" noWrap>
               {detail.state.branch ?? "No branch"} {detail.state.commit ? `· ${detail.state.commit}` : ""}
@@ -443,7 +443,7 @@ export function AgentDetail({
               aria-label="Rename agent"
               sx={{ minWidth: 44, minHeight: 44 }}
               onClick={() => {
-                setRenameValue(detail.thread.title);
+                setRenameValue(detail.agent.title);
                 setRenameOpen(true);
               }}
             >
@@ -456,14 +456,14 @@ export function AgentDetail({
             </IconButton>
           </Tooltip>
           <Button size="small" variant="outlined" sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
-            setMembershipIds(detail.thread.conversationIds);
-            setPrimaryConversationId(detail.thread.conversationId ?? "");
+            setMembershipIds(detail.agent.conversationIds);
+            setPrimaryConversationId(detail.agent.conversationId ?? "");
             setMembershipOpen(true);
           }}>
             Assign chats
           </Button>
           <Button size="small" variant="outlined" startIcon={<AccountTreeOutlinedIcon />} sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
-            setOrganizationParentId(detail.thread.managerAgentId ?? "");
+            setOrganizationParentId(detail.agent.managerAgentId ?? "");
             setOrganizationOpen(true);
           }}>
             Organize
@@ -498,7 +498,7 @@ export function AgentDetail({
           sx={{ mt: 1, display: compactViewport && !runSetupOpen ? "none" : "flex" }}
         >
           <Chip
-            label={`${engine?.displayName ?? detail.thread.activeEngine}${engine?.authenticated ? "" : " · not signed in"}`}
+            label={`${engine?.displayName ?? detail.agent.activeEngine}${engine?.authenticated ? "" : " · not signed in"}`}
             color={engine?.authenticated ? "default" : "warning"}
             sx={{ justifyContent: "flex-start" }}
           />
@@ -536,17 +536,17 @@ export function AgentDetail({
           </FormControl>
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
-        {runtimeActivity ? <RespondingIndicator agentName={detail.thread.title} startedAt={runtimeActivity.startedAt} /> : null}
-        {detail.thread.spawnedByAgentId ? <Box component="section" aria-label="Agent creation" sx={{ mt: 1.5, p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+        {runtimeActivity ? <RespondingIndicator agentName={detail.agent.title} startedAt={runtimeActivity.startedAt} /> : null}
+        {detail.agent.spawnedByAgentId ? <Box component="section" aria-label="Agent creation" sx={{ mt: 1.5, p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
-            <Typography fontWeight={700} sx={{ flex: 1 }}>Created by {spawningAgent?.title ?? detail.thread.spawnedByAgentId}</Typography>
+            <Typography fontWeight={700} sx={{ flex: 1 }}>Created by {spawningAgent?.title ?? detail.agent.spawnedByAgentId}</Typography>
             {spawningAgent ? <Button size="small" onClick={() => onOpenAgent(spawningAgent.id)}>Open manager</Button> : null}
           </Stack>
           <Typography variant="overline" color="text.secondary">Original message</Typography>
           <Typography component="pre" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", m: 0 }}>
-            {detail.thread.spawnPrompt ?? "No initial message — this agent was created idle."}
+            {detail.agent.spawnPrompt ?? "No initial message — this agent was created idle."}
           </Typography>
-          {detail.thread.spawnedByExecutionId ? <Typography variant="caption" color="text.secondary">Created during execution {detail.thread.spawnedByExecutionId}</Typography> : null}
+          {detail.agent.spawnedByExecutionId ? <Typography variant="caption" color="text.secondary">Created during execution {detail.agent.spawnedByExecutionId}</Typography> : null}
         </Box> : null}
       </Box>
 
@@ -578,7 +578,7 @@ export function AgentDetail({
         ) : null}
         <Composer
           commands={commands}
-          projectId={detail.thread.projectId}
+          projectId={detail.agent.projectId}
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           disabled={sendMessage.isPending}
           running={false}
@@ -594,7 +594,7 @@ export function AgentDetail({
               return api.compactSession(agentId).then(() => setQueuedMessageNotice("Agent session compacted."));
             }
             if (files.length === 0 && text === "/status") {
-              setQueuedMessageNotice(`${detail.thread.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
+              setQueuedMessageNotice(`${detail.agent.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
               return Promise.resolve();
             }
             return submitAgentMessage("steer")(text, files);
@@ -610,7 +610,7 @@ export function AgentDetail({
         <DialogTitle>Delete agent?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            This permanently deletes <Box component="strong">{detail.thread.title}</Box>, including its
+            This permanently deletes <Box component="strong">{detail.agent.title}</Box>, including its
             event log, tasks, and artifacts.
             {descendantCount ? ` Its ${descendantCount} direct and indirect report${descendantCount === 1 ? "" : "s"} will also be deleted unless promoted or reparented first.` : ""}
             {" "}This cannot be undone.
@@ -712,7 +712,7 @@ export function AgentDetail({
               onChange={(event) => setOrganizationParentId(event.target.value)}
             >
               <MenuItem value="">Top level</MenuItem>
-              {eligibleOrganizationParents(detail.thread, agents)
+              {eligibleOrganizationParents(detail.agent, agents)
                 .map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.title}</MenuItem>)}
             </Select>
           </FormControl>

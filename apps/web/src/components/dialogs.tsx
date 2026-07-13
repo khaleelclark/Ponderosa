@@ -14,7 +14,7 @@ import {
   TextField,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentPresetDto, EngineDto, ConversationDto, ThreadDto } from "@ponderosa/core";
+import type { AgentPresetDto, EngineDto, ConversationDto, AgentDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 
 const UNSET = "";
@@ -54,7 +54,7 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
 }
 
 /**
- * Conversations are model-agnostic control rooms: an optional default engine just
+ * Project conversations are model-agnostic: an optional default engine just
  * prefills the agents spawned from here. The user can pick any engine per agent
  * and change it any time.
  */
@@ -142,7 +142,7 @@ export interface CreateAgentInput {
   initialMessage?: string;
 }
 
-export function activeManagerOptions(agents: ThreadDto[]): ThreadDto[] {
+export function activeManagerOptions(agents: AgentDto[]): AgentDto[] {
   return agents.filter((agent) => !agent.archived);
 }
 
@@ -169,7 +169,7 @@ export function createAgentInputFromForm(input: {
 }
 
 /**
- * Spawns an agent (thread). From a conversation, `fixedConversationId` locks the
+ * Spawns an agent (agent). From a conversation, `fixedConversationId` locks the
  * manager and prefills defaults; from the Agents tab, the user may optionally
  * assign it to a conversation.
  */
@@ -194,7 +194,7 @@ export function CreateAgentDialog({
   engines: EngineDto[];
   conversations: ConversationDto[];
   presets: AgentPresetDto[];
-  agents: ThreadDto[];
+  agents: AgentDto[];
   fixedConversationId?: string;
   defaultEngine?: string;
   defaultModel?: string;

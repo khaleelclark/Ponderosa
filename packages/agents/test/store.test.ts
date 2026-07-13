@@ -1,18 +1,19 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ThreadStore } from "../src/store.js";
+import { AgentStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
 import { artifactContentPath, collaborationMessagesPath, communicationEventsPath, conversationMessagesPath, projectDir, projectJsonPath, runTriggersPath } from "../src/paths.js";
 
 let dir: string;
-let store: ThreadStore;
+let store: AgentStore;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "pond-store-"));
-  store = new ThreadStore(dir);
+  store = new AgentStore(dir);
 });
 
 afterEach(() => {
@@ -21,15 +22,15 @@ afterEach(() => {
 });
 
 /** Read every projection table as plain sorted rows (for equality snapshots). */
-function snapshot(s: ThreadStore): Record<string, unknown[]> {
+function snapshot(s: AgentStore): Record<string, unknown[]> {
   const db = s.sqlite;
   const tables = [
     "projects",
     "agent_presets",
     "conversations",
     "conversation_messages",
-    "thread_conversation_memberships",
-    "threads",
+    "agent_conversation_memberships",
+    "agents",
     "messages",
     "tasks",
     "artifacts",
@@ -37,25 +38,52 @@ function snapshot(s: ThreadStore): Record<string, unknown[]> {
   ];
   const out: Record<string, unknown[]> = {};
   for (const t of tables) {
-    const order = t === "thread_conversation_memberships" ? "thread_id, position" : "id";
+    const order = t === "agent_conversation_memberships" ? "agent_id, position" : "id";
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
   }
   return out;
 }
 
-function seedThread(): { projectId: string; threadId: string } {
+function seedAgent(): { projectId: string; agentId: string } {
   const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-  const thread = store.createThread(project.id, { title: "Auth", engine: "codex" });
-  return { projectId: project.id, threadId: thread.id };
+  const agent = store.createAgent(project.id, { title: "Auth", engine: "codex" });
+  return { projectId: project.id, agentId: agent.id };
 }
 
-describe("ThreadStore — canonical communication events", () => {
+describe("AgentStore — V1 layout", () => {
+  it("drops Thread-era test state while preserving managed source workspaces", () => {
+    const legacyDir = join(dir, "legacy-state");
+    const workspaceFile = join(legacyDir, "workspaces", "demo", "README.md");
+    const legacyAgentFile = join(legacyDir, "projects", "project-old", "threads", "thread-old", "thread.json");
+    mkdirSync(join(legacyDir, "workspaces", "demo"), { recursive: true });
+    mkdirSync(join(legacyDir, "projects", "project-old", "threads", "thread-old"), { recursive: true });
+    writeFileSync(workspaceFile, "# Keep me\n", "utf8");
+    writeFileSync(legacyAgentFile, "{}\n", "utf8");
+    const legacyDb = new Database(join(legacyDir, "ponderosa.db"));
+    legacyDb.exec("CREATE TABLE threads (id TEXT PRIMARY KEY)");
+    legacyDb.close();
+
+    const migrated = new AgentStore(legacyDir);
+    try {
+      expect(readFileSync(workspaceFile, "utf8")).toBe("# Keep me\n");
+      expect(existsSync(legacyAgentFile)).toBe(false);
+      expect(migrated.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agents'").get())
+        .toEqual({ name: "agents" });
+      expect(migrated.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='threads'").get())
+        .toBeUndefined();
+    } finally {
+      migrated.close();
+    }
+  });
+});
+
+describe("AgentStore — canonical communication events", () => {
   it("keeps long-form documents canonical, scoped, and out of projected summary text", () => {
     const project = store.createProject({ label: "Docs", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: room.id });
-    const recipient = store.createThread(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: room.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
     const event: CommunicationEvent = {
       eventId: "doc-event", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "agent", agentId: author.id, executionId: "run-1" },
@@ -120,9 +148,9 @@ describe("ThreadStore — canonical communication events", () => {
   it("normalizes V2 collaboration recipients before persistence and idempotency comparison", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const sender = store.createThread(project.id, { title: "Sender", engine: "codex", conversationId: room.id });
-    const a = store.createThread(project.id, { title: "A", engine: "codex", conversationId: room.id });
-    const b = store.createThread(project.id, { title: "B", engine: "codex", conversationId: room.id });
+    const sender = store.createAgent(project.id, { title: "Sender", engine: "codex", conversationId: room.id });
+    const a = store.createAgent(project.id, { title: "A", engine: "codex", conversationId: room.id });
+    const b = store.createAgent(project.id, { title: "B", engine: "codex", conversationId: room.id });
     const event: CommunicationEvent = {
       eventId: "normalized", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "agent", agentId: sender.id }, intent: "collaboration",
@@ -140,8 +168,8 @@ describe("ThreadStore — canonical communication events", () => {
     const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
     const room = store.createConversation(project.id, { title: "Room" });
     const otherRoom = store.createConversation(project.id, { title: "Other room" });
-    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
-    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
+    const foreign = store.createAgent(otherProject.id, { title: "Foreign", engine: "codex" });
     const dm: CommunicationEvent = {
       eventId: "dm", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
@@ -172,14 +200,14 @@ describe("ThreadStore — canonical communication events", () => {
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "unknown", audience: { ...dm.audience, agentId: "missing" } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "foreign", audience: { ...dm.audience, agentId: foreign.id } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "wrong-room", conversationId: otherRoom.id })).toThrow("belong to its conversation");
-    store.updateThread(agent.id, { archived: true });
+    store.updateAgent(agent.id, { archived: true });
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "archived" })).toThrow("active agent");
   });
 
   it("projects one bidirectional User DM identity into Main and Direct Agent timelines", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
     const userDm: CommunicationEvent = {
       eventId: "user-to-agent", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
@@ -211,8 +239,8 @@ describe("ThreadStore — canonical communication events", () => {
   it("projects one user-authored group DM into each explicit agent audit", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: room.id });
-    const second = store.createThread(project.id, { title: "Second", engine: "codex", conversationId: room.id });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: room.id });
+    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: room.id });
     const groupDm: CommunicationEvent = {
       eventId: "group-dm", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
@@ -235,8 +263,8 @@ describe("ThreadStore — canonical communication events", () => {
   it("uses a durable RunTrigger—not message text—to link a Project request to its responsible agent", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const responsible = store.createThread(project.id, { title: "Responsible", engine: "codex", conversationId: room.id });
-    const other = store.createThread(project.id, { title: "Other", engine: "codex", conversationId: room.id });
+    const responsible = store.createAgent(project.id, { title: "Responsible", engine: "codex", conversationId: room.id });
+    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: room.id });
     const request: CommunicationEvent = {
       eventId: "project-request", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
@@ -255,12 +283,12 @@ describe("ThreadStore — canonical communication events", () => {
       replayed: true,
     });
     store.appendEvent(responsible.id, { type: "user_message", text: request.text, communicationEventId: request.eventId });
-    expect(store.getProjectedThreadMessages(responsible.id)).toHaveLength(1);
-    expect(store.getProjectedThreadMessages(other.id)).toHaveLength(0);
+    expect(store.getProjectedAgentMessages(responsible.id)).toHaveLength(1);
+    expect(store.getProjectedAgentMessages(other.id)).toHaveLength(0);
     expect(readFileSync(runTriggersPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
 
     store.close();
-    store = new ThreadStore(dir);
+    store = new AgentStore(dir);
     expect(store.readRunTriggers(project.id, responsible.id)).toEqual([first.trigger]);
     expect(store.hasRunTrigger(project.id, request.eventId, responsible.id)).toBe(true);
   });
@@ -268,8 +296,8 @@ describe("ThreadStore — canonical communication events", () => {
   it("preserves an agent collaborator as the visible author in the recipient audit", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const child = store.createThread(project.id, { title: "Child", engine: "codex", conversationId: room.id });
-    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", conversationId: room.id });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: room.id });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: room.id });
     const report: CommunicationEvent = {
       eventId: "child-report", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "agent", agentId: child.id }, intent: "collaboration",
@@ -281,11 +309,11 @@ describe("ThreadStore — canonical communication events", () => {
     store.appendEvent(child.id, { type: "communication_projection", text: report.text, communicationEventId: report.eventId });
     store.appendEvent(manager.id, { type: "user_message", text: report.text, communicationEventId: report.eventId });
 
-    expect(store.getProjectedThreadMessages(manager.id)).toEqual([
+    expect(store.getProjectedAgentMessages(manager.id)).toEqual([
       expect.objectContaining({
         communicationEventId: report.eventId,
         role: "assistant",
-        authorThreadId: child.id,
+        authorAgentId: child.id,
         text: report.text,
       }),
     ]);
@@ -295,7 +323,7 @@ describe("ThreadStore — canonical communication events", () => {
   it("rejects self-recipient collaboration before writing the canonical ledger", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const sender = store.createThread(project.id, { title: "Sender", engine: "codex", conversationId: room.id });
+    const sender = store.createAgent(project.id, { title: "Sender", engine: "codex", conversationId: room.id });
     expect(() => store.appendCommunicationEvent({
       eventId: "self", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "agent", agentId: sender.id }, intent: "collaboration",
@@ -310,11 +338,11 @@ describe("ThreadStore — canonical communication events", () => {
     const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
     const room = store.createConversation(project.id, { title: "Room" });
     const otherRoom = store.createConversation(project.id, { title: "Other room" });
-    const recipient = store.createThread(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
-    const wrongRoom = store.createThread(project.id, { title: "Wrong room", engine: "codex", conversationId: otherRoom.id });
-    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", conversationId: room.id });
-    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
-    store.updateThread(archived.id, { archived: true });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
+    const wrongRoom = store.createAgent(project.id, { title: "Wrong room", engine: "codex", conversationId: otherRoom.id });
+    const archived = store.createAgent(project.id, { title: "Archived", engine: "codex", conversationId: room.id });
+    const foreign = store.createAgent(otherProject.id, { title: "Foreign", engine: "codex" });
+    store.updateAgent(archived.id, { archived: true });
     const before = () => ({
       events: store.readCommunicationEvents(project.id),
       context: store.readContextClassifications(project.id),
@@ -345,34 +373,34 @@ describe("ThreadStore — canonical communication events", () => {
     store.appendCommunicationEvent(event);
     store.close();
     writeFileSync(file, `${readFileSync(file, "utf8")}{\"eventId\":\"torn`, "utf8");
-    store = new ThreadStore(dir);
+    store = new AgentStore(dir);
     store.appendCommunicationEvent({ ...event, eventId: "event-2", text: "Second" });
     expect(store.readCommunicationEvents(project.id).map((item) => item.eventId)).toEqual(["event-1", "event-2"]);
 
     const valid = readFileSync(file, "utf8");
     store.close();
     writeFileSync(file, `{not-json}\n${JSON.stringify(event)}\n`, "utf8");
-    expect(() => new ThreadStore(dir)).toThrow("non-tail corruption");
+    expect(() => new AgentStore(dir)).toThrow("non-tail corruption");
     writeFileSync(file, valid, "utf8");
-    store = new ThreadStore(dir);
+    store = new AgentStore(dir);
   });
 
   it("reconciles and rebuilds a direct-agent projection by canonical event ID", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     const event: CommunicationEvent = {
       eventId: "event-direct", schemaVersion: 1, projectId: project.id,
-      sender: { kind: "agent", agentId: thread.id }, intent: "direct_to_user",
+      sender: { kind: "agent", agentId: agent.id }, intent: "direct_to_user",
       audience: { kind: "user", userId: "local-operator" }, text: "Audit note",
       createdAt: "2026-07-12T00:00:00.000Z",
     };
     store.appendCommunicationEvent(event);
-    store.appendEvent(thread.id, { type: "communication_projection", communicationEventId: event.eventId, text: event.text });
+    store.appendEvent(agent.id, { type: "communication_projection", communicationEventId: event.eventId, text: event.text });
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 1, linkedProjections: 2 });
-    expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
+    expect(store.getMessages(agent.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
 
     store.rebuildProjections();
-    expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
+    expect(store.getMessages(agent.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
   });
 
@@ -399,18 +427,18 @@ describe("ThreadStore — canonical communication events", () => {
   it("accepts one event on multiple surfaces while deduplicating each projection tuple", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
     const event: CommunicationEvent = {
       eventId: "event-multi", schemaVersion: 1, projectId: project.id, conversationId: room.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
-      audience: { kind: "agents", agentIds: [thread.id] }, text: "Review",
+      audience: { kind: "agents", agentIds: [agent.id] }, text: "Review",
       createdAt: "2026-07-12T00:00:00.000Z",
     };
     store.appendCommunicationEvent(event);
     store.appendConversationMessage(room.id, { text: event.text }, undefined, "collaboration", undefined, undefined, event.eventId);
-    store.appendEvent(thread.id, { type: "user_message", text: event.text, communicationEventId: event.eventId });
+    store.appendEvent(agent.id, { type: "user_message", text: event.text, communicationEventId: event.eventId });
     expect(store.appendCommunicationProjection(project.id, {
-      eventId: event.eventId, surface: "direct_agent_audit", projectionKey: thread.id,
+      eventId: event.eventId, surface: "direct_agent_audit", projectionKey: agent.id,
       projectedAt: "later retry timestamp",
     }).replayed).toBe(true);
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
@@ -418,7 +446,7 @@ describe("ThreadStore — canonical communication events", () => {
     });
     expect(store.readProjectedCommunicationMessages(project.id, "collaboration_view", room.id))
       .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
-    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", thread.id))
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id))
       .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
   });
 
@@ -458,7 +486,7 @@ describe("ThreadStore — canonical communication events", () => {
     store.appendCommunicationEvent(secondEvent);
     store.appendConversationMessage(room.id, {
       text: "Reply", replyToMessageId: first.id,
-      attachments: [{ id: "asset-1", threadId: "manager", name: "diagram.png", mediaType: "image/png", size: 42, url: "/api/assets/asset-1" }],
+      attachments: [{ id: "asset-1", agentId: "manager", name: "diagram.png", mediaType: "image/png", size: 42, url: "/api/assets/asset-1" }],
     }, undefined, "main", undefined, undefined, secondEvent.eventId);
     const expected = store.getConversationMessages(room.id);
     writeFileSync(conversationMessagesPath(dir, project.id, room.id), "", "utf8");
@@ -467,15 +495,15 @@ describe("ThreadStore — canonical communication events", () => {
 
   it("recovers a durable execution start that has no terminal event after restart", () => {
     const project = store.createProject({ label: "Recovery", hostPath: "/repo" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
-    store.appendEvent(thread.id, {
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
+    store.appendEvent(agent.id, {
       type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "execution-before-crash",
     });
     store.close();
-    store = new ThreadStore(dir);
+    store = new AgentStore(dir);
 
-    expect(store.recoverInterruptedExecutions()).toEqual([thread.id]);
-    expect(store.readEvents(thread.id).at(-1)?.event).toEqual({
+    expect(store.recoverInterruptedExecutions()).toEqual([agent.id]);
+    expect(store.readEvents(agent.id).at(-1)?.event).toEqual({
       type: "agent_lifecycle", status: "failed", reason: "execution_interrupted", executionId: "execution-before-crash",
     });
     expect(store.recoverInterruptedExecutions()).toEqual([]);
@@ -503,28 +531,28 @@ describe("ThreadStore — canonical communication events", () => {
   }, 20_000);
 });
 
-describe("ThreadStore — multi-conversation membership", () => {
+describe("AgentStore — multi-conversation membership", () => {
   it("rebuilds membership and removes only a deleted room", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const first = store.createConversation(project.id, { title: "First" });
     const second = store.createConversation(project.id, { title: "Second" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: first.id });
-    expect(store.updateThreadConversationMemberships(thread.id, { conversationIds: [first.id, second.id], primaryConversationId: second.id }))
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: first.id });
+    expect(store.updateAgentConversationMemberships(agent.id, { conversationIds: [first.id, second.id], primaryConversationId: second.id }))
       .toMatchObject({ conversationId: second.id, conversationIds: [first.id, second.id] });
-    expect(store.getConversationDetail(first.id)?.threads.map((item) => item.id)).toEqual([thread.id]);
-    expect(store.getConversationDetail(second.id)?.threads.map((item) => item.id)).toEqual([thread.id]);
+    expect(store.getConversationDetail(first.id)?.agents.map((item) => item.id)).toEqual([agent.id]);
+    expect(store.getConversationDetail(second.id)?.agents.map((item) => item.id)).toEqual([agent.id]);
     store.rebuildProjections();
-    expect(store.getThread(thread.id)?.conversationIds).toEqual([first.id, second.id]);
+    expect(store.getAgent(agent.id)?.conversationIds).toEqual([first.id, second.id]);
     store.deleteConversation(second.id);
-    expect(store.getThread(thread.id)).toMatchObject({ conversationId: first.id, conversationIds: [first.id] });
+    expect(store.getAgent(agent.id)).toMatchObject({ conversationId: first.id, conversationIds: [first.id] });
   });
 
   it("rejects cross-project membership", () => {
     const one = store.createProject({ label: "One", hostPath: "/one" });
     const two = store.createProject({ label: "Two", hostPath: "/two" });
-    const thread = store.createThread(one.id, { title: "Agent", engine: "codex" });
+    const agent = store.createAgent(one.id, { title: "Agent", engine: "codex" });
     const foreign = store.createConversation(two.id, { title: "Foreign" });
-    expect(() => store.updateThreadConversationMemberships(thread.id, { conversationIds: [foreign.id], primaryConversationId: foreign.id })).toThrow("does not belong");
+    expect(() => store.updateAgentConversationMemberships(agent.id, { conversationIds: [foreign.id], primaryConversationId: foreign.id })).toThrow("does not belong");
   });
 });
 
@@ -545,12 +573,12 @@ const RUN: LogEvent[] = [
   { type: "agent_output", executionId: "run-1", text: "I'll handle this.Done — auth refactor complete.", sourceSeqStart: 3, sourceSeqEnd: 7 },
 ];
 
-describe("ThreadStore — append + projection", () => {
+describe("AgentStore — append + projection", () => {
   it("projects a full run into Chat, Work log, Tasks, and Artifacts", () => {
-    const { projectId, threadId } = seedThread();
-    for (const ev of RUN) store.appendEvent(threadId, ev);
+    const { projectId, agentId } = seedAgent();
+    for (const ev of RUN) store.appendEvent(agentId, ev);
 
-    const detail = store.getThreadDetail(threadId)!;
+    const detail = store.getAgentDetail(agentId)!;
     expect(detail.messages.map((m) => m.role)).toEqual(["user"]);
     expect(detail.runOutput).toEqual([expect.objectContaining({
       executionId: "run-1",
@@ -576,29 +604,29 @@ describe("ThreadStore — append + projection", () => {
     const commandFile = artifactContentPath(
       dir,
       projectId,
-      threadId,
+      agentId,
       detail.artifacts[0]!.path,
     );
     expect(existsSync(commandFile)).toBe(true);
     expect(readFileSync(commandFile, "utf8")).toContain("pnpm test");
     // session id captured for resume
-    expect(store.resumeSessionId(threadId)).toBe("sess-abc");
+    expect(store.resumeSessionId(agentId)).toBe("sess-abc");
   });
 
   it("recovers legacy text into ordered execution-scoped Work log entries after restart", () => {
-    const { threadId } = seedThread();
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-1" });
-    store.appendEvent(threadId, { type: "text", delta: "first legacy response" });
-    store.appendEvent(threadId, { type: "turn_done" });
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-1" });
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-2" });
-    store.appendEvent(threadId, { type: "text", delta: "second legacy response" });
-    store.appendEvent(threadId, { type: "turn_done" });
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-2" });
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-1" });
+    store.appendEvent(agentId, { type: "text", delta: "first legacy response" });
+    store.appendEvent(agentId, { type: "turn_done" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-1" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-2" });
+    store.appendEvent(agentId, { type: "text", delta: "second legacy response" });
+    store.appendEvent(agentId, { type: "turn_done" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-2" });
 
     store.close();
-    store = new ThreadStore(dir);
-    const detail = store.getThreadDetail(threadId)!;
+    store = new AgentStore(dir);
+    const detail = store.getAgentDetail(agentId)!;
     expect(detail.messages).toEqual([]);
     expect(detail.runOutput.map(({ executionId, text, completed }) => ({ executionId, text, completed }))).toEqual([
       { executionId: "legacy-run-1", text: "first legacy response", completed: true },
@@ -607,18 +635,18 @@ describe("ThreadStore — append + projection", () => {
   });
 
   it("rebuilds chronological activity and per-file execution history after restart", () => {
-    const { threadId } = seedThread();
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-a" });
-    store.appendEvent(threadId, { type: "command", command: "pnpm test", cwd: "/repo" });
-    store.appendEvent(threadId, { type: "file_change", path: "src/a.ts", kind: "create", diff: "+first" });
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-a" });
-    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-b" });
-    store.appendEvent(threadId, { type: "test_result", passed: true, summary: "unit tests" });
-    store.appendEvent(threadId, { type: "file_change", path: "src/a.ts", kind: "edit", diff: "+second" });
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-a" });
+    store.appendEvent(agentId, { type: "command", command: "pnpm test", cwd: "/repo" });
+    store.appendEvent(agentId, { type: "file_change", path: "src/a.ts", kind: "create", diff: "+first" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-a" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-b" });
+    store.appendEvent(agentId, { type: "test_result", passed: true, summary: "unit tests" });
+    store.appendEvent(agentId, { type: "file_change", path: "src/a.ts", kind: "edit", diff: "+second" });
 
     store.close();
-    store = new ThreadStore(dir);
-    const detail = store.getThreadDetail(threadId)!;
+    store = new AgentStore(dir);
+    const detail = store.getAgentDetail(agentId)!;
     expect(detail.activity.map(({ executionId, event }) => [executionId, event.type])).toEqual([
       ["run-a", "command"], ["run-a", "file_change"], ["run-b", "test_result"], ["run-b", "file_change"],
     ]);
@@ -627,48 +655,48 @@ describe("ThreadStore — append + projection", () => {
     })]);
   });
 
-  it("assigns monotonic per-thread seq and is append-only (readSince works)", () => {
-    const { threadId } = seedThread();
-    const seqs = RUN.map((ev) => store.appendEvent(threadId, ev).seq);
+  it("assigns monotonic per-agent seq and is append-only (readSince works)", () => {
+    const { agentId } = seedAgent();
+    const seqs = RUN.map((ev) => store.appendEvent(agentId, ev).seq);
     expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(store.readEvents(threadId)).toHaveLength(9);
+    expect(store.readEvents(agentId)).toHaveLength(9);
     // SSE replay-from-seq
-    expect(store.readEventsSince(threadId, 5).map((e) => e.seq)).toEqual([6, 7, 8, 9]);
+    expect(store.readEventsSince(agentId, 5).map((e) => e.seq)).toEqual([6, 7, 8, 9]);
     // The public surface has no update/delete of events (append-only by design).
     expect((store as unknown as Record<string, unknown>)["deleteEvent"]).toBeUndefined();
   });
 
   it("clears only the resumable engine session for fresh-session rollover", () => {
-    const { threadId } = seedThread();
-    store.appendEvent(threadId, { type: "session", sessionId: "stale-session" });
-    const before = store.getThread(threadId);
-    const eventsBefore = store.readEvents(threadId);
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, { type: "session", sessionId: "stale-session" });
+    const before = store.getAgent(agentId);
+    const eventsBefore = store.readEvents(agentId);
 
-    expect(store.clearResumeSession(threadId, "explicit_compaction")).toBe(true);
-    expect(store.resumeSessionId(threadId)).toBeUndefined();
-    expect(store.getThread(threadId)).toMatchObject({
+    expect(store.clearResumeSession(agentId, "explicit_compaction")).toBe(true);
+    expect(store.resumeSessionId(agentId)).toBeUndefined();
+    expect(store.getAgent(agentId)).toMatchObject({
       id: before?.id,
       projectId: before?.projectId,
       conversationId: before?.conversationId,
       conversationIds: before?.conversationIds,
     });
-    expect(store.readEvents(threadId).slice(0, -1)).toEqual(eventsBefore);
-    expect(store.readEvents(threadId).at(-1)?.event).toEqual({
+    expect(store.readEvents(agentId).slice(0, -1)).toEqual(eventsBefore);
+    expect(store.readEvents(agentId).at(-1)?.event).toEqual({
       type: "session_reset",
       reason: "explicit_compaction",
     });
     store.rebuildProjections();
-    expect(store.resumeSessionId(threadId)).toBeUndefined();
-    expect(store.clearResumeSession("missing-thread", "explicit_compaction")).toBe(false);
+    expect(store.resumeSessionId(agentId)).toBeUndefined();
+    expect(store.clearResumeSession("missing-agent", "explicit_compaction")).toBe(false);
   });
 });
 
-describe("ThreadStore — rebuild is byte-identical (the property)", () => {
+describe("AgentStore — rebuild is byte-identical (the property)", () => {
   it("wiping SQLite and rebuilding from the logs yields identical rows", () => {
-    // Two threads, two runs, to exercise multiple projects/threads.
+    // Two agents, two runs, to exercise multiple projects/agents.
     const p = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const t1 = store.createThread(p.id, { title: "Auth", engine: "codex" });
-    const t2 = store.createThread(p.id, { title: "UI", engine: "codex" });
+    const t1 = store.createAgent(p.id, { title: "Auth", engine: "codex" });
+    const t2 = store.createAgent(p.id, { title: "UI", engine: "codex" });
     for (const ev of RUN) store.appendEvent(t1.id, ev);
     for (const ev of RUN.slice(0, 5)) store.appendEvent(t2.id, ev);
     // a second run on t1
@@ -695,8 +723,8 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
   });
 
   it("rebuild reconstructs projections after a total SQLite loss", () => {
-    const { threadId } = seedThread();
-    for (const ev of RUN) store.appendEvent(threadId, ev);
+    const { agentId } = seedAgent();
+    for (const ev of RUN) store.appendEvent(agentId, ev);
     const before = snapshot(store);
 
     // Simulate SQLite loss: delete all projection rows, then rebuild from logs.
@@ -705,7 +733,7 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
       "projects",
       "conversations",
       "conversation_messages",
-      "threads",
+      "agents",
       "messages",
       "tasks",
       "artifacts",
@@ -720,17 +748,17 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
   });
 
   it("catches a stale SQLite projection up automatically on restart", () => {
-    const { threadId } = seedThread();
-    for (const ev of RUN) store.appendEvent(threadId, ev);
+    const { agentId } = seedAgent();
+    for (const ev of RUN) store.appendEvent(agentId, ev);
     const before = snapshot(store);
     store.sqlite.exec("DELETE FROM events; DELETE FROM messages; DELETE FROM tasks; DELETE FROM artifacts;");
     store.close();
 
-    store = new ThreadStore(dir);
+    store = new AgentStore(dir);
     expect(snapshot(store)).toEqual(before);
   });
 
-  it("persists model-agnostic conversations and linked agent threads across rebuilds", () => {
+  it("persists model-agnostic conversations and linked agents across rebuilds", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const conversation = store.createConversation(project.id, {
       title: "Release control room",
@@ -741,14 +769,14 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
     const message = store.appendConversationMessage(conversation.id, {
       text: "Spin up one agent for API work and one for UI work.",
     });
-    const thread = store.createThread(project.id, {
+    const agent = store.createAgent(project.id, {
       title: "API agent",
       engine: "codex",
       conversationId: conversation.id,
     });
 
     expect(message?.role).toBe("user");
-    expect(thread.conversationId).toBe(conversation.id);
+    expect(agent.conversationId).toBe(conversation.id);
 
     const before = snapshot(store);
     store.rebuildProjections();
@@ -761,79 +789,79 @@ describe("ThreadStore — rebuild is byte-identical (the property)", () => {
         defaultEngine: "codex",
       },
       messages: [{ text: "Spin up one agent for API work and one for UI work." }],
-      threads: [{ id: thread.id, conversationId: conversation.id }],
+      agents: [{ id: agent.id, conversationId: conversation.id }],
     });
   });
 
-  it("persists reply references canonically for thread and conversation messages", () => {
+  it("persists reply references canonically for agent and conversation messages", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const master = store.createConversation(project.id, { title: "Room" });
     const first = store.appendConversationMessage(master.id, { text: "Original context" })!;
     store.appendConversationMessage(master.id, { text: "Answer", replyToMessageId: first.id });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
-    store.appendEvent(thread.id, { type: "user_message", text: "Thread original" });
-    const originalMessageId = store.getMessages(thread.id)[0]!.id;
-    store.appendEvent(thread.id, {
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
+    store.appendEvent(agent.id, { type: "user_message", text: "Agent original" });
+    const originalMessageId = store.getMessages(agent.id)[0]!.id;
+    store.appendEvent(agent.id, {
       type: "user_message",
-      text: "Thread answer",
-      replyTo: { messageId: originalMessageId, text: "Thread original", role: "user" },
+      text: "Agent answer",
+      replyTo: { messageId: originalMessageId, text: "Agent original", role: "user" },
     });
 
     store.rebuildProjections();
     expect(store.getConversationMessages(master.id)[1]?.replyTo).toMatchObject({ messageId: first.id, text: "Original context" });
-    expect(store.getMessages(thread.id)[1]?.replyTo).toMatchObject({ text: "Thread original" });
+    expect(store.getMessages(agent.id)[1]?.replyTo).toMatchObject({ text: "Agent original" });
     expect(() => store.appendConversationMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
   });
 
   it("records direct replies only for the referenced active agent author", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const master = store.createConversation(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const other = store.createThread(project.id, { title: "Other", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
     const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Done" }, author.id)!;
     const managerMessage = store.appendConversationMessage(master.id, { text: "Manager note" })!;
 
     const direct = store.appendConversationMessage(master.id, {
       text: "Please revise",
       replyToMessageId: report.id,
-      directReplyToAuthorThreadId: author.id,
-    }, undefined, "main", [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }], "direct-receipt")!;
-    expect(direct.replyTo?.authorThreadId).toBe(author.id);
+      directReplyToAuthorAgentId: author.id,
+    }, undefined, "main", [{ targetAgentId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }], "direct-receipt")!;
+    expect(direct.replyTo?.authorAgentId).toBe(author.id);
     expect(store.getConversationMessageByReceiptKey(master.id, "direct-receipt")?.id).toBe(direct.id);
-    expect(store.getConversationDeliveryIntents(master.id)).toMatchObject([{ message: { id: direct.id }, intent: { kind: "direct", targetThreadId: author.id }, messageReceiptKey: "direct-receipt" }]);
+    expect(store.getConversationDeliveryIntents(master.id)).toMatchObject([{ message: { id: direct.id }, intent: { kind: "direct", targetAgentId: author.id }, messageReceiptKey: "direct-receipt" }]);
     expect(readFileSync(conversationMessagesPath(dir, project.id, master.id), "utf8"))
-      .toContain(`"directReplyToAuthorThreadId":"${author.id}"`);
+      .toContain(`"directReplyToAuthorAgentId":"${author.id}"`);
     expect(() => store.appendConversationMessage(master.id, {
       text: "Spoofed",
       replyToMessageId: report.id,
-      directReplyToAuthorThreadId: other.id,
+      directReplyToAuthorAgentId: other.id,
     })).toThrow(/must be the author/);
     expect(() => store.appendConversationMessage(master.id, {
       text: "No agent author",
       replyToMessageId: managerMessage.id,
-      directReplyToAuthorThreadId: author.id,
+      directReplyToAuthorAgentId: author.id,
     })).toThrow(/must be the author/);
 
-    store.updateThread(author.id, { archived: true });
+    store.updateAgent(author.id, { archived: true });
     expect(() => store.appendConversationMessage(master.id, {
       text: "Archived",
       replyToMessageId: report.id,
-      directReplyToAuthorThreadId: author.id,
+      directReplyToAuthorAgentId: author.id,
     })).toThrow(/not an active agent/);
   });
 });
 
 describe("artifactContentPath", () => {
-  it("keeps artifact reads and writes inside the thread artifacts directory", () => {
-    const { projectId, threadId } = seedThread();
+  it("keeps artifact reads and writes inside the agent artifacts directory", () => {
+    const { projectId, agentId } = seedAgent();
 
-    expect(artifactContentPath(dir, projectId, threadId, "000001-command.md")).toContain(
+    expect(artifactContentPath(dir, projectId, agentId, "000001-command.md")).toContain(
       "artifacts",
     );
-    expect(() => artifactContentPath(dir, projectId, threadId, "../thread.json")).toThrow(
+    expect(() => artifactContentPath(dir, projectId, agentId, "../agent.json")).toThrow(
       /escapes/,
     );
-    expect(() => artifactContentPath(dir, projectId, threadId, "/tmp/elsewhere")).toThrow(
+    expect(() => artifactContentPath(dir, projectId, agentId, "/tmp/elsewhere")).toThrow(
       /escapes/,
     );
   });
@@ -843,12 +871,12 @@ describe("agent organizational hierarchy", () => {
   it("persists mutable reporting lines canonically without allowing invalid parents or cycles", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
-    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
-    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex" });
-    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
-    const archived = store.createThread(project.id, { title: "Archived", engine: "codex" });
-    store.updateThread(archived.id, { archived: true });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex" });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex" });
+    const grandchild = store.createAgent(project.id, { title: "Grandchild", engine: "codex" });
+    const foreign = store.createAgent(otherProject.id, { title: "Foreign", engine: "codex" });
+    const archived = store.createAgent(project.id, { title: "Archived", engine: "codex" });
+    store.updateAgent(archived.id, { archived: true });
 
     expect(store.updateAgentOrganization(child.id, { managerAgentId: parent.id }))
       .toMatchObject({ managerAgentId: parent.id });
@@ -861,8 +889,8 @@ describe("agent organizational hierarchy", () => {
     expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(2);
 
     store.rebuildProjections();
-    expect(store.getThread(child.id)?.managerAgentId).toBe(parent.id);
-    expect(store.getThread(grandchild.id)?.managerAgentId).toBe(child.id);
+    expect(store.getAgent(child.id)?.managerAgentId).toBe(parent.id);
+    expect(store.getAgent(grandchild.id)?.managerAgentId).toBe(child.id);
 
     expect(store.updateAgentOrganization(child.id, { managerAgentId: null })?.managerAgentId).toBeUndefined();
     expect(store.readAgentOrganizationEvents(project.id).at(-1)).toMatchObject({ agentId: child.id, managerAgentId: null });
@@ -870,26 +898,26 @@ describe("agent organizational hierarchy", () => {
 
   it("promotes children when archived and cascade-deletes descendants with a deleted manager", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
-    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex" });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex" });
     store.updateAgentOrganization(child.id, { managerAgentId: parent.id });
-    store.updateThread(parent.id, { archived: true });
-    expect(store.getThread(child.id)?.managerAgentId).toBeUndefined();
+    store.updateAgent(parent.id, { archived: true });
+    expect(store.getAgent(child.id)?.managerAgentId).toBeUndefined();
 
-    const replacement = store.createThread(project.id, { title: "Replacement", engine: "codex" });
+    const replacement = store.createAgent(project.id, { title: "Replacement", engine: "codex" });
     store.updateAgentOrganization(child.id, { managerAgentId: replacement.id });
-    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex", managerAgentId: child.id });
-    expect(store.deleteThread(replacement.id)).toBe(true);
-    expect(store.getThread(child.id)).toBeUndefined();
-    expect(store.getThread(grandchild.id)).toBeUndefined();
+    const grandchild = store.createAgent(project.id, { title: "Grandchild", engine: "codex", managerAgentId: child.id });
+    expect(store.deleteAgent(replacement.id)).toBe(true);
+    expect(store.getAgent(child.id)).toBeUndefined();
+    expect(store.getAgent(grandchild.id)).toBeUndefined();
     store.rebuildProjections();
-    expect(store.getThread(child.id)).toBeUndefined();
+    expect(store.getAgent(child.id)).toBeUndefined();
   });
 
   it("persists agent spawn provenance and replays it by execution idempotency", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const manager = store.createThread(project.id, { title: "Manager", engine: "codex" });
-    const child = store.createThread(project.id, {
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex" });
+    const child = store.createAgent(project.id, {
       title: "Researcher", engine: "codex", managerAgentId: manager.id,
     }, {
       agentId: manager.id, executionId: "execution-1", idempotencyKey: "spawn-1", prompt: "Study the evidence.",
@@ -902,7 +930,7 @@ describe("agent organizational hierarchy", () => {
     });
     expect(store.findAgentSpawn(manager.id, "execution-1", "spawn-1")?.id).toBe(child.id);
     store.rebuildProjections();
-    expect(store.getThread(child.id)).toMatchObject({ spawnedByAgentId: manager.id, spawnPrompt: "Study the evidence." });
+    expect(store.getAgent(child.id)).toMatchObject({ spawnedByAgentId: manager.id, spawnPrompt: "Study the evidence." });
   });
 });
 
@@ -911,13 +939,13 @@ describe("agent presets", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     expect(store.listAgentPresets(project.id).map((preset) => preset.name)).toEqual(["Documentation", "Frontend", "QA", "Security"]);
     const preset = store.createAgentPreset(project.id, { name: "Release", description: "Ship safely", guidance: "Verify every release gate before shipping.", engine: "codex", enabled: true });
-    const thread = store.createThread(project.id, { title: "Ship", engine: "codex", presetId: preset.id });
+    const agent = store.createAgent(project.id, { title: "Ship", engine: "codex", presetId: preset.id });
     store.updateAgentPreset(preset.id, { guidance: "Changed later and must not affect active agents." });
-    expect(store.getThread(thread.id)?.presetSnapshot?.guidance).toBe("Verify every release gate before shipping.");
+    expect(store.getAgent(agent.id)?.presetSnapshot?.guidance).toBe("Verify every release gate before shipping.");
     expect(store.deleteAgentPreset(preset.id)).toBe(true);
     store.rebuildProjections();
     expect(store.getAgentPreset(preset.id)).toBeUndefined();
-    expect(store.getThread(thread.id)?.presetSnapshot?.name).toBe("Release");
+    expect(store.getAgent(agent.id)?.presetSnapshot?.name).toBe("Release");
   });
 });
 
@@ -933,22 +961,22 @@ describe("project lifecycle", () => {
   it("permanently deletes one canonical project tree and all of its projections", () => {
     const removed = store.createProject({ label: "Remove", hostPath: "/remove" });
     const room = store.createConversation(removed.id, { title: "Room" });
-    const thread = store.createThread(removed.id, { title: "Agent", engine: "codex", conversationId: room.id });
-    store.appendEvent(thread.id, { type: "user_message", text: "work" });
+    const agent = store.createAgent(removed.id, { title: "Agent", engine: "codex", conversationId: room.id });
+    store.appendEvent(agent.id, { type: "user_message", text: "work" });
     const retained = store.createProject({ label: "Keep", hostPath: "/keep" });
-    const retainedThread = store.createThread(retained.id, { title: "Keeper", engine: "codex" });
+    const retainedAgent = store.createAgent(retained.id, { title: "Keeper", engine: "codex" });
 
     expect(store.deleteProject(removed.id)).toBe(true);
     expect(existsSync(projectDir(dir, removed.id))).toBe(false);
     expect(store.getProject(removed.id)).toBeUndefined();
-    for (const table of ["conversations", "conversation_messages", "threads", "messages", "tasks", "artifacts", "events"]) {
-      const projectRows = table === "conversations" || table === "threads"
+    for (const table of ["conversations", "conversation_messages", "agents", "messages", "tasks", "artifacts", "events"]) {
+      const projectRows = table === "conversations" || table === "agents"
         ? store.sqlite.prepare(`SELECT * FROM ${table} WHERE project_id = ?`).all(removed.id)
         : [];
       expect(projectRows).toEqual([]);
     }
     expect(store.getProject(retained.id)).toBeDefined();
-    expect(store.getThread(retainedThread.id)).toBeDefined();
+    expect(store.getAgent(retainedAgent.id)).toBeDefined();
     store.rebuildProjections();
     expect(store.getProject(removed.id)).toBeUndefined();
   });

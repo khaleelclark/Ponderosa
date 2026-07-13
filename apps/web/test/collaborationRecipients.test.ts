@@ -1,9 +1,9 @@
-import type { ThreadDto } from "@ponderosa/core";
+import type { AgentDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { activeCollaborationRecipients, allActiveRecipientIds, retainActiveRecipientIds } from "../src/collaborationRecipients.js";
 
-function agent(id: string, archived = false): ThreadDto {
-  return { id, title: id, archived } as ThreadDto;
+function agent(id: string, archived = false): AgentDto {
+  return { id, title: id, archived } as AgentDto;
 }
 
 describe("collaboration recipient selection", () => {
@@ -12,9 +12,9 @@ describe("collaboration recipient selection", () => {
   });
 
   it("resolves Everyone to an explicit stable-ID snapshot", () => {
-    const threads = [agent("agent-a"), agent("agent-b"), agent("old", true)];
-    const resolved = allActiveRecipientIds(threads);
-    threads.push(agent("later"));
+    const agents = [agent("agent-a"), agent("agent-b"), agent("old", true)];
+    const resolved = allActiveRecipientIds(agents);
+    agents.push(agent("later"));
     expect(resolved).toEqual(["agent-a", "agent-b"]);
   });
 

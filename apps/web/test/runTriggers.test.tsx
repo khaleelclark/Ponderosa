@@ -17,7 +17,7 @@ describe("Runs trigger audit", () => {
       }]}
       messages={[{
         id: "message-1",
-        threadId: "agent-1",
+        agentId: "agent-1",
         seq: 1,
         role: "user",
         text: "Review the onboarding flow",

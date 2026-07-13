@@ -224,7 +224,7 @@ export interface CommunicationProjection {
     /** Server-rendered text may add display handles without changing event text. */
     renderedText?: string;
     createdAt: string;
-    /** Direct-audit ordering key from the canonical thread log. */
+    /** Direct-audit ordering key from the canonical agent log. */
     sequence?: number;
     authorAgentId?: string;
     replyToLegacyMessageId?: string;

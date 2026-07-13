@@ -1,13 +1,13 @@
-// The SSE wire contract (SPEC §8 streaming). GET /api/threads/:id/stream emits one
-// SSE message per event: the SSE `id:` field is the per-thread `seq`, so a client
+// The SSE wire contract (SPEC §8 streaming). GET /api/agents/:id/stream emits one
+// SSE message per event: the SSE `id:` field is the per-agent `seq`, so a client
 // reconnecting with `Last-Event-ID` gets replay-from-seq then live tail, deduped
 // by seq (critical for phones locking/unlocking).
 
 import type { AgentEvent } from "./events.js";
 import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentLifecycleStatus, AgentOutputEvent, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
 
-/** Canonical thread events visible on the live wire, including server-owned records. */
-export type ThreadStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" }>
+/** Canonical agent events visible on the live wire, including server-owned records. */
+export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" }>
   | AgentExecutionDeltaEvent
   | AgentOutputEvent
   | { type: "user_message"; communicationEventId?: string; text: string; replyTo?: MessageReferenceDto; attachments?: ImageAttachmentDto[] }
@@ -17,14 +17,14 @@ export type ThreadStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning"
 
 /**
  * The JSON payload of a `data:` line on the event stream. Wraps a StoredEvent's
- * fields plus the threadId. The SSE `id:` line carries `seq` separately (used for
+ * fields plus the agentId. The SSE `id:` line carries `seq` separately (used for
  * Last-Event-ID reconnect), and this envelope repeats it for convenience.
  */
 export interface SseEventEnvelope {
-  threadId: string;
+  agentId: string;
   seq: number;
   ts: string;
-  event: ThreadStreamEvent;
+  event: AgentStreamEvent;
   /** True for catch-up records written before the live subscription boundary. */
   replayed?: boolean;
 }

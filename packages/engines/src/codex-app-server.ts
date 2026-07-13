@@ -25,7 +25,7 @@ export class CodexAppServerSession implements RuntimeSession {
   readonly events: AsyncIterable<AgentEvent>;
 
   private constructor(
-    readonly engineThreadId: string,
+    readonly engineAgentId: string,
     private readonly rpc: JsonRpcProcess,
     private readonly cwd: string,
   ) {
@@ -70,7 +70,7 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
     const response = await this.rpc.request<TurnResponse>("turn/start", {
-      threadId: this.engineThreadId,
+      threadId: this.engineAgentId,
       input: [{ type: "text", text: input.prompt, text_elements: [] }],
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
@@ -84,7 +84,7 @@ export class CodexAppServerSession implements RuntimeSession {
     if (!this.activeTurnId) return { status: "not_active" };
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
-        threadId: this.engineThreadId,
+        threadId: this.engineAgentId,
         expectedTurnId: this.activeTurnId,
         input: [{ type: "text", text: input.prompt, text_elements: [] }],
         ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
@@ -107,7 +107,7 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async interrupt(): Promise<void> {
     if (!this.activeTurnId) return;
-    await this.rpc.request("turn/interrupt", { threadId: this.engineThreadId, turnId: this.activeTurnId });
+    await this.rpc.request("turn/interrupt", { threadId: this.engineAgentId, turnId: this.activeTurnId });
   }
 
   close(): Promise<void> {
@@ -115,7 +115,7 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private async *eventStream(): AsyncIterable<AgentEvent> {
-    yield { type: "session", sessionId: this.engineThreadId };
+    yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
       if (notification.method === "turn/started") {
         const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;

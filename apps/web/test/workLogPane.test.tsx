@@ -11,11 +11,11 @@ describe("WorkLogPane", () => {
   it("renders completed responses and transient reasoning distinctly in chronological order", () => {
     const html = renderToStaticMarkup(<WorkLogPane entries={[
       {
-        id: "later", threadId: "agent", executionId: "run-2", kind: "reasoning", text: "Checking constraints",
+        id: "later", agentId: "agent", executionId: "run-2", kind: "reasoning", text: "Checking constraints",
         completed: false, seq: 8, sourceSeqStart: 8, sourceSeqEnd: 8, createdAt: "2026-07-12T01:00:02.000Z",
       },
       {
-        id: "earlier", threadId: "agent", executionId: "run-1", kind: "response", text: "Completed output",
+        id: "earlier", agentId: "agent", executionId: "run-1", kind: "response", text: "Completed output",
         completed: true, seq: 4, sourceSeqStart: 2, sourceSeqEnd: 3, createdAt: "2026-07-12T01:00:01.000Z",
       },
     ]} />);

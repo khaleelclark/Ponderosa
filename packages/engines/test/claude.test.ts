@@ -36,7 +36,7 @@ describe("ClaudeAdapter.seed (fake claude)", () => {
     const controller = new AbortController();
     const events = await collect(
       fakeAdapter("seed").seed({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "hello",
         history: [],
@@ -60,7 +60,7 @@ describe("ClaudeAdapter.seed (fake claude)", () => {
     const controller = new AbortController();
     const events = await collect(
       fakeAdapter("fail").seed({
-        threadId: "t1",
+        agentId: "t1",
         cwd,
         prompt: "x",
         history: [],
@@ -76,7 +76,7 @@ describe("ClaudeAdapter.seed (fake claude)", () => {
     const controller = new AbortController();
     const events: AgentEvent[] = [];
     for await (const ev of fakeAdapter("hang").seed({
-      threadId: "t1",
+      agentId: "t1",
       cwd,
       prompt: "x",
       history: [],
@@ -103,7 +103,7 @@ describe("ClaudeAdapter.continue", () => {
     const controller = new AbortController();
     // start the stream (don't need to consume) to trigger spawn synchronously
     void adapter.continue({
-      threadId: "t1",
+      agentId: "t1",
       cwd,
       prompt: "next",
       resumeSessionId: "sess-xyz",

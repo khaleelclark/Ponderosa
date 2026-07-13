@@ -7,7 +7,7 @@ import { ChatPane } from "../src/components/panes";
 function message(id: string, role: MessageDto["role"], text: string): MessageDto {
   return {
     id,
-    threadId: "agent-1",
+    agentId: "agent-1",
     seq: Number(id),
     role,
     text,
@@ -79,7 +79,7 @@ describe("individual chat sender identity", () => {
   it("renders an inbound collaboration with the sending agent's identity", () => {
     const report = {
       ...message("2", "assistant", "Private finding for the manager."),
-      authorThreadId: "child-agent",
+      authorAgentId: "child-agent",
     } satisfies MessageDto;
     const html = renderToStaticMarkup(createElement(ChatPane, {
       agentName: "Castle Clinton",

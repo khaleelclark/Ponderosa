@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
-import { ThreadStore } from "@ponderosa/threads";
+import { AgentStore } from "@ponderosa/agents";
 import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function appendBroadcast(store: ThreadStore, projectId: string, conversationId: string, text: string): void {
+function appendBroadcast(store: AgentStore, projectId: string, conversationId: string, text: string): void {
   const eventId = randomUUID();
   store.appendCommunicationEvent({
     eventId, schemaVersion: 1, projectId, conversationId,
@@ -138,7 +138,7 @@ class SteerableMockAdapter extends MockAdapter {
     const queue = new TestEventQueue();
     queue.push({ type: "session", sessionId: "persistent-session" });
     return {
-      engineThreadId: "persistent-session",
+      engineAgentId: "persistent-session",
       events: queue,
       startTurn: async (input) => {
         this.starts.push(input);
@@ -162,7 +162,7 @@ class SteerableMockAdapter extends MockAdapter {
 
 let dataDir: string;
 let repoDir: string;
-let store: ThreadStore;
+let store: AgentStore;
 let adapter: MockAdapter;
 let engines: EngineRegistration[];
 
@@ -170,7 +170,7 @@ beforeEach(() => {
   dataDir = mkdtempSync(path.join(tmpdir(), "pond-server-data-"));
   repoDir = mkdtempSync(path.join(tmpdir(), "pond-server-repo-"));
   writeFileSync(path.join(repoDir, "README.md"), "# demo\n", "utf8");
-  store = new ThreadStore(dataDir);
+  store = new AgentStore(dataDir);
   adapter = new MockAdapter();
   engines = [{ adapter, authStatus: async () => ({ authenticated: true, detail: "test" }) }];
 });
@@ -181,7 +181,7 @@ afterEach(() => {
   rmSync(repoDir, { recursive: true, force: true });
 });
 
-async function createProjectAndThread() {
+async function createProjectAndAgent() {
   const app = createServer({ dataDir, store, engines, logger: false });
   const projectRes = await app.inject({
     method: "POST",
@@ -189,18 +189,18 @@ async function createProjectAndThread() {
     payload: { label: "Demo", hostPath: repoDir },
   });
   const project = projectRes.json<{ id: string }>();
-  const threadRes = await app.inject({
+  const agentRes = await app.inject({
     method: "POST",
-    url: `/api/projects/${project.id}/threads`,
-    payload: { title: "Thread", engine: "codex" },
+    url: `/api/projects/${project.id}/agents`,
+    payload: { title: "Agent", engine: "codex" },
   });
-  const thread = threadRes.json<{ id: string }>();
-  return { app, project, thread };
+  const agent = agentRes.json<{ id: string }>();
+  return { app, project, agent };
 }
 
-async function waitForRun(threadId: string, expectedTurnDoneCount = 1): Promise<void> {
+async function waitForRun(agentId: string, expectedTurnDoneCount = 1): Promise<void> {
   for (let i = 0; i < 80; i += 1) {
-    const done = store.readEvents(threadId).filter((event) => event.event.type === "turn_done").length;
+    const done = store.readEvents(agentId).filter((event) => event.event.type === "turn_done").length;
     if (done >= expectedTurnDoneCount) return;
     await sleep(10);
   }
@@ -217,12 +217,12 @@ async function waitForSeedCount(expected: number): Promise<void> {
 
 describe("generated artifact endpoints", () => {
   it("previews and downloads a canonical PDF only inside its owning project", async () => {
-    const { app, project, thread } = await createProjectAndThread();
+    const { app, project, agent } = await createProjectAndAgent();
     const pdf = Buffer.from("%PDF-1.4\n% test\n");
     const pdfPath = path.join(repoDir, "report.pdf");
     writeFileSync(pdfPath, pdf);
-    store.appendEvent(thread.id, { type: "file_change", path: pdfPath, kind: "create" });
-    const artifact = store.getArtifacts(thread.id).find((item) => item.kind === "document")!;
+    store.appendEvent(agent.id, { type: "file_change", path: pdfPath, kind: "create" });
+    const artifact = store.getArtifacts(agent.id).find((item) => item.kind === "document")!;
 
     expect(artifact).toMatchObject({ mediaType: "application/pdf", previewUrl: expect.any(String), downloadUrl: expect.any(String) });
     const preview = await app.inject({ method: "GET", url: artifact.previewUrl! });
@@ -275,15 +275,15 @@ describe("project lifecycle API", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Before", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
-    store.appendEvent(thread.id, { type: "user_message", text: "canonical execution input" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
+    store.appendEvent(agent.id, { type: "user_message", text: "canonical execution input" });
     const renamed = await app.inject({ method: "PATCH", url: `/api/projects/${project.id}`, payload: { label: "After" } });
     expect(renamed.statusCode).toBe(200);
     expect(renamed.json()).toMatchObject({ id: project.id, label: "After", hostPath: repoDir });
     const deleted = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
     expect(deleted.statusCode).toBe(200);
     expect(store.getProject(project.id)).toBeUndefined();
-    expect(store.getThread(thread.id)).toBeUndefined();
+    expect(store.getAgent(agent.id)).toBeUndefined();
     expect(existsSync(path.join(dataDir, "projects", project.id))).toBe(false);
     expect(existsSync(path.join(repoDir, "README.md"))).toBe(true);
     expect((await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}` })).statusCode).toBe(404);
@@ -297,15 +297,15 @@ describe("persistent engine steering", () => {
     engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Steering", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Persistent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Persistent", engine: "codex" });
 
-    const first = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" } });
+    const first = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Start working" } });
     expect(first.statusCode).toBe(200);
     await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
-    const original = store.getMessages(thread.id).find((message) => message.text === "Start working")!;
+    const original = store.getMessages(agent.id).find((message) => message.text === "Start working")!;
     const second = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "Use the new direction", replyToMessageId: original.id },
     });
     expect(second.statusCode).toBe(200);
@@ -314,14 +314,14 @@ describe("persistent engine steering", () => {
     expect(steerable.steers).toEqual([expect.objectContaining({ kind: "user_message" })]);
     expect(steerable.steers[0]?.prompt).toContain("Use the new direction");
     expect(steerable.steers[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Start working");
-    await waitForRun(thread.id);
-    expect(store.getMessages(thread.id).map((message) => message.text)).toEqual([
+    await waitForRun(agent.id);
+    expect(store.getMessages(agent.id).map((message) => message.text)).toEqual([
       "Start working", "Use the new direction",
     ]);
-    expect(store.getThreadDetail(thread.id)?.runOutput).toEqual([
+    expect(store.getAgentDetail(agent.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "steered result", completed: true }),
     ]);
-    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(agent.id)).toBe(0);
     await app.close();
   });
 
@@ -330,26 +330,26 @@ describe("persistent engine steering", () => {
     engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Explicit queue", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Persistent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Persistent", engine: "codex" });
 
     expect((await app.inject({
-      method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" },
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Start working" },
     })).statusCode).toBe(200);
     await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
       .toMatchObject({ agents: [expect.objectContaining({
-        agentId: thread.id,
+        agentId: agent.id,
         runtimeActivity: { state: "responding", executionId: expect.any(String), startedAt: expect.any(String) },
       })] });
 
     const queued = await app.inject({
-      method: "POST", url: `/api/threads/${thread.id}/messages`,
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
       payload: { text: "Do this after", activeRunDelivery: "queue" },
     });
     expect(queued.statusCode).toBe(202);
     expect(queued.json()).toMatchObject({ queued: true, position: 1 });
     expect(steerable.steers).toHaveLength(0);
-    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(1);
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(agent.id)).toBe(1);
     await app.close();
   });
 
@@ -360,7 +360,7 @@ describe("persistent engine steering", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Persistent capabilities", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Dinosaur", engine: "codex", conversationId: master.id });
+    const agent = store.createAgent(project.id, { title: "Dinosaur", engine: "codex", conversationId: master.id });
     const statuses: number[] = [];
     const observedTokens: string[] = [];
     persistent.onStartedTurn = async (turnNumber, environment) => {
@@ -373,8 +373,8 @@ describe("persistent engine steering", () => {
       statuses.push(sent.statusCode);
     };
 
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first" } });
-    await waitForRun(thread.id);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first" } });
+    await waitForRun(agent.id);
     const expiredBetweenTurns = await app.inject({
       method: "POST", url: "/api/agent-messages",
       headers: { authorization: `Bearer ${observedTokens[0]}` },
@@ -382,12 +382,12 @@ describe("persistent engine steering", () => {
     });
     expect(expiredBetweenTurns.statusCode).toBe(401);
 
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second" } });
-    await waitForRun(thread.id, 2);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second" } });
+    await waitForRun(agent.id, 2);
     expect(persistent.opened).toBe(1);
     expect(observedTokens).toEqual([observedTokens[0], observedTokens[0]]);
     expect(statuses).toEqual([200, 200]);
-    expect(store.getConversationMessages(master.id).filter((message) => message.authorThreadId === thread.id)
+    expect(store.getConversationMessages(master.id).filter((message) => message.authorAgentId === agent.id)
       .map((message) => message.text)).toEqual(["#user reply 1", "#user reply 2"]);
     await app.close();
   });
@@ -409,9 +409,9 @@ describe("persistent engine steering", () => {
       },
     });
     const project = store.createProject({ label: "Runtime TTL", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Bounded", engine: "codex" });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "run" } });
-    await waitForRun(thread.id);
+    const agent = store.createAgent(project.id, { title: "Bounded", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "run" } });
+    await waitForRun(agent.id);
     expect(persistent.opened).toBe(1);
     expect(persistent.closed).toBe(0);
     idleCallback?.();
@@ -421,10 +421,10 @@ describe("persistent engine steering", () => {
   });
 });
 
-async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: string): Promise<void> {
-  await app.inject({ method: "POST", url: `/api/threads/${threadId}/cancel` });
+async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: string): Promise<void> {
+  await app.inject({ method: "POST", url: `/api/agents/${agentId}/cancel` });
   for (let i = 0; i < 80; i += 1) {
-    const response = await app.inject({ method: "POST", url: `/api/threads/${threadId}/cancel` });
+    const response = await app.inject({ method: "POST", url: `/api/agents/${agentId}/cancel` });
     if (!response.json<{ cancelled: boolean }>().cancelled) return;
     await sleep(10);
   }
@@ -443,17 +443,17 @@ describe("server chunk F", () => {
       onOwnershipState: ({ state }) => transitions.push(state),
     } });
     const project = store.createProject({ label: "Stall", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Stalled", engine: "codex" });
-    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "run" } })).statusCode).toBe(200);
+    const agent = store.createAgent(project.id, { title: "Stalled", engine: "codex" });
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "run" } })).statusCode).toBe(200);
     await vi.waitFor(() => expect(received).toBe(true));
     await sleep(25);
     const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
     expect(health.json<{ agents: Array<{ status: string; reason: string; runtimeOwnership: string }> }>().agents[0])
       .toMatchObject({ status: "stalled", reason: "runtime_event_consumer_stalled", runtimeOwnership: "stalled" });
     expect(transitions.filter((state) => state === "stalled")).toHaveLength(1);
-    expect(store.readEvents(thread.id).some((item) => item.event.type === "command")).toBe(false);
+    expect(store.readEvents(agent.id).some((item) => item.event.type === "command")).toBe(false);
     release();
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
     expect(transitions).toContain("running");
     await app.close();
   });
@@ -468,24 +468,24 @@ describe("server chunk F", () => {
       },
     } });
     const project = store.createProject({ label: "Fence", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Fenced", engine: "codex" });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first prompt" } });
+    const agent = store.createAgent(project.id, { title: "Fenced", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first prompt" } });
     await vi.waitFor(() => expect(blocked).toBe(true));
-    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "queued prompt" } })).statusCode).toBe(202);
-    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` })).json()).toEqual({ cancelled: true });
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "queued prompt" } })).statusCode).toBe(202);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: true });
     release();
     await vi.waitFor(() => expect(adapter.seeds.length + adapter.continues.length).toBe(2));
-    await waitForRun(thread.id);
-    expect(store.getMessages(thread.id).filter((message) => message.text === "queued prompt")).toHaveLength(1);
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.status === "completed")).toHaveLength(1);
+    await waitForRun(agent.id);
+    expect(store.getMessages(agent.id).filter((message) => message.text === "queued prompt")).toHaveLength(1);
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.status === "completed")).toHaveLength(1);
     await app.close();
   });
 
   it("serves server-owned agent health at project and conversation scope", async () => {
     const project = store.createProject({ label: "Health", hostPath: repoDir });
     const room = store.createConversation(project.id, { title: "Room" });
-    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
-    const outside = store.createThread(project.id, { title: "Outside", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
+    const outside = store.createAgent(project.id, { title: "Outside", engine: "codex" });
     const app = createServer({ dataDir, store, engines, logger: false });
 
     const roomHealth = await app.inject({ method: "GET", url: `/api/conversations/${room.id}/agent-health` });
@@ -504,10 +504,10 @@ describe("server chunk F", () => {
 
   it("reports observed compaction and preserves ordinary cancellation", async () => {
     const project = store.createProject({ label: "Health transitions", hostPath: repoDir });
-    const agent = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     const app = createServer({ dataDir, store, engines, logger: false });
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${agent.id}/messages`, payload: { text: "Work" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Work" } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect((await app.inject({
@@ -519,7 +519,7 @@ describe("server chunk F", () => {
 
     await cancelAndWait(app, agent.id);
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
-      .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "cancelled", reason: "thread_cancelled" })] });
+      .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "cancelled", reason: "agent_cancelled" })] });
     await app.close();
   });
 
@@ -544,12 +544,12 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Directory", hostPath: repoDir });
     const preset = store.listAgentPresets(project.id).find((item) => item.name === "Frontend")!;
-    const parent = store.createThread(project.id, { title: "Lead", engine: "codex", presetId: preset.id });
-    const child = store.createThread(project.id, { title: "Reviewer", engine: "codex" });
+    const parent = store.createAgent(project.id, { title: "Lead", engine: "codex", presetId: preset.id });
+    const child = store.createAgent(project.id, { title: "Reviewer", engine: "codex" });
     store.updateAgentOrganization(child.id, { managerAgentId: parent.id });
     store.appendEvent(parent.id, { type: "task_update", taskId: "assignment", title: "Build directory", status: "running" });
 
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Start" } });
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Start" } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
     const directory = await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } });
@@ -612,7 +612,7 @@ describe("server chunk F", () => {
 
     const unavailable = createServer({
       dataDir,
-      store: new ThreadStore(dataDir),
+      store: new AgentStore(dataDir),
       engines: [{ adapter, authStatus: async () => ({ authenticated: false, detail: "login required" }) }],
       logger: false,
     });
@@ -661,13 +661,13 @@ describe("server chunk F", () => {
     const created = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review trust boundaries", guidance: "Review trust boundaries and capability checks.", engine: "codex", model: "mock-model", effort: "high" } });
     expect(created.statusCode).toBe(201);
     const preset = created.json<{ id: string }>();
-    const spawned = await app.inject({ method: "POST", url: `/api/projects/${project.id}/threads`, payload: { title: "Audit", engine: "spoofed", presetId: preset.id } });
+    const spawned = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agents`, payload: { title: "Audit", engine: "spoofed", presetId: preset.id } });
     expect(spawned.statusCode).toBe(200);
     expect(spawned.json<{ activeEngine: string; presetSnapshot: { guidance: string } }>()).toMatchObject({ activeEngine: "codex", presetSnapshot: { guidance: "Review trust boundaries and capability checks." } });
     await app.close();
   });
 
-  it("creates conversations, records control messages, and spawns linked agent threads", async () => {
+  it("creates conversations, records control messages, and spawns linked agents", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const projectRes = await app.inject({
       method: "POST",
@@ -706,17 +706,17 @@ describe("server chunk F", () => {
         text: "Start an API agent.",
       }),
     ]);
-    expect(store.listThreads(project.id)).toHaveLength(0);
+    expect(store.listAgents(project.id)).toHaveLength(0);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
 
-    const threadRes = await app.inject({
+    const agentRes = await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/threads`,
+      url: `/api/projects/${project.id}/agents`,
       payload: { title: "API agent", engine: "codex", conversationId: conversation.id },
     });
-    expect(threadRes.statusCode, threadRes.body).toBe(200);
-    const thread = threadRes.json<{ id: string; conversationId: string }>();
-    expect(thread.conversationId).toBe(conversation.id);
+    expect(agentRes.statusCode, agentRes.body).toBe(200);
+    const agent = agentRes.json<{ id: string; conversationId: string }>();
+    expect(agent.conversationId).toBe(conversation.id);
 
     const detailRes = await app.inject({
       method: "GET",
@@ -726,11 +726,11 @@ describe("server chunk F", () => {
     expect(
       detailRes.json<{
         messages: { text: string }[];
-        threads: { id: string; conversationId: string }[];
+        agents: { id: string; conversationId: string }[];
       }>(),
     ).toMatchObject({
       messages: [{ text: "#broadcast Start an API agent." }],
-      threads: [{ id: thread.id, conversationId: conversation.id }],
+      agents: [{ id: agent.id, conversationId: conversation.id }],
     });
 
     await app.close();
@@ -740,25 +740,25 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "User-managed organization", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Organization" });
-    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
 
     const childResponse = await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/threads`,
+      url: `/api/projects/${project.id}/agents`,
       payload: { title: "Specialist", engine: "codex", managerAgentId: manager.id },
     });
     expect(childResponse.statusCode, childResponse.body).toBe(200);
-    const child = childResponse.json<ThreadDto>();
+    const child = childResponse.json<AgentDto>();
     expect(child).toMatchObject({ managerAgentId: manager.id, conversationId: master.id });
     expect(adapter.seeds).toHaveLength(0);
 
-    const grandchild = store.createThread(project.id, {
+    const grandchild = store.createAgent(project.id, {
       title: "Assistant", engine: "codex", conversationId: master.id, managerAgentId: child.id,
     });
-    const deleted = await app.inject({ method: "DELETE", url: `/api/threads/${manager.id}` });
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${manager.id}` });
     expect(deleted.statusCode).toBe(200);
     expect(deleted.json()).toEqual({ deleted: true, deletedAgentIds: [manager.id, child.id, grandchild.id] });
-    expect(store.listThreads(project.id)).toEqual([]);
+    expect(store.listAgents(project.id)).toEqual([]);
     await app.close();
   });
 
@@ -766,12 +766,12 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Shared default", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Project chat" });
-    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
-    const responsible = store.createThread(project.id, { title: "Responsible", engine: "codex", conversationId: master.id });
+    const observer = store.createAgent(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
+    const responsible = store.createAgent(project.id, { title: "Responsible", engine: "codex", conversationId: master.id });
 
     const shared = await app.inject({
       method: "POST",
-      url: `/api/threads/${responsible.id}/messages`,
+      url: `/api/agents/${responsible.id}/messages`,
       payload: {
         text: "Fix the onboarding flow",
         sourceChannel: "main",
@@ -791,7 +791,7 @@ describe("server chunk F", () => {
     expect(store.readRunTriggers(project.id, responsible.id)).toEqual([
       expect.objectContaining({ communicationEventId: eventId, agentId: responsible.id, source: "project_request" }),
     ]);
-    const responsibleDetail = await app.inject({ method: "GET", url: `/api/threads/${responsible.id}` });
+    const responsibleDetail = await app.inject({ method: "GET", url: `/api/agents/${responsible.id}` });
     expect(responsibleDetail.json<{ runTriggers: Array<{ communicationEventId: string }> }>().runTriggers)
       .toEqual([expect.objectContaining({ communicationEventId: eventId })]);
     expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
@@ -801,8 +801,8 @@ describe("server chunk F", () => {
       }),
     ]);
     expect(store.getConversationMessages(master.id)
-      .find((message) => message.authorThreadId === responsible.id && message.text === "done")).toBeUndefined();
-    expect(store.getThreadDetail(responsible.id)?.runOutput).toEqual([
+      .find((message) => message.authorAgentId === responsible.id && message.text === "done")).toBeUndefined();
+    expect(store.getAgentDetail(responsible.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "done", completed: true }),
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
@@ -811,8 +811,8 @@ describe("server chunk F", () => {
     expect(store.getMessages(responsible.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "Fix the onboarding flow", communicationEventId: eventId }),
     ]));
-    expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
-    const responsiblePrompt = adapter.seeds.find((turn) => turn.threadId === responsible.id)?.prompt ?? "";
+    expect(adapter.seeds.filter((turn) => turn.agentId === observer.id)).toHaveLength(0);
+    const responsiblePrompt = adapter.seeds.find((turn) => turn.agentId === responsible.id)?.prompt ?? "";
     expect(responsiblePrompt.match(/Fix the onboarding flow/g)).toHaveLength(1);
 
     const passive = await app.inject({
@@ -824,20 +824,20 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
     ]));
-    expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
+    expect(adapter.seeds.filter((turn) => turn.agentId === observer.id)).toHaveLength(0);
     expect(store.getMessages(observer.id)).toHaveLength(0);
 
     // A future agent receives room context only when it runs; its private
     // history starts empty and is never backfilled with organizational prose.
     const futureViaApi = await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/threads`,
+      url: `/api/projects/${project.id}/agents`,
       payload: { title: "Future via API", engine: "codex", conversationId: master.id },
     });
     expect(futureViaApi.statusCode).toBe(200);
     const futureId = futureViaApi.json<{ id: string }>().id;
     expect(store.getMessages(futureId)).toHaveLength(0);
-    expect(adapter.seeds.filter((turn) => turn.threadId === futureId)).toHaveLength(0);
+    expect(adapter.seeds.filter((turn) => turn.agentId === futureId)).toHaveLength(0);
     await app.close();
   });
 
@@ -846,7 +846,7 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Isolated rooms", hostPath: repoDir });
     const oldMaster = store.createConversation(project.id, { title: "Deleted room" });
     appendBroadcast(store, project.id, oldMaster.id, "OLD ROOM SECRET MARKER");
-    const oldAgent = store.createThread(project.id, {
+    const oldAgent = store.createAgent(project.id, {
       title: "Olympic", engine: "codex", conversationId: oldMaster.id,
     });
     store.appendEvent(oldAgent.id, { type: "session", sessionId: "old-provider-session" });
@@ -856,7 +856,7 @@ describe("server chunk F", () => {
     expect(deleted.json()).toEqual({ deleted: true });
     const freshMaster = store.createConversation(project.id, { title: "Fresh room" });
     const created = await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/threads`,
+      method: "POST", url: `/api/projects/${project.id}/agents`,
       payload: { title: "Olympic", engine: "codex", conversationId: freshMaster.id },
     });
     expect(created.statusCode).toBe(200);
@@ -866,7 +866,7 @@ describe("server chunk F", () => {
     expect(store.getMessages(freshAgent.id)).toHaveLength(0);
 
     const turn = await app.inject({
-      method: "POST", url: `/api/threads/${freshAgent.id}/messages`,
+      method: "POST", url: `/api/agents/${freshAgent.id}/messages`,
       payload: {
         text: "Start completely fresh", sourceChannel: "main",
         sourceConversationId: freshMaster.id, shareWithOrganization: true,
@@ -874,10 +874,10 @@ describe("server chunk F", () => {
     });
     expect(turn.statusCode, turn.body).toBe(200);
     await waitForRun(freshAgent.id);
-    const prompt = adapter.seeds.find((seed) => seed.threadId === freshAgent.id)?.prompt ?? "";
+    const prompt = adapter.seeds.find((seed) => seed.agentId === freshAgent.id)?.prompt ?? "";
     expect(prompt).toContain("Start completely fresh");
     expect(prompt).not.toContain("OLD ROOM SECRET MARKER");
-    expect(adapter.continues.some((entry) => entry.threadId === freshAgent.id)).toBe(false);
+    expect(adapter.continues.some((entry) => entry.agentId === freshAgent.id)).toBe(false);
     expect(store.readCommunicationProjections(project.id).some((projection) =>
       store.getCommunicationEvent(project.id, projection.eventId)?.conversationId === oldMaster.id)).toBe(false);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
@@ -888,9 +888,9 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Group direct", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Friends" });
-    const kings = store.createThread(project.id, { title: "Kings Canyon", engine: "codex", conversationId: master.id });
-    const cabrillo = store.createThread(project.id, { title: "Cabrillo", engine: "codex", conversationId: master.id });
-    const olympic = store.createThread(project.id, { title: "Olympic", engine: "codex", conversationId: master.id });
+    const kings = store.createAgent(project.id, { title: "Kings Canyon", engine: "codex", conversationId: master.id });
+    const cabrillo = store.createAgent(project.id, { title: "Cabrillo", engine: "codex", conversationId: master.id });
+    const olympic = store.createAgent(project.id, { title: "Olympic", engine: "codex", conversationId: master.id });
     const text = "#Kings-Canyon #Cabrillo #Olympic guess what! I just got married!!!!";
     const payload = {
       text,
@@ -919,12 +919,12 @@ describe("server chunk F", () => {
       expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
         expect.objectContaining({ role: "user", text, communicationEventId: communication?.eventId }),
       ]));
-      const prompt = adapter.seeds.find((seed) => seed.threadId === agent.id)?.prompt ?? "";
+      const prompt = adapter.seeds.find((seed) => seed.agentId === agent.id)?.prompt ?? "";
       expect(prompt.match(/guess what! I just got married!!!!/g)).toHaveLength(1);
     }
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#user done")).toHaveLength(0);
     for (const agent of [kings, cabrillo, olympic]) {
-      expect(store.getThreadDetail(agent.id)?.runOutput).toEqual([
+      expect(store.getAgentDetail(agent.id)?.runOutput).toEqual([
         expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
       ]);
     }
@@ -943,8 +943,8 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "User emoji reaction", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const observer = store.createAgent(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
     const text = "the user reacted with 🧑🏽‍🚀";
     const communicationEventId = randomUUID();
     store.appendCommunicationEvent({
@@ -976,7 +976,7 @@ describe("server chunk F", () => {
       method: "POST", url: "/api/user-reactions",
       payload: { projectId: project.id, communicationEventId, emoji: "🧑🏽‍🚀", idempotencyKey: "reaction-to-author" },
     });
-    expect(replay.json()).toMatchObject({ replayed: true, targetAuthorThreadId: author.id });
+    expect(replay.json()).toMatchObject({ replayed: true, targetAuthorAgentId: author.id });
     await waitForRun(author.id);
 
     expect(store.getConversationMessages(master.id)).toEqual([expect.objectContaining({ id: original.id })]);
@@ -984,7 +984,7 @@ describe("server chunk F", () => {
     expect(detail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
       { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
     ]);
-    const authorDetail = await app.inject({ method: "GET", url: `/api/threads/${author.id}` });
+    const authorDetail = await app.inject({ method: "GET", url: `/api/agents/${author.id}` });
     expect(authorDetail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
       { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
     ]);
@@ -992,10 +992,10 @@ describe("server chunk F", () => {
       expect.objectContaining({ role: "user", text, communicationEventId: undefined }),
     ]));
     expect(store.getMessages(observer.id).some((message) => message.text === text)).toBe(false);
-    expect(adapter.seeds.filter((seed) => seed.threadId === author.id)).toHaveLength(1);
+    expect(adapter.seeds.filter((seed) => seed.agentId === author.id)).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain(text);
     expect(adapter.seeds[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Original agent result");
-    expect(adapter.seeds.filter((seed) => seed.threadId === observer.id)).toHaveLength(0);
+    expect(adapter.seeds.filter((seed) => seed.agentId === observer.id)).toHaveLength(0);
     expect(store.readCommunicationEvents(project.id).filter((event) => event.text === text)).toHaveLength(0);
     await app.close();
   });
@@ -1004,7 +1004,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Question flow", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Planning" });
-    const agent = store.createThread(project.id, { title: "Planner", engine: "codex", conversationId: master.id });
+    const agent = store.createAgent(project.id, { title: "Planner", engine: "codex", conversationId: master.id });
     let dmStatus: number | undefined;
     adapter.responseText = "This ordinary response must be suppressed";
     adapter.beforeResponse = async (opts) => {
@@ -1022,7 +1022,7 @@ describe("server chunk F", () => {
     };
 
     const task = await app.inject({
-      method: "POST", url: `/api/threads/${agent.id}/messages`,
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
       payload: {
         text: "Plan my trip",
         sourceChannel: "main",
@@ -1037,7 +1037,7 @@ describe("server chunk F", () => {
     const messages = store.getConversationMessages(master.id);
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "Plan my trip" }),
-      expect.objectContaining({ text: "#user Which dates should I use?", authorThreadId: agent.id }),
+      expect.objectContaining({ text: "#user Which dates should I use?", authorAgentId: agent.id }),
     ]));
     expect(messages.some((message) => message.text.includes("This ordinary response must be suppressed"))).toBe(false);
     await app.close();
@@ -1055,9 +1055,9 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/conversations`,
       payload: { title: "Temporary room" },
     })).json<{ id: string }>();
-    const thread = (await app.inject({
+    const agent = (await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/threads`,
+      url: `/api/projects/${project.id}/agents`,
       payload: { title: "Preserved agent", engine: "codex", conversationId: conversation.id },
     })).json<{ id: string }>();
 
@@ -1065,13 +1065,13 @@ describe("server chunk F", () => {
     expect(deleteRes.statusCode).toBe(200);
     expect(deleteRes.json()).toEqual({ deleted: true });
     expect((await app.inject({ method: "GET", url: `/api/conversations/${conversation.id}` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{ thread: { conversationId?: string } }>().thread.conversationId).toBeUndefined();
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agent.id}` })).json<{ agent: { conversationId?: string } }>().agent.conversationId).toBeUndefined();
     expect((await app.inject({ method: "DELETE", url: `/api/conversations/${conversation.id}` })).statusCode).toBe(404);
 
     await app.close();
   });
 
-  it("rejects linking an agent thread to another project's conversation", async () => {
+  it("rejects linking an agent to another project's conversation", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const firstProjectRes = await app.inject({
       method: "POST",
@@ -1092,14 +1092,14 @@ describe("server chunk F", () => {
     });
     const conversation = masterRes.json<{ id: string }>();
 
-    const threadRes = await app.inject({
+    const agentRes = await app.inject({
       method: "POST",
-      url: `/api/projects/${secondProject.id}/threads`,
+      url: `/api/projects/${secondProject.id}/agents`,
       payload: { title: "Wrong project", engine: "codex", conversationId: conversation.id },
     });
 
-    expect(threadRes.statusCode).toBe(400);
-    expect(threadRes.json()).toEqual({ error: "conversation does not belong to project" });
+    expect(agentRes.statusCode).toBe(400);
+    expect(agentRes.json()).toEqual({ error: "conversation does not belong to project" });
     await app.close();
   });
 
@@ -1108,63 +1108,63 @@ describe("server chunk F", () => {
     const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
     const first = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Home" } })).json<{ id: string }>();
     const second = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Review" } })).json<{ id: string }>();
-    const thread = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/threads`, payload: { title: "Agent", engine: "codex", conversationId: first.id } })).json<{ id: string }>();
-    const membership = await app.inject({ method: "PUT", url: `/api/threads/${thread.id}/conversation-memberships`, payload: { conversationIds: [first.id, second.id], primaryConversationId: first.id } });
+    const agent = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/agents`, payload: { title: "Agent", engine: "codex", conversationId: first.id } })).json<{ id: string }>();
+    const membership = await app.inject({ method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`, payload: { conversationIds: [first.id, second.id], primaryConversationId: first.id } });
     expect(membership.statusCode).toBe(200);
     expect(membership.json()).toMatchObject({ conversationIds: [first.id, second.id] });
-    const turn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceConversationId: second.id } });
+    const turn = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceConversationId: second.id } });
     expect(turn.statusCode).toBe(200);
-    await waitForRun(thread.id);
-    expect(store.getConversationMessages(second.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
-    expect(store.getConversationMessages(first.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
-    expect(store.getThreadDetail(thread.id)?.runOutput).toEqual([
+    await waitForRun(agent.id);
+    expect(store.getConversationMessages(second.id).some((message) => message.authorAgentId === agent.id)).toBe(false);
+    expect(store.getConversationMessages(first.id).some((message) => message.authorAgentId === agent.id)).toBe(false);
+    expect(store.getAgentDetail(agent.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
     await app.close();
   });
 
   it("seeds first message, then continues with the captured session id", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     const first = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "first", model: "mock-model", effort: "high" },
     });
     expect(first.statusCode).toBe(200);
     expect(first.json()).toMatchObject({ mode: "seed" });
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
     const firstEventId = first.json<{ communicationEventId: string }>().communicationEventId;
     expect(firstEventId).toBeTruthy();
-    expect(store.getMessages(thread.id)).toEqual(expect.arrayContaining([
+    expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "first", communicationEventId: firstEventId }),
     ]));
-    expect(store.getMessages(thread.id).filter((message) => message.role === "assistant")).toEqual([]);
-    expect(store.getThreadDetail(thread.id)?.runOutput).toEqual([
+    expect(store.getMessages(agent.id).filter((message) => message.role === "assistant")).toEqual([]);
+    expect(store.getAgentDetail(agent.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
-    expect(store.readCommunicationEvents(store.getThread(thread.id)!.projectId).some((event) =>
+    expect(store.readCommunicationEvents(store.getAgent(agent.id)!.projectId).some((event) =>
       event.sender.kind === "agent" && event.text === "done")).toBe(false);
-    expect(store.reconcileCommunicationEvents(store.getThread(thread.id)!.projectId)).toMatchObject({ ok: true });
+    expect(store.reconcileCommunicationEvents(store.getAgent(agent.id)!.projectId)).toMatchObject({ ok: true });
 
     const second = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "second" },
     });
     expect(second.statusCode).toBe(200);
     expect(second.json()).toMatchObject({ mode: "continue" });
-    await waitForRun(thread.id, 2);
+    await waitForRun(agent.id, 2);
 
     expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain(`your agent id: ${thread.id}`);
-    expect(adapter.seeds[0]?.prompt).toContain("your display name: Thread");
+    expect(adapter.seeds[0]?.prompt).toContain(`your agent id: ${agent.id}`);
+    expect(adapter.seeds[0]?.prompt).toContain("your display name: Agent");
     expect(adapter.seeds[0]?.history).toEqual([]);
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.continues[0]?.resumeSessionId).toBe("sess-1");
-    const artifacts = store.getArtifacts(thread.id);
+    const artifacts = store.getArtifacts(agent.id);
     const artifactRes = await app.inject({
       method: "GET",
-      url: `/api/threads/${thread.id}/artifacts/${artifacts.find((artifact) => artifact.kind === "diff")?.id}`,
+      url: `/api/agents/${agent.id}/artifacts/${artifacts.find((artifact) => artifact.kind === "diff")?.id}`,
     });
     expect(artifactRes.statusCode).toBe(200);
     expect(artifactRes.json<{ content: string; contentType: string }>()).toMatchObject({
@@ -1175,57 +1175,57 @@ describe("server chunk F", () => {
   });
 
   it("rolls a failed Codex compaction resume into one fresh seeded session", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "first" },
     });
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
 
     adapter.mode = "resume_compaction_fail";
     const second = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "second" },
     });
     expect(second.json()).toMatchObject({ mode: "continue" });
-    await waitForRun(thread.id, 2);
+    await waitForRun(agent.id, 2);
 
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(2);
     expect(adapter.seeds[1]?.history.map((message) => message.text)).toContain("first");
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "session_reset"))
       .toHaveLength(1);
-    expect(store.readEvents(thread.id).some((item) =>
+    expect(store.readEvents(agent.id).some((item) =>
       item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
     )).toBe(false);
-    expect(store.resumeSessionId(thread.id)).toBe("sess-1");
+    expect(store.resumeSessionId(agent.id)).toBe("sess-1");
     await app.close();
   });
 
   it("does not replay a failed resume after material side effects", async () => {
-    const { app, thread } = await createProjectAndThread();
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first" } });
-    await waitForRun(thread.id);
+    const { app, agent } = await createProjectAndAgent();
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first" } });
+    await waitForRun(agent.id);
 
     adapter.mode = "material_compaction_fail";
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second" } });
     await vi.waitFor(() => {
-      expect(store.readEvents(thread.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
+      expect(store.readEvents(agent.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
     });
 
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(1);
-    expect(store.readEvents(thread.id).some((item) => item.event.type === "command" && item.event.command === "touch already-ran")).toBe(true);
-    expect(store.readEvents(thread.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
+    expect(store.readEvents(agent.id).some((item) => item.event.type === "command" && item.event.command === "touch already-ran")).toBe(true);
+    expect(store.readEvents(agent.id).some((item) => item.event.type === "error" && item.event.message.includes("pre-sampling compact"))).toBe(true);
     await app.close();
   });
 
   it("lets an active agent schedule a safe session rollover at turn completion", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     adapter.mode = "boundary";
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "work then refresh" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "work then refresh" } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     const url = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_ROLLOVER_URL;
@@ -1235,34 +1235,34 @@ describe("server chunk F", () => {
     const scheduled = await app.inject({ method: "POST", url: "/api/agent-session/rollover", headers: { authorization: `Bearer ${token}` } });
     expect(scheduled.statusCode).toBe(200);
     expect(scheduled.json()).toMatchObject({ scheduled: true });
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
 
-    expect(store.resumeSessionId(thread.id)).toBeUndefined();
-    expect(store.readEvents(thread.id).some((item) => item.event.type === "session_reset" && item.event.reason === "explicit_compaction")).toBe(true);
+    expect(store.resumeSessionId(agent.id)).toBeUndefined();
+    expect(store.readEvents(agent.id).some((item) => item.event.type === "session_reset" && item.event.reason === "explicit_compaction")).toBe(true);
     await app.close();
   });
 
   it("explicitly compacts only an idle persisted runtime session", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "active" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "active" } });
     await waitForSeedCount(1);
 
-    const active = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    const active = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/compact` });
     expect(active.statusCode).toBe(409);
     expect(active.json()).toMatchObject({ retryable: true });
-    await cancelAndWait(app, thread.id);
+    await cancelAndWait(app, agent.id);
 
-    const compacted = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    const compacted = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/compact` });
     expect(compacted.statusCode).toBe(200);
     expect(compacted.json()).toEqual({ compacted: true });
-    expect(store.resumeSessionId(thread.id)).toBeUndefined();
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+    expect(store.resumeSessionId(agent.id)).toBeUndefined();
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "session_reset"))
       .toEqual([expect.objectContaining({ event: expect.objectContaining({ reason: "explicit_compaction" }) })]);
 
-    const replay = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/compact` });
+    const replay = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/compact` });
     expect(replay.json()).toEqual({ compacted: false });
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "session_reset"))
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "session_reset"))
       .toHaveLength(1);
     await app.close();
   });
@@ -1272,7 +1272,7 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Release room" });
     appendBroadcast(store, project.id, master.id, "Ship the API change.");
-    const thread = store.createThread(project.id, {
+    const agent = store.createAgent(project.id, {
       title: "Aspen",
       engine: "codex",
       conversationId: master.id,
@@ -1280,10 +1280,10 @@ describe("server chunk F", () => {
 
     await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "Ship the API change.", sourceChannel: "main" },
     });
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
 
     expect(adapter.seeds[0]?.prompt).toContain("The latest request is a Direct Message");
     expect(adapter.seeds[0]?.prompt).toContain("Never Broadcast acknowledgments, questions, thanks, routine progress");
@@ -1300,10 +1300,10 @@ describe("server chunk F", () => {
     appendBroadcast(store, project.id, master.id, "#Aspen Is it tested?");
     await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "#Aspen Is it tested?", sourceChannel: "main" },
     });
-    await waitForRun(thread.id, 2);
+    await waitForRun(agent.id, 2);
 
     expect(adapter.continues[0]?.prompt).not.toContain("Aspen: done");
     expect(adapter.continues[0]?.prompt).toContain("Manager: #Aspen Is it tested?");
@@ -1315,7 +1315,7 @@ describe("server chunk F", () => {
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
     expect(store.getConversationMessages(master.id)).not.toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ authorThreadId: thread.id, text: "Got it — I’m on it." }),
+        expect.objectContaining({ authorAgentId: agent.id, text: "Got it — I’m on it." }),
       ]),
     );
     await app.close();
@@ -1325,14 +1325,14 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Scoped room" });
-    const aspen = store.createThread(project.id, { title: "Aspen", engine: "codex", conversationId: master.id });
-    const birch = store.createThread(project.id, { title: "Birch", engine: "codex", conversationId: master.id });
+    const aspen = store.createAgent(project.id, { title: "Aspen", engine: "codex", conversationId: master.id });
+    const birch = store.createAgent(project.id, { title: "Birch", engine: "codex", conversationId: master.id });
     appendBroadcast(store, project.id, master.id, "Shared release context.");
     appendBroadcast(store, project.id, master.id, "#Aspen private assignment marker");
 
     await app.inject({
       method: "POST",
-      url: `/api/threads/${birch.id}/messages`,
+      url: `/api/agents/${birch.id}/messages`,
       payload: { text: "Birch task", sourceChannel: "main" },
     });
     await waitForRun(birch.id);
@@ -1343,7 +1343,7 @@ describe("server chunk F", () => {
 
     await app.inject({
       method: "POST",
-      url: `/api/threads/${aspen.id}/messages`,
+      url: `/api/agents/${aspen.id}/messages`,
       payload: { text: "Aspen task", sourceChannel: "main" },
     });
     await waitForRun(aspen.id);
@@ -1358,21 +1358,21 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Incremental room" });
     appendBroadcast(store, project.id, master.id, "seed-only marker");
-    const thread = store.createThread(project.id, { title: "Delta", engine: "codex", conversationId: master.id });
+    const agent = store.createAgent(project.id, { title: "Delta", engine: "codex", conversationId: master.id });
 
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
-    await waitForRun(thread.id);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(agent.id);
     expect(adapter.seeds[0]?.prompt).toContain("seed-only marker");
     expect(adapter.seeds[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=16");
 
     appendBroadcast(store, project.id, master.id, "delta marker");
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delta", sourceChannel: "main" } });
-    await waitForRun(thread.id, 2);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "delta", sourceChannel: "main" } });
+    await waitForRun(agent.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("delta marker");
     expect(adapter.continues[0]?.prompt).not.toContain("seed-only marker");
 
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "unchanged", sourceChannel: "main" } });
-    await waitForRun(thread.id, 3);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "unchanged", sourceChannel: "main" } });
+    await waitForRun(agent.id, 3);
     expect(adapter.continues[1]?.prompt).toContain("room_messages=0; room_characters=0");
     expect(adapter.continues[1]?.prompt).not.toContain("delta marker");
     expect(adapter.continues[1]?.prompt).not.toContain("seed-only marker");
@@ -1384,22 +1384,22 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Retry room" });
     appendBroadcast(store, project.id, master.id, "original context");
-    const thread = store.createThread(project.id, { title: "Retry", engine: "codex", conversationId: master.id });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
-    await waitForRun(thread.id);
+    const agent = store.createAgent(project.id, { title: "Retry", engine: "codex", conversationId: master.id });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(agent.id);
 
     appendBroadcast(store, project.id, master.id, "must redeliver");
     adapter.failNextTurn = true;
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "fails", sourceChannel: "main" } });
-    await waitForRun(thread.id, 2);
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "retry", sourceChannel: "main" } });
-    await waitForRun(thread.id, 3);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "fails", sourceChannel: "main" } });
+    await waitForRun(agent.id, 2);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "retry", sourceChannel: "main" } });
+    await waitForRun(agent.id, 3);
     expect(adapter.continues[0]?.prompt).toContain("must redeliver");
     expect(adapter.continues[1]?.prompt).toContain("must redeliver");
 
-    store.appendEvent(thread.id, { type: "session", sessionId: "sess-2" });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "new epoch", sourceChannel: "main" } });
-    await waitForRun(thread.id, 4);
+    store.appendEvent(agent.id, { type: "session", sessionId: "sess-2" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "new epoch", sourceChannel: "main" } });
+    await waitForRun(agent.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
     expect(adapter.continues[2]?.prompt).toContain("original context");
     expect(adapter.continues[2]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Work log tab");
@@ -1413,12 +1413,12 @@ describe("server chunk F", () => {
     const second = store.createConversation(project.id, { title: "Second" });
     appendBroadcast(store, project.id, first.id, "first-room secret");
     appendBroadcast(store, project.id, second.id, "second-room secret");
-    const thread = store.createThread(project.id, { title: "Rooms", engine: "codex", conversationId: first.id });
-    store.updateThreadConversationMemberships(thread.id, { conversationIds: [first.id, second.id], primaryConversationId: first.id });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceConversationId: first.id } });
-    await waitForRun(thread.id);
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceConversationId: second.id } });
-    await waitForRun(thread.id, 2);
+    const agent = store.createAgent(project.id, { title: "Rooms", engine: "codex", conversationId: first.id });
+    store.updateAgentConversationMemberships(agent.id, { conversationIds: [first.id, second.id], primaryConversationId: first.id });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceConversationId: first.id } });
+    await waitForRun(agent.id);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceConversationId: second.id } });
+    await waitForRun(agent.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
     expect(adapter.continues[0]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Work log tab");
@@ -1430,16 +1430,16 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Restart room" });
     appendBroadcast(store, project.id, master.id, "before-restart marker");
-    const thread = store.createThread(project.id, { title: "Restart", engine: "codex", conversationId: master.id });
-    await firstApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
-    await waitForRun(thread.id);
+    const agent = store.createAgent(project.id, { title: "Restart", engine: "codex", conversationId: master.id });
+    await firstApp.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(agent.id);
     await firstApp.close();
 
-    store = new ThreadStore(dataDir);
+    store = new AgentStore(dataDir);
     appendBroadcast(store, project.id, master.id, "after-restart marker");
     const secondApp = createServer({ dataDir, store, engines, logger: false });
-    await secondApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "resume", sourceChannel: "main" } });
-    await waitForRun(thread.id, 2);
+    await secondApp.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "resume", sourceChannel: "main" } });
+    await waitForRun(agent.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("after-restart marker");
     expect(adapter.continues[0]?.prompt).not.toContain("before-restart marker");
     await secondApp.close();
@@ -1452,7 +1452,7 @@ describe("server chunk F", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/threads`,
+      url: `/api/projects/${project.id}/agents`,
       payload: {
         title: "Acadia",
         engine: "codex",
@@ -1462,12 +1462,12 @@ describe("server chunk F", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    const thread = response.json<{ id: string }>();
-    await waitForRun(thread.id);
+    const agent = response.json<{ id: string }>();
+    await waitForRun(agent.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
     const shared = store.getConversationMessages(master.id).find((message) => message.text === "#Acadia Check the first-run path.");
-    const audit = store.getMessages(thread.id).find((message) => message.text === "Check the first-run path.");
+    const audit = store.getMessages(agent.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
     expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
     const eventId = shared!.communicationEventId!;
@@ -1476,13 +1476,13 @@ describe("server chunk F", () => {
         schemaVersion: 2,
         sender: { kind: "user", userId: "local-operator" },
         intent: "user_dm",
-        audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id },
+        audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
       }),
     ]);
     expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId)
       .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
         ["conversation", master.id],
-        ["direct_agent_audit", thread.id],
+        ["direct_agent_audit", agent.id],
         ["user_inbox", "local-operator"],
       ]));
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
@@ -1493,7 +1493,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Collaboration room" });
-    const yosemite = store.createThread(project.id, {
+    const yosemite = store.createAgent(project.id, {
       title: "Yosemite",
       engine: "codex",
       conversationId: master.id,
@@ -1515,7 +1515,7 @@ describe("server chunk F", () => {
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Yosemite can you review this?" })]),
     );
     expect(store.getConversationMessages(master.id)).toEqual([]);
-    expect(store.getThreadDetail(yosemite.id)?.runOutput).toEqual([
+    expect(store.getAgentDetail(yosemite.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
     expect(store.getConversationMessages(master.id, "collaboration")).toEqual(
@@ -1529,7 +1529,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Retry recipient failure" });
-    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
+    const recipient = store.createAgent(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
 
     const response = await app.inject({
       method: "POST",
@@ -1551,7 +1551,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Bounded recipient failure" });
-    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
+    const recipient = store.createAgent(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
 
     const response = await app.inject({
       method: "POST",
@@ -1581,7 +1581,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Collaboration room" });
-    const wrangell = store.createThread(project.id, {
+    const wrangell = store.createAgent(project.id, {
       title: "Wrangell-St. Elias",
       engine: "codex",
       conversationId: master.id,
@@ -1606,10 +1606,10 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Broadcast room" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: master.id });
-    const second = store.createThread(project.id, { title: "Second", engine: "codex", conversationId: master.id });
-    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
-    store.updateThread(archived.id, { archived: true });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id });
+    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: master.id });
+    const archived = store.createAgent(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
+    store.updateAgent(archived.id, { archived: true });
 
     const response = await app.inject({
       method: "POST",
@@ -1625,7 +1625,7 @@ describe("server chunk F", () => {
     expect(store.getMessages(second.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
     expect(store.getMessages(archived.id)).toHaveLength(0);
     const intents = store.getConversationDeliveryIntents(master.id);
-    expect(intents.map(({ intent }) => ({ id: intent.targetThreadId, audience: intent.audience }))).toEqual([
+    expect(intents.map(({ intent }) => ({ id: intent.targetAgentId, audience: intent.audience }))).toEqual([
       { id: first.id, audience: "mention" },
       { id: second.id, audience: "mention" },
     ]);
@@ -1637,7 +1637,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Private collaboration" });
-    const agent = store.createThread(project.id, {
+    const agent = store.createAgent(project.id, {
       title: "Yosemite",
       engine: "codex",
       conversationId: master.id,
@@ -1678,9 +1678,9 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Three-agent room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const verifier = store.createThread(project.id, { title: "Verifier", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const verifier = store.createAgent(project.id, { title: "Verifier", engine: "codex", conversationId: master.id });
 
     // Organization-audience system guidance is explicitly shared with every
     // project agent through the Main projection.
@@ -1698,9 +1698,9 @@ describe("server chunk F", () => {
     });
 
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Coordinate reviews." } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Coordinate reviews." } });
     await waitForSeedCount(1);
-    const authorToken = adapter.seeds.find((turn) => turn.threadId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const authorToken = adapter.seeds.find((turn) => turn.agentId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(authorToken).toBeTruthy();
 
     const toReviewer = await app.inject({
@@ -1735,8 +1735,8 @@ describe("server chunk F", () => {
     expect(toVerifier.statusCode).toBe(200);
     await waitForSeedCount(3);
 
-    const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
-    const verifierPrompt = adapter.seeds.find((turn) => turn.threadId === verifier.id)?.prompt ?? "";
+    const reviewerPrompt = adapter.seeds.find((turn) => turn.agentId === reviewer.id)?.prompt ?? "";
+    const verifierPrompt = adapter.seeds.find((turn) => turn.agentId === verifier.id)?.prompt ?? "";
     expect(reviewerPrompt).toContain("Reviewer-only launch credential: ALPHA.");
     expect(verifierPrompt).toContain("Verifier-only release checklist.");
     expect(verifierPrompt).not.toContain("Reviewer-only launch credential: ALPHA.");
@@ -1753,18 +1753,18 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Immutable scope", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Scope room" });
-    const participant = store.createThread(project.id, { title: "Participant", engine: "codex", conversationId: master.id });
-    const collaborator = store.createThread(project.id, { title: "Collaborator", engine: "codex", conversationId: master.id });
+    const participant = store.createAgent(project.id, { title: "Participant", engine: "codex", conversationId: master.id });
+    const collaborator = store.createAgent(project.id, { title: "Collaborator", engine: "codex", conversationId: master.id });
 
     appendBroadcast(store, project.id, master.id, "shared project finding");
     adapter.mode = "hang";
     const direct = await app.inject({
-      method: "POST", url: `/api/threads/${participant.id}/messages`,
+      method: "POST", url: `/api/agents/${participant.id}/messages`,
       payload: { text: "private manager note", sourceChannel: "main" },
     });
     expect(direct.statusCode).toBe(200);
     await waitForSeedCount(1);
-    const token = adapter.seeds.find((turn) => turn.threadId === participant.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const token = adapter.seeds.find((turn) => turn.agentId === participant.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     const collaboration = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
       payload: {
@@ -1785,13 +1785,13 @@ describe("server chunk F", () => {
     await cancelAndWait(app, participant.id);
     await cancelAndWait(app, collaborator.id);
     adapter.mode = "normal";
-    const future = store.createThread(project.id, { title: "Future", engine: "codex", conversationId: master.id });
+    const future = store.createAgent(project.id, { title: "Future", engine: "codex", conversationId: master.id });
     await app.inject({
-      method: "POST", url: `/api/threads/${future.id}/messages`,
+      method: "POST", url: `/api/agents/${future.id}/messages`,
       payload: { text: "Start", sourceChannel: "main" },
     });
     await waitForRun(future.id);
-    const prompt = adapter.seeds.find((turn) => turn.threadId === future.id)?.prompt ?? "";
+    const prompt = adapter.seeds.find((turn) => turn.agentId === future.id)?.prompt ?? "";
     expect(prompt).toContain("shared project finding");
     expect(prompt).not.toContain("Manager: #Participant private manager note");
     expect(prompt).not.toContain("participant-only review");
@@ -1803,26 +1803,26 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Conversational reply", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Team room" });
     appendBroadcast(store, project.id, master.id, "#Greeter sounds good thanks!");
-    const greeter = store.createThread(project.id, { title: "Greeter", engine: "codex", conversationId: master.id });
+    const greeter = store.createAgent(project.id, { title: "Greeter", engine: "codex", conversationId: master.id });
     adapter.responseText = "You're welcome!";
 
     await app.inject({
-      method: "POST", url: `/api/threads/${greeter.id}/messages`,
+      method: "POST", url: `/api/agents/${greeter.id}/messages`,
       payload: { text: "#Greeter sounds good thanks!", sourceChannel: "main" },
     });
     await waitForRun(greeter.id);
 
     expect(store.getConversationMessages(master.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
     expect(store.getMessages(greeter.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
-    expect(store.getThreadDetail(greeter.id)?.runOutput).toEqual([
+    expect(store.getAgentDetail(greeter.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "You're welcome!", completed: true }),
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.sender.kind === "agent" && event.text === "You're welcome!")).toBe(false);
 
-    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
+    const observer = store.createAgent(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
     await app.inject({
-      method: "POST", url: `/api/threads/${observer.id}/messages`,
+      method: "POST", url: `/api/agents/${observer.id}/messages`,
       payload: { text: "What shared context is available?", sourceChannel: "main" },
     });
     await waitForRun(observer.id);
@@ -1834,7 +1834,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Casual conversation", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Trip planning" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: master.id });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id });
     adapter.responseText = "Here are three trip options";
     adapter.beforeResponse = async (opts) => {
       const response = await app.inject({
@@ -1847,7 +1847,7 @@ describe("server chunk F", () => {
     };
 
     const opening = await app.inject({
-      method: "POST", url: `/api/threads/${first.id}/messages`,
+      method: "POST", url: `/api/agents/${first.id}/messages`,
       payload: {
         text: "Help me plan a trip",
         sourceChannel: "main",
@@ -1858,26 +1858,26 @@ describe("server chunk F", () => {
     expect(opening.statusCode, opening.body).toBe(200);
     await waitForRun(first.id);
 
-    const openingPrompt = adapter.seeds.find((turn) => turn.threadId === first.id)?.prompt ?? "";
+    const openingPrompt = adapter.seeds.find((turn) => turn.agentId === first.id)?.prompt ?? "";
     expect(openingPrompt).toContain("Send its actual completed answer with intent broadcast, never direct_to_user");
     expect(store.getConversationMessages(master.id)).toContainEqual(
-      expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorThreadId: first.id }),
+      expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorAgentId: first.id }),
     );
     expect(store.getConversationMessages(master.id).some((message) => message.text === "#broadcast Here are three trip options")).toBe(false);
 
-    const privateAgent = store.createThread(project.id, { title: "Private", engine: "codex", conversationId: master.id });
+    const privateAgent = store.createAgent(project.id, { title: "Private", engine: "codex", conversationId: master.id });
     adapter.responseText = "Private implementation detail";
     const privateTurn = await app.inject({
-      method: "POST", url: `/api/threads/${privateAgent.id}/messages`,
+      method: "POST", url: `/api/agents/${privateAgent.id}/messages`,
       payload: { text: "Inspect a private issue", sourceChannel: "main", sourceConversationId: master.id },
     });
     expect(privateTurn.statusCode, privateTurn.body).toBe(200);
     await waitForRun(privateAgent.id);
 
-    const next = store.createThread(project.id, { title: "Next", engine: "codex", conversationId: master.id });
+    const next = store.createAgent(project.id, { title: "Next", engine: "codex", conversationId: master.id });
     adapter.responseText = "Let's continue";
     const followUp = await app.inject({
-      method: "POST", url: `/api/threads/${next.id}/messages`,
+      method: "POST", url: `/api/agents/${next.id}/messages`,
       payload: {
         text: "I can leave Friday",
         sourceChannel: "main",
@@ -1888,13 +1888,13 @@ describe("server chunk F", () => {
     expect(followUp.statusCode, followUp.body).toBe(200);
     await waitForRun(next.id);
 
-    const prompt = adapter.seeds.find((turn) => turn.threadId === next.id)?.prompt ?? "";
+    const prompt = adapter.seeds.find((turn) => turn.agentId === next.id)?.prompt ?? "";
     expect(prompt).toContain("Manager: Help me plan a trip");
     expect(prompt).toContain("First: Here are three trip options");
     expect(prompt).not.toContain("Inspect a private issue");
     expect(prompt).not.toContain("Private implementation detail");
     expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);
-    expect(store.getThreadDetail(privateAgent.id)?.runOutput).toEqual([
+    expect(store.getAgentDetail(privateAgent.id)?.runOutput).toEqual([
       expect.objectContaining({ text: "Private implementation detail", completed: true }),
     ]);
     await app.close();
@@ -1904,7 +1904,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Cutover", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Canonical room" });
-    const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const agent = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
 
     const main = await app.inject({
       method: "POST", url: `/api/conversations/${master.id}/messages`, payload: { text: "Shared decision" },
@@ -1939,17 +1939,17 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Routing room" });
-    const author = store.createThread(project.id, {
+    const author = store.createAgent(project.id, {
       title: "Author Agent",
       engine: "codex",
       conversationId: master.id,
     });
-    const reviewer = store.createThread(project.id, {
+    const reviewer = store.createAgent(project.id, {
       title: "Review Agent",
       engine: "codex",
       conversationId: master.id,
     });
-    const verifier = store.createThread(project.id, {
+    const verifier = store.createAgent(project.id, {
       title: "Verify Agent",
       engine: "codex",
       conversationId: master.id,
@@ -1958,7 +1958,7 @@ describe("server chunk F", () => {
     adapter.mode = "hang";
     await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/messages`,
+      url: `/api/agents/${author.id}/messages`,
       payload: { text: "#Review-Agent is tagged, but this is in my individual chat." },
     });
     await waitForSeedCount(1);
@@ -1993,19 +1993,19 @@ describe("server chunk F", () => {
     );
     expect(store.getConversationMessages(master.id)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ authorThreadId: author.id, text: "#user Private implementation note." }),
-        expect.objectContaining({ authorThreadId: author.id, text: "#broadcast Manager-facing checkpoint." }),
+        expect.objectContaining({ authorAgentId: author.id, text: "#user Private implementation note." }),
+        expect.objectContaining({ authorAgentId: author.id, text: "#broadcast Manager-facing checkpoint." }),
       ]),
     );
     expect(store.getConversationMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          authorThreadId: author.id,
+          authorAgentId: author.id,
           text: "#Review-Agent #Verify-Agent Please review the API contract.",
         }),
       ]),
     );
-    const reviewerPrompt = adapter.seeds.find((turn) => turn.threadId === reviewer.id)?.prompt ?? "";
+    const reviewerPrompt = adapter.seeds.find((turn) => turn.agentId === reviewer.id)?.prompt ?? "";
     expect(reviewerPrompt).toContain("- channel: collaboration");
     expect(reviewerPrompt).toContain("- author: Author Agent");
     expect(reviewerPrompt).toContain("- tagged agents: #Review-Agent, #Verify-Agent");
@@ -2090,8 +2090,8 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Retirement", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Explicit room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
 
     const manualMention = await app.inject({
       method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`, payload: { text: "#Reviewer inspect this" },
@@ -2100,7 +2100,7 @@ describe("server chunk F", () => {
     expect(manualMention.json()).toMatchObject({ error: expect.stringContaining("explicit recipientAgentIds") });
 
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Begin" } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Begin" } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     const legacy = await app.inject({
@@ -2113,7 +2113,7 @@ describe("server chunk F", () => {
       payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Explicit route" },
     });
     expect(explicit.statusCode).toBe(200);
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
     for (let index = 0; index < 80 && adapter.abortedSeeds < 1; index += 1) await sleep(10);
     expect(adapter.abortedSeeds).toBeGreaterThanOrEqual(1);
     await app.close();
@@ -2124,11 +2124,11 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Documents", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Private room" });
     const outsiderRoom = store.createConversation(project.id, { title: "Unrelated room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", conversationId: outsiderRoom.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: outsiderRoom.id });
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Begin" } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Begin" } });
     await waitForSeedCount(1);
     const authorToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
     const full = `# Detailed review\n\n${"private analysis ".repeat(400)}`;
@@ -2159,7 +2159,7 @@ describe("server chunk F", () => {
     expect(agentPreview.json()).toMatchObject({ content: full });
     expect(adapter.seeds[1]!.environment!.PONDEROSA_DOCUMENT_URL).toContain("/api/agent-documents");
 
-    await app.inject({ method: "POST", url: `/api/threads/${outsider.id}/messages`, payload: { text: "Unrelated work" } });
+    await app.inject({ method: "POST", url: `/api/agents/${outsider.id}/messages`, payload: { text: "Unrelated work" } });
     await waitForSeedCount(3);
     const outsiderToken = adapter.seeds[2]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
     const forbiddenCollaboration = await app.inject({ method: "GET", url: `/api/agent-documents/${event.document!.id}`, headers: { authorization: `Bearer ${outsiderToken}` } });
@@ -2184,10 +2184,10 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Broadcast documents", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Shared room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reader = store.createThread(project.id, { title: "Reader", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reader = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: master.id });
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Prepare shared guidance" } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Prepare shared guidance" } });
     await waitForSeedCount(1);
     const authorToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
     const full = `# Organization Runbook\n\n${"FULL-SECRET-BODY ".repeat(500)}`;
@@ -2199,7 +2199,7 @@ describe("server chunk F", () => {
     const event = store.getCommunicationEvent(project.id, sent.json<{ eventId: string }>().eventId)!;
 
     const turn = await app.inject({
-      method: "POST", url: `/api/threads/${reader.id}/messages`,
+      method: "POST", url: `/api/agents/${reader.id}/messages`,
       payload: { text: "Use the shared guidance", sourceChannel: "main", sourceConversationId: master.id, shareWithOrganization: true },
     });
     expect(turn.statusCode).toBe(200);
@@ -2222,10 +2222,10 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Routing room" });
     const otherMaster = store.createConversation(project.id, { title: "Other room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", conversationId: otherMaster.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: otherMaster.id });
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
     const headers = { authorization: `Bearer ${adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` };
 
@@ -2250,10 +2250,10 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Agent broadcast" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     const payload = { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "review this.", idempotencyKey: "broadcast-review" };
@@ -2276,13 +2276,13 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Membership room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    store.updateThreadConversationMemberships(author.id, { conversationIds: [] });
+    store.updateAgentConversationMemberships(author.id, { conversationIds: [] });
 
     const response = await app.inject({
       method: "POST",
@@ -2303,13 +2303,13 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, {
+    const agent = store.createAgent(project.id, {
       title: "Agent",
       engine: "codex",
       conversationId: master.id,
     });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Finish." } });
-    await waitForRun(thread.id);
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Finish." } });
+    await waitForRun(agent.id);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     const response = await app.inject({
       method: "POST",
@@ -2330,17 +2330,17 @@ describe("server chunk F", () => {
   it("does not let forwarded or Host headers redirect capability callbacks", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     adapter.mode = "hang";
     await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       headers: { host: "pine.example.test", "x-forwarded-proto": "https" },
       payload: { text: "Use the routed endpoint." },
     });
     await waitForSeedCount(1);
     expect(adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
-    await cancelAndWait(app, thread.id);
+    await cancelAndWait(app, agent.id);
     await app.close();
   });
 
@@ -2348,22 +2348,22 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Collaboration room" });
-    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", conversationId: master.id });
-    const author = store.createThread(project.id, { title: "Badlands", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Pinnacles", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Badlands", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
     await app.inject({
       method: "POST",
-      url: `/api/threads/${reviewer.id}/messages`,
+      url: `/api/agents/${reviewer.id}/messages`,
       payload: { text: "Review the current change." },
     });
     await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/messages`,
+      url: `/api/agents/${author.id}/messages`,
       payload: { text: "Prepare the handoff." },
     });
     await waitForSeedCount(2);
-    const token = adapter.seeds.find((seed) => seed.threadId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const token = adapter.seeds.find((seed) => seed.agentId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(token).toBeTruthy();
 
     const handoff = await app.inject({
@@ -2374,7 +2374,7 @@ describe("server chunk F", () => {
     });
     expect(handoff.statusCode).toBe(200);
 
-    await app.inject({ method: "POST", url: `/api/threads/${reviewer.id}/cancel` });
+    await app.inject({ method: "POST", url: `/api/agents/${reviewer.id}/cancel` });
     await waitForRun(reviewer.id);
     expect(adapter.continues.at(-1)?.prompt).toContain(
       "Latest message for you:\n#Pinnacles Please review this once you finish.",
@@ -2388,14 +2388,14 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Async handoffs" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const child = store.createThread(project.id, { title: "Child", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Stay busy." } });
-    await app.inject({ method: "POST", url: `/api/threads/${child.id}/messages`, payload: { text: "Wait for a retry." } });
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Stay busy." } });
+    await app.inject({ method: "POST", url: `/api/agents/${child.id}/messages`, payload: { text: "Wait for a retry." } });
     await waitForSeedCount(2);
-    const childToken = adapter.seeds.find((seed) => seed.threadId === child.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const childToken = adapter.seeds.find((seed) => seed.agentId === child.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
 
     const tag = { intent: "collaboration" as const, recipientAgentIds: [parent.id], text: "first completed result", idempotencyKey: "result-1" };
@@ -2417,9 +2417,9 @@ describe("server chunk F", () => {
     // The recipient is still in a tool-like wait. Cancellation must not consume
     // its queued tags; all three enter one lossless FIFO continuation turn.
     adapter.mode = "normal";
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/cancel` });
     await waitForRun(parent.id);
-    const batchPrompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
+    const batchPrompt = adapter.continues.find((turn) => turn.agentId === parent.id)?.prompt ?? "";
     expect(batchPrompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
     expect(batchPrompt.indexOf("#Parent first completed result")).toBeLessThan(batchPrompt.indexOf("#Parent second completed result"));
     expect(batchPrompt.indexOf("#Parent second completed result")).toBeLessThan(batchPrompt.indexOf("#Parent third completed result"));
@@ -2432,9 +2432,9 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Safe boundary" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     adapter.mode = "boundary";
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Work through a tool call." } });
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Work through a tool call." } });
     await waitForSeedCount(1);
 
     await Promise.all([
@@ -2442,7 +2442,7 @@ describe("server chunk F", () => {
       app.inject({ method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`, payload: { text: "result two", recipientAgentIds: [parent.id] } }),
     ]);
     await waitForRun(parent.id, 2);
-    const prompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
+    const prompt = adapter.continues.find((turn) => turn.agentId === parent.id)?.prompt ?? "";
     expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
     expect(prompt.indexOf("#Parent result one")).toBeLessThan(prompt.indexOf("#Parent result two"));
     await app.close();
@@ -2452,14 +2452,14 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Child result delivery" });
-    const parent = store.createThread(project.id, { title: "Cedar Breaks", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Cedar Breaks", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
     await app.inject({
       method: "POST", url: `/api/conversations/${master.id}/messages`,
       payload: { text: "#broadcast Shared policy: verify claims before reporting." },
     });
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Create a research report." } });
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Create a research report." } });
     await waitForSeedCount(1);
     const parentToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_SPAWN_URL).toBe("http://127.0.0.1:8787/api/agent-spawns");
@@ -2470,7 +2470,7 @@ describe("server chunk F", () => {
       payload: { displayName: "Research", initialMessage: "Research and report back.", runtime: "codex", idempotencyKey: "child-result" },
     });
     expect(spawned.statusCode).toBe(201);
-    const child = spawned.json<{ agent: ThreadDto }>().agent;
+    const child = spawned.json<{ agent: AgentDto }>().agent;
     expect(child).toMatchObject({
       managerAgentId: parent.id,
       spawnedByAgentId: parent.id,
@@ -2483,7 +2483,7 @@ describe("server chunk F", () => {
     });
     expect(replay.json()).toMatchObject({ replayed: true, agent: { id: child.id } });
     await waitForSeedCount(2);
-    const childSeed = adapter.seeds.find((seed) => seed.threadId === child.id);
+    const childSeed = adapter.seeds.find((seed) => seed.agentId === child.id);
     const childToken = childSeed?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
     expect(childSeed?.prompt).toContain(`Your direct manager is the stable agent id ${parent.id}`);
@@ -2528,14 +2528,14 @@ describe("server chunk F", () => {
       audience: { kind: "agents", agentIds: [parent.id] },
     });
 
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/cancel` });
     await waitForRun(parent.id);
-    expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
+    expect(adapter.continues.find((turn) => turn.agentId === parent.id)?.prompt).toContain(
       "Latest message for you:\n#Cedar-Breaks Huntsville result is ready.",
     );
-    expect(store.getProjectedThreadMessages(parent.id).find((message) => message.communicationEventId === resultEventId)).toMatchObject({
+    expect(store.getProjectedAgentMessages(parent.id).find((message) => message.communicationEventId === resultEventId)).toMatchObject({
       role: "assistant",
-      authorThreadId: child.id,
+      authorAgentId: child.id,
       text: "#Cedar-Breaks Huntsville result is ready.",
     });
     expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
@@ -2550,10 +2550,10 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Managed failure", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Failure supervision" });
-    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${manager.id}/messages`, payload: { text: "Supervise your reports." } });
+    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/messages`, payload: { text: "Supervise your reports." } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
     adapter.mode = "normal";
@@ -2562,14 +2562,14 @@ describe("server chunk F", () => {
       method: "POST", url: "/api/agent-spawns", headers: { authorization: `Bearer ${token}` },
       payload: { displayName: "Fragile worker", initialMessage: "Try the risky work.", idempotencyKey: "fragile-1" },
     });
-    const child = spawned.json<{ agent: ThreadDto }>().agent;
+    const child = spawned.json<{ agent: AgentDto }>().agent;
     await waitForSeedCount(2);
     for (let index = 0; index < 80 && !store.readEvents(child.id).some((event) => event.event.type === "agent_lifecycle" && event.event.status === "failed"); index += 1) await sleep(10);
 
-    await app.inject({ method: "POST", url: `/api/threads/${manager.id}/cancel` });
+    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/cancel` });
     await waitForRun(manager.id);
     const managerFollowUp = [...adapter.seeds, ...adapter.continues].find((turn) =>
-      turn.threadId === manager.id && turn.prompt.includes("Internal managed-agent update"));
+      turn.agentId === manager.id && turn.prompt.includes("Internal managed-agent update"));
     expect(managerFollowUp?.prompt).toContain("Fragile worker");
     expect(managerFollowUp?.prompt).toContain("simulated runtime failure");
     expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
@@ -2581,13 +2581,13 @@ describe("server chunk F", () => {
   it("recovers queued and interrupted collaboration deliveries after restart in FIFO order", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Restart recovery" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const firstMessage = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent interrupted first result" },
       undefined,
       "collaboration",
-      [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
+      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
     const secondMessage = store.appendConversationMessage(
       master.id,
@@ -2599,7 +2599,7 @@ describe("server chunk F", () => {
     const first = deliveries.queue({
       conversationId: master.id,
       messageId: firstMessage.id,
-      targetThreadId: parent.id,
+      targetAgentId: parent.id,
       text: firstMessage.text,
       relayDepth: 0,
       mentionTrail: [],
@@ -2609,7 +2609,7 @@ describe("server chunk F", () => {
     deliveries.queue({
       conversationId: master.id,
       messageId: secondMessage.id,
-      targetThreadId: parent.id,
+      targetAgentId: parent.id,
       text: secondMessage.text,
       relayDepth: 0,
       mentionTrail: [],
@@ -2620,7 +2620,7 @@ describe("server chunk F", () => {
     await app.ready();
     await waitForRun(parent.id);
 
-    const prompt = adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
+    const prompt = adapter.seeds.find((turn) => turn.agentId === parent.id)?.prompt ?? "";
     expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
     expect(prompt.lastIndexOf("#Parent interrupted first result")).toBeLessThan(prompt.lastIndexOf("#Parent queued second result"));
     await app.close();
@@ -2629,17 +2629,17 @@ describe("server chunk F", () => {
   it("dispatches a fixed, exact collaboration batch and leaves in-flight arrivals for the next turn", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Batch room" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const other = store.createThread(project.id, { title: "Other", engine: "codex", conversationId: master.id });
-    const author = store.createThread(project.id, { title: "Mesa Author", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Mesa Author", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const firstAt = "2026-07-11T10:00:00.000Z";
     const secondAt = "2026-07-11T10:00:01.000Z";
-    const queue = (messageId: string, targetThreadId: string, text: string, createdAt: string) => deliveries.queue({
+    const queue = (messageId: string, targetAgentId: string, text: string, createdAt: string) => deliveries.queue({
       conversationId: master.id,
       messageId,
-      targetThreadId,
-      authorThreadId: author.id,
+      targetAgentId,
+      authorAgentId: author.id,
       text,
       relayDepth: 0,
       mentionTrail: [],
@@ -2664,17 +2664,17 @@ describe("server chunk F", () => {
     await waitForRun(other.id);
 
     const parentTurns = [
-      ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
-      ...adapter.continues.filter((turn) => turn.threadId === parent.id),
+      ...adapter.seeds.filter((turn) => turn.agentId === parent.id),
+      ...adapter.continues.filter((turn) => turn.agentId === parent.id),
     ];
     expect(parentTurns).toHaveLength(2);
     expect(parentTurns[0]?.prompt).toContain(
-      `Author: Mesa Author (#Mesa-Author, thread ${author.id})\nUTC timestamp: ${firstAt}\nOriginal message (exact):\nfirst exact\nline two`,
+      `Author: Mesa Author (#Mesa-Author, agent ${author.id})\nUTC timestamp: ${firstAt}\nOriginal message (exact):\nfirst exact\nline two`,
     );
     expect(parentTurns[0]?.prompt).toContain(`UTC timestamp: ${secondAt}\nOriginal message (exact):\nsecond exact`);
     expect(parentTurns[0]?.prompt).not.toContain("arrived during active batch");
     expect(parentTurns[1]?.prompt).toContain("#Parent arrived during active batch");
-    expect(adapter.seeds.find((turn) => turn.threadId === other.id)?.prompt).toContain("other recipient only");
+    expect(adapter.seeds.find((turn) => turn.agentId === other.id)?.prompt).toContain("other recipient only");
     expect(parentTurns.every((turn) => !turn.prompt.includes("other recipient only"))).toBe(true);
 
     const persisted = new CollaborationDeliveryStore(dataDir);
@@ -2689,12 +2689,12 @@ describe("server chunk F", () => {
   it("retries every unacknowledged batch member after a shared runtime failure", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Batch retry" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const ids = ["one", "two"].map((text, index) => deliveries.queue({
       conversationId: master.id,
       messageId: `retry-${text}`,
-      targetThreadId: parent.id,
+      targetAgentId: parent.id,
       text,
       relayDepth: 0,
       mentionTrail: [],
@@ -2706,7 +2706,7 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
     await waitForRun(parent.id, 2);
-    const turns = [...adapter.seeds, ...adapter.continues].filter((turn) => turn.threadId === parent.id);
+    const turns = [...adapter.seeds, ...adapter.continues].filter((turn) => turn.agentId === parent.id);
     expect(turns).toHaveLength(2);
     expect(turns.every((turn) => turn.prompt.includes("Original message (exact):\none") && turn.prompt.includes("Original message (exact):\ntwo"))).toBe(true);
     const persisted = new CollaborationDeliveryStore(dataDir);
@@ -2717,20 +2717,20 @@ describe("server chunk F", () => {
   it("rebuilds a missing inbox record from a canonical tagged message", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Crash window" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
     store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent result persisted before the inbox write" },
       undefined,
       "collaboration",
-      [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
+      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     );
 
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
     await waitForRun(parent.id);
-    expect(adapter.seeds.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
+    expect(adapter.seeds.find((turn) => turn.agentId === parent.id)?.prompt).toContain(
       "Latest message for you:\n#Parent result persisted before the inbox write",
     );
     await app.close();
@@ -2739,13 +2739,13 @@ describe("server chunk F", () => {
   it("reconciles an #everyone crash window once per still-eligible recipient with audit provenance", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Broadcast crash window" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: master.id });
-    const second = store.createThread(project.id, { title: "Second", engine: "codex", conversationId: master.id });
-    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
-    const deleted = store.createThread(project.id, { title: "Deleted", engine: "codex", conversationId: master.id });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id });
+    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: master.id });
+    const archived = store.createAgent(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
+    const deleted = store.createAgent(project.id, { title: "Deleted", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
-    const intent = (targetThreadId: string) => ({
-      targetThreadId,
+    const intent = (targetAgentId: string) => ({
+      targetAgentId,
       relayDepth: 0,
       mentionTrail: [],
       kind: "tag" as const,
@@ -2758,8 +2758,8 @@ describe("server chunk F", () => {
       "collaboration",
       [intent(first.id), intent(second.id), intent(archived.id), intent(deleted.id)],
     )!;
-    store.updateThread(archived.id, { archived: true });
-    store.deleteThread(deleted.id);
+    store.updateAgent(archived.id, { archived: true });
+    store.deleteAgent(deleted.id);
 
     adapter.mode = "hang";
     const firstStart = createServer({ dataDir, store, engines, logger: false });
@@ -2767,7 +2767,7 @@ describe("server chunk F", () => {
     await waitForSeedCount(2);
     await firstStart.close();
 
-    const restartedStore = new ThreadStore(dataDir);
+    const restartedStore = new AgentStore(dataDir);
     const secondStart = createServer({ dataDir, store: restartedStore, engines, logger: false });
     await secondStart.ready();
     await secondStart.close();
@@ -2775,12 +2775,12 @@ describe("server chunk F", () => {
     const records = readFileSync(path.join(dataDir, "collaboration-deliveries.jsonl"), "utf8")
       .trim().split("\n").map((line) => JSON.parse(line) as {
         type: string;
-        delivery?: { id: string; messageId: string; targetThreadId: string; audience?: string };
+        delivery?: { id: string; messageId: string; targetAgentId: string; audience?: string };
       });
     const deliveries = records
       .flatMap((record) => record.delivery ? [record.delivery] : [])
       .filter((delivery) => delivery.messageId === message.id);
-    const uniqueByTarget = new Map(deliveries.map((delivery) => [delivery.targetThreadId, delivery]));
+    const uniqueByTarget = new Map(deliveries.map((delivery) => [delivery.targetAgentId, delivery]));
     expect([...uniqueByTarget.keys()].sort()).toEqual([first.id, second.id].sort());
     expect(new Set(deliveries.map((delivery) => delivery.id)).size).toBe(2);
     expect(deliveries.every((delivery) => delivery.audience === "everyone")).toBe(true);
@@ -2789,9 +2789,9 @@ describe("server chunk F", () => {
   it("preserves canonical FIFO when an older message is reconstructed", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "FIFO crash window" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
-    const intent = { targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
+    const intent = { targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
     const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
     vi.setSystemTime(afterReconciliationBoundary);
@@ -2814,7 +2814,7 @@ describe("server chunk F", () => {
     deliveries.queue({
       conversationId: master.id,
       messageId: newer.id,
-      targetThreadId: parent.id,
+      targetAgentId: parent.id,
       text: newer.text,
       relayDepth: 0,
       mentionTrail: [],
@@ -2827,8 +2827,8 @@ describe("server chunk F", () => {
     await app.ready();
     await waitForRun(parent.id);
     const turns = [
-      ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
-      ...adapter.continues.filter((turn) => turn.threadId === parent.id),
+      ...adapter.seeds.filter((turn) => turn.agentId === parent.id),
+      ...adapter.continues.filter((turn) => turn.agentId === parent.id),
     ];
     expect(turns).toHaveLength(1);
     expect(turns[0]?.prompt.indexOf("#Parent older message missing its inbox write")).toBeLessThan(
@@ -2840,7 +2840,7 @@ describe("server chunk F", () => {
   it("preserves mixed collaboration and direct FIFO when timestamps tie", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Mixed FIFO crash window" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
@@ -2850,12 +2850,12 @@ describe("server chunk F", () => {
       { role: "user", text: "#Parent older collaboration message missing its inbox write" },
       undefined,
       "collaboration",
-      [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
+      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
     const directCreatedAt = new Date().toISOString();
     deliveries.queue({
       messageId: "newer-direct-manager-message",
-      targetThreadId: parent.id,
+      targetAgentId: parent.id,
       text: "Newer direct manager message already queued",
       relayDepth: 0,
       mentionTrail: [],
@@ -2870,8 +2870,8 @@ describe("server chunk F", () => {
     await app.ready();
     await waitForRun(parent.id, 2);
     const turns = [
-      ...adapter.seeds.filter((turn) => turn.threadId === parent.id),
-      ...adapter.continues.filter((turn) => turn.threadId === parent.id),
+      ...adapter.seeds.filter((turn) => turn.agentId === parent.id),
+      ...adapter.continues.filter((turn) => turn.agentId === parent.id),
     ];
     expect(turns[0]?.prompt).toContain(
       "Latest message for you:\n#Parent older collaboration message missing its inbox write",
@@ -2883,7 +2883,7 @@ describe("server chunk F", () => {
   it("does not infer delivery for canonical messages without an authorized intent", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Blocked recovery" });
-    store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
     store.appendConversationMessage(
       master.id,
@@ -2901,10 +2901,10 @@ describe("server chunk F", () => {
 
   it("recovers a durable direct manager follow-up after restart", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Worker", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex" });
     new CollaborationDeliveryStore(dataDir).queue({
       messageId: "direct-restart",
-      targetThreadId: thread.id,
+      targetAgentId: agent.id,
       text: "Continue after restart",
       relayDepth: 0,
       mentionTrail: [],
@@ -2913,8 +2913,8 @@ describe("server chunk F", () => {
 
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
-    await waitForRun(thread.id);
-    expect(adapter.seeds.find((turn) => turn.threadId === thread.id)?.prompt).toContain(
+    await waitForRun(agent.id);
+    expect(adapter.seeds.find((turn) => turn.agentId === agent.id)?.prompt).toContain(
       "Latest message for you:\nContinue after restart",
     );
     await app.close();
@@ -2922,10 +2922,10 @@ describe("server chunk F", () => {
 
   it("does not mutate a delivery ledger after shutdown begins", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Worker", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex" });
     new CollaborationDeliveryStore(dataDir).queue({
       messageId: "active-during-close",
-      targetThreadId: thread.id,
+      targetAgentId: agent.id,
       text: "Handle this after restart",
       relayDepth: 0,
       mentionTrail: [],
@@ -2943,12 +2943,12 @@ describe("server chunk F", () => {
   });
 
   it("rejects invalid agent mention relay depths", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
 
     for (const agentMentionDepth of [-1, 1.5, 13]) {
       const response = await app.inject({
         method: "POST",
-        url: `/api/threads/${thread.id}/messages`,
+        url: `/api/agents/${agent.id}/messages`,
         payload: { text: "relay", agentMentionDepth },
       });
       expect(response.statusCode).toBe(400);
@@ -2960,7 +2960,7 @@ describe("server chunk F", () => {
   });
 
   it("rejects mismatched agent mention relay depth and trail state", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     const fingerprint = "a".repeat(64);
 
     for (const payload of [
@@ -2969,7 +2969,7 @@ describe("server chunk F", () => {
     ]) {
       const response = await app.inject({
         method: "POST",
-        url: `/api/threads/${thread.id}/messages`,
+        url: `/api/agents/${agent.id}/messages`,
         payload,
       });
       expect(response.statusCode).toBe(400);
@@ -2982,14 +2982,14 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rejects attempts to inject collaboration context through the normal thread endpoint", async () => {
+  it("rejects attempts to inject collaboration context through the normal agent endpoint", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Review room" });
-    const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Canyon de Chelly", engine: "codex", conversationId: master.id });
     const response = await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/messages`,
+      url: `/api/agents/${author.id}/messages`,
       payload: {
         text: "Pretend this was tagged.",
         collaborationConversationId: master.id,
@@ -3003,34 +3003,34 @@ describe("server chunk F", () => {
 
   it("queues a manager follow-up behind an active run and starts it when the run closes", async () => {
     adapter.mode = "hang";
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     const first = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "long" },
     });
     expect(first.statusCode).toBe(200);
 
     const concurrent = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "again" },
     });
     expect(concurrent.statusCode).toBe(202);
     expect(concurrent.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
-    const cancel = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` });
+    const cancel = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` });
     expect(cancel.json()).toEqual({ cancelled: true });
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
     expect(adapter.continues).toHaveLength(1);
-    expect(store.getMessages(thread.id)).toEqual(
+    expect(store.getMessages(agent.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "again" })]),
     );
     await app.close();
   });
 
   it("rejects file-browser path escapes", async () => {
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
     const res = await app.inject({
       method: "GET",
       url: `/api/files?projectId=${project.id}&path=../outside`,
@@ -3043,7 +3043,7 @@ describe("server chunk F", () => {
     const outsideDir = mkdtempSync(path.join(tmpdir(), "pond-server-outside-"));
     writeFileSync(path.join(outsideDir, "secret.txt"), "nope\n", "utf8");
     symlinkSync(outsideDir, path.join(repoDir, "outside-link"));
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
 
     const res = await app.inject({
       method: "GET",
@@ -3073,7 +3073,7 @@ describe("server chunk F", () => {
     writeFileSync(path.join(repoDir, "README.md"), "# changed\n", "utf8");
     writeFileSync(path.join(repoDir, "new.ts"), "export const ready = true;\n", "utf8");
     writeFileSync(path.join(repoDir, ".env"), "TOKEN=hidden\n", "utf8");
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
 
     const status = await app.inject({ method: "GET", url: `/api/projects/${project.id}/workspace` });
     expect(status.statusCode).toBe(200);
@@ -3119,7 +3119,7 @@ describe("server chunk F", () => {
   it("caps file-browser reads and preserves binary data as base64", async () => {
     writeFileSync(path.join(repoDir, "large.bin"), Buffer.alloc(2 * 1024 * 1024 + 1));
     writeFileSync(path.join(repoDir, "binary.bin"), Buffer.from([0xff, 0xfe, 0xfd]));
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
     const large = await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}&path=large.bin` });
     const binary = await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}&path=binary.bin` });
     expect(large.statusCode).toBe(400);
@@ -3176,16 +3176,16 @@ describe("server chunk F", () => {
   });
 
   it("keeps v2 routes as explicit 501 stubs", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
 
     const switchEngine = await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/switch-engine`,
+      url: `/api/agents/${agent.id}/switch-engine`,
       payload: { engine: "claude" },
     });
     const search = await app.inject({
       method: "GET",
-      url: `/api/threads/${thread.id}/search?q=history`,
+      url: `/api/agents/${agent.id}/search?q=history`,
     });
 
     expect(switchEngine.statusCode).toBe(501);
@@ -3193,35 +3193,35 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("deletes a thread: removes projections + on-disk log, cancels active run", async () => {
-    const { app, project, thread } = await createProjectAndThread();
+  it("deletes a agent: removes projections + on-disk log, cancels active run", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
 
-    // Give the thread some history so there's a log + projections to remove.
+    // Give the agent some history so there's a log + projections to remove.
     await app.inject({
       method: "POST",
-      url: `/api/threads/${thread.id}/messages`,
+      url: `/api/agents/${agent.id}/messages`,
       payload: { text: "do work" },
     });
-    await waitForRun(thread.id);
-    expect(store.readEvents(thread.id).length).toBeGreaterThan(0);
+    await waitForRun(agent.id);
+    expect(store.readEvents(agent.id).length).toBeGreaterThan(0);
 
-    const del = await app.inject({ method: "DELETE", url: `/api/threads/${thread.id}` });
+    const del = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
     expect(del.statusCode).toBe(200);
     expect(del.json<{ deleted: boolean }>().deleted).toBe(true);
 
     // Gone from the projection list and by id.
-    const list = await app.inject({ method: "GET", url: `/api/projects/${project.id}/threads` });
+    const list = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agents` });
     expect(list.json<unknown[]>()).toHaveLength(0);
-    const detail = await app.inject({ method: "GET", url: `/api/threads/${thread.id}` });
+    const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
     expect(detail.statusCode).toBe(404);
 
     // Deleting again is a 404.
-    const again = await app.inject({ method: "DELETE", url: `/api/threads/${thread.id}` });
+    const again = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
     expect(again.statusCode).toBe(404);
 
-    // On-disk thread directory is gone (rebuild won't resurrect it).
+    // On-disk agent directory is gone (rebuild won't resurrect it).
     store.rebuildProjections();
-    const afterRebuild = await app.inject({ method: "GET", url: `/api/threads/${thread.id}` });
+    const afterRebuild = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
     expect(afterRebuild.statusCode).toBe(404);
     await app.close();
   });
@@ -3242,7 +3242,7 @@ describe("server chunk F", () => {
     const fingerprinted = await app.inject({ method: "GET", url: "/static/js/app.123.js" });
     const serviceWorker = await app.inject({ method: "GET", url: "/sw.js" });
     const registerSw = await app.inject({ method: "GET", url: "/register-sw.js" });
-    const fallback = await app.inject({ method: "GET", url: "/threads/abc" });
+    const fallback = await app.inject({ method: "GET", url: "/agents/abc" });
     const apiMiss = await app.inject({ method: "GET", url: "/api/not-real" });
     const escape = await app.inject({ method: "GET", url: "/%5c..%5cpackage.json" });
 
@@ -3273,8 +3273,8 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Delegation room" });
-    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const parent = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
+    const agent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const parent = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "delegate" } });
     const parentRunId = parent.json<{ runId: string }>().runId;
 
     expect((await app.inject({
@@ -3285,39 +3285,39 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "POST", url: "/api/internal/assignments/missing/launch", payload: {} })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/api/internal/assignments/missing/output", payload: { text: "forged" } })).statusCode).toBe(404);
 
-    await cancelAndWait(app, thread.id);
+    await cancelAndWait(app, agent.id);
     await app.close();
   });
 
   it("validates, scopes, persists, serves, and prevents deletion of sent image attachments", async () => {
-    const { app, thread } = await createProjectAndThread();
+    const { app, agent } = await createProjectAndAgent();
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
-    const rejected = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/attachments`, headers: { "content-type": "image/png" }, payload: Buffer.from("<svg><script/></svg>") });
+    const rejected = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/attachments`, headers: { "content-type": "image/png" }, payload: Buffer.from("<svg><script/></svg>") });
     expect(rejected.statusCode).toBe(415);
-    const uploaded = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/attachments`, headers: { "content-type": "image/png", "x-ponderosa-filename": "../../screen.png" }, payload: png });
+    const uploaded = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/attachments`, headers: { "content-type": "image/png", "x-ponderosa-filename": "../../screen.png" }, payload: png });
     expect(uploaded.statusCode).toBe(201);
     const attachment = uploaded.json<{ id: string; name: string; url: string }>();
     expect(attachment.name).toBe("screen.png");
     expect(attachment.url).not.toContain(dataDir);
-    const send = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Inspect this", attachmentIds: [attachment.id] } });
+    const send = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect this", attachmentIds: [attachment.id] } });
     expect(send.statusCode).toBe(200);
-    await waitForRun(thread.id);
-    expect(store.getMessages(thread.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, threadId: thread.id });
+    await waitForRun(agent.id);
+    expect(store.getMessages(agent.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, agentId: agent.id });
     store.rebuildProjections();
-    expect(store.getMessages(thread.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, threadId: thread.id });
+    expect(store.getMessages(agent.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, agentId: agent.id });
     expect(adapter.seeds[0]?.prompt).toContain("Attached images");
     expect(adapter.seeds[0]?.prompt).not.toContain("base64");
     expect((await app.inject({ method: "GET", url: attachment.url })).headers["x-content-type-options"]).toBe("nosniff");
     expect((await app.inject({ method: "DELETE", url: attachment.url })).statusCode).toBe(409);
-    expect((await app.inject({ method: "POST", url: `/api/threads/not-${thread.id}/messages`, payload: { text: "x", attachmentIds: [attachment.id] } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: `/api/agents/not-${agent.id}/messages`, payload: { text: "x", attachmentIds: [attachment.id] } })).statusCode).toBe(404);
     await app.close();
   });
 
   it("serves general assets only as bounded private downloads with non-enumerating ownership failures", async () => {
-    const { app, project, thread } = await createProjectAndThread();
-    const second = store.createThread(project.id, { title: "Other", engine: "codex" });
+    const { app, project, agent } = await createProjectAndAgent();
+    const second = store.createAgent(project.id, { title: "Other", engine: "codex" });
     const uploaded = await app.inject({
-      method: "POST", url: `/api/threads/${thread.id}/attachments`,
+      method: "POST", url: `/api/agents/${agent.id}/attachments`,
       headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "application/pdf", "x-ponderosa-filename": "résumé.pdf" },
       payload: Buffer.from("%PDF-1.7\n<script>download only</script>"),
     });
@@ -3335,26 +3335,26 @@ describe("server chunk F", () => {
     });
     expect(download.headers["content-disposition"]).toContain("attachment;");
     expect((await app.inject({ method: "GET", url: asset.downloadUrl, headers: { range: "bytes=0-2" } })).statusCode).toBe(416);
-    const foreignUrl = `/api/threads/${second.id}/assets/${asset.id}/download`;
+    const foreignUrl = `/api/agents/${second.id}/assets/${asset.id}/download`;
     expect((await app.inject({ method: "GET", url: foreignUrl })).json()).toEqual({ error: "asset not found" });
-    expect((await app.inject({ method: "GET", url: `/api/threads/${second.id}/assets/${randomUUID()}/download` })).json()).toEqual({ error: "asset not found" });
-    expect((await app.inject({ method: "DELETE", url: `/api/threads/${thread.id}` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/agents/${second.id}/assets/${randomUUID()}/download` })).json()).toEqual({ error: "asset not found" });
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: asset.downloadUrl })).statusCode).toBe(404);
-    expect(existsSync(path.join(dataDir, "projects", project.id, "threads", thread.id))).toBe(false);
+    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id))).toBe(false);
     await app.close();
   });
 
   it("streams live SSE and replays from last seen seq without duplicates", async () => {
-    const { app, project, thread } = await createProjectAndThread();
+    const { app, project, agent } = await createProjectAndAgent();
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address();
     if (!address || typeof address === "string") throw new Error("no server address");
     const base = `http://127.0.0.1:${address.port}`;
 
     const liveAbort = new AbortController();
-    const live = await fetch(`${base}/api/threads/${thread.id}/stream`, { signal: liveAbort.signal });
+    const live = await fetch(`${base}/api/agents/${agent.id}/stream`, { signal: liveAbort.signal });
     const reader = live.body!.getReader();
-    await fetch(`${base}/api/threads/${thread.id}/messages`, {
+    await fetch(`${base}/api/agents/${agent.id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "stream" }),
@@ -3372,10 +3372,10 @@ describe("server chunk F", () => {
     expect(chunk).toContain('"executionId":');
     expect(chunk).toContain('"text":"done"');
     expect(chunk).not.toContain('"replayed":true');
-    await waitForRun(thread.id);
+    await waitForRun(agent.id);
 
     const replayAbort = new AbortController();
-    const replay = await fetch(`${base}/api/threads/${thread.id}/stream?lastEventId=1`, {
+    const replay = await fetch(`${base}/api/agents/${agent.id}/stream?lastEventId=1`, {
       signal: replayAbort.signal,
     });
     const replayReader = replay.body!.getReader();
@@ -3391,32 +3391,32 @@ describe("server chunk F", () => {
   }, 10000);
 
   it("validates individual reply targets and sends compact quoted context", async () => {
-    const { app, project, thread } = await createProjectAndThread();
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Original question" } });
-    await waitForRun(thread.id);
-    const original = store.getMessages(thread.id)[0]!;
-    const other = store.createThread(project.id, { title: "Other", engine: "codex" });
-    const rejected = await app.inject({ method: "POST", url: `/api/threads/${other.id}/messages`, payload: { text: "Cross-boundary", replyToMessageId: original.id } });
+    const { app, project, agent } = await createProjectAndAgent();
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Original question" } });
+    await waitForRun(agent.id);
+    const original = store.getMessages(agent.id)[0]!;
+    const other = store.createAgent(project.id, { title: "Other", engine: "codex" });
+    const rejected = await app.inject({ method: "POST", url: `/api/agents/${other.id}/messages`, payload: { text: "Cross-boundary", replyToMessageId: original.id } });
     expect(rejected.statusCode).toBe(400);
-    const accepted = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Specific answer", replyToMessageId: original.id } });
+    const accepted = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Specific answer", replyToMessageId: original.id } });
     expect(accepted.statusCode).toBe(200);
     expect(adapter.continues.at(-1)?.prompt).toContain("Replying specifically to this earlier message");
     expect(adapter.continues.at(-1)?.prompt).toContain("Original question");
-    expect(store.getMessages(thread.id).find((message) => message.text === "Specific answer")?.replyTo?.messageId).toBe(original.id);
-    await waitForRun(thread.id);
+    expect(store.getMessages(agent.id).find((message) => message.text === "Specific answer")?.replyTo?.messageId).toBe(original.id);
+    await waitForRun(agent.id);
     await app.close();
   });
 
   it("delivers Reply Directly once and replays a stable receipt", async () => {
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const other = store.createThread(project.id, { title: "Other", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
     const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
     const upload = await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/attachments`,
+      url: `/api/agents/${author.id}/attachments`,
       headers: { "content-type": "image/png", "x-ponderosa-filename": "direct.png" },
       payload: png,
     });
@@ -3426,18 +3426,18 @@ describe("server chunk F", () => {
     const accepted = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
+      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
     });
     expect(accepted.statusCode).toBe(200);
-    expect(accepted.json()).toMatchObject({ replayed: false, targetAuthorThreadId: author.id });
+    expect(accepted.json()).toMatchObject({ replayed: false, targetAuthorAgentId: author.id });
     await waitForRun(author.id);
-    expect(adapter.seeds.find((turn) => turn.threadId === author.id)?.prompt)
+    expect(adapter.seeds.find((turn) => turn.agentId === author.id)?.prompt)
       .toContain("Replying specifically to this earlier message:\n> Result");
 
     const replayed = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
+      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
     });
     expect(replayed.statusCode).toBe(200);
     expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
@@ -3448,11 +3448,11 @@ describe("server chunk F", () => {
     const conflict = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Changed payload", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-1" },
+      payload: { text: "Changed payload", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "reply-1" },
     });
     expect(conflict.statusCode).toBe(409);
 
-    const concurrentPayload = { text: "Concurrent follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-concurrent" };
+    const concurrentPayload = { text: "Concurrent follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "reply-concurrent" };
     const concurrent = await Promise.all([
       app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload }),
       app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload }),
@@ -3466,7 +3466,7 @@ describe("server chunk F", () => {
     const spoofed = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Wrong target", replyToMessageId: report.id, targetAuthorThreadId: other.id, idempotencyKey: "reply-2" },
+      payload: { text: "Wrong target", replyToMessageId: report.id, targetAuthorAgentId: other.id, idempotencyKey: "reply-2" },
     });
     expect(spoofed.statusCode).toBe(400);
     expect(spoofed.json()).toMatchObject({ error: expect.stringMatching(/must be the author/) });
@@ -3474,14 +3474,14 @@ describe("server chunk F", () => {
   });
 
   it("repairs a same-process direct-reply crash window and double replay without duplicates or spawning", async () => {
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Recovery room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
     const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
     const upload = await app.inject({
       method: "POST",
-      url: `/api/threads/${author.id}/attachments`,
+      url: `/api/agents/${author.id}/attachments`,
       headers: { "content-type": "image/png", "x-ponderosa-filename": "recovered.png" },
       payload: png,
     });
@@ -3489,14 +3489,14 @@ describe("server chunk F", () => {
     const receiptKey = `direct-reply:${master.id}:crash-window`;
     const canonical = store.appendConversationMessage(
       master.id,
-      { text: "#Author Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id, attachments: [upload.json()] },
+      { text: "#Author Recovered follow up", replyToMessageId: report.id, directReplyToAuthorAgentId: author.id, attachments: [upload.json()] },
       undefined,
       "main",
-      [{ targetThreadId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+      [{ targetAgentId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
       receiptKey,
     )!;
-    const threadCount = store.listThreads(project.id).length;
-    const payload = { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "crash-window" };
+    const agentCount = store.listAgents(project.id).length;
+    const payload = { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, attachmentIds: [attachmentId], idempotencyKey: "crash-window" };
     const replay = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
@@ -3510,18 +3510,18 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).find((message) => message.text === "Recovered follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
-    expect(store.listThreads(project.id)).toHaveLength(threadCount);
+    expect(store.listAgents(project.id)).toHaveLength(agentCount);
     await app.close();
   });
 
   it("returns a truthful retryable failure when a canonical direct reply has no persisted delivery intent", async () => {
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Incomplete recovery room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
     const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
     store.appendConversationMessage(
       master.id,
-      { text: "#Author Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
+      { text: "#Author Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorAgentId: author.id },
       undefined,
       "main",
       undefined,
@@ -3531,7 +3531,7 @@ describe("server chunk F", () => {
     const replay = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "missing-intent" },
+      payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "missing-intent" },
     });
     expect(replay.statusCode).toBe(503);
     expect(replay.json()).toMatchObject({ retryable: true, error: expect.stringMatching(/intent is unavailable/) });
@@ -3541,15 +3541,15 @@ describe("server chunk F", () => {
   });
 
   it("queues one direct reply for a busy author and deduplicates retries", async () => {
-    const { app, project } = await createProjectAndThread();
+    const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Busy room" });
-    const author = store.createThread(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
+    const author = store.createAgent(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
     const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Working" }, author.id)!;
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Current work" } });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
     await waitForSeedCount(1);
 
-    const payload = { text: "Queued follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "busy-reply" };
+    const payload = { text: "Queued follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "busy-reply" };
     const first = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     const retry = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     expect(first.json()).toMatchObject({ replayed: false, queued: true });
@@ -3557,28 +3557,28 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
 
     adapter.mode = "normal";
-    await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
     for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
     expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
     await app.close();
   });
 
   it("updates mutable agent organization through stable IDs without rewriting delegation provenance", async () => {
-    const { app, project, thread: parent } = await createProjectAndThread();
-    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
-    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex" });
+    const { app, project, agent: parent } = await createProjectAndAgent();
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex" });
+    const grandchild = store.createAgent(project.id, { title: "Grandchild", engine: "codex" });
 
     const demoted = await app.inject({
-      method: "PUT", url: `/api/threads/${child.id}/manager`, payload: { managerAgentId: parent.id },
+      method: "PUT", url: `/api/agents/${child.id}/manager`, payload: { managerAgentId: parent.id },
     });
     expect(demoted.statusCode).toBe(200);
     expect(demoted.json()).toMatchObject({ id: child.id, managerAgentId: parent.id });
-    await app.inject({ method: "PUT", url: `/api/threads/${grandchild.id}/manager`, payload: { managerAgentId: child.id } });
-    const cycle = await app.inject({ method: "PUT", url: `/api/threads/${parent.id}/manager`, payload: { managerAgentId: grandchild.id } });
+    await app.inject({ method: "PUT", url: `/api/agents/${grandchild.id}/manager`, payload: { managerAgentId: child.id } });
+    const cycle = await app.inject({ method: "PUT", url: `/api/agents/${parent.id}/manager`, payload: { managerAgentId: grandchild.id } });
     expect(cycle.statusCode).toBe(400);
     expect(cycle.json()).toMatchObject({ error: expect.stringMatching(/cycle/) });
 
-    const promoted = await app.inject({ method: "PUT", url: `/api/threads/${child.id}/manager`, payload: { managerAgentId: null } });
+    const promoted = await app.inject({ method: "PUT", url: `/api/agents/${child.id}/manager`, payload: { managerAgentId: null } });
     expect(promoted.statusCode).toBe(200);
     expect(promoted.json()).not.toHaveProperty("managerAgentId");
     expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(3);

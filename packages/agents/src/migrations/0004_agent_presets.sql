@@ -3,4 +3,4 @@ CREATE TABLE agent_presets (
  guidance TEXT NOT NULL, engine TEXT NOT NULL, model TEXT, effort TEXT, enabled INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
-ALTER TABLE threads ADD COLUMN preset_snapshot_json TEXT;
+ALTER TABLE agents ADD COLUMN preset_snapshot_json TEXT;

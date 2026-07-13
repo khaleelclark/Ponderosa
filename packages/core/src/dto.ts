@@ -97,7 +97,7 @@ export interface WorkspaceFileReviewDto {
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
-/** A model-agnostic project control room that can spawn many agent threads. */
+/** A model-agnostic project conversation that can include many agents. */
 export interface ConversationDto {
   id: string;
   projectId: string;
@@ -137,11 +137,11 @@ export interface ConversationMessageDto {
   text: string;
   createdAt: string;
   /**
-   * The agent (thread) that authored this message, when it came from an agent
+   * The agent (agent) that authored this message, when it came from an agent
    * reporting back into the group chat (finished/stuck). Absent for the manager's
    * own messages.
    */
-  authorThreadId?: string;
+  authorAgentId?: string;
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
@@ -168,7 +168,7 @@ export interface CreateUserReactionRequest {
 export interface CreateUserReactionResponse {
   replayed: boolean;
   queued: boolean;
-  targetAuthorThreadId: string;
+  targetAuthorAgentId: string;
   reactions: MessageReactionDto[];
 }
 
@@ -176,7 +176,7 @@ export interface MessageReferenceDto {
   messageId: string;
   text: string;
   role: "user" | "assistant" | "system";
-  authorThreadId?: string;
+  authorAgentId?: string;
 }
 
 /** The two communication projections available for one project conversation. */
@@ -185,14 +185,14 @@ export type ConversationChannel = "main" | "collaboration";
 /** The private, opt-in agent-collaboration projection. */
 export interface CollaborationViewDto {
   messages: ConversationMessageDto[];
-  threads: ThreadDto[];
+  agents: AgentDto[];
 }
 
 /** GET /api/conversations/:id response. */
 export interface ConversationDetailDto {
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
-  threads: ThreadDto[];
+  agents: AgentDto[];
 }
 
 /** POST /api/conversations/:id/messages body. */
@@ -222,7 +222,7 @@ export interface CreateCollaborationMessageResponse {
 export interface CreateDirectReplyRequest {
   text: string;
   replyToMessageId: string;
-  targetAuthorThreadId: string;
+  targetAuthorAgentId: string;
   attachmentIds?: string[];
   /** Stable across retries; the server applies both durable effects once. */
   idempotencyKey: string;
@@ -230,7 +230,7 @@ export interface CreateDirectReplyRequest {
 
 export interface DirectReplyResponse {
   messageId: string;
-  targetAuthorThreadId: string;
+  targetAuthorAgentId: string;
   replayed: boolean;
   queued: boolean;
 }
@@ -249,26 +249,26 @@ export interface MultiAgentDirectMessageResponse {
   recipients: Array<{ agentId: string; queued: boolean }>;
 }
 
-// ─── Threads ─────────────────────────────────────────────────────────────────
+// ─── Agents ─────────────────────────────────────────────────────────────────
 
-/** Derived thread state (current branch/commit), from `state` events (SPEC §2). */
-export interface ThreadState {
+/** Derived agent state (current branch/commit), from `state` events (SPEC §2). */
+export interface AgentState {
   branch?: string;
   commit?: string;
 }
 
-/** A feature-scoped unit of work (SPEC §2). Mirrors the `threads` projection. */
-export interface ThreadDto {
+/** A stable, addressable agent identity. Mirrors the `agents` projection. */
+export interface AgentDto {
   id: string;
   projectId: string;
-  /** Optional control-room/conversation that spawned or groups this agent. */
+  /** Optional primary Project conversation that groups this agent. */
   conversationId?: string;
-  /** All control rooms this agent belongs to. `conversationId` is the primary/home member. */
+  /** All Project conversations this agent belongs to. `conversationId` is primary. */
   conversationIds: string[];
   title: string;
-  /** The engine currently bound to this thread. */
+  /** The engine currently bound to this agent. */
   activeEngine: EngineId;
-  state: ThreadState;
+  state: AgentState;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -302,16 +302,16 @@ export interface TeamDirectoryDto {
   agents: TeamDirectoryAgentDto[];
 }
 
-/** POST /api/projects/:id/threads body. */
-export interface CreateThreadRequest {
+/** POST /api/projects/:id/agents body. */
+export interface CreateAgentRequest {
   title: string;
   engine: EngineId;
   conversationId?: string;
   model?: string;
   effort?: string;
-  /** Optional first turn, dispatched atomically with thread creation. */
+  /** Optional first turn, dispatched atomically with agent creation. */
   initialMessage?: string;
-  /** Master-chat message referenced by the optional first turn. */
+  /** Project-chat message referenced by the optional first turn. */
   replyToMessageId?: string;
   presetId?: string;
   /** Optional existing agent this new agent reports to. User-authorized creation only. */
@@ -330,18 +330,18 @@ export interface AgentSpawnRequest {
 }
 
 export interface AgentSpawnResponse {
-  agent: ThreadDto;
+  agent: AgentDto;
   accepted: boolean;
   replayed: boolean;
 }
 
-/** PATCH /api/threads/:id body (rename / archive). */
-export interface UpdateThreadRequest {
+/** PATCH /api/agents/:id body (rename / archive). */
+export interface UpdateAgentRequest {
   title?: string;
   archived?: boolean;
 }
 
-/** PUT /api/threads/:id/manager body. Null promotes to top level. */
+/** PUT /api/agents/:id/manager body. Null promotes to top level. */
 export interface UpdateAgentOrganizationRequest {
   managerAgentId: string | null;
 }
@@ -356,8 +356,8 @@ export interface AgentOrganizationEvent {
   createdAt: string;
 }
 
-/** PUT /api/threads/:id/conversation-memberships body. Replaces membership atomically. */
-export interface UpdateThreadConversationMembershipsRequest {
+/** PUT /api/agents/:id/conversation-memberships body. Replaces membership atomically. */
+export interface UpdateAgentConversationMembershipsRequest {
   conversationIds: string[];
   /** Must be one of `conversationIds`; omit only when the resulting set is empty. */
   primaryConversationId?: string;
@@ -370,13 +370,13 @@ export interface MessageDto {
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
-  threadId: string;
+  agentId: string;
   seq: number;
   role: "user" | "assistant";
   text: string;
   createdAt: string;
   /** Stable agent author for explicit agent communication shown in this audit. */
-  authorThreadId?: string;
+  authorAgentId?: string;
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];
@@ -387,10 +387,10 @@ export type AssetMediaType =
   | "image/png" | "image/jpeg" | "image/webp"
   | "application/pdf" | "text/plain" | "application/json" | "application/zip";
 
-/** A content-validated, thread-owned asset staged for or associated with a message. */
+/** A content-validated, agent-owned asset staged for or associated with a message. */
 export interface AssetDto {
   id: string;
-  threadId: string;
+  agentId: string;
   name: string;
   mediaType: AssetMediaType;
   size: number;
@@ -413,7 +413,7 @@ export interface AssetLimitsDto {
   maxRequestBytes: number;
   maxAssetsPerMessage: number;
   maxMessageBytes: number;
-  maxThreadBytes: number;
+  maxAgentBytes: number;
   acceptedMediaTypes: AssetMediaType[];
 }
 
@@ -427,7 +427,7 @@ export interface ImageAttachmentLimitsDto {
 /** A Tasks-pane execution unit (SPEC §7 `tasks`). */
 export interface TaskDto {
   id: string;
-  threadId: string;
+  agentId: string;
   title: string;
   status: TaskStatus;
   engine: EngineId;
@@ -445,7 +445,7 @@ export type AgentActivityEvent = Extract<AgentEvent, {
 /** Canonical, refresh-safe execution activity projected from the agent event log. */
 export interface AgentActivityDto {
   id: string;
-  threadId: string;
+  agentId: string;
   executionId?: string;
   seq: number;
   createdAt: string;
@@ -466,10 +466,10 @@ export interface ChangedFileDto {
 /** An Artifacts-pane entry (SPEC §7 `artifacts`). Metadata only; content via :aid. */
 export interface ArtifactDto {
   id: string;
-  threadId: string;
+  agentId: string;
   taskId?: string;
   kind: ArtifactKind;
-  /** Relative path under the thread's `artifacts/` dir. */
+  /** Relative path under the agent's `artifacts/` dir. */
   path: string;
   summary?: string;
   createdAt: string;
@@ -479,7 +479,7 @@ export interface ArtifactDto {
   downloadUrl?: string;
 }
 
-/** GET /api/threads/:id/artifacts/:aid — the artifact plus its rendered content. */
+/** GET /api/agents/:id/artifacts/:aid — the artifact plus its rendered content. */
 export interface ArtifactContentDto extends ArtifactDto {
   /** Raw text content (diff text, report body, log text). */
   content: string;
@@ -501,7 +501,7 @@ export type AgentExecutionDeltaEvent =
 
 export interface RunOutputDto {
   id: string;
-  threadId: string;
+  agentId: string;
   executionId: string;
   kind: "response" | "reasoning";
   text: string;
@@ -513,11 +513,11 @@ export interface RunOutputDto {
 }
 
 /**
- * GET /api/threads/:id — the full thread view. Chat contains only explicit
+ * GET /api/agents/:id — the full agent view. Chat contains only explicit
  * communications; Work log contains execution-scoped ordinary output.
  */
-export interface ThreadDetailDto {
-  thread: ThreadDto;
+export interface AgentDetailDto {
+  agent: AgentDto;
   messages: MessageDto[];
   runTriggers: RunTriggerRecord[];
   runOutput: RunOutputDto[];
@@ -525,12 +525,12 @@ export interface ThreadDetailDto {
   changedFiles: ChangedFileDto[];
   tasks: TaskDto[];
   artifacts: ArtifactDto[];
-  state: ThreadState;
+  state: AgentState;
 }
 
 // ─── Messaging / runs ────────────────────────────────────────────────────────
 
-/** POST /api/threads/:id/messages body — send a user turn. */
+/** POST /api/agents/:id/messages body — send a user turn. */
 export interface SendMessageRequest {
   text: string;
   attachmentIds?: string[];
@@ -550,7 +550,7 @@ export interface SendMessageRequest {
   activeRunDelivery?: "steer" | "queue";
 }
 
-/** POST /api/threads/:id/messages response when a turn starts immediately. */
+/** POST /api/agents/:id/messages response when a turn starts immediately. */
 export interface StartedMessageResponse {
   queued: false;
   runId: string;
@@ -561,7 +561,7 @@ export interface StartedMessageResponse {
   communicationEventId?: string;
 }
 
-/** POST /api/threads/:id/messages response when another turn is still active. */
+/** POST /api/agents/:id/messages response when another turn is still active. */
 export interface QueuedMessageResponse {
   queued: true;
   /** One-based position among follow-ups waiting for this agent. */
@@ -600,7 +600,7 @@ export interface CommunicationDocumentContentDto extends CommunicationDocumentRe
   content: string;
 }
 
-/** POST /api/threads/:id/cancel response. */
+/** POST /api/agents/:id/cancel response. */
 export interface CancelResponse {
   cancelled: boolean;
 }
@@ -661,11 +661,11 @@ export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted
 export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
   | "task_completed" | "turn_completed" | "runtime_error"
-  | "session_rollover_scheduled" | "thread_cancelled"
+  | "session_rollover_scheduled" | "agent_cancelled"
   | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled";
 
 export interface AgentHealthDto {
-  /** Stable thread identity; titles and mention handles are presentation only. */
+  /** Stable agent identity; titles and mention handles are presentation only. */
   agentId: string;
   managerAgentId?: string;
   childAgentIds: string[];
@@ -714,14 +714,14 @@ export interface ReadinessDto {
 
 // ─── v2 (stubbed 501 in v1 — SPEC §8) ────────────────────────────────────────
 
-/** POST /api/threads/:id/switch-engine body (v2). */
+/** POST /api/agents/:id/switch-engine body (v2). */
 export interface SwitchEngineRequest {
   engine: EngineId;
   model?: string;
   effort?: string;
 }
 
-/** GET /api/threads/:id/search?q= result (v2). */
+/** GET /api/agents/:id/search?q= result (v2). */
 export interface SearchResultDto {
   seq: number;
   ts: string;
@@ -730,7 +730,7 @@ export interface SearchResultDto {
   snippet?: string;
 }
 
-/** GET /api/threads/:id/search?q= response (v2). */
+/** GET /api/agents/:id/search?q= response (v2). */
 export interface SearchResponse {
   query: string;
   results: SearchResultDto[];

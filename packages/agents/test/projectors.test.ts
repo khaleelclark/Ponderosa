@@ -7,7 +7,7 @@ import {
 } from "../src/projectors.js";
 import type { StoredLogEvent } from "../src/log-event.js";
 
-const T = "thread-1";
+const T = "agent-1";
 
 function stored(seq: number, event: StoredLogEvent["event"]): StoredLogEvent {
   return { seq, ts: `2026-01-01T00:00:0${seq}.000Z`, event };
@@ -28,7 +28,7 @@ describe("projectEvent — routing (SPEC §5)", () => {
     if (msg?.kind === "insert_message") {
       expect(msg.row.role).toBe("user");
       expect(msg.row.text).toBe("Refactor auth");
-      expect(msg.row.id).toBe("thread-1:m:1");
+      expect(msg.row.id).toBe("agent-1:m:1");
     }
     expect(kinds(ops)).toContain("insert_event");
   });
@@ -78,7 +78,7 @@ describe("projectEvent — routing (SPEC §5)", () => {
     const task = ops.find((o) => o.kind === "insert_task");
     if (task?.kind === "insert_task") {
       expect(task.row.status).toBe("running");
-      expect(task.row.id).toBe("thread-1:t:1"); // keyed by opening user_message seq
+      expect(task.row.id).toBe("agent-1:t:1"); // keyed by opening user_message seq
       expect(task.row.title).toBe("go");
     }
     const artifact = ops.find((o) => o.kind === "insert_artifact");
@@ -102,7 +102,7 @@ describe("projectEvent — routing (SPEC §5)", () => {
     if (art?.kind === "insert_artifact") {
       expect(art.row.kind).toBe("diff");
       expect(art.row.path).toBe("000002-diff.patch");
-      expect(art.row.taskId).toBe("thread-1:t:1");
+      expect(art.row.taskId).toBe("agent-1:t:1");
       expect(art.content).toContain("No diff text was provided");
     }
   });
@@ -144,7 +144,7 @@ describe("projectEvent — routing (SPEC §5)", () => {
     const upd = ops.find((o) => o.kind === "update_task");
     expect(upd).toEqual({
       kind: "update_task",
-      id: "thread-1:t:1",
+      id: "agent-1:t:1",
       status: "done",
       updatedAt: "2026-01-01T00:00:03.000Z",
     });

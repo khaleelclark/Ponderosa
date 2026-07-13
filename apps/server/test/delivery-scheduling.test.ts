@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ContinueOptions, SeedOptions, ThreadDto } from "@ponderosa/core";
-import { ThreadStore } from "@ponderosa/threads";
+import type { Adapter, AgentEvent, ContinueOptions, SeedOptions, AgentDto } from "@ponderosa/core";
+import { AgentStore } from "@ponderosa/agents";
 import { COLLABORATION_DISPATCH_LIMITS, createServer } from "../src/app.js";
 import { projectAgentHealth } from "../src/agent-health.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
@@ -34,15 +34,15 @@ afterEach(() => {
 function fixture(count: number, text: (index: number) => string = (index) => `message-${index}`) {
   const dataDir = mkdtempSync(path.join(tmpdir(), "pond-delivery-scheduling-"));
   dirs.push(dataDir);
-  const store = new ThreadStore(dataDir);
+  const store = new AgentStore(dataDir);
   const project = store.createProject({ label: "Project", hostPath: dataDir });
   const master = store.createConversation(project.id, { title: "Room" });
-  const thread = store.createThread(project.id, { title: "Recipient", engine: "codex", conversationId: master.id });
+  const agent = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: master.id });
   const ledger = new CollaborationDeliveryStore(dataDir);
   const ids = Array.from({ length: count }, (_, index) => ledger.queue({
     conversationId: master.id,
     messageId: `message-${index}`,
-    targetThreadId: thread.id,
+    targetAgentId: agent.id,
     text: text(index),
     relayDepth: 0,
     mentionTrail: [],
@@ -50,7 +50,7 @@ function fixture(count: number, text: (index: number) => string = (index) => `me
     createdAt: `2026-07-12T00:00:${String(index).padStart(2, "0")}.000Z`,
     orderKey: String(index).padStart(8, "0"),
   }).delivery.id);
-  return { dataDir, store, project, master, thread, ids };
+  return { dataDir, store, project, master, agent, ids };
 }
 
 async function waitForPrompts(adapter: RecordingAdapter, count: number) {
@@ -63,7 +63,7 @@ describe("bounded collaboration delivery scheduling", () => {
   it.each([429, 500])("deduplicates timers and dead-letters a persistent %s claim", async (status) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-12T00:00:00.000Z"));
-    const { dataDir, store, thread, ids } = fixture(1);
+    const { dataDir, store, agent, ids } = fixture(1);
     let claims = 0;
     const adapter = new RecordingAdapter();
     const app = createServer({
@@ -83,7 +83,7 @@ describe("bounded collaboration delivery scheduling", () => {
     expect(claims).toBe(COLLABORATION_DISPATCH_LIMITS.maxDispatchAttempts);
     expect(failed).toMatchObject({ status: "failed", dispatchAttempts: 5 });
     expect(failed?.failure).toContain("dead-lettered after 5 dispatch attempts");
-    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(agent.id)).toBe(0);
     await app.close();
   });
 
@@ -101,7 +101,7 @@ describe("bounded collaboration delivery scheduling", () => {
     expect(new CollaborationDeliveryStore(dataDir).get(ids[0]!)?.dispatchAttempts).toBe(1);
     await first.close();
 
-    const reopenedStore = new ThreadStore(dataDir);
+    const reopenedStore = new AgentStore(dataDir);
     const second = createServer({ dataDir, store: reopenedStore, engines: [{ adapter }], logger: false });
     await second.ready();
     await vi.advanceTimersByTimeAsync(COLLABORATION_DISPATCH_LIMITS.baseRetryMs);
@@ -143,20 +143,20 @@ describe("bounded collaboration delivery scheduling", () => {
   it("projects 1,000 busy agents from indexed queues and realistic events within a bounded interval", () => {
     const { dataDir, store, project } = fixture(0);
     const ledger = new CollaborationDeliveryStore(dataDir);
-    const threads: ThreadDto[] = [];
-    const events = new Map<string, ReturnType<ThreadStore["readEvents"]>>();
+    const agents: AgentDto[] = [];
+    const events = new Map<string, ReturnType<AgentStore["readEvents"]>>();
     for (let index = 0; index < 1_000; index += 1) {
-      const agent = store.createThread(project.id, { title: `Agent ${index}`, engine: "codex" });
-      threads.push(agent);
-      ledger.queue({ messageId: `busy-${index}`, targetThreadId: agent.id, text: "queued", relayDepth: 0, mentionTrail: [], kind: "direct" });
+      const agent = store.createAgent(project.id, { title: `Agent ${index}`, engine: "codex" });
+      agents.push(agent);
+      ledger.queue({ messageId: `busy-${index}`, targetAgentId: agent.id, text: "queued", relayDepth: 0, mentionTrail: [], kind: "direct" });
       store.appendEvent(agent.id, { type: "task_update", taskId: `task-${index}`, status: "running" });
       store.appendEvent(agent.id, { type: "text", delta: "busy output" });
       events.set(agent.id, store.readEvents(agent.id));
     }
     const started = performance.now();
     const result = projectAgentHealth({
-      scope: { type: "project", id: project.id }, threads, activeRuns: new Map(),
-      queuedDeliveries: (threadId) => ledger.pending(threadId), events: (threadId) => events.get(threadId) ?? [],
+      scope: { type: "project", id: project.id }, agents, activeRuns: new Map(),
+      queuedDeliveries: (agentId) => ledger.pending(agentId), events: (agentId) => events.get(agentId) ?? [],
       now: "2026-07-12T00:00:00.000Z",
     });
     const elapsedMs = performance.now() - started;

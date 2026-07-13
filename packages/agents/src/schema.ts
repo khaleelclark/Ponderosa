@@ -19,7 +19,7 @@ export const agentPresets = sqliteTable("agent_presets", {
   createdAt: text("created_at").notNull(), updatedAt: text("updated_at").notNull(),
 });
 
-export const threads = sqliteTable("threads", {
+export const agents = sqliteTable("agents", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
   conversationId: text("conversation_id"),
@@ -52,9 +52,9 @@ export const conversations = sqliteTable("conversations", {
   archived: integer("archived").notNull().default(0),
 });
 
-/** Rebuildable projection of the canonical membership list in thread.json. */
-export const threadConversationMemberships = sqliteTable("thread_conversation_memberships", {
-  threadId: text("thread_id").notNull(),
+/** Rebuildable projection of the canonical membership list in agent.json. */
+export const agentConversationMemberships = sqliteTable("agent_conversation_memberships", {
+  agentId: text("agent_id").notNull(),
   conversationId: text("conversation_id").notNull(),
   position: integer("position").notNull(),
 });
@@ -66,8 +66,8 @@ export const conversationMessages = sqliteTable("conversation_messages", {
   role: text("role").notNull(), // "user" | "assistant" | "system"
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
-  // Set when an agent (thread) posts back into the group chat; null for the manager.
-  authorThreadId: text("author_thread_id"),
+  // Set when an agent (agent) posts back into the group chat; null for the manager.
+  authorAgentId: text("author_agent_id"),
   // Project chat is user-facing. Collaboration is opt-in and only sent to explicit agents.
   channel: text("channel").notNull().default("main"),
   replyToJson: text("reply_to_json"),
@@ -77,7 +77,7 @@ export const conversationMessages = sqliteTable("conversation_messages", {
 export const messages = sqliteTable("messages", {
   id: text("id").primaryKey(),
   communicationEventId: text("communication_event_id"),
-  threadId: text("thread_id").notNull(),
+  agentId: text("agent_id").notNull(),
   seq: integer("seq").notNull(),
   role: text("role").notNull(), // "user" | "assistant"
   text: text("text").notNull(),
@@ -88,7 +88,7 @@ export const messages = sqliteTable("messages", {
 
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
-  threadId: text("thread_id").notNull(),
+  agentId: text("agent_id").notNull(),
   title: text("title").notNull(),
   status: text("status").notNull(), // TaskStatus
   engine: text("engine").notNull(),
@@ -98,7 +98,7 @@ export const tasks = sqliteTable("tasks", {
 
 export const artifacts = sqliteTable("artifacts", {
   id: text("id").primaryKey(),
-  threadId: text("thread_id").notNull(),
+  agentId: text("agent_id").notNull(),
   taskId: text("task_id"),
   kind: text("kind").notNull(), // ArtifactKind
   path: text("path").notNull(),
@@ -109,7 +109,7 @@ export const artifacts = sqliteTable("artifacts", {
 /** Searchable index over the log (SPEC §7). One row per stored event. */
 export const events = sqliteTable("events", {
   id: text("id").primaryKey(),
-  threadId: text("thread_id").notNull(),
+  agentId: text("agent_id").notNull(),
   seq: integer("seq").notNull(),
   type: text("type").notNull(),
   payloadJson: text("payload_json").notNull(),
@@ -118,9 +118,9 @@ export const events = sqliteTable("events", {
 
 export type ProjectRow = typeof projects.$inferSelect;
 export type AgentPresetRow = typeof agentPresets.$inferSelect;
-export type ThreadRow = typeof threads.$inferSelect;
+export type AgentRow = typeof agents.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
-export type ThreadConversationMembershipRow = typeof threadConversationMemberships.$inferSelect;
+export type AgentConversationMembershipRow = typeof agentConversationMemberships.$inferSelect;
 export type ConversationMessageRow = typeof conversationMessages.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;

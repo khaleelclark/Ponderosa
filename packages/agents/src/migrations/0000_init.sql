@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS projects (
   last_used_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS threads (
+CREATE TABLE IF NOT EXISTS agents (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL,
   conversation_id    TEXT,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS threads (
 
 CREATE TABLE IF NOT EXISTS messages (
   id         TEXT PRIMARY KEY,
-  thread_id  TEXT NOT NULL,
+  agent_id  TEXT NOT NULL,
   seq        INTEGER NOT NULL,
   role       TEXT NOT NULL,
   text       TEXT NOT NULL,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE TABLE IF NOT EXISTS tasks (
   id         TEXT PRIMARY KEY,
-  thread_id  TEXT NOT NULL,
+  agent_id  TEXT NOT NULL,
   title      TEXT NOT NULL,
   status     TEXT NOT NULL,
   engine     TEXT NOT NULL,
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 
 CREATE TABLE IF NOT EXISTS artifacts (
   id         TEXT PRIMARY KEY,
-  thread_id  TEXT NOT NULL,
+  agent_id  TEXT NOT NULL,
   task_id    TEXT,
   kind       TEXT NOT NULL,
   path       TEXT NOT NULL,
@@ -54,16 +54,16 @@ CREATE TABLE IF NOT EXISTS artifacts (
 
 CREATE TABLE IF NOT EXISTS events (
   id           TEXT PRIMARY KEY,
-  thread_id    TEXT NOT NULL,
+  agent_id    TEXT NOT NULL,
   seq          INTEGER NOT NULL,
   type         TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   created_at   TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_threads_project ON threads (project_id);
-CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages (thread_id, seq);
-CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks (thread_id);
-CREATE INDEX IF NOT EXISTS idx_artifacts_thread ON artifacts (thread_id);
-CREATE INDEX IF NOT EXISTS idx_events_thread_seq ON events (thread_id, seq);
+CREATE INDEX IF NOT EXISTS idx_agents_project ON agents (project_id);
+CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages (agent_id, seq);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks (agent_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_agent ON artifacts (agent_id);
+CREATE INDEX IF NOT EXISTS idx_events_agent_seq ON events (agent_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events (type);

@@ -13,12 +13,12 @@ import type {
   CreateUserReactionRequest,
   CreateUserReactionResponse,
   CreateProjectRequest,
-  CreateThreadRequest,
+  CreateAgentRequest,
   ConversationDetailDto,
   ConversationDto,
   UpdateConversationRequest,
-  UpdateThreadRequest,
-  UpdateThreadConversationMembershipsRequest,
+  UpdateAgentRequest,
+  UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   EngineDto,
   DirectReplyResponse,
@@ -34,11 +34,11 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  ThreadDetailDto,
-  ThreadDto,
+  AgentDetailDto,
+  AgentDto,
 } from "@ponderosa/core";
 
-/** User-facing options when spawning an agent (a thread) from the UI. */
+/** User-facing options when spawning an agent (a agent) from the UI. */
 export interface CreateAgentOptions {
   title: string;
   engine: string;
@@ -85,30 +85,30 @@ export interface PonderosaApi {
   sendDirectReply(conversationId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
   sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;
-  listThreads(projectId: string): Promise<ThreadDto[]>;
+  listAgents(projectId: string): Promise<AgentDto[]>;
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]>;
   createAgentPreset(projectId: string, request: CreateAgentPresetRequest): Promise<AgentPresetDto>;
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto>;
   deleteAgentPreset(id: string): Promise<void>;
-  createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;
-  /** User-facing wrapper around createThread that spawns an agent, optionally under a conversation. */
-  createAgent(projectId: string, conversationId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
-  updateThread(threadId: string, patch: UpdateThreadRequest): Promise<ThreadDto>;
-  updateThreadConversationMemberships(threadId: string, request: UpdateThreadConversationMembershipsRequest): Promise<ThreadDto>;
-  updateAgentOrganization(threadId: string, request: UpdateAgentOrganizationRequest): Promise<ThreadDto>;
-  deleteThread(threadId: string): Promise<void>;
-  getThread(threadId: string): Promise<ThreadDetailDto>;
+  createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto>;
+  /** User-facing wrapper that creates an agent, optionally under a conversation. */
+  createAgent(projectId: string, conversationId: string | undefined, options: CreateAgentOptions): Promise<AgentDto>;
+  updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto>;
+  updateAgentConversationMemberships(agentId: string, request: UpdateAgentConversationMembershipsRequest): Promise<AgentDto>;
+  updateAgentOrganization(agentId: string, request: UpdateAgentOrganizationRequest): Promise<AgentDto>;
+  deleteAgent(agentId: string): Promise<void>;
+  getAgent(agentId: string): Promise<AgentDetailDto>;
   listEngines(): Promise<EngineDto[]>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;
   getFiles(projectId: string, path?: string): Promise<FilesResponse>;
   getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto>;
   getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto>;
-  getArtifact(threadId: string, artifactId: string): Promise<ArtifactContentDto>;
+  getArtifact(agentId: string, artifactId: string): Promise<ArtifactContentDto>;
   getCommunicationDocument(previewUrl: string): Promise<CommunicationDocumentContentDto>;
-  sendMessage(threadId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
-  uploadAttachment(threadId: string, file: File): Promise<ImageAttachmentDto>;
-  deleteAttachment(threadId: string, attachmentId: string): Promise<void>;
-  cancelRun(threadId: string): Promise<void>;
-  compactSession(threadId: string): Promise<{ compacted: boolean }>;
-  subscribeThread(threadId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
+  sendMessage(agentId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
+  uploadAttachment(agentId: string, file: File): Promise<ImageAttachmentDto>;
+  deleteAttachment(agentId: string, attachmentId: string): Promise<void>;
+  cancelRun(agentId: string): Promise<void>;
+  compactSession(agentId: string): Promise<{ compacted: boolean }>;
+  subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
 }

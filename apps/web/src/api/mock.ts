@@ -13,8 +13,8 @@ import type {
   SendMessageResponse,
   SseEventEnvelope,
   TaskDto,
-  ThreadDetailDto,
-  ThreadDto,
+  AgentDetailDto,
+  AgentDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -48,9 +48,9 @@ const masterMessages: Record<string, ConversationMessageDto[]> = {
 const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const agentPresets: AgentPresetDto[] = [];
 
-const threads: ThreadDto[] = [
+const agents: AgentDto[] = [
   {
-    id: "thread-auth",
+    id: "agent-auth",
     projectId: "ponderosa",
     conversationId: "master-release",
     conversationIds: ["master-release"],
@@ -62,7 +62,7 @@ const threads: ThreadDto[] = [
     archived: false,
   },
   {
-    id: "thread-sse",
+    id: "agent-sse",
     projectId: "ponderosa",
     conversationIds: [],
     title: "SSE reconnect audit",
@@ -73,7 +73,7 @@ const threads: ThreadDto[] = [
     archived: false,
   },
   {
-    id: "thread-login",
+    id: "agent-login",
     projectId: "mobile",
     conversationIds: [],
     title: "Phone login regression",
@@ -86,10 +86,10 @@ const threads: ThreadDto[] = [
 ];
 
 const messages: Record<string, MessageDto[]> = {
-  "thread-auth": [
+  "agent-auth": [
     {
       id: "m1",
-      threadId: "thread-auth",
+      agentId: "agent-auth",
       seq: 1,
       role: "user",
       text: "Implement the mobile-first Ponderosa web shell.",
@@ -97,27 +97,27 @@ const messages: Record<string, MessageDto[]> = {
     },
     {
       id: "m2",
-      threadId: "thread-auth",
+      agentId: "agent-auth",
       seq: 2,
       role: "assistant",
       text: "I have the shell structure mapped and will keep execution detail in Tasks and Artifacts.",
       createdAt: now,
     },
   ],
-  "thread-sse": [
+  "agent-sse": [
     {
       id: "m3",
-      threadId: "thread-sse",
+      agentId: "agent-sse",
       seq: 1,
       role: "user",
       text: "Verify reconnect behavior when the phone sleeps.",
       createdAt: now,
     },
   ],
-  "thread-login": [
+  "agent-login": [
     {
       id: "m4",
-      threadId: "thread-login",
+      agentId: "agent-login",
       seq: 1,
       role: "user",
       text: "Find why mobile login started failing after the auth refactor.",
@@ -127,10 +127,10 @@ const messages: Record<string, MessageDto[]> = {
 };
 
 const tasks: Record<string, TaskDto[]> = {
-  "thread-auth": [
+  "agent-auth": [
     {
       id: "task-ui",
-      threadId: "thread-auth",
+      agentId: "agent-auth",
       title: "Build responsive shell",
       status: "running",
       engine: "codex",
@@ -139,7 +139,7 @@ const tasks: Record<string, TaskDto[]> = {
     },
     {
       id: "task-pwa",
-      threadId: "thread-auth",
+      agentId: "agent-auth",
       title: "Add manifest and shell caching",
       status: "waiting_approval",
       engine: "codex",
@@ -147,10 +147,10 @@ const tasks: Record<string, TaskDto[]> = {
       updatedAt: now,
     },
   ],
-  "thread-sse": [
+  "agent-sse": [
     {
       id: "task-stream",
-      threadId: "thread-sse",
+      agentId: "agent-sse",
       title: "Replay missed events from seq",
       status: "done",
       engine: "codex",
@@ -158,14 +158,14 @@ const tasks: Record<string, TaskDto[]> = {
       updatedAt: now,
     },
   ],
-  "thread-login": [],
+  "agent-login": [],
 };
 
 const artifacts: Record<string, ArtifactDto[]> = {
-  "thread-auth": [
+  "agent-auth": [
     {
       id: "artifact-diff-app",
-      threadId: "thread-auth",
+      agentId: "agent-auth",
       taskId: "task-ui",
       kind: "diff",
       path: "apps/web/src/App.tsx.diff",
@@ -174,7 +174,7 @@ const artifacts: Record<string, ArtifactDto[]> = {
     },
     {
       id: "artifact-report",
-      threadId: "thread-auth",
+      agentId: "agent-auth",
       taskId: "task-pwa",
       kind: "test_report",
       path: "reports/web-build.md",
@@ -182,19 +182,19 @@ const artifacts: Record<string, ArtifactDto[]> = {
       createdAt: now,
     },
   ],
-  "thread-sse": [],
-  "thread-login": [],
+  "agent-sse": [],
+  "agent-login": [],
 };
 
 const artifactContent: Record<string, ArtifactContentDto> = {
   "artifact-diff-app": {
-    ...artifacts["thread-auth"]![0]!,
+    ...artifacts["agent-auth"]![0]!,
     contentType: "diff",
     content:
-      "diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx\n+function Workbench() {\n+  return <ThreadView />;\n+}\n",
+      "diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx\n+function Workbench() {\n+  return <AgentView />;\n+}\n",
   },
   "artifact-report": {
-    ...artifacts["thread-auth"]![1]!,
+    ...artifacts["agent-auth"]![1]!,
     contentType: "markdown",
     content: "## Web build\n\n- TypeScript contract imports are wired.\n- Chat excludes command and diff output.\n",
   },
@@ -236,10 +236,10 @@ const engines: EngineDto[] = [
 ];
 
 const subscribers = new Map<string, Set<StreamHandlers>>();
-const threadSeq = new Map<string, number>([
-  ["thread-auth", 10],
-  ["thread-sse", 4],
-  ["thread-login", 1],
+const agentSeq = new Map<string, number>([
+  ["agent-auth", 10],
+  ["agent-sse", 4],
+  ["agent-login", 1],
 ]);
 
 function delay<T>(value: T, ms = 160): Promise<T> {
@@ -248,26 +248,26 @@ function delay<T>(value: T, ms = 160): Promise<T> {
   });
 }
 
-function nextSeq(threadId: string): number {
-  const next = (threadSeq.get(threadId) ?? 0) + 1;
-  threadSeq.set(threadId, next);
+function nextSeq(agentId: string): number {
+  const next = (agentSeq.get(agentId) ?? 0) + 1;
+  agentSeq.set(agentId, next);
   return next;
 }
 
-function emit(threadId: string, event: AgentEvent): void {
+function emit(agentId: string, event: AgentEvent): void {
   const envelope: SseEventEnvelope = {
-    threadId,
-    seq: nextSeq(threadId),
+    agentId,
+    seq: nextSeq(agentId),
     ts: new Date().toISOString(),
     event,
   };
-  const handlers = subscribers.get(threadId);
+  const handlers = subscribers.get(agentId);
   handlers?.forEach((handler) => handler.onEvent(envelope));
 }
 
-function replayRun(threadId: string, prompt: string): void {
+function replayRun(agentId: string, prompt: string): void {
   const events: AgentEvent[] = [
-    { type: "session", sessionId: `mock-${threadId}` },
+    { type: "session", sessionId: `mock-${agentId}` },
     { type: "task_update", taskId: "task-live", status: "running", title: "Run requested change" },
     { type: "text", delta: "I am on it. I will keep the chat clean and put execution detail in the task panes." },
     { type: "command", command: "pnpm --filter @ponderosa/web typecheck", cwd: "/Users/khaleel/Projects/Ponderosa" },
@@ -284,7 +284,7 @@ function replayRun(threadId: string, prompt: string): void {
   ];
 
   events.forEach((event, index) => {
-    window.setTimeout(() => emit(threadId, event), 500 + index * 700);
+    window.setTimeout(() => emit(agentId, event), 500 + index * 700);
   });
 }
 
@@ -322,12 +322,12 @@ export const mockApi: PonderosaApi = {
     return delay({
       scope: { type: "project" as const, id: projectId },
       generatedAt,
-      agents: threads.filter((thread) => thread.projectId === projectId).map((thread) => {
-        const agentTasks = tasks[thread.id] ?? [];
+      agents: agents.filter((agent) => agent.projectId === projectId).map((agent) => {
+        const agentTasks = tasks[agent.id] ?? [];
         const status = agentTasks.some((task) => task.status === "running") ? "running" as const
           : agentTasks.some((task) => task.status === "waiting_approval") ? "waiting" as const
             : agentTasks.length && agentTasks.every((task) => task.status === "done") ? "completed" as const : "idle" as const;
-        return { agentId: thread.id, childAgentIds: [], status, statusTimestamp: thread.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "task_waiting_approval" as const : status === "completed" ? "task_completed" as const : "no_active_work" as const };
+        return { agentId: agent.id, childAgentIds: [], status, statusTimestamp: agent.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "task_waiting_approval" as const : status === "completed" ? "task_completed" as const : "no_active_work" as const };
       }),
     });
   },
@@ -347,14 +347,14 @@ export const mockApi: PonderosaApi = {
   getConversation(conversationId) {
     const conversation = conversations.find((master) => master.id === conversationId);
     if (!conversation) return Promise.reject(new Error("Master chat not found"));
-    return delay({ conversation, messages: masterMessages[conversationId] ?? [], threads: threads.filter((thread) => thread.conversationId === conversationId) });
+    return delay({ conversation, messages: masterMessages[conversationId] ?? [], agents: agents.filter((agent) => agent.conversationId === conversationId) });
   },
   getCollaborationView(conversationId) {
     const conversation = conversations.find((master) => master.id === conversationId);
     if (!conversation) return Promise.reject(new Error("Master chat not found"));
     const detail: CollaborationViewDto = {
       messages: collaborationMessages[conversationId] ?? [],
-      threads: threads.filter((thread) => thread.conversationId === conversationId),
+      agents: agents.filter((agent) => agent.conversationId === conversationId),
     };
     return delay(detail);
   },
@@ -369,8 +369,8 @@ export const mockApi: PonderosaApi = {
     if (index === -1) return Promise.reject(new Error("Master chat not found"));
     conversations.splice(index, 1);
     delete masterMessages[conversationId];
-    for (const thread of threads) {
-      if (thread.conversationId === conversationId) thread.conversationId = undefined;
+    for (const agent of agents) {
+      if (agent.conversationId === conversationId) agent.conversationId = undefined;
     }
     return delay(undefined, 80);
   },
@@ -381,17 +381,17 @@ export const mockApi: PonderosaApi = {
     await delay(undefined, 80);
   },
   async sendDirectReply(conversationId, request) {
-    const target = threads.find((thread) => thread.id === request.targetAuthorThreadId);
+    const target = agents.find((agent) => agent.id === request.targetAuthorAgentId);
     if (!target) throw new Error("Agent not found");
     masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), {
       id: request.idempotencyKey,
       conversationId,
       role: "user",
       text: `#${target.title.replace(/\s+/g, "-")} ${request.text}`,
-      replyTo: { messageId: request.replyToMessageId, text: "", role: "assistant", authorThreadId: target.id },
+      replyTo: { messageId: request.replyToMessageId, text: "", role: "assistant", authorAgentId: target.id },
       createdAt: new Date().toISOString(),
     }];
-    return { messageId: request.idempotencyKey, targetAuthorThreadId: request.targetAuthorThreadId, replayed: false, queued: false };
+    return { messageId: request.idempotencyKey, targetAuthorAgentId: request.targetAuthorAgentId, replayed: false, queued: false };
   },
   async sendMultiAgentDirectMessage(conversationId, request) {
     if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
@@ -411,20 +411,20 @@ export const mockApi: PonderosaApi = {
   },
   async sendUserReaction(request) {
     const reaction = { emoji: request.emoji, count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" as const }] };
-    let targetAuthorThreadId: string | undefined;
+    let targetAuthorAgentId: string | undefined;
     for (const roomMessages of [...Object.values(masterMessages), ...Object.values(collaborationMessages)]) {
       const message = roomMessages.find((candidate) => candidate.communicationEventId === request.communicationEventId);
-      if (message?.authorThreadId) {
+      if (message?.authorAgentId) {
         message.reactions = [...(message.reactions ?? []).filter((item) => item.emoji !== request.emoji), reaction];
-        targetAuthorThreadId = message.authorThreadId;
+        targetAuthorAgentId = message.authorAgentId;
       }
     }
-    for (const threadMessages of Object.values(messages)) {
-      const message = threadMessages.find((candidate) => candidate.communicationEventId === request.communicationEventId);
+    for (const agentMessages of Object.values(messages)) {
+      const message = agentMessages.find((candidate) => candidate.communicationEventId === request.communicationEventId);
       if (message) message.reactions = [...(message.reactions ?? []).filter((item) => item.emoji !== request.emoji), reaction];
     }
-    if (!targetAuthorThreadId) throw new Error("Agent-authored message not found");
-    return { replayed: false, queued: false, targetAuthorThreadId, reactions: [reaction] };
+    if (!targetAuthorAgentId) throw new Error("Agent-authored message not found");
+    return { replayed: false, queued: false, targetAuthorAgentId, reactions: [reaction] };
   },
   async sendCollaborationMessage(conversationId, request) {
     if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
@@ -442,12 +442,12 @@ export const mockApi: PonderosaApi = {
     ];
     return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
   },
-  listThreads(projectId) {
-    return delay(threads.filter((thread) => thread.projectId === projectId && !thread.archived));
+  listAgents(projectId) {
+    return delay(agents.filter((agent) => agent.projectId === projectId && !agent.archived));
   },
-  createThread(projectId, request) {
-    const thread: ThreadDto = {
-      id: `thread-${Date.now()}`,
+  createAgentRecord(projectId, request) {
+    const agent: AgentDto = {
+      id: `agent-${Date.now()}`,
       projectId,
       conversationId: request.conversationId,
       conversationIds: request.conversationId ? [request.conversationId] : [],
@@ -459,17 +459,17 @@ export const mockApi: PonderosaApi = {
       archived: false,
       managerAgentId: request.managerAgentId,
     };
-    threads.push(thread);
-    messages[thread.id] = [];
-    tasks[thread.id] = [];
-    artifacts[thread.id] = [];
-    threadSeq.set(thread.id, 0);
-    return delay(thread);
+    agents.push(agent);
+    messages[agent.id] = [];
+    tasks[agent.id] = [];
+    artifacts[agent.id] = [];
+    agentSeq.set(agent.id, 0);
+    return delay(agent);
   },
   async createAgent(projectId, conversationId, options) {
-    const thread = await this.createThread(projectId, {
+    const agent = await this.createAgentRecord(projectId, {
       title: options.title,
-      engine: options.engine as ThreadDto["activeEngine"],
+      engine: options.engine as AgentDto["activeEngine"],
       conversationId,
       model: options.model,
       effort: options.effort,
@@ -477,63 +477,63 @@ export const mockApi: PonderosaApi = {
     });
     if (options.initialMessage) {
       if (conversationId) await this.sendConversationMessage(conversationId, { text: options.initialMessage });
-      await this.sendMessage(thread.id, {
+      await this.sendMessage(agent.id, {
         text: options.initialMessage,
         model: options.model,
         effort: options.effort,
       });
     }
-    return thread;
+    return agent;
   },
-  updateThread(threadId, patch) {
-    const thread = threads.find((candidate) => candidate.id === threadId);
-    if (!thread) return Promise.reject(new Error("Thread not found"));
-    if (patch.title !== undefined) thread.title = patch.title;
-    if (patch.archived !== undefined) thread.archived = patch.archived;
-    thread.updatedAt = new Date().toISOString();
-    return delay(thread);
+  updateAgent(agentId, patch) {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent) return Promise.reject(new Error("Agent not found"));
+    if (patch.title !== undefined) agent.title = patch.title;
+    if (patch.archived !== undefined) agent.archived = patch.archived;
+    agent.updatedAt = new Date().toISOString();
+    return delay(agent);
   },
-  updateThreadConversationMemberships(threadId, membership) {
-    const thread = threads.find((candidate) => candidate.id === threadId);
-    if (!thread) return Promise.reject(new Error("Thread not found"));
-    thread.conversationIds = [...membership.conversationIds];
-    thread.conversationId = membership.primaryConversationId;
-    thread.updatedAt = new Date().toISOString();
-    return delay(thread);
+  updateAgentConversationMemberships(agentId, membership) {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent) return Promise.reject(new Error("Agent not found"));
+    agent.conversationIds = [...membership.conversationIds];
+    agent.conversationId = membership.primaryConversationId;
+    agent.updatedAt = new Date().toISOString();
+    return delay(agent);
   },
-  updateAgentOrganization(threadId, organization) {
-    const thread = threads.find((candidate) => candidate.id === threadId);
-    if (!thread) return Promise.reject(new Error("Thread not found"));
-    thread.managerAgentId = organization.managerAgentId ?? undefined;
-    thread.updatedAt = new Date().toISOString();
-    return delay(thread);
+  updateAgentOrganization(agentId, organization) {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent) return Promise.reject(new Error("Agent not found"));
+    agent.managerAgentId = organization.managerAgentId ?? undefined;
+    agent.updatedAt = new Date().toISOString();
+    return delay(agent);
   },
-  deleteThread(threadId) {
-    const index = threads.findIndex((candidate) => candidate.id === threadId);
-    if (index !== -1) threads.splice(index, 1);
-    delete messages[threadId];
-    delete tasks[threadId];
-    delete artifacts[threadId];
-    threadSeq.delete(threadId);
-    subscribers.delete(threadId);
+  deleteAgent(agentId) {
+    const index = agents.findIndex((candidate) => candidate.id === agentId);
+    if (index !== -1) agents.splice(index, 1);
+    delete messages[agentId];
+    delete tasks[agentId];
+    delete artifacts[agentId];
+    agentSeq.delete(agentId);
+    subscribers.delete(agentId);
     return delay(undefined, 80);
   },
-  getThread(threadId) {
-    const thread = threads.find((candidate) => candidate.id === threadId);
-    if (!thread) {
-      return Promise.reject(new Error("Thread not found"));
+  getAgent(agentId) {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent) {
+      return Promise.reject(new Error("Agent not found"));
     }
 
     return delay({
-      thread,
-      messages: messages[threadId] ?? [],
+      agent,
+      messages: messages[agentId] ?? [],
       runTriggers: [],
       runOutput: [],
       activity: [],
       changedFiles: [],
-      tasks: tasks[threadId] ?? [],
-      artifacts: artifacts[threadId] ?? [],
-      state: thread.state,
+      tasks: tasks[agentId] ?? [],
+      artifacts: artifacts[agentId] ?? [],
+      state: agent.state,
     });
   },
   listEngines() {
@@ -557,7 +557,7 @@ export const mockApi: PonderosaApi = {
   getWorkspaceFile(projectId, path) {
     return delay({ projectId, path, exists: true, content: "", diff: "", stagedDiff: "", unstagedDiff: "", truncated: false });
   },
-  getArtifact(_threadId, artifactId) {
+  getArtifact(_agentId, artifactId) {
     const content = artifactContent[artifactId];
     if (!content) {
       return Promise.reject(new Error("Artifact not found"));
@@ -567,44 +567,44 @@ export const mockApi: PonderosaApi = {
   getCommunicationDocument(previewUrl) {
     return Promise.reject(new Error(`Communication document ${previewUrl} is unavailable in mock mode`));
   },
-  sendMessage(threadId, request: SendMessageRequest): Promise<SendMessageResponse> {
+  sendMessage(agentId, request: SendMessageRequest): Promise<SendMessageResponse> {
     const nextMessage: MessageDto = {
       id: `mock-user-${Date.now()}`,
-      threadId,
-      seq: nextSeq(threadId),
+      agentId,
+      seq: nextSeq(agentId),
       role: "user",
       text: request.text,
       createdAt: new Date().toISOString(),
     };
-    messages[threadId] = [...(messages[threadId] ?? []), nextMessage];
-    replayRun(threadId, request.text);
+    messages[agentId] = [...(messages[agentId] ?? []), nextMessage];
+    replayRun(agentId, request.text);
     return delay({ queued: false, runId: `mock-run-${Date.now()}`, mode: "continue" });
   },
-  uploadAttachment(threadId, file) {
-    return Promise.resolve({ id: `mock-${Date.now()}`, threadId, name: file.name, mediaType: (file.type || "image/png") as "image/png", size: file.size, width: 1, height: 1, url: URL.createObjectURL(file) });
+  uploadAttachment(agentId, file) {
+    return Promise.resolve({ id: `mock-${Date.now()}`, agentId, name: file.name, mediaType: (file.type || "image/png") as "image/png", size: file.size, width: 1, height: 1, url: URL.createObjectURL(file) });
   },
   deleteAttachment() { return Promise.resolve(); },
-  async cancelRun(threadId) {
-    emit(threadId, { type: "error", message: "Mock run cancelled." });
-    emit(threadId, { type: "turn_done" });
+  async cancelRun(agentId) {
+    emit(agentId, { type: "error", message: "Mock run cancelled." });
+    emit(agentId, { type: "turn_done" });
     await delay(undefined, 80);
   },
   compactSession() { return delay({ compacted: true }); },
-  subscribeThread(threadId, lastSeenSeq, handlers): StreamSubscription {
-    const handlersForThread = subscribers.get(threadId) ?? new Set<StreamHandlers>();
-    handlersForThread.add(handlers);
-    subscribers.set(threadId, handlersForThread);
+  subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {
+    const handlersForAgent = subscribers.get(agentId) ?? new Set<StreamHandlers>();
+    handlersForAgent.add(handlers);
+    subscribers.set(agentId, handlersForAgent);
     window.setTimeout(() => handlers.onOpen?.(), 0);
 
-    if (lastSeenSeq !== undefined && lastSeenSeq < (threadSeq.get(threadId) ?? 0)) {
+    if (lastSeenSeq !== undefined && lastSeenSeq < (agentSeq.get(agentId) ?? 0)) {
       window.setTimeout(() => {
-        emit(threadId, { type: "text", delta: "Reconnected to the mock stream." });
+        emit(agentId, { type: "text", delta: "Reconnected to the mock stream." });
       }, 250);
     }
 
     return {
       close() {
-        handlersForThread.delete(handlers);
+        handlersForAgent.delete(handlers);
       },
     };
   },

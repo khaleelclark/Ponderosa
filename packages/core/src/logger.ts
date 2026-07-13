@@ -1,6 +1,6 @@
 // Minimal structured logger. Node-only; behind a subpath export, not in the barrel.
 // The Fastify daemon uses pino for HTTP logging; this is a lightweight logger for
-// library code (engines, threads, CLI harness) that shouldn't depend on Fastify.
+// library code (engines, agents, CLI harness) that shouldn't depend on Fastify.
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 

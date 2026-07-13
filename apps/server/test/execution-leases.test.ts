@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, ModelOption, SeedOptions } from "@ponderosa/core";
-import { ThreadStore } from "@ponderosa/threads";
+import { AgentStore } from "@ponderosa/agents";
 import { createServer, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
@@ -91,7 +91,7 @@ class FakeLeaseClock {
 describe("enforced execution leases", () => {
   let dataDir: string;
   let repoDir: string;
-  let store: ThreadStore;
+  let store: AgentStore;
   let adapter: LeaseAdapter;
   let engines: EngineRegistration[];
   let clock: FakeLeaseClock;
@@ -99,7 +99,7 @@ describe("enforced execution leases", () => {
   beforeEach(() => {
     dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-execution-lease-"));
     repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-execution-lease-repo-"));
-    store = new ThreadStore(dataDir);
+    store = new AgentStore(dataDir);
     adapter = new LeaseAdapter();
     clock = new FakeLeaseClock();
     engines = [{ adapter, authStatus: async () => ({ authenticated: true }) }];
@@ -121,42 +121,42 @@ describe("enforced execution leases", () => {
 
   it("expires once, aborts, revokes capabilities, and fences late events from a newer generation", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     const app = server();
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "hang" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "hang" } });
     await flush();
     const capability = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
     await clock.advance(1_000);
     await flush();
     expect(adapter.aborts).toBe(1);
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
     expect((await app.inject({
       method: "POST", url: "/api/agent-session/rollover", headers: { authorization: `Bearer ${capability}` },
     })).statusCode).toBe(401);
 
-    const second = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "new generation" } });
+    const second = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "new generation" } });
     expect(second.statusCode).toBe(200);
     await flush();
     adapter.releaseLateEvent();
     await flush();
 
-    const events = store.readEvents(thread.id);
+    const events = store.readEvents(agent.id);
     expect(events.some((item) => item.event.type === "text" && item.event.delta === "late event from expired generation")).toBe(false);
     expect(events.some((item) => item.event.type === "text" && item.event.delta === "new generation completed")).toBe(true);
     expect(events.filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
-    expect((await app.inject({ method: "POST", url: `/api/threads/${thread.id}/cancel` })).json()).toEqual({ cancelled: false });
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: false });
     await app.close();
   });
 
   it("requeues a claimed collaboration delivery and resumes FIFO dispatch after expiry", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
     const app = server();
     const queued = await app.inject({
       method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "queued follow-up", recipientAgentIds: [thread.id] },
+      payload: { text: "queued follow-up", recipientAgentIds: [agent.id] },
     });
     expect(queued.statusCode).toBe(200);
     await eventually(() => adapter.seeds.length === 1);
@@ -165,10 +165,10 @@ describe("enforced execution leases", () => {
     await flush();
     await eventually(() => adapter.seeds.length === 2);
     expect(adapter.seeds[1]!.prompt).toContain("#Agent queued follow-up");
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
     adapter.releaseLateEvent();
     await flush();
-    await eventually(() => store.readEvents(thread.id).some((item) => item.event.type === "text" && item.event.delta === "new generation completed"));
+    await eventually(() => store.readEvents(agent.id).some((item) => item.event.type === "text" && item.event.delta === "new generation completed"));
     await app.close();
   });
 
@@ -176,11 +176,11 @@ describe("enforced execution leases", () => {
     adapter.hangRuns = 2;
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
     const app = server();
     const queued = await app.inject({
       method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "bounded expiry", recipientAgentIds: [thread.id] },
+      payload: { text: "bounded expiry", recipientAgentIds: [agent.id] },
     });
     const messageId = queued.json<{ message: { id: string } }>().message.id;
     await eventually(() => adapter.seeds.length === 1);
@@ -190,10 +190,10 @@ describe("enforced execution leases", () => {
     await clock.advance(1_000);
     await flush();
 
-    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, thread.id);
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, agent.id);
     expect(delivery).toMatchObject({ status: "failed", attempts: 2, failure: "execution lease expired" });
     expect(adapter.seeds).toHaveLength(2);
-    expect(store.readEvents(thread.id).filter((item) =>
+    expect(store.readEvents(agent.id).filter((item) =>
       item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(2);
     adapter.releaseAllLateEvents();
     await flush();
@@ -202,16 +202,16 @@ describe("enforced execution leases", () => {
 
   it("clears supervision timers on shutdown and preserves restart interruption recovery", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     const app = server();
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "hang" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "hang" } });
     await flush();
     await app.close();
     await clock.advance(2_000);
-    store = new ThreadStore(dataDir);
-    expect(store.readEvents(thread.id).some((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toBe(false);
+    store = new AgentStore(dataDir);
+    expect(store.readEvents(agent.id).some((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toBe(false);
     const restarted = createServer({ dataDir, store, engines, logger: false, executionLeaseScheduling: { leaseMs: 1_000, now: () => clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer } });
-    expect(store.readEvents(thread.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_interrupted")).toHaveLength(1);
+    expect(store.readEvents(agent.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_interrupted")).toHaveLength(1);
     await restarted.close();
   });
 });

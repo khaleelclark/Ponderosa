@@ -14,7 +14,7 @@ describe("Codex app-server persistent runtime", () => {
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
       spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
     const session = await CodexAppServerSession.open({
-      threadId: "ponderosa-thread",
+      agentId: "ponderosa-thread",
       cwd: here,
       history: [],
       signal: controller.signal,
@@ -23,7 +23,7 @@ describe("Codex app-server persistent runtime", () => {
       sandboxMode: "danger-full-access",
       killGraceMs: 50,
     });
-    expect(session.engineThreadId).toBe("codex-thread-v1");
+    expect(session.engineAgentId).toBe("codex-thread-v1");
     const events: AgentEvent[] = [];
     const collecting = (async () => {
       for await (const event of session.events) {

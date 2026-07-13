@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   const history: ChatMessage[] = [];
   const stream = args.resume
     ? adapter.continue({
-        threadId: "harness",
+        agentId: "harness",
         cwd: args.cwd,
         prompt: args.prompt,
         resumeSessionId: args.resume,
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
         signal: controller.signal,
       })
     : adapter.seed({
-        threadId: "harness",
+        agentId: "harness",
         cwd: args.cwd,
         prompt: args.prompt,
         history,

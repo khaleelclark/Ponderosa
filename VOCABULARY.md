@@ -42,9 +42,10 @@ objects with different identity, audience, or lifetime must not share a noun.
 
 - **Master Chat:** replaced by **Project chat** in the UI and `Conversation` in
   the domain. It implied a control hierarchy and said nothing about scope.
-- **Thread:** not a canonical V1 noun. It collided with visible conversations,
-  reply chains, provider handles, executions, and operating-system threads.
-- **Work log:** replaced by **Work log** in the UI and `RunOutput` in the domain.
+- **Thread:** not a canonical Ponderosa V1 noun. It collided with visible
+  conversations, reply chains, provider handles, and executions. Provider
+  adapters may still use it when an engine protocol does.
+- **Thinking:** replaced by **Work log** in the UI and `RunOutput` in the domain.
   The old name conflated observable runtime output with private reasoning.
 - **Task:** never use unqualified. Choose `WorkItem`, `AgentRun`, `Dispatch`, or
   tool call according to the actual lifetime.

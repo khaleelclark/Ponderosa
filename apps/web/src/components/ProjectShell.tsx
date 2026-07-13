@@ -2,13 +2,13 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useAgentHealth, useAgentPresets, useConversations, useThreads } from "../hooks/queries";
+import { useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
@@ -42,9 +42,9 @@ export function ProjectShell({
   const queryClient = useQueryClient();
 
   const conversationsQuery = useConversations(projectId);
-  const threadsQuery = useThreads(projectId);
+  const agentsQuery = useAgents(projectId);
   const conversations = conversationsQuery.data ?? [];
-  const agents = threadsQuery.data ?? [];
+  const agents = agentsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
   const capabilitiesQuery = useQuery({
@@ -61,14 +61,14 @@ export function ProjectShell({
   // Per-agent detail powers live status + activity in the sidebar and Agents tab.
   const agentDetailQueries = useQueries({
     queries: agents.map((agent) => ({
-      queryKey: ["thread", agent.id],
-      queryFn: () => api.getThread(agent.id),
+      queryKey: ["agent", agent.id],
+      queryFn: () => api.getAgent(agent.id),
       staleTime: 30_000,
     })),
   });
 
   const detailByAgentId = useMemo(() => {
-    const map = new Map<string, ThreadDetailDto | undefined>();
+    const map = new Map<string, AgentDetailDto | undefined>();
     agents.forEach((agent, index) => map.set(agent.id, agentDetailQueries[index]?.data));
     return map;
   }, [agents, agentDetailQueries]);
@@ -108,10 +108,10 @@ export function ProjectShell({
         initialMessage: input.initialMessage,
       }),
     onSuccess: (agent) => {
-      queryClient.setQueryData<ThreadDto[]>(["threads", projectId], (current = []) =>
+      queryClient.setQueryData<AgentDto[]>(["agents", projectId], (current = []) =>
         current.some((item) => item.id === agent.id) ? current : [...current, agent],
       );
-      void queryClient.invalidateQueries({ queryKey: ["threads", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
       if (agent.conversationId) {
         void queryClient.invalidateQueries({ queryKey: ["conversation", agent.conversationId] });
       }
@@ -159,7 +159,7 @@ export function ProjectShell({
     />
   );
 
-  const loading = conversationsQuery.isLoading || threadsQuery.isLoading;
+  const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
 
   useEffect(() => {
     if (loading) return;
@@ -173,7 +173,7 @@ export function ProjectShell({
     }
   }, [agents, loading, conversations, navigate, projectId, route]);
 
-  if (conversationsQuery.isError || threadsQuery.isError) {
+  if (conversationsQuery.isError || agentsQuery.isError) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -184,7 +184,7 @@ export function ProjectShell({
               size="small"
               onClick={() => {
                 void conversationsQuery.refetch();
-                void threadsQuery.refetch();
+                void agentsQuery.refetch();
               }}
             >
               Retry

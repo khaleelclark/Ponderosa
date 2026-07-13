@@ -1,4 +1,4 @@
--- Add project-level conversations and optional thread grouping.
+-- Add project-level conversations and optional agent grouping.
 
 CREATE TABLE IF NOT EXISTS conversations (
   id             TEXT PRIMARY KEY,
@@ -22,4 +22,4 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations (project_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_master ON conversation_messages (conversation_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_threads_conversation ON threads (conversation_id);
+CREATE INDEX IF NOT EXISTS idx_agents_conversation ON agents (conversation_id);

@@ -26,7 +26,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { ConversationDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { ConversationDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
@@ -51,10 +51,10 @@ export function AgentsTab({
   onOpenAgent,
   onNewAgent,
 }: {
-  agents: ThreadDto[];
+  agents: AgentDto[];
   conversations: ConversationDto[];
   statusByAgentId: Map<string, AgentStatus>;
-  detailByAgentId: Map<string, ThreadDetailDto | undefined>;
+  detailByAgentId: Map<string, AgentDetailDto | undefined>;
   onOpenAgent(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
 }): JSX.Element {
@@ -62,13 +62,13 @@ export function AgentsTab({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
+  const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
 
   const deleteAgent = useMutation({
-    mutationFn: (agentId: string) => api.deleteThread(agentId),
+    mutationFn: (agentId: string) => api.deleteAgent(agentId),
     onSuccess: (_data, agentId) => {
-      queryClient.removeQueries({ queryKey: ["thread", agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      queryClient.removeQueries({ queryKey: ["agent", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
       void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       setPendingDelete(undefined);
     },
@@ -76,8 +76,8 @@ export function AgentsTab({
   const promoteAgent = useMutation({
     mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
     onSuccess: (updated) => {
-      void queryClient.invalidateQueries({ queryKey: ["threads", updated.projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["thread", updated.id] });
+      void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent", updated.id] });
     },
   });
 

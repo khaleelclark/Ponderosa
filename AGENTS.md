@@ -212,7 +212,7 @@ Ordinary runtime output → execution-scoped Work log
 apps/web/        Rspack + React + TS + MUI SPA (the PWA; thin client)
 apps/server/     Fastify daemon: API, SSE, session manager, auth (SOURCE OF TRUTH)
 packages/engines Adapter interface + codex/claude adapters + event mappers
-packages/threads event log + SQLite projections (Drizzle schema)
+packages/agents event log + SQLite projections (Drizzle schema)
 packages/core    shared types (AgentEvent, DTOs), config, logging
 deploy/          systemd unit
 
@@ -231,7 +231,7 @@ that way; don't duplicate these types per app.
 
 - **TypeScript everywhere.** Shared types come from `packages/core`; don't redefine
   equivalent shapes in an app.
-- **Build order matters:** `packages/engines` → `packages/threads` →
+- **Build order matters:** `packages/engines` → `packages/agents` →
   `apps/server` (SSE) → `apps/web`. The event contract and projections are the
   foundation; UI comes last.
 - **Normalize at the edge.** Runtime-specific event shapes (Codex JSONL, Claude SDK

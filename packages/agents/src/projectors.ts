@@ -12,7 +12,7 @@
 //   file_change  → Tasks + Artifacts (a diff artifact)
 //   test_result  → Tasks + Artifacts (a test_report artifact)
 //   task_update  → Tasks (explicit status, if an engine emits it)
-//   session      → thread's active engine session id column
+//   session      → agent's active engine session id column
 //   turn_done    → close the current task (done)
 //   * (all)      → events index row (searchable log)
 //
@@ -37,7 +37,7 @@ export type ProjectionOp =
   | { kind: "insert_event"; row: EventRow }
   | { kind: "set_session"; sessionId: string | null }
   | { kind: "set_state"; branch?: string; commit?: string }
-  | { kind: "touch_thread"; updatedAt: string };
+  | { kind: "touch_agent"; updatedAt: string };
 
 export interface ProjectionState {
   activeEngine: string;
@@ -67,7 +67,7 @@ function artifactPath(seq: number, suffix: string): string {
  * apply. Pure: no I/O, no clock, no randomness.
  */
 export function projectEvent(
-  threadId: string,
+  agentId: string,
   state: ProjectionState,
   stored: StoredLogEvent,
 ): { state: ProjectionState; ops: ProjectionOp[] } {
@@ -79,8 +79,8 @@ export function projectEvent(
   ops.push({
     kind: "insert_event",
     row: {
-      id: eventRowId(threadId, seq),
-      threadId,
+      id: eventRowId(agentId, seq),
+      agentId,
       seq,
       type: event.type,
       payloadJson: JSON.stringify(event),
@@ -94,13 +94,13 @@ export function projectEvent(
     if (next.currentRunSeq === undefined) {
       next = { ...next, currentRunSeq: runSeq };
     }
-    const id = taskId(threadId, runSeq);
+    const id = taskId(agentId, runSeq);
     if (!next.taskCreated) {
       ops.push({
         kind: "insert_task",
         row: {
           id,
-          threadId,
+          agentId,
           title: next.currentRunTitle,
           status: "running",
           engine: next.activeEngine,
@@ -118,9 +118,9 @@ export function projectEvent(
       ops.push({
         kind: "insert_message",
         row: {
-          id: messageId(threadId, seq),
+          id: messageId(agentId, seq),
           communicationEventId: event.communicationEventId ?? null,
-          threadId,
+          agentId,
           seq,
           role: "user",
           text: event.text,
@@ -136,7 +136,7 @@ export function projectEvent(
         currentRunTitle: truncate(event.text) || "Task",
         taskCreated: false,
       };
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -149,9 +149,9 @@ export function projectEvent(
       ops.push({
         kind: "insert_message",
         row: {
-          id: messageId(threadId, seq),
+          id: messageId(agentId, seq),
           communicationEventId: event.communicationEventId,
-          threadId,
+          agentId,
           seq,
           role: event.role ?? "assistant",
           text: event.text,
@@ -160,7 +160,7 @@ export function projectEvent(
           attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -181,8 +181,8 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(threadId, seq, 0),
-          threadId,
+          id: artifactId(agentId, seq, 0),
+          agentId,
           taskId: tId,
           kind: "log",
           path: artifactPath(seq, "command.md"),
@@ -191,7 +191,7 @@ export function projectEvent(
         },
         content: `# Command\n\n\`\`\`bash\n${event.command}\n\`\`\`\n\ncwd: \`${event.cwd}\`\n`,
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -200,8 +200,8 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(threadId, seq, 0),
-          threadId,
+          id: artifactId(agentId, seq, 0),
+          agentId,
           taskId: tId,
           kind: "diff",
           path: artifactPath(seq, "diff.patch"),
@@ -212,7 +212,7 @@ export function projectEvent(
           event.diff ??
           `# ${event.kind} ${event.path}\n\nNo diff text was provided by the engine.\n`,
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -221,8 +221,8 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(threadId, seq, 0),
-          threadId,
+          id: artifactId(agentId, seq, 0),
+          agentId,
           taskId: tId,
           kind: "test_report",
           path: artifactPath(seq, "test.md"),
@@ -231,7 +231,7 @@ export function projectEvent(
         },
         content: `# Test Result\n\nStatus: ${event.passed ? "passed" : "failed"}\n\n${event.summary}\n`,
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -240,8 +240,8 @@ export function projectEvent(
       ops.push({
         kind: "insert_task",
         row: {
-          id: `${threadId}:t:${event.taskId}`,
-          threadId,
+          id: `${agentId}:t:${event.taskId}`,
+          agentId,
           title: event.title ?? next.currentRunTitle,
           status: event.status,
           engine: next.activeEngine,
@@ -256,13 +256,13 @@ export function projectEvent(
       if (next.currentRunSeq !== undefined && next.taskCreated) {
         ops.push({
           kind: "update_task",
-          id: taskId(threadId, next.currentRunSeq),
+          id: taskId(agentId, next.currentRunSeq),
           status: "done",
           updatedAt: ts,
         });
       }
       next = { ...next, taskCreated: false, currentRunSeq: undefined };
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -270,12 +270,12 @@ export function projectEvent(
       if (next.currentRunSeq !== undefined && next.taskCreated) {
         ops.push({
           kind: "update_task",
-          id: taskId(threadId, next.currentRunSeq),
+          id: taskId(agentId, next.currentRunSeq),
           status: "done",
           updatedAt: ts,
         });
       }
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -289,14 +289,14 @@ export function projectEvent(
 
 /** Fold a full log into ops (used by rebuild and tests). */
 export function projectAll(
-  threadId: string,
+  agentId: string,
   storedEvents: StoredLogEvent[],
   activeEngine: string,
 ): ProjectionOp[] {
   let state = initProjectionState(activeEngine);
   const ops: ProjectionOp[] = [];
   for (const stored of storedEvents) {
-    const res = projectEvent(threadId, state, stored);
+    const res = projectEvent(agentId, state, stored);
     state = res.state;
     ops.push(...res.ops);
   }

@@ -1,18 +1,18 @@
 import { describe, expect, it } from "vitest";
-import type { ThreadDto } from "@ponderosa/core";
-import type { StoredLogEvent } from "@ponderosa/threads";
+import type { AgentDto } from "@ponderosa/core";
+import type { StoredLogEvent } from "@ponderosa/agents";
 import { projectAgentHealth } from "../src/agent-health.js";
 
 const t0 = "2026-07-12T00:00:00.000Z";
 const t1 = "2026-07-12T00:01:00.000Z";
-const thread = (id: string): ThreadDto => ({
+const agent = (id: string): AgentDto => ({
   id, projectId: "project", conversationId: "master", conversationIds: ["master"],
   title: id, activeEngine: "codex", state: {}, createdAt: t0, updatedAt: t0, archived: false,
 });
 const event = (value: StoredLogEvent["event"], ts = t1): StoredLogEvent => ({ seq: 1, ts, event: value });
 
 function project(options: {
-  threads?: ThreadDto[];
+  agents?: AgentDto[];
   active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "interrupted" }>;
   compacting?: Map<string, string>;
   queued?: Record<string, Array<{ createdAt: string }>>;
@@ -20,7 +20,7 @@ function project(options: {
 } = {}) {
   return projectAgentHealth({
     scope: { type: "conversation", id: "master" },
-    threads: options.threads ?? [thread("agent")],
+    agents: options.agents ?? [agent("agent")],
     activeRuns: options.active ?? new Map(),
     compactingAgents: options.compacting ?? new Map(),
     queuedDeliveries: (id) => options.queued?.[id] ?? [],
@@ -72,7 +72,7 @@ describe("agent health projection", () => {
   });
 
   it("reports stable direct parent and child IDs within scope", () => {
-    const result = project({ threads: [thread("parent"), { ...thread("child"), managerAgentId: "parent" }] });
+    const result = project({ agents: [agent("parent"), { ...agent("child"), managerAgentId: "parent" }] });
     expect(result.agents.find((agent) => agent.agentId === "parent")?.childAgentIds).toEqual(["child"]);
     expect(result.agents.find((agent) => agent.agentId === "child")?.managerAgentId).toBe("parent");
   });
@@ -84,13 +84,13 @@ describe("agent health projection", () => {
   });
 
   it("preserves ordinary cancellation from a durable lifecycle event", () => {
-    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "cancelled", reason: "thread_cancelled" })] } }).agents[0])
-      .toMatchObject({ status: "cancelled", reason: "thread_cancelled" });
+    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled" })] } }).agents[0])
+      .toMatchObject({ status: "cancelled", reason: "agent_cancelled" });
   });
 
   it("projects a thousand-agent organization without per-agent polling", () => {
-    const threads = Array.from({ length: 1_000 }, (_, index) => thread(`agent-${String(index).padStart(4, "0")}`));
-    const result = project({ threads });
+    const agents = Array.from({ length: 1_000 }, (_, index) => agent(`agent-${String(index).padStart(4, "0")}`));
+    const result = project({ agents });
     expect(result.agents).toHaveLength(1_000);
     expect(result.agents.every((agent) => agent.status === "idle")).toBe(true);
     expect(result.agents[0]?.agentId).toBe("agent-0000");

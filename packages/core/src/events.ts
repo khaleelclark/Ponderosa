@@ -24,7 +24,7 @@ export interface TokenUsage {
  *
  * Server routing (SPEC §5): `text`/`reasoning` → execution-scoped Work log;
  * `command`/`file_change`/`test_result` → Tasks & Artifacts; `session` → the
- * thread's active session id. Runtime output never implies communication scope.
+ * agent's active session id. Runtime output never implies communication scope.
  * This union is the single contract between engines and everything downstream;
  * changing it requires a SPEC edit (AGENTS.md).
  */
@@ -45,13 +45,13 @@ export type AgentEvent =
 export type AgentEventType = AgentEvent["type"];
 
 /**
- * One line of a thread's append-only event log (`events.jsonl`, SPEC §4/§7).
- * `seq` is monotonic per thread and doubles as the SSE event id for reconnect
+ * One line of a agent's append-only event log (`events.jsonl`, SPEC §4/§7).
+ * `seq` is monotonic per agent and doubles as the SSE event id for reconnect
  * dedupe (SPEC §8 streaming contract). The log is the canonical source of truth;
  * SQLite projections are rebuildable from it.
  */
 export interface StoredEvent {
-  /** Monotonic per-thread sequence number, starting at 1. */
+  /** Monotonic per-agent sequence number, starting at 1. */
   seq: number;
   /** ISO-8601 timestamp when the event was appended. */
   ts: string;

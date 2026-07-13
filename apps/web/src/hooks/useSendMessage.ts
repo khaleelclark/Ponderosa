@@ -1,45 +1,45 @@
-import type { MessageDto, SendMessageRequest, ThreadDetailDto } from "@ponderosa/core";
+import type { MessageDto, SendMessageRequest, AgentDetailDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 
-export function useSendMessage(threadId: string | undefined) {
+export function useSendMessage(agentId: string | undefined) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async (request: SendMessageRequest) => {
-      if (!threadId) {
-        throw new Error("No thread selected");
+      if (!agentId) {
+        throw new Error("No agent selected");
       }
-      return api.sendMessage(threadId, request);
+      return api.sendMessage(agentId, request);
     },
     onMutate: async (request) => {
-      if (!threadId) {
+      if (!agentId) {
         return undefined;
       }
-      await queryClient.cancelQueries({ queryKey: ["thread", threadId] });
-      const previous = queryClient.getQueryData<ThreadDetailDto>(["thread", threadId]);
+      await queryClient.cancelQueries({ queryKey: ["agent", agentId] });
+      const previous = queryClient.getQueryData<AgentDetailDto>(["agent", agentId]);
       const optimistic: MessageDto = {
         id: `optimistic-user-${Date.now()}`,
-        threadId,
+        agentId,
         seq: Number.MAX_SAFE_INTEGER,
         role: "user",
         text: request.text,
         createdAt: new Date().toISOString(),
       };
-      queryClient.setQueryData<ThreadDetailDto>(["thread", threadId], (detail) =>
+      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (detail) =>
         detail ? { ...detail, messages: [...detail.messages, optimistic] } : detail,
       );
       return { previous };
     },
     onError: (_error, _request, context) => {
-      if (threadId && context?.previous) {
-        queryClient.setQueryData(["thread", threadId], context.previous);
+      if (agentId && context?.previous) {
+        queryClient.setQueryData(["agent", agentId], context.previous);
       }
     },
     onSettled: () => {
-      if (threadId) {
-        void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
-        void queryClient.invalidateQueries({ queryKey: ["threads"] });
+      if (agentId) {
+        void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["agents"] });
       }
     },
   });

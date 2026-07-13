@@ -38,8 +38,8 @@ function runMigrations(sqlite: Database.Database): void {
     if (applied.has(file)) continue;
     const sql = readFileSync(join(migrationsDir, file), "utf8");
     sqlite.transaction(() => {
-      if (file === "0001_conversations.sql" && !hasColumn(sqlite, "threads", "conversation_id")) {
-        sqlite.exec(`ALTER TABLE threads ADD COLUMN conversation_id TEXT;`);
+      if (file === "0001_conversations.sql" && !hasColumn(sqlite, "agents", "conversation_id")) {
+        sqlite.exec(`ALTER TABLE agents ADD COLUMN conversation_id TEXT;`);
       }
       sqlite.exec(sql);
       insert.run(file, new Date().toISOString());

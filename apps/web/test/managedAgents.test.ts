@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ThreadDto } from "@ponderosa/core";
+import type { AgentDto } from "@ponderosa/core";
 import { activeManagerOptions, createAgentInputFromForm } from "../src/components/dialogs";
 
-const agent = (id: string, archived = false): ThreadDto => ({
+const agent = (id: string, archived = false): AgentDto => ({
   id,
   projectId: "project-1",
   title: id,

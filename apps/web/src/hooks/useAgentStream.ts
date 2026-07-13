@@ -1,4 +1,4 @@
-import type { AgentActivityDto, AgentEvent, ArtifactDto, ChangedFileDto, SseEventEnvelope, TaskDto, RunOutputDto, ThreadDetailDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentEvent, ArtifactDto, ChangedFileDto, SseEventEnvelope, TaskDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -41,23 +41,23 @@ export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope
 
 const streamCursors = new Map<string, { lastSeq?: number; seenSeqs: Set<number> }>();
 
-function projectedArtifactId(threadId: string, seq: number): string {
-  return `${threadId}:a:${seq}:0`;
+function projectedArtifactId(agentId: string, seq: number): string {
+  return `${agentId}:a:${seq}:0`;
 }
 
-function projectedTaskUpdateId(threadId: string, taskId: string): string {
-  return `${threadId}:t:${taskId}`;
+function projectedTaskUpdateId(agentId: string, taskId: string): string {
+  return `${agentId}:t:${taskId}`;
 }
 
-export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope, detail: ThreadDetailDto): ThreadDetailDto {
+export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
   const { event, seq, ts } = envelope;
 
   if (executionTypes.has(event.type)) {
     const activity = detail.activity ?? [];
-    const id = `${threadId}:activity:${seq}`;
+    const id = `${agentId}:activity:${seq}`;
     if (!activity.some((item) => item.id === id)) {
       const entry: AgentActivityDto = {
-        id, threadId, seq, createdAt: ts,
+        id, agentId, seq, createdAt: ts,
         event: event as AgentActivityDto["event"],
       };
       detail = { ...detail, activity: [...activity, entry].sort((a, b) => a.seq - b.seq) };
@@ -96,7 +96,7 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
       sourceSeqEnd: seq,
     } : {
       id,
-      threadId,
+      agentId,
       executionId,
       kind,
       text: event.delta,
@@ -117,8 +117,8 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
   if (event.type === "agent_output") {
     const runOutput = compactDefined(detail.runOutput ?? []);
     const entry: RunOutputDto = {
-      id: `${threadId}:runOutput:${seq}`,
-      threadId,
+      id: `${agentId}:runOutput:${seq}`,
+      agentId,
       executionId: event.executionId,
       kind: "response",
       text: event.text,
@@ -138,14 +138,14 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
 
   if (event.type === "task_update") {
     const tasks = compactDefined(detail.tasks);
-    const canonicalId = projectedTaskUpdateId(threadId, event.taskId);
+    const canonicalId = projectedTaskUpdateId(agentId, event.taskId);
     const existing = tasks.find((task) => task.id === canonicalId || task.id === event.taskId);
     const nextTask: TaskDto = {
       id: existing?.id ?? canonicalId,
-      threadId,
+      agentId,
       title: event.title ?? existing?.title ?? "Agent task",
       status: event.status,
-      engine: detail.thread.activeEngine,
+      engine: detail.agent.activeEngine,
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
     };
@@ -159,7 +159,7 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
     const artifacts = compactDefined(detail.artifacts);
     if (
       artifacts.some(
-        (artifact) => artifact.id === projectedArtifactId(threadId, seq) || artifact.id === `live-artifact-${seq}`,
+        (artifact) => artifact.id === projectedArtifactId(agentId, seq) || artifact.id === `live-artifact-${seq}`,
       )
     ) {
       return detail;
@@ -167,7 +167,7 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
     const isPdf = event.path.toLowerCase().endsWith(".pdf");
     const artifact: ArtifactDto = {
       id: `live-artifact-${seq}`,
-      threadId,
+      agentId,
       kind: isPdf ? "document" : "diff",
       path: event.path,
       summary: `${event.kind} ${event.path}`,
@@ -181,14 +181,14 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
     const artifacts = compactDefined(detail.artifacts);
     if (
       artifacts.some(
-        (artifact) => artifact.id === projectedArtifactId(threadId, seq) || artifact.id === `live-artifact-${seq}`,
+        (artifact) => artifact.id === projectedArtifactId(agentId, seq) || artifact.id === `live-artifact-${seq}`,
       )
     ) {
       return detail;
     }
     const artifact: ArtifactDto = {
       id: `live-artifact-${seq}`,
-      threadId,
+      agentId,
       kind: "test_report",
       path: `test-result-${seq}.md`,
       summary: event.summary,
@@ -200,27 +200,27 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
   return detail;
 }
 
-export function useThreadStream(threadId: string | undefined): StreamState {
+export function useAgentStream(agentId: string | undefined): StreamState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>(initialStreamState);
   const lastSeqRef = useRef<number | undefined>(undefined);
   const seenSeqRef = useRef(new Set<number>());
 
   useEffect(() => {
-    if (!threadId) {
+    if (!agentId) {
       lastSeqRef.current = undefined;
       seenSeqRef.current = new Set<number>();
       setState(initialStreamState);
       return undefined;
     }
 
-    const cursor = streamCursors.get(threadId) ?? { seenSeqs: new Set<number>() };
-    streamCursors.set(threadId, cursor);
+    const cursor = streamCursors.get(agentId) ?? { seenSeqs: new Set<number>() };
+    streamCursors.set(agentId, cursor);
     lastSeqRef.current = cursor.lastSeq;
     seenSeqRef.current = new Set(cursor.seenSeqs);
     setState({ ...initialStreamState, lastSeq: cursor.lastSeq });
 
-    const subscription = api.subscribeThread(threadId, lastSeqRef.current, {
+    const subscription = api.subscribeAgent(agentId, lastSeqRef.current, {
       onOpen() {
         setState((current) => ({ ...current, connected: true }));
       },
@@ -254,13 +254,13 @@ export function useThreadStream(threadId: string | undefined): StreamState {
             : current.timeline,
         }));
 
-        queryClient.setQueryData<ThreadDetailDto>(["thread", threadId], (detail) =>
-          detail ? updateThreadDetail(threadId, envelope, detail) : detail,
+        queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (detail) =>
+          detail ? updateAgentDetail(agentId, envelope, detail) : detail,
         );
 
         if (envelope.event.type === "turn_done") {
-          void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
-          void queryClient.invalidateQueries({ queryKey: ["threads"] });
+          void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+          void queryClient.invalidateQueries({ queryKey: ["agents"] });
         }
         if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
           void queryClient.invalidateQueries({ queryKey: ["agent-health"] });
@@ -269,7 +269,7 @@ export function useThreadStream(threadId: string | undefined): StreamState {
     });
 
     return () => subscription.close();
-  }, [queryClient, threadId]);
+  }, [queryClient, agentId]);
 
   return useMemo(() => state, [state]);
 }

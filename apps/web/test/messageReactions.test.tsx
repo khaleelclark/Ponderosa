@@ -3,15 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { EmojiReactionPicker, isSingleEmoji, userReactionMessage } from "../src/components/EmojiReactionPicker";
 import { ConversationMessage } from "../src/components/ConversationView";
 
-const renderMessage = (authorThreadId?: string) => renderToStaticMarkup(<ConversationMessage
+const renderMessage = (authorAgentId?: string) => renderToStaticMarkup(<ConversationMessage
   message={{
     id: "m1",
     conversationId: "room",
-    role: authorThreadId ? "assistant" : "user",
+    role: authorAgentId ? "assistant" : "user",
     text: "Result",
     createdAt: "2026-07-12T00:00:00.000Z",
-    authorThreadId,
-    communicationEventId: authorThreadId ? "communication-1" : undefined,
+    authorAgentId,
+    communicationEventId: authorAgentId ? "communication-1" : undefined,
   }}
   conversation="main"
   agentTitle={() => "Olympic"}
@@ -38,7 +38,7 @@ describe("user emoji reactions", () => {
     const html = renderToStaticMarkup(<ConversationMessage
       message={{
         id: "m1", communicationEventId: "communication-1", conversationId: "room", role: "assistant",
-        text: "Result", createdAt: "2026-07-12T00:00:00.000Z", authorThreadId: "olympic",
+        text: "Result", createdAt: "2026-07-12T00:00:00.000Z", authorAgentId: "olympic",
         reactions: [{ emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] }],
       }}
       conversation="main" agentTitle={() => "Olympic"} agentIdForHandle={() => undefined}

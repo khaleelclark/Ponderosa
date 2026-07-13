@@ -1,5 +1,5 @@
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
-// interface. The thread stores canonical history; the adapter translates it into
+// interface. The agent stores canonical history; the adapter translates it into
 // a runtime session. Nothing outside packages/engines may know which engine it is
 // (AGENTS.md invariant 2).
 
@@ -9,7 +9,7 @@ import type { AgentEvent } from "./events.js";
 export type EngineId = string;
 
 /**
- * A single conversation turn in a thread's canonical chat history. This is the
+ * A single conversation turn in a agent's canonical chat history. This is the
  * human-facing intent layer only (SPEC §2) — execution detail lives in Tasks/
  * Artifacts, never here. Passed to `seed()` to start a fresh runtime session.
  */
@@ -41,7 +41,7 @@ export interface EffortOption {
 
 /** Options shared by both `seed()` and `continue()`. */
 export interface RunOptionsBase {
-  threadId: string;
+  agentId: string;
   /** The project's on-disk path; the agent's cwd, where it reads md files/git. */
   cwd: string;
   /** The next user message driving this turn. */
@@ -54,16 +54,16 @@ export interface RunOptionsBase {
   signal: AbortSignal;
 }
 
-/** Options for continuing a thread's already-active runtime session. */
+/** Options for continuing a agent's already-active runtime session. */
 export interface ContinueOptions extends RunOptionsBase {
   /** The engine session id captured from a prior `session` event. */
   resumeSessionId: string;
 }
 
-/** Options for starting a fresh runtime session for a thread. */
+/** Options for starting a fresh runtime session for a agent. */
 export interface SeedOptions extends RunOptionsBase {
   /**
-   * The thread's conversation so far (often just the first message in v1). The
+   * The agent's conversation so far (often just the first message in v1). The
    * adapter renders this into the initial prompt — there is NO assembled packet
    * (SPEC §4/§5, AGENTS.md invariant 4). The agent reads repo context itself.
    */
@@ -85,12 +85,12 @@ export type RuntimeSteerResult =
   | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
 
 /**
- * One durable engine thread. The process/transport may survive many turns.
+ * One durable engine agent. The process/transport may survive many turns.
  * New signals steer an active turn or start a turn while idle; callers retain a
  * durable mailbox only for the short intervals where neither operation is safe.
  */
 export interface RuntimeSession {
-  readonly engineThreadId: string;
+  readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
@@ -99,7 +99,7 @@ export interface RuntimeSession {
 }
 
 export interface OpenRuntimeSessionOptions {
-  threadId: string;
+  agentId: string;
   cwd: string;
   resumeSessionId?: string;
   history: ChatMessage[];
@@ -146,14 +146,14 @@ export interface Adapter {
   capabilities?(cwd: string): Promise<EngineCapabilities>;
 
   /**
-   * Continue the thread's ACTIVE session with the next user message. Resume by
+   * Continue the agent's ACTIVE session with the next user message. Resume by
    * session id; let the runtime manage its own context (do not re-send history).
    */
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent>;
 
   /**
-   * Start a FRESH session for the thread (first turn, or a v2 engine switch).
-   * Seed with the thread's chat history + the project dir — no packet.
+   * Start a FRESH session for the agent (first turn, or a v2 engine switch).
+   * Seed with the agent's chat history + the project dir — no packet.
    */
   seed(opts: SeedOptions): AsyncIterable<AgentEvent>;
 }
