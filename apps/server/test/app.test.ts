@@ -2050,8 +2050,10 @@ describe("server chunk F", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Documents", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Private room" });
+    const outsiderRoom = store.createMasterChat(project.id, { title: "Unrelated room" });
     const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
     const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", masterChatId: outsiderRoom.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Begin" } });
     await waitForSeedCount(1);
@@ -2083,7 +2085,62 @@ describe("server chunk F", () => {
     expect(agentPreview.statusCode).toBe(200);
     expect(agentPreview.json()).toMatchObject({ content: full });
     expect(adapter.seeds[1]!.environment!.PONDEROSA_DOCUMENT_URL).toContain("/api/agent-documents");
-    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
+
+    await app.inject({ method: "POST", url: `/api/threads/${outsider.id}/messages`, payload: { text: "Unrelated work" } });
+    await waitForSeedCount(3);
+    const outsiderToken = adapter.seeds[2]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const forbiddenCollaboration = await app.inject({ method: "GET", url: `/api/agent-documents/${event.document!.id}`, headers: { authorization: `Bearer ${outsiderToken}` } });
+    expect(forbiddenCollaboration.statusCode).toBe(404);
+    expect(forbiddenCollaboration.json()).toEqual({ error: "document not found" });
+
+    const direct = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: { intent: "direct_to_user", text: "Private manager summary", document: { title: "Manager Detail", content: "# Manager only\n\nSensitive." } },
+    });
+    expect(direct.statusCode).toBe(200);
+    const directEvent = store.getCommunicationEvent(project.id, direct.json<{ eventId: string }>().eventId)!;
+    const forbiddenDirect = await app.inject({ method: "GET", url: `/api/agent-documents/${directEvent.document!.id}`, headers: { authorization: `Bearer ${outsiderToken}` } });
+    expect(forbiddenDirect.statusCode).toBe(404);
+    expect(forbiddenDirect.json()).toEqual({ error: "document not found" });
+
+    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id), cancelAndWait(app, outsider.id)]);
+    await app.close();
+  });
+
+  it("lets eligible room agents retrieve broadcast documents without seeding full content", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Broadcast documents", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Shared room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reader = store.createThread(project.id, { title: "Reader", engine: "codex", masterChatId: master.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Prepare shared guidance" } });
+    await waitForSeedCount(1);
+    const authorToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const full = `# Organization Runbook\n\n${"FULL-SECRET-BODY ".repeat(500)}`;
+    const sent = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: { intent: "broadcast", text: "The organization runbook is ready.", document: { title: "Organization Runbook", content: full } },
+    });
+    expect(sent.statusCode).toBe(200);
+    const event = store.getCommunicationEvent(project.id, sent.json<{ eventId: string }>().eventId)!;
+
+    const turn = await app.inject({
+      method: "POST", url: `/api/threads/${reader.id}/messages`,
+      payload: { text: "Use the shared guidance", sourceChannel: "main", sourceMasterChatId: master.id, shareWithOrganization: true },
+    });
+    expect(turn.statusCode).toBe(200);
+    await waitForSeedCount(2);
+    const seeded = adapter.seeds[1]!.prompt;
+    expect(seeded).toContain("The organization runbook is ready.");
+    expect(seeded).toContain(`document: Organization Runbook; id: ${event.document!.id}`);
+    expect(seeded).not.toContain("FULL-SECRET-BODY");
+
+    const readerToken = adapter.seeds[1]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const retrieved = await app.inject({ method: "GET", url: `/api/agent-documents/${event.document!.id}`, headers: { authorization: `Bearer ${readerToken}` } });
+    expect(retrieved.statusCode).toBe(200);
+    expect(retrieved.json()).toMatchObject({ title: "Organization Runbook", content: full });
+    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reader.id)]);
     await app.close();
   });
 
