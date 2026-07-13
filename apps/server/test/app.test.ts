@@ -577,11 +577,23 @@ describe("server chunk F", () => {
   });
 
   it("separates daemon liveness from work readiness", async () => {
-    const app = createServer({ dataDir, store, engines, authToken: "operator-secret", logger: false });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      authToken: "operator-secret",
+      buildRevision: "test-revision-123",
+      logger: false,
+    });
 
     const health = await app.inject({ method: "GET", url: "/api/health" });
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual({ status: "ok", service: "ponderosa", version: "0.0.0" });
+    expect(health.json()).toEqual({
+      status: "ok",
+      service: "ponderosa",
+      version: "0.0.0",
+      revision: "test-revision-123",
+    });
 
     const ready = await app.inject({ method: "GET", url: "/api/ready" });
     expect(ready.statusCode).toBe(200);
