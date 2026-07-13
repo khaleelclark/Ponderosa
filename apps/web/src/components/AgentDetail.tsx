@@ -46,6 +46,7 @@ import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane, ThinkingPane } from "./panes";
 
 type AgentTab = "chat" | "thinking" | "log" | "tasks" | "artifacts";
@@ -89,7 +90,10 @@ export function AgentDetail({
   const threadQuery = useThread(agentId);
   const stream = useThreadStream(agentId);
   const sendMessage = useSendMessage(agentId);
-  const [tab, setTab] = useState<AgentTab>("chat");
+  const [tab, setTab] = useState<AgentTab>(() => {
+    const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
+    return AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat";
+  });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -103,6 +107,15 @@ export function AgentDetail({
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const theme = useTheme();
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
+
+  useEffect(() => {
+    const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
+    setTab(AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat");
+  }, [agentId]);
+
+  useEffect(() => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
+  }, [agentId, tab]);
 
   const detail = threadQuery.data;
   const engine =
@@ -430,6 +443,7 @@ export function AgentDetail({
         <Composer
           commands={commands}
           projectId={detail.thread.projectId}
+          draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           disabled={sendMessage.isPending}
           running={false}
           placeholder={stream.running ? "Steer this agent's active turn" : "Message this agent directly"}

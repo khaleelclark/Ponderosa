@@ -3,6 +3,8 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DifferenceIcon from "@mui/icons-material/Difference";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SendIcon from "@mui/icons-material/Send";
 import ReplyIcon from "@mui/icons-material/Reply";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
@@ -12,6 +14,7 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import {
   Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
   ClickAwayListener,
@@ -36,11 +39,13 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { readChatState, writeChatState } from "../chatState";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
+import { MessageContextMenu } from "./MessageContextMenu";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -209,6 +214,10 @@ export function replyFallbackText(text: string): string {
   return text.trim() || "Original message unavailable";
 }
 
+export function isLongChatMessage(text: string): boolean {
+  return text.length > 1_600 || text.split("\n").length > 18;
+}
+
 export function individualChatSenderLabel(
   role: MessageDto["role"],
   agentName: string,
@@ -334,6 +343,7 @@ export function ChatMarkdown({
     <Box
       sx={{
         overflowWrap: "anywhere",
+        whiteSpace: "pre-wrap",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
         "& p": { my: 0.75 },
@@ -369,6 +379,44 @@ export function ChatMarkdown({
       >
         {children}
       </ReactMarkdown>
+    </Box>
+  );
+}
+
+export function ChatMessageBody({
+  text,
+  agentIdForHandle,
+  onOpenAgent,
+}: {
+  text: string;
+  agentIdForHandle?(handle: string): string | undefined;
+  onOpenAgent?(agentId: string): void;
+}): JSX.Element {
+  const collapsible = isLongChatMessage(text);
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <Box>
+      <Box
+        sx={collapsible && !expanded ? {
+          maxHeight: "22rem",
+          overflow: "hidden",
+          maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
+        } : undefined}
+      >
+        <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{text}</ChatMarkdown>
+      </Box>
+      {collapsible ? (
+        <Button
+          size="small"
+          color="inherit"
+          startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          sx={{ mt: 0.5 }}
+        >
+          {expanded ? "Show less" : "Show full message"}
+        </Button>
+      ) : null}
     </Box>
   );
 }
@@ -444,6 +492,10 @@ export function ChatPane({
           }}
         >
           {message.role === "user" ? <UserMessageLabel /> : null}
+          <MessageContextMenu
+            text={message.text}
+            onReply={onReply ? () => onReply(message) : undefined}
+          >
           <Box
             data-message-bubble="true"
             sx={{
@@ -472,7 +524,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{message.text}</ChatMarkdown>
+            <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
                 {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
@@ -489,6 +541,7 @@ export function ChatPane({
               </Stack> : undefined}
             />
           </Box>
+          </MessageContextMenu>
         </Box>
         );
       })}
@@ -860,6 +913,7 @@ export function Composer({
   replyTo,
   onCancelReply,
   replyLabel,
+  draftStorageKey,
 }: {
   disabled: boolean;
   running: boolean;
@@ -879,12 +933,15 @@ export function Composer({
   replyTo?: { text: string };
   onCancelReply?(): void;
   replyLabel?: string;
+  /** Stable surface key used to preserve an unsent draft across tabs and refreshes. */
+  draftStorageKey?: string;
 }): JSX.Element {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
   const files = attachments.files;
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const previousDraftStorageKey = useRef(draftStorageKey);
   const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
@@ -909,6 +966,17 @@ export function Composer({
   const update = (next: string) => {
     setText(next);
   };
+
+  useEffect(() => {
+    if (previousDraftStorageKey.current !== draftStorageKey) {
+      previousDraftStorageKey.current = draftStorageKey;
+      setText(draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
+    }
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    if (draftStorageKey) writeChatState(draftStorageKey, text);
+  }, [draftStorageKey, text]);
 
   const addFiles = (candidates: File[]) => {
     dispatchAttachments({ type: "add", candidates });

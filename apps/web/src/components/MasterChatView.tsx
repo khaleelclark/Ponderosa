@@ -48,12 +48,14 @@ import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents } from
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
-import { ChatMarkdown, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { ChatMessageBody, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
+import { MessageContextMenu } from "./MessageContextMenu";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
 
 export function MasterChatMessage({
   message,
@@ -88,6 +90,11 @@ export function MasterChatMessage({
       sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
     >
       {showUserLabel ? <UserMessageLabel /> : null}
+      <MessageContextMenu
+        text={message.text}
+        onReply={() => onReply(message)}
+        onOpenAgent={message.authorThreadId ? () => onOpenAgent(message.authorThreadId!) : undefined}
+      >
       <Box
         data-message-bubble="true"
         sx={{
@@ -124,7 +131,7 @@ export function MasterChatMessage({
             <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
           </Box>
         ) : null}
-        <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{message.text}</ChatMarkdown>
+        <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
             {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
@@ -149,6 +156,7 @@ export function MasterChatMessage({
           ) : null}
         </Stack>} />
       </Box>
+      </MessageContextMenu>
     </Box>
   );
 }
@@ -178,7 +186,9 @@ export function MasterChatView({
   const queryClient = useQueryClient();
   const detailQuery = useMasterChat(masterChatId);
   const collaborationQuery = useCollaborationChat(masterChatId);
-  const [conversation, setConversation] = useState<"main" | "collaboration">("main");
+  const [conversation, setConversation] = useState<"main" | "collaboration">(() =>
+    readChatState(chatStateKey("view", `master.${masterChatId}`)) === "collaboration" ? "collaboration" : "main",
+  );
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -221,6 +231,14 @@ export function MasterChatView({
   const showSubagents = isSubagentUiEnabled(env);
   const liveSubagents = useSubagents(masterChatId, showSubagents);
   const subagentBinding = subagents ?? liveSubagents;
+
+  useEffect(() => {
+    setConversation(readChatState(chatStateKey("view", `master.${masterChatId}`)) === "collaboration" ? "collaboration" : "main");
+  }, [masterChatId]);
+
+  useEffect(() => {
+    writeChatState(chatStateKey("view", `master.${masterChatId}`), conversation);
+  }, [conversation, masterChatId]);
 
   const masterChat = detailQuery.data?.masterChat;
   // Live query updates can briefly leave sparse entries in cached collections.
@@ -909,6 +927,7 @@ export function MasterChatView({
           </FormControl>
         ) : null}
         <Composer
+          draftStorageKey={chatStateKey("draft", `master.${masterChatId}.${conversation}`)}
           disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
