@@ -31,7 +31,7 @@ interface CommunicationEventBase {
   schemaVersion: 1;
   projectId: string;
   /** Workstream of origin; event identity remains project-global. */
-  masterChatId?: string;
+  conversationId?: string;
   sender: CommunicationActor;
   text: string;
   document?: CommunicationDocumentRecord;
@@ -72,8 +72,8 @@ export type CommunicationEventV2 = Omit<CommunicationEventBase, "schemaVersion">
 export type CommunicationEvent = CommunicationEventV1 | CommunicationEventV2;
 
 export type CommunicationProjectionSurface =
-  | "master_chat"
-  | "collaboration_chat"
+  | "conversation"
+  | "collaboration_view"
   | "direct_agent_audit"
   | "agent_inbox"
   | "user_inbox";

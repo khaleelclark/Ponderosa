@@ -16,10 +16,10 @@ export function useProjectFolders(open: boolean) {
   });
 }
 
-export function useMasterChats(projectId: string | undefined) {
+export function useConversations(projectId: string | undefined) {
   return useQuery({
-    queryKey: ["master-chats", projectId],
-    queryFn: () => api.listMasterChats(projectId ?? ""),
+    queryKey: ["conversations", projectId],
+    queryFn: () => api.listConversations(projectId ?? ""),
     enabled: Boolean(projectId),
   });
 }
@@ -37,22 +37,22 @@ export function useAgentHealth(projectId: string | undefined) {
   });
 }
 
-export function useMasterChat(masterChatId: string | undefined) {
+export function useConversation(conversationId: string | undefined) {
   return useQuery({
-    queryKey: ["master-chat", masterChatId],
-    queryFn: () => api.getMasterChat(masterChatId ?? ""),
-    enabled: Boolean(masterChatId),
+    queryKey: ["conversation", conversationId],
+    queryFn: () => api.getConversation(conversationId ?? ""),
+    enabled: Boolean(conversationId),
     // The group chat is the primary surface: poll so agent report-backs and new
     // agents appear without a manual refresh.
     refetchInterval: 4000,
   });
 }
 
-export function useCollaborationChat(masterChatId: string | undefined) {
+export function useCollaborationView(conversationId: string | undefined) {
   return useQuery({
-    queryKey: ["collaboration-chat", masterChatId],
-    queryFn: () => api.getCollaborationChat(masterChatId ?? ""),
-    enabled: Boolean(masterChatId),
+    queryKey: ["collaboration-chat", conversationId],
+    queryFn: () => api.getCollaborationView(conversationId ?? ""),
+    enabled: Boolean(conversationId),
     refetchInterval: 4000,
   });
 }

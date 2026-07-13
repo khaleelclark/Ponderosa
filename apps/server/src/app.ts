@@ -25,9 +25,9 @@ import type {
   FilesResponse,
   HealthDto,
   ReadinessDto,
-  MasterChatMessageDto,
-  MasterChatDetailDto,
-  CollaborationChatDetailDto,
+  ConversationMessageDto,
+  ConversationDetailDto,
+  CollaborationViewDto,
   AssetDto,
   ImageAttachmentDto,
   CreateDirectReplyRequest,
@@ -45,7 +45,7 @@ import type {
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
 } from "@ponderosa/core";
-import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
+import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
@@ -155,11 +155,11 @@ function canonicalAudienceIncludes(
 }
 
 function recipientCollaborationMessages(
-  messages: MasterChatMessageDto[],
+  messages: ConversationMessageDto[],
   events: CommunicationEvent[],
   projectId: string,
   recipientAgentId: string,
-): MasterChatMessageDto[] {
+): ConversationMessageDto[] {
   const eventsById = new Map(events.map((event) => [event.eventId, event]));
   return messages.filter((message) => {
     if (!message.communicationEventId) return false;
@@ -174,12 +174,12 @@ function recipientCollaborationMessages(
  * in the room. Untagged broadcasts and #everyone remain shared context.
  */
 function organizationalMasterMessages(
-  messages: MasterChatMessageDto[],
+  messages: ConversationMessageDto[],
   events: CommunicationEvent[],
   projectId: string,
   recipientAgentId: string,
   threads: ThreadDto[],
-): MasterChatMessageDto[] {
+): ConversationMessageDto[] {
   const eventsById = new Map(events.map((event) => [event.eventId, event]));
   return messages.filter((message) => {
     if (!message.communicationEventId) return false;
@@ -199,9 +199,9 @@ interface PendingTurn {
   effort?: string;
   agentMentionDepth: number;
   agentMentionTrail: string[];
-  collaborationMasterChatId?: string;
+  collaborationConversationId?: string;
   sourceChannel?: "main";
-  sourceMasterChatId?: string;
+  sourceConversationId?: string;
   sourceAuthorThreadId?: string;
   /** Set only by the server's persisted collaboration delivery dispatcher. */
   collaborationDeliveryId?: string;
@@ -214,7 +214,7 @@ interface PendingTurn {
 
 interface AgentMessageCapability {
   threadId: string;
-  masterChatId?: string;
+  conversationId?: string;
   runId: string;
   mentionDepth: number;
   mentionTrail: string[];
@@ -380,7 +380,7 @@ export function runtimeIdentityPrompt(
 function agentMessagingPrompt(): string[] {
   return [
     "Communication scope is immutable. Choose the scope when creating a message; never try to promote or re-scope an existing message.",
-    "Your ordinary runtime response is execution-scoped output saved in your Thinking tab. It is never delivered to the manager, agents, or organization.",
+    "Your ordinary runtime response is execution-scoped output saved in your Work log tab. It is never delivered to the manager, agents, or organization.",
     "If anyone should receive information, you must explicitly use the messaging tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
@@ -390,7 +390,7 @@ function agentMessagingPrompt(): string[] {
     "Agents cannot create reactions. A user emoji reaction arrives as a private notification with immutable reply context identifying the message they reacted to.",
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     'Discover current teammates with GET "$PONDEROSA_AGENT_DIRECTORY_URL" or one stable identity with GET "$PONDEROSA_AGENT_DIRECTORY_URL/<agent-id>" using the same Bearer token.',
-    "If you are a top-level agent, Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
+    "If you are a top-level agent, Broadcast completed answers and task results from a shared Conversation request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
     "Use Collaboration for agent-to-agent coordination. Use direct_to_user only for a question or private update the user themselves needs, never as an automatic completion receipt. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
@@ -409,10 +409,10 @@ function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
   ].join("\n");
 }
 
-function sharedBroadcastContextPrompt(messages: MasterChatMessageDto[], threads: ThreadDto[]): string {
+function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], threads: ThreadDto[]): string {
   const names = new Map(threads.map((thread) => [thread.id, thread.title]));
   return [
-    "Shared Broadcast context from Main Chat (organizational knowledge; supplied independently of private chat):",
+    "Shared Broadcast context from Project chat (organizational knowledge; supplied independently of private chat):",
     ...(messages.length ? messages.map((message) => {
       const author = message.authorThreadId ? names.get(message.authorThreadId) ?? "Agent" : "User";
       return `${author}: ${message.text}`;
@@ -426,7 +426,7 @@ function agentSpawnPrompt(): string[] {
     "Use only Ponderosa's managed-agent creation bridge. The new agent is a normal agent that reports directly to you:",
     'curl -sS -X POST "$PONDEROSA_AGENT_SPAWN_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"displayName":"Safe name","initialMessage":"Optional task, role, or introduction","runtime":"codex","idempotencyKey":"stable-key"}\'',
     "initialMessage is optional. You may create an idle report and introduce or steer it later through ordinary Collaboration.",
-    "Do not send managerAgentId, parentAgentId, threadId, masterChatId, or execution ownership fields. Ponderosa derives the reporting line from your active capability.",
+    "Do not send managerAgentId, parentAgentId, threadId, conversationId, or execution ownership fields. Ponderosa derives the reporting line from your active capability.",
     "After asking a report to work, end your turn. Do not poll or sleep; its messages and failures return through the normal managed-agent delivery system.",
   ];
 }
@@ -439,7 +439,7 @@ function managerRelationshipPrompt(agent: Pick<ThreadDto, "managerAgentId">): st
     `You are a managed agent. Your direct manager is the stable agent id ${agent.managerAgentId}.`,
     `Send questions, interim findings, and completed results to that manager with Collaboration recipientAgentIds ["${agent.managerAgentId}"].`,
     "You may Direct Message the user when you need the user's decision or input, have genuinely user-only information, or are replying to a user message with an answer that your manager report does not already provide.",
-    "After sending a finding or result to your manager, do not also send the user a routine completion notice, acknowledgment, or duplicate summary. End the turn; any ordinary wrap-up remains in Thinking.",
+    "After sending a finding or result to your manager, do not also send the user a routine completion notice, acknowledgment, or duplicate summary. End the turn; any ordinary wrap-up remains in Work log.",
     "You may reply to any agent that contacts you. Do not Broadcast; your manager owns organizational synthesis and publication.",
   ];
 }
@@ -455,12 +455,12 @@ function agentMessageEndpoint(
 }
 
 /**
- * Give a master-chat agent the shared room context and a lightweight teammate
+ * Give a conversation agent the shared room context and a lightweight teammate
  * response contract. This is intentionally part of the next user prompt (rather
  * than engine-specific configuration) so new and resumed agents behave alike.
  */
-function masterChatPrompt(
-  messages: MasterChatMessageDto[],
+function conversationPrompt(
+  messages: ConversationMessageDto[],
   threads: ThreadDto[],
   currentRequest: string,
   context: InboundMessageContext,
@@ -484,9 +484,9 @@ function masterChatPrompt(
     .join("\n");
 
   const staticInstructions = incremental ? [] : [
-    "You are handling a manager request that originated in Master Chat.",
+    "You are handling a manager request that originated in Conversation.",
     replyScope === "broadcast"
-      ? "The latest plain Master Chat request is shared work. Send its actual completed answer with intent broadcast, never direct_to_user. Reserve direct_to_user for a private question, private progress note, or a reply to an explicitly private manager message."
+      ? "The latest plain Conversation request is shared work. Send its actual completed answer with intent broadcast, never direct_to_user. Reserve direct_to_user for a private question, private progress note, or a reply to an explicitly private manager message."
       : "The latest request is a Direct Message. Explicitly send direct_to_user to answer privately.",
     "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
@@ -500,7 +500,7 @@ function masterChatPrompt(
     ...(routingMetadata ? [routingMetadata] : []),
     ...messageContextPrompt(context),
     "",
-    incremental ? "New master chat messages since the last accepted turn:" : "Current master chat history:",
+    incremental ? "New conversation messages since the last accepted turn:" : "Current conversation history:",
     transcript || (incremental ? "(No new room messages.)" : "(No earlier messages.)"),
     `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
     "",
@@ -511,8 +511,8 @@ function masterChatPrompt(
 }
 
 /** Collaboration context is opt-in: it is assembled only for an explicit recipient delivery. */
-function collaborationChatPrompt(
-  messages: MasterChatMessageDto[],
+function collaborationPrompt(
+  messages: ConversationMessageDto[],
   threads: ThreadDto[],
   currentRequest: string,
   context: InboundMessageContext,
@@ -534,12 +534,12 @@ function collaborationChatPrompt(
     })
     .join("\n");
   const staticInstructions = incremental ? [] : [
-    "You are collaborating with teammates in Ponderosa's opt-in collaboration chat.",
+    "You are collaborating with teammates in Ponderosa's opt-in team chat.",
     "You received this context because you were an explicit collaboration recipient.",
     "This is the only chat for agent-to-agent coordination. Respond directly to the latest request here.",
     "To involve a teammate, send a collaboration intent with their stable agent ID; the server routes it and renders any display handle.",
     "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
-    "You may use the separately supplied shared Broadcast context, but do not claim access to private Main Chat messages.",
+    "You may use the separately supplied shared Broadcast context, but do not claim access to private Project-chat messages.",
     ...agentMessagingPrompt(),
   ];
   return [
@@ -573,7 +573,7 @@ function continuationPrompt(currentRequest: string, context: InboundMessageConte
   const channelRule = context.channel === "collaboration"
     ? "Explicitly send Collaboration to stable recipient IDs when another agent should receive this turn's result."
     : context.channel === "main"
-      ? "A plain shared Master Chat request must receive its completed answer through broadcast, not direct_to_user. Use direct_to_user only for a private question or progress note."
+      ? "A plain shared Conversation request must receive its completed answer through broadcast, not direct_to_user. Use direct_to_user only for a private question or progress note."
       : "Explicitly use direct_to_user when the manager should receive an answer.";
   return [
     ...messageContextPrompt(context),
@@ -991,16 +991,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     } : message);
   }
 
-  function masterChatDetail(masterChatId: string): MasterChatDetailDto | undefined {
-    const detail = store.getMasterChatDetail(masterChatId);
+  function conversationDetail(conversationId: string): ConversationDetailDto | undefined {
+    const detail = store.getConversationDetail(conversationId);
     if (!detail) return detail;
-    return { ...detail, messages: withUserReactions(store.getProjectedMasterChatMessages(masterChatId, "main")) };
+    return { ...detail, messages: withUserReactions(store.getProjectedConversationMessages(conversationId, "main")) };
   }
 
-  function collaborationChatDetail(masterChatId: string): CollaborationChatDetailDto | undefined {
-    const detail = store.getCollaborationChatDetail(masterChatId);
+  function collaborationViewDetail(conversationId: string): CollaborationViewDto | undefined {
+    const detail = store.getCollaborationViewDetail(conversationId);
     if (!detail) return detail;
-    return { ...detail, messages: withUserReactions(store.getProjectedMasterChatMessages(masterChatId, "collaboration")) };
+    return { ...detail, messages: withUserReactions(store.getProjectedConversationMessages(conversationId, "collaboration")) };
   }
 
   function threadDetail(threadId: string): import("@ponderosa/core").ThreadDetailDto | undefined {
@@ -1077,9 +1077,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort: delivery.effort,
       agentMentionDepth: delivery.relayDepth,
       agentMentionTrail: delivery.mentionTrail,
-      collaborationMasterChatId: delivery.kind === "direct" ? undefined : delivery.masterChatId,
+      collaborationConversationId: delivery.kind === "direct" ? undefined : delivery.conversationId,
       sourceChannel: delivery.sourceChannel,
-      sourceMasterChatId: delivery.sourceChannel === "main" ? delivery.masterChatId : undefined,
+      sourceConversationId: delivery.sourceChannel === "main" ? delivery.conversationId : undefined,
       sourceAuthorThreadId: delivery.authorThreadId,
       collaborationDeliveryId: delivery.id,
       replyToMessageId: delivery.replyToMessageId,
@@ -1252,9 +1252,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } else {
         const failed = retried[0];
         const target = failed ? store.getThread(failed.targetThreadId) : undefined;
-        if (failed?.masterChatId && target) {
+        if (failed?.conversationId && target) {
           appendCollaborationSystemNotice(
-            failed.masterChatId,
+            failed.conversationId,
             `⚠️ #${agentMentionHandle(target.title)} was not notified because their follow-up delivery exhausted bounded retries. The handoff is retained as failed; retry manually or contact the manager.`,
             `delivery-failure:${failed.id}`,
           );
@@ -1264,9 +1264,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
       const delivery = collaborationDeliveries.get(deliveryIds[0]!);
       const target = delivery ? store.getThread(delivery.targetThreadId) : undefined;
-      if (delivery?.masterChatId && target) {
+      if (delivery?.conversationId && target) {
         appendCollaborationSystemNotice(
-          delivery.masterChatId,
+          delivery.conversationId,
           `⚠️ #${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
           `delivery-failure:${delivery.id}`,
         );
@@ -1289,14 +1289,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const boundary = collaborationDeliveries.reconciliationBoundary();
     const recipients = new Set<string>();
     for (const project of store.listProjects()) {
-      for (const master of store.listMasterChats(project.id)) {
-        for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getMasterChatDeliveryIntents(master.id)) {
+      for (const master of store.listConversations(project.id)) {
+        for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getConversationDeliveryIntents(master.id)) {
           if (message.createdAt < boundary) continue;
           const target = store.getThread(intent.targetThreadId);
-          if (!target || target.archived || !target.masterChatIds.includes(master.id)) continue;
+          if (!target || target.archived || !target.conversationIds.includes(master.id)) continue;
           if (messageReceiptKey) collaborationDeliveries.rememberMessageReceipt(messageReceiptKey, message.id);
           const queued = collaborationDeliveries.queue({
-            masterChatId: master.id,
+            conversationId: master.id,
             messageId: message.id,
             communicationEventId: message.communicationEventId,
             targetThreadId: intent.targetThreadId,
@@ -1423,7 +1423,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     attachments?: AssetDto[],
   ): void {
     const excluded = new Set(excludedThreadIds);
-    // A Broadcast is shared through its Master Chat context, not copied into
+    // A Broadcast is shared through its Conversation context, not copied into
     // every agent's private history. Only its actual agent author owns a local
     // audit projection; user/system broadcasts have no individual author.
     if (event.sender.kind !== "agent" || excluded.has(event.sender.agentId)) return;
@@ -1445,13 +1445,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function resolveCollaborationIntents(
-    masterChatId: string,
+    conversationId: string,
     authorThreadId: string,
     text: string,
     relayDepth: number,
     mentionTrail: string[],
-  ): { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
-    const detail = collaborationChatDetail(masterChatId);
+  ): { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
+    const detail = collaborationViewDetail(conversationId);
     const eligible = detail?.threads.filter((thread) => !thread.archived && thread.id !== authorThreadId) ?? [];
     const targetsById = new Map(
       mentionedAgentThreads(text, eligible, authorThreadId).map((thread) => [thread.id, thread]),
@@ -1460,7 +1460,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       for (const thread of eligible) targetsById.set(thread.id, thread);
     }
     const targets = [...targetsById.values()];
-    const intents: MasterChatDeliveryIntent[] = [];
+    const intents: ConversationDeliveryIntent[] = [];
     const blocked: Array<{ title: string; reason: string }> = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorThreadId, target.id, text);
@@ -1485,22 +1485,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function resolveExplicitCollaborationIntents(
-    masterChatId: string,
+    conversationId: string,
     authorThreadId: string,
     recipientAgentIds: string[],
     text: string,
     relayDepth: number,
     mentionTrail: string[],
-  ): { text: string; intents: MasterChatDeliveryIntent[]; error?: string } {
-    const detail = store.getCollaborationChatDetail(masterChatId);
+  ): { text: string; intents: ConversationDeliveryIntent[]; error?: string } {
+    const detail = store.getCollaborationViewDetail(conversationId);
     const members = new Map((detail?.threads ?? []).map((thread) => [thread.id, thread]));
     const targetIds = [...new Set(recipientAgentIds)];
     const targets = targetIds.map((id) => members.get(id));
     if (targets.some((target) => !target || target.archived || target.id === authorThreadId)) {
-      return { text, intents: [], error: "every collaboration recipient must be a different active agent in this master chat" };
+      return { text, intents: [], error: "every collaboration recipient must be a different active agent in this conversation" };
     }
     const renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
-    const intents: MasterChatDeliveryIntent[] = [];
+    const intents: ConversationDeliveryIntent[] = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorThreadId, target!.id, renderedText);
       if (mentionTrail.includes(fingerprint)) {
@@ -1521,13 +1521,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function queueRecordedCollaborationMessage(
-    masterChatId: string,
-    message: MasterChatMessageDto,
+    conversationId: string,
+    message: ConversationMessageDto,
     authorThreadId: string | undefined,
-    intents: MasterChatDeliveryIntent[],
+    intents: ConversationDeliveryIntent[],
   ): void {
-    const orderKey = store.getMasterChatMessageDeliveryOrderKey(masterChatId, message.id);
-    const master = store.getMasterChat(masterChatId);
+    const orderKey = store.getConversationMessageDeliveryOrderKey(conversationId, message.id);
+    const master = store.getConversation(conversationId);
     const communication = master && message.communicationEventId
       ? store.getCommunicationEvent(master.projectId, message.communicationEventId)
       : undefined;
@@ -1536,7 +1536,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       : message.text;
     for (const intent of intents) {
       queueCollaborationDelivery({
-        masterChatId,
+        conversationId,
         messageId: message.id,
         communicationEventId: message.communicationEventId,
         targetThreadId: intent.targetThreadId,
@@ -1554,36 +1554,36 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   function appendBlockedMentionWarnings(
-    masterChatId: string,
+    conversationId: string,
     blocked: Array<{ title: string; reason: string }>,
   ): void {
     for (const item of blocked) {
       appendCollaborationSystemNotice(
-        masterChatId,
+        conversationId,
         `⚠️ #${agentMentionHandle(item.title)} was not notified because ${item.reason}. Please ask the manager to continue the conversation.`,
       );
     }
   }
 
   function appendCollaborationSystemNotice(
-    masterChatId: string,
+    conversationId: string,
     text: string,
     idempotencyKey?: string,
-  ): MasterChatMessageDto | undefined {
-    const master = store.getMasterChat(masterChatId);
+  ): ConversationMessageDto | undefined {
+    const master = store.getConversation(conversationId);
     if (!master) return undefined;
     const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, masterChatId,
+      eventId: randomUUID(), schemaVersion: 1, projectId: master.projectId, conversationId,
       sender: { kind: "system", component: "collaboration-supervision" },
       intent: "direct_to_user", audience: { kind: "user", userId: "local-operator" },
       text, createdAt: new Date().toISOString(), ...(idempotencyKey ? { idempotencyKey } : {}),
     });
     const existing = communication
-      ? store.getMasterChatMessages(masterChatId, "collaboration").find((message) => message.communicationEventId === communication.eventId)
+      ? store.getConversationMessages(conversationId, "collaboration").find((message) => message.communicationEventId === communication.eventId)
       : undefined;
     if (existing) return existing;
-    return store.appendMasterChatMessage(
-      masterChatId, { role: "system", text }, undefined, "collaboration", undefined, undefined, communication?.eventId,
+    return store.appendConversationMessage(
+      conversationId, { role: "system", text }, undefined, "collaboration", undefined, undefined, communication?.eventId,
     );
   }
 
@@ -1594,7 +1594,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!child || !manager || manager.archived) return;
     const createdAt = new Date().toISOString();
     queueCollaborationDelivery({
-      masterChatId: child.masterChatIds.find((id) => manager.masterChatIds.includes(id)),
+      conversationId: child.conversationIds.find((id) => manager.conversationIds.includes(id)),
       messageId: `managed-agent:${child.id}:${executionId}:failure`,
       targetThreadId: manager.id,
       authorThreadId: child.id,
@@ -1696,7 +1696,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         eventId: randomUUID(),
         schemaVersion: 2,
         projectId: currentAuthor.projectId,
-        ...(capability.masterChatId ? { masterChatId: capability.masterChatId } : {}),
+        ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
         sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
         intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: capability.threadId },
@@ -1711,9 +1711,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         projectionKey: "local-operator",
         projectedAt: communication.createdAt,
       });
-      if (capability.masterChatId) {
-        store.appendMasterChatMessage(
-          capability.masterChatId,
+      if (capability.conversationId) {
+        store.appendConversationMessage(
+          capability.conversationId,
           { text: renderScopedMessage("user", text) },
           capability.threadId,
           "main",
@@ -1730,16 +1730,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
       return { intent, eventId: communication.eventId, messageId, replayed: false };
     }
-    if (!capability.masterChatId) {
-      return reply.code(409).send({ error: "agent is not linked to a master chat" });
+    if (!capability.conversationId) {
+      return reply.code(409).send({ error: "agent is not linked to a conversation" });
     }
-    if (!currentAuthor.masterChatIds.includes(capability.masterChatId)) {
-      return reply.code(409).send({ error: "agent is no longer an active member of this master chat" });
+    if (!currentAuthor.conversationIds.includes(capability.conversationId)) {
+      return reply.code(409).send({ error: "agent is no longer an active member of this conversation" });
     }
     let renderedText = intent === "broadcast"
       ? capability.plainSharedReply ? stripLeadingScopeTag(text, "broadcast") : renderScopedMessage("broadcast", text)
       : text;
-    let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
+    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration" && !legacyChannel) {
       const recipientAgentIds = request.body.recipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
@@ -1747,7 +1747,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       if (recipientAgentIds.length > 100) return reply.code(400).send({ error: "collaboration supports at most 100 recipients" });
       const resolved = resolveExplicitCollaborationIntents(
-        capability.masterChatId,
+        capability.conversationId,
         capability.threadId,
         recipientAgentIds,
         text,
@@ -1759,7 +1759,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       routing = { intents: resolved.intents, blocked: [] };
     } else if (intent === "collaboration") {
       routing = resolveCollaborationIntents(
-        capability.masterChatId,
+        capability.conversationId,
         capability.threadId,
         text,
         capability.mentionDepth,
@@ -1771,7 +1771,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       eventId: randomUUID(),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
-      masterChatId: capability.masterChatId,
+      conversationId: capability.conversationId,
       sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
       intent,
       audience: { kind: "organization", organizationId: currentAuthor.projectId },
@@ -1783,7 +1783,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       eventId: randomUUID(),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
-      masterChatId: capability.masterChatId,
+      conversationId: capability.conversationId,
       sender: { kind: "agent", agentId: capability.threadId, executionId: capability.runId },
       intent,
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
@@ -1792,8 +1792,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
-    const message = store.appendMasterChatMessage(
-      capability.masterChatId,
+    const message = store.appendConversationMessage(
+      capability.conversationId,
       { role: "assistant", text: renderedText },
       capability.threadId,
       channel,
@@ -1801,12 +1801,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       receiptKey,
       communication?.eventId,
     );
-    if (!message) return reply.code(404).send({ error: "master chat not found" });
+    if (!message) return reply.code(404).send({ error: "conversation not found" });
     if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication, [], message.attachments);
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (intent === "collaboration") {
-      queueRecordedCollaborationMessage(capability.masterChatId, message, capability.threadId, routing.intents);
-      appendBlockedMentionWarnings(capability.masterChatId, routing.blocked);
+      queueRecordedCollaborationMessage(capability.conversationId, message, capability.threadId, routing.intents);
+      appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
     }
     return { intent, eventId: communication?.eventId, messageId: message.id, replayed: false };
   });
@@ -1814,7 +1814,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function agentCanReadDocument(event: CommunicationEvent, agentId: string): boolean {
     const agent = store.getThread(agentId);
     if (!agent || agent.projectId !== event.projectId || agent.archived) return false;
-    if (event.intent === "broadcast") return !event.masterChatId || agent.masterChatIds.includes(event.masterChatId);
+    if (event.intent === "broadcast") return !event.conversationId || agent.conversationIds.includes(event.conversationId);
     if (event.schemaVersion === 2 && event.intent === "user_dm") {
       return event.sender.kind === "agent" && event.sender.agentId === agentId;
     }
@@ -1859,7 +1859,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token || !parent) {
         return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
       }
-      const forbiddenOwnership = ["managerAgentId", "parentAgentId", "threadId", "masterChatId", "executionId"]
+      const forbiddenOwnership = ["managerAgentId", "parentAgentId", "threadId", "conversationId", "executionId"]
         .find((field) => request.body && field in request.body);
       if (forbiddenOwnership) {
         return reply.code(403).send({ error: `ownership field ${forbiddenOwnership} is server-controlled` });
@@ -1874,12 +1874,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (displayName.length > 100 || (initialMessage?.length ?? 0) > MAX_TEXT_LENGTH || idempotencyKey.length > 200) {
         return reply.code(400).send({ error: "agent creation fields exceed their size limits" });
       }
-      const masterChatId = capability.masterChatId ?? parent.masterChatId;
-      const masterChat = masterChatId ? store.getMasterChat(masterChatId) : undefined;
-      if (!masterChat || masterChat.projectId !== parent.projectId || !parent.masterChatIds.includes(masterChat.id)) {
-        return reply.code(409).send({ error: "spawning agent must belong to an active master chat" });
+      const conversationId = capability.conversationId ?? parent.conversationId;
+      const conversation = conversationId ? store.getConversation(conversationId) : undefined;
+      if (!conversation || conversation.projectId !== parent.projectId || !parent.conversationIds.includes(conversation.id)) {
+        return reply.code(409).send({ error: "spawning agent must belong to an active conversation" });
       }
-      const roomId = masterChat.id;
+      const roomId = conversation.id;
       const preset = input.presetId ? store.getAgentPreset(input.presetId) : undefined;
       if (input.presetId && (!preset || preset.projectId !== parent.projectId || !preset.enabled)) {
         return reply.code(400).send({ error: "preset is unavailable for this project" });
@@ -1900,7 +1900,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         child = store.createThread(parent.projectId, {
           title: displayName,
           engine: runtime,
-          masterChatId: roomId,
+          conversationId: roomId,
           model: preset?.model ?? input.model,
           effort: preset?.effort ?? input.effort,
           presetId: preset?.id,
@@ -1925,7 +1925,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             eventId: randomUUID(),
             schemaVersion: 2,
             projectId: parent.projectId,
-            masterChatId: roomId,
+            conversationId: roomId,
             sender: { kind: "agent", agentId: parent.id, executionId: capability.runId },
             intent: "collaboration",
             audience: { kind: "agents", agentIds: [child.id] },
@@ -1933,7 +1933,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: new Date().toISOString(),
             idempotencyKey: `agent-spawn:${capability.runId}:${idempotencyKey}`,
           });
-          const message = store.appendMasterChatMessage(
+          const message = store.appendConversationMessage(
             roomId,
             { role: "assistant", text: routing.text },
             parent.id,
@@ -2088,7 +2088,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!project) return reply.code(404).send({ error: "project not found" });
     const threads = store.listThreads(project.id);
     const threadIds = new Set(threads.map((thread) => thread.id));
-    const masterChatIds = new Set(store.listMasterChats(project.id).map((master) => master.id));
+    const conversationIds = new Set(store.listConversations(project.id).map((master) => master.id));
     for (const threadId of threadIds) {
       const active = activeRuns.get(threadId);
       if (active) {
@@ -2134,33 +2134,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return teamDirectory(request.params.id);
   });
 
-  app.get<{ Params: { id: string } }>("/api/projects/:id/master-chats", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/api/projects/:id/conversations", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return store.listMasterChats(request.params.id);
+    return store.listConversations(request.params.id);
   });
 
   app.post<{
     Params: { id: string };
     Body: { title: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
-  }>("/api/projects/:id/master-chats", async (request, reply) => {
+  }>("/api/projects/:id/conversations", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     if (!request.body?.title) return reply.code(400).send({ error: "title is required" });
     if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    return store.createMasterChat(request.params.id, request.body);
+    return store.createConversation(request.params.id, request.body);
   });
 
-  app.get<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
-    const detail = masterChatDetail(request.params.id);
-    return detail ?? reply.code(404).send({ error: "master chat not found" });
+  app.get<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
+    const detail = conversationDetail(request.params.id);
+    return detail ?? reply.code(404).send({ error: "conversation not found" });
   });
 
-  app.get<{ Params: { id: string } }>("/api/master-chats/:id/agent-health", async (request, reply) => {
-    const master = store.getMasterChat(request.params.id);
-    if (!master) return reply.code(404).send({ error: "master chat not found" });
-    const threads = store.listThreads(master.projectId).filter((thread) => thread.masterChatIds.includes(master.id));
-    return agentHealth({ type: "master_chat", id: master.id }, threads);
+  app.get<{ Params: { id: string } }>("/api/conversations/:id/agent-health", async (request, reply) => {
+    const master = store.getConversation(request.params.id);
+    if (!master) return reply.code(404).send({ error: "conversation not found" });
+    const threads = store.listThreads(master.projectId).filter((thread) => thread.conversationIds.includes(master.id));
+    return agentHealth({ type: "conversation", id: master.id }, threads);
   });
 
   app.patch<{
@@ -2172,36 +2172,36 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       defaultEffort?: string | null;
       archived?: boolean;
     };
-  }>("/api/master-chats/:id", async (request, reply) => {
+  }>("/api/conversations/:id", async (request, reply) => {
     if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
-    const masterChat = store.updateMasterChat(request.params.id, request.body ?? {});
-    return masterChat ?? reply.code(404).send({ error: "master chat not found" });
+    const conversation = store.updateConversation(request.params.id, request.body ?? {});
+    return conversation ?? reply.code(404).send({ error: "conversation not found" });
   });
 
-  app.delete<{ Params: { id: string } }>("/api/master-chats/:id", async (request, reply) => {
-    const deleted = store.deleteMasterChat(request.params.id);
-    return deleted ? { deleted: true } : reply.code(404).send({ error: "master chat not found" });
+  app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
+    const deleted = store.deleteConversation(request.params.id);
+    return deleted ? { deleted: true } : reply.code(404).send({ error: "conversation not found" });
   });
 
   app.post<{
     Params: { id: string };
     Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string; directReplyToAuthorThreadId?: string; attachments?: AssetDto[] };
-  }>("/api/master-chats/:id/messages", async (request, reply) => {
+  }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
     const text = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     if (!text) return reply.code(400).send({ error: "broadcast text is required after #broadcast" });
     if (request.body.directReplyToAuthorThreadId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
-    const master = store.getMasterChat(request.params.id);
-    if (!master) return reply.code(404).send({ error: "master chat not found" });
+    const master = store.getConversation(request.params.id);
+    if (!master) return reply.code(404).send({ error: "conversation not found" });
     const requestedAssets = request.body.attachments ?? [];
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: "at most 4 assets are allowed" });
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
       const owner = store.getThread(requested.threadId);
-      const stored = owner?.projectId === master.projectId && owner.masterChatIds.includes(master.id)
+      const stored = owner?.projectId === master.projectId && owner.conversationIds.includes(master.id)
         ? await assetMetadata(owner.id, requested.id) : undefined;
       if (!stored) return reply.code(404).send({ error: "asset not found" });
       const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = stored;
@@ -2212,7 +2212,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       eventId: randomUUID(),
       schemaVersion: 1,
       projectId: master.projectId,
-      masterChatId: master.id,
+      conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" },
       intent: "broadcast",
       audience: { kind: "organization", organizationId: master.projectId },
@@ -2221,7 +2221,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     });
     let message;
     try {
-      message = store.appendMasterChatMessage(request.params.id, {
+      message = store.appendConversationMessage(request.params.id, {
         role: request.body.role,
         text: renderScopedMessage("broadcast", text),
         replyToMessageId: request.body.replyToMessageId,
@@ -2235,11 +2235,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return assets.associate(owner.projectId, owner.id, [asset.id]);
     }));
     if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
-    return message ?? reply.code(404).send({ error: "master chat not found" });
+    return message ?? reply.code(404).send({ error: "conversation not found" });
   });
 
   app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(
-    "/api/master-chats/:id/direct-messages",
+    "/api/conversations/:id/direct-messages",
     async (request, reply) => {
       const text = request.body?.text?.trim() ?? "";
       const recipients = request.body?.recipients ?? [];
@@ -2261,21 +2261,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return reply.code(400).send({ error: "each recipient supports at most 4 unique attachments" });
         }
       }
-      const master = store.getMasterChat(request.params.id);
-      if (!master || master.archived) return reply.code(404).send({ error: "master chat not found" });
+      const master = store.getConversation(request.params.id);
+      if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
       const targets = agentIds.map((agentId) => store.getThread(agentId));
-      if (targets.some((target) => !target || target.archived || !target.masterChatIds.includes(master.id))) {
+      if (targets.some((target) => !target || target.archived || !target.conversationIds.includes(master.id))) {
         return reply.code(404).send({ error: "direct message recipient not found" });
       }
       const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
-      const persistedIntents = () => store.getMasterChatDeliveryIntents(master.id)
+      const persistedIntents = () => store.getConversationDeliveryIntents(master.id)
         .filter((item) => item.messageReceiptKey === receiptKey && item.intent.kind === "direct");
-      const queueMissingDeliveries = (message: MasterChatMessageDto): MultiAgentDirectMessageResponse["recipients"] => {
+      const queueMissingDeliveries = (message: ConversationMessageDto): MultiAgentDirectMessageResponse["recipients"] => {
         return persistedIntents().map(({ intent, deliveryOrderKey }) => {
           const existingDelivery = collaborationDeliveries.getForMessageTarget(message.id, intent.targetThreadId);
           const wasBusy = activeRuns.has(intent.targetThreadId);
           const delivery = existingDelivery ?? queueCollaborationDelivery({
-            masterChatId: master.id,
+            conversationId: master.id,
             messageId: message.id,
             communicationEventId: message.communicationEventId,
             targetThreadId: intent.targetThreadId,
@@ -2295,8 +2295,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       };
       const existingMessageId = collaborationDeliveries.messageReceipt(receiptKey);
       const existing = existingMessageId
-        ? store.getMasterChatMessages(master.id).find((message) => message.id === existingMessageId)
-        : store.getMasterChatMessageByReceiptKey(master.id, receiptKey);
+        ? store.getConversationMessages(master.id).find((message) => message.id === existingMessageId)
+        : store.getConversationMessageByReceiptKey(master.id, receiptKey);
       if (existing) {
         const intents = persistedIntents();
         const persistedRecipients = intents.map(({ intent }) => ({
@@ -2327,7 +2327,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           return attached as ImageAttachmentDto[];
         }));
-        const intents: MasterChatDeliveryIntent[] = recipients.map((recipient) => ({
+        const intents: ConversationDeliveryIntent[] = recipients.map((recipient) => ({
           targetThreadId: recipient.agentId,
           relayDepth: 0,
           mentionTrail: [],
@@ -2335,7 +2335,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(recipient.attachmentIds?.length ? { attachmentIds: recipient.attachmentIds } : {}),
         }));
         const communication = recordCommunication({
-          eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, masterChatId: master.id,
+          eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
           sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
           audience: { kind: "user_agents", userId: "local-operator", agentIds: agentIds as [string, ...string[]] },
           text, createdAt: new Date().toISOString(), idempotencyKey: receiptKey,
@@ -2347,9 +2347,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           projectionKey: "local-operator",
           projectedAt: communication.createdAt,
         });
-        let message: MasterChatMessageDto | undefined;
+        let message: ConversationMessageDto | undefined;
         try {
-          message = store.appendMasterChatMessage(
+          message = store.appendConversationMessage(
             master.id,
             { text, replyToMessageId, attachments: attachmentsByAgent[0] },
             undefined,
@@ -2361,7 +2361,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         } catch (error) {
           return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct message" });
         }
-        if (!message) return reply.code(404).send({ error: "master chat not found" });
+        if (!message) return reply.code(404).send({ error: "conversation not found" });
         collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
         return {
           messageId: message.id,
@@ -2415,7 +2415,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const existingDelivery = collaborationDeliveries.getForMessageTarget(deliveryMessageId, target.id);
     const wasBusy = activeRuns.has(target.id);
     const delivery = existingDelivery ?? queueCollaborationDelivery({
-      masterChatId: communication.masterChatId ?? target.masterChatId,
+      conversationId: communication.conversationId ?? target.conversationId,
       messageId: deliveryMessageId,
       targetThreadId: target.id,
       text: `the user reacted with ${emoji}`,
@@ -2437,7 +2437,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
-    "/api/master-chats/:id/direct-replies",
+    "/api/conversations/:id/direct-replies",
     async (request, reply) => {
       const text = request.body?.text?.trim() ?? "";
       const replyToMessageId = request.body?.replyToMessageId?.trim() ?? "";
@@ -2451,15 +2451,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
         return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
       }
-      const master = store.getMasterChat(request.params.id);
-      if (!master || master.archived) return reply.code(404).send({ error: "master chat not found" });
+      const master = store.getConversation(request.params.id);
+      if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
       const receiptKey = `direct-reply:${master.id}:${idempotencyKey}`;
       const existingMessageId = collaborationDeliveries.messageReceipt(receiptKey);
       const existing = existingMessageId
-        ? store.getMasterChatMessages(master.id).find((message) => message.id === existingMessageId)
-        : store.getMasterChatMessageByReceiptKey(master.id, receiptKey);
+        ? store.getConversationMessages(master.id).find((message) => message.id === existingMessageId)
+        : store.getConversationMessageByReceiptKey(master.id, receiptKey);
       const target = store.getThread(targetAuthorThreadId);
-      if (!target || target.archived || !target.masterChatIds.includes(master.id)) return reply.code(404).send({ error: "direct reply target not found" });
+      if (!target || target.archived || !target.conversationIds.includes(master.id)) return reply.code(404).send({ error: "direct reply target not found" });
       const renderedText = `#${agentMentionHandle(target.title)} ${text}`.trimEnd();
       if (existing) {
         const sameRequest = existing.text === renderedText && existing.replyTo?.messageId === replyToMessageId &&
@@ -2469,7 +2469,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         collaborationDeliveries.rememberMessageReceipt(receiptKey, existing.id);
         let delivery = collaborationDeliveries.getForMessageTarget(existing.id, targetAuthorThreadId);
         if (!delivery) {
-          const persisted = store.getMasterChatDeliveryIntents(master.id).find(({ message, intent, messageReceiptKey }) =>
+          const persisted = store.getConversationDeliveryIntents(master.id).find(({ message, intent, messageReceiptKey }) =>
             message.id === existing.id && messageReceiptKey === receiptKey &&
             intent.kind === "direct" && intent.targetThreadId === targetAuthorThreadId,
           );
@@ -2481,7 +2481,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           try {
             delivery = queueCollaborationDelivery({
-              masterChatId: master.id,
+              conversationId: master.id,
               messageId: existing.id,
               communicationEventId: existing.communicationEventId,
               targetThreadId: persisted.intent.targetThreadId,
@@ -2520,7 +2520,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const attached = await Promise.all(attachmentIds.map((id) => assetMetadata(target.id, id)));
       if (attached.some((item) => !item || item.threadId !== target.id)) return reply.code(404).send({ error: "direct reply attachment not found" });
       const attachments = attached as ImageAttachmentDto[];
-      const intent: MasterChatDeliveryIntent = {
+      const intent: ConversationDeliveryIntent = {
         targetThreadId: target.id,
         relayDepth: 0,
         mentionTrail: [],
@@ -2530,7 +2530,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         eventId: randomUUID(),
         schemaVersion: 2,
         projectId: master.projectId,
-        masterChatId: master.id,
+        conversationId: master.id,
         sender: { kind: "user", userId: "local-operator" },
         intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
@@ -2538,9 +2538,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         createdAt: new Date().toISOString(),
         idempotencyKey: receiptKey,
       });
-      let message: MasterChatMessageDto | undefined;
+      let message: ConversationMessageDto | undefined;
       try {
-        message = store.appendMasterChatMessage(
+        message = store.appendConversationMessage(
           master.id,
           { text: renderedText, replyToMessageId, directReplyToAuthorThreadId: target.id, attachments },
           undefined,
@@ -2552,11 +2552,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } catch (error) {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
       }
-      if (!message) return reply.code(404).send({ error: "master chat not found" });
+      if (!message) return reply.code(404).send({ error: "conversation not found" });
       collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
       const wasBusy = activeRuns.has(target.id);
       const delivery = queueCollaborationDelivery({
-        masterChatId: master.id,
+        conversationId: master.id,
         messageId: message.id,
         communicationEventId: message.communicationEventId,
         targetThreadId: target.id,
@@ -2565,7 +2565,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: [],
         kind: "direct",
         createdAt: message.createdAt,
-        orderKey: store.getMasterChatMessageDeliveryOrderKey(master.id, message.id),
+        orderKey: store.getConversationMessageDeliveryOrderKey(master.id, message.id),
         sourceChannel: "main",
         replyToMessageId,
         attachmentIds,
@@ -2583,24 +2583,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
-  app.get<{ Params: { id: string } }>("/api/master-chats/:id/collaboration", async (request, reply) => {
-    const detail = collaborationChatDetail(request.params.id);
-    return detail ?? reply.code(404).send({ error: "master chat not found" });
+  app.get<{ Params: { id: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
+    const detail = collaborationViewDetail(request.params.id);
+    return detail ?? reply.code(404).send({ error: "conversation not found" });
   });
 
   app.post<{
     Params: { id: string };
     Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorThreadId?: string };
-  }>("/api/master-chats/:id/collaboration/messages", async (request, reply) => {
+  }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     if (request.body.directReplyToAuthorThreadId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
-    const detail = collaborationChatDetail(request.params.id);
-    if (!detail) return reply.code(404).send({ error: "master chat not found" });
+    const detail = collaborationViewDetail(request.params.id);
+    if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
     let renderedText = text;
-    let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
+    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
     if (request.body.recipientAgentIds !== undefined) {
       const ids = request.body.recipientAgentIds;
       if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
@@ -2610,7 +2610,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const members = new Map(detail.threads.map((thread) => [thread.id, thread]));
       const targets = uniqueIds.map((id) => members.get(id));
       if (targets.some((target) => !target || target.archived)) {
-        return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this master chat" });
+        return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this conversation" });
       }
       renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
       routing = {
@@ -2625,7 +2625,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (routing.intents.length === 0) {
       return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
     }
-    const master = store.getMasterChat(request.params.id)!;
+    const master = store.getConversation(request.params.id)!;
     if (request.body.replyToMessageId) {
       const replyTarget = detail.messages.find((message) => message.id === request.body.replyToMessageId);
       const replyEvent = replyTarget?.communicationEventId
@@ -2638,13 +2638,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
     }
     const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, masterChatId: master.id,
+      eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
       text, createdAt: new Date().toISOString(),
     });
     let message;
-    try { message = store.appendMasterChatMessage(
+    try { message = store.appendConversationMessage(
       request.params.id,
       { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId },
       undefined,
@@ -2696,7 +2696,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; masterChatId?: string; model?: string; effort?: string; initialMessage?: string; replyToMessageId?: string; presetId?: string; managerAgentId?: string };
+    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; initialMessage?: string; replyToMessageId?: string; presetId?: string; managerAgentId?: string };
   }>(
     "/api/projects/:id/threads",
     async (request, reply) => {
@@ -2715,17 +2715,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (!manager || manager.projectId !== request.params.id || manager.archived) {
           return reply.code(400).send({ error: "manager must be an active agent in this project" });
         }
-        request.body.masterChatId ??= manager.masterChatId;
-        if (request.body.masterChatId && !manager.masterChatIds.includes(request.body.masterChatId)) {
-          return reply.code(400).send({ error: "manager must belong to the selected master chat" });
+        request.body.conversationId ??= manager.conversationId;
+        if (request.body.conversationId && !manager.conversationIds.includes(request.body.conversationId)) {
+          return reply.code(400).send({ error: "manager must belong to the selected conversation" });
         }
       }
-      if (request.body.masterChatId) {
-        const masterChat = store.getMasterChat(request.body.masterChatId);
-        if (!masterChat || masterChat.projectId !== request.params.id) {
-          return reply.code(400).send({ error: "master chat does not belong to project" });
+      if (request.body.conversationId) {
+        const conversation = store.getConversation(request.body.conversationId);
+        if (!conversation || conversation.projectId !== request.params.id) {
+          return reply.code(400).send({ error: "conversation does not belong to project" });
         }
-        if (request.body.replyToMessageId && !store.getMasterChatMessages(request.body.masterChatId, "main").some((message) => message.id === request.body.replyToMessageId)) {
+        if (request.body.replyToMessageId && !store.getConversationMessages(request.body.conversationId, "main").some((message) => message.id === request.body.replyToMessageId)) {
           return reply.code(400).send({ error: "reply target was not found in this conversation" });
         }
       }
@@ -2738,9 +2738,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       if (initialMessage) {
         let initialCommunicationEventId: string | undefined;
-        if (thread.masterChatId) {
+        if (thread.conversationId) {
           const communication = recordCommunication({
-            eventId: randomUUID(), schemaVersion: 2, projectId: thread.projectId, masterChatId: thread.masterChatId,
+            eventId: randomUUID(), schemaVersion: 2, projectId: thread.projectId, conversationId: thread.conversationId,
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
             audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id }, text: initialMessage,
             createdAt: new Date().toISOString(),
@@ -2752,8 +2752,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             projectionKey: communication.audience.userId,
             projectedAt: communication.createdAt,
           });
-          store.appendMasterChatMessage(
-            thread.masterChatId,
+          store.appendConversationMessage(
+            thread.conversationId,
             { text: `#${agentMentionHandle(thread.title)} ${initialMessage}`, replyToMessageId: request.body.replyToMessageId },
             undefined, "main", undefined, undefined, initialCommunicationEventId,
           );
@@ -2770,7 +2770,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             model: request.body.model,
             effort: request.body.effort,
             sourceChannel: "main",
-            ...(thread.masterChatId ? { sourceMasterChatId: thread.masterChatId } : {}),
+            ...(thread.conversationId ? { sourceConversationId: thread.conversationId } : {}),
             ...(request.body.replyToMessageId ? { replyToMessageId: request.body.replyToMessageId } : {}),
             ...(initialCommunicationEventId ? { communicationEventId: initialCommunicationEventId } : {}),
           },
@@ -2815,13 +2815,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.put<{
     Params: { id: string };
-    Body: { masterChatIds: string[]; primaryMasterChatId?: string };
-  }>("/api/threads/:id/master-chat-memberships", async (request, reply) => {
-    if (!Array.isArray(request.body?.masterChatIds)) {
-      return reply.code(400).send({ error: "masterChatIds is required" });
+    Body: { conversationIds: string[]; primaryConversationId?: string };
+  }>("/api/threads/:id/conversation-memberships", async (request, reply) => {
+    if (!Array.isArray(request.body?.conversationIds)) {
+      return reply.code(400).send({ error: "conversationIds is required" });
     }
     try {
-      const thread = store.updateThreadMasterChatMemberships(request.params.id, request.body);
+      const thread = store.updateThreadConversationMemberships(request.params.id, request.body);
       return thread ?? reply.code(404).send({ error: "thread not found" });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid membership" });
@@ -2933,13 +2933,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort?: string;
       agentMentionDepth?: number;
       agentMentionTrail?: string[];
-      collaborationMasterChatId?: string;
+      collaborationConversationId?: string;
       collaborationDeliveryId?: string;
       collaborationDeliveryIds?: string[];
       sourceChannel?: "main";
       shareWithOrganization?: boolean;
       activeRunDelivery?: "steer" | "queue";
-      sourceMasterChatId?: string;
+      sourceConversationId?: string;
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
       /** Server-only immutable context for a delivery that is not itself a chat message. */
@@ -2970,43 +2970,43 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (messageAttachments.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
       if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
-      const collaborationMasterChatId = request.body.collaborationMasterChatId;
-      if (collaborationMasterChatId !== undefined && !thread.masterChatIds.includes(collaborationMasterChatId)) {
-        return reply.code(400).send({ error: "collaboration chat does not belong to thread" });
+      const collaborationConversationId = request.body.collaborationConversationId;
+      if (collaborationConversationId !== undefined && !thread.conversationIds.includes(collaborationConversationId)) {
+        return reply.code(400).send({ error: "team chat does not belong to thread" });
       }
       if (
-        collaborationMasterChatId !== undefined &&
+        collaborationConversationId !== undefined &&
         request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey
       ) {
         return reply.code(403).send({ error: "collaboration context must be delivered by an explicit recipient event" });
       }
-      const sourceMasterChatId = request.body.sourceMasterChatId;
-      if (sourceMasterChatId !== undefined && !thread.masterChatIds.includes(sourceMasterChatId)) {
-        return reply.code(400).send({ error: "master chat does not belong to thread" });
+      const sourceConversationId = request.body.sourceConversationId;
+      if (sourceConversationId !== undefined && !thread.conversationIds.includes(sourceConversationId)) {
+        return reply.code(400).send({ error: "conversation does not belong to thread" });
       }
-      if (request.body.sourceChannel === "main" && sourceMasterChatId) {
-        const sourceMaster = store.getMasterChat(sourceMasterChatId);
+      if (request.body.sourceChannel === "main" && sourceConversationId) {
+        const sourceMaster = store.getConversation(sourceConversationId);
         if (!sourceMaster || sourceMaster.archived) {
-          return reply.code(400).send({ error: "archived master chats cannot route new turns" });
+          return reply.code(400).send({ error: "archived conversations cannot route new turns" });
         }
       }
       const shareWithOrganization = request.body.shareWithOrganization === true;
-      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceMasterChatId || collaborationMasterChatId)) {
-        return reply.code(400).send({ error: "shared turns must originate from a Master Chat" });
+      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceConversationId || collaborationConversationId)) {
+        return reply.code(400).send({ error: "shared turns must originate from a Conversation" });
       }
-      const directMessageMasterChatId = sourceMasterChatId ?? thread.masterChatId;
+      const directMessageConversationId = sourceConversationId ?? thread.conversationId;
       if (request.body.replyTo && request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey) {
         return reply.code(403).send({ error: "reply context is server-controlled" });
       }
       const directReplyTarget = request.body.replyToMessageId
         ? threadMessages(thread.id).find((message) => message.id === request.body.replyToMessageId)
         : undefined;
-      const sourceMasterReply = request.body.replyToMessageId && directMessageMasterChatId
-        ? store.getMasterChatMessages(directMessageMasterChatId, "main")
+      const sourceMasterReply = request.body.replyToMessageId && directMessageConversationId
+        ? store.getConversationMessages(directMessageConversationId, "main")
             .find((message) => message.id === request.body.replyToMessageId)
         : undefined;
-      const sourceCollaborationReply = request.body.replyToMessageId && collaborationMasterChatId
-        ? store.getMasterChatMessages(collaborationMasterChatId, "collaboration")
+      const sourceCollaborationReply = request.body.replyToMessageId && collaborationConversationId
+        ? store.getConversationMessages(collaborationConversationId, "collaboration")
             .find((message) => message.id === request.body.replyToMessageId)
         : undefined;
       if (request.body.replyToMessageId && !request.body.replyTo && !directReplyTarget && !sourceMasterReply && !sourceCollaborationReply) {
@@ -3021,7 +3021,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
           inboxDeliveries.some((delivery) => delivery?.targetThreadId !== thread.id || delivery.status !== "delivered") ||
-          (inboxDelivery?.kind !== "direct" && !collaborationMasterChatId))
+          (inboxDelivery?.kind !== "direct" && !collaborationConversationId))
       ) {
         return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
       }
@@ -3036,13 +3036,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const communicationEventId = serverCommunicationEventId ?? (requestedDeliveryIds.length === 0
         ? recordCommunication(shareWithOrganization ? {
-            eventId: randomUUID(), schemaVersion: 2, projectId: project.id, masterChatId: sourceMasterChatId!,
+            eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
             sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
             audience: { kind: "organization", organizationId: project.id }, text,
             createdAt: new Date().toISOString(),
           } : {
             eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
-            ...((sourceMasterChatId ?? thread.masterChatId) ? { masterChatId: sourceMasterChatId ?? thread.masterChatId } : {}),
+            ...((sourceConversationId ?? thread.conversationId) ? { conversationId: sourceConversationId ?? thread.conversationId } : {}),
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
             audience: { kind: "user_agent", userId: "local-operator", agentId: thread.id }, text,
             createdAt: new Date().toISOString(),
@@ -3053,7 +3053,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : undefined;
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && (shareWithOrganization || serverCommunicationEventId));
-      let sourceMasterMessage: MasterChatMessageDto | undefined;
+      let sourceMasterMessage: ConversationMessageDto | undefined;
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
         if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
           store.appendCommunicationProjection(project.id, {
@@ -3064,8 +3064,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           });
         }
       }
-      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageMasterChatId) {
-        sourceMasterMessage = store.appendMasterChatMessage(directMessageMasterChatId, {
+      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageConversationId) {
+        sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
           role: "user",
           text: sharedCommunication ? text : `#${agentMentionHandle(thread.title)} ${text}`,
           attachments: messageAttachments,
@@ -3073,8 +3073,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }, undefined, "main", undefined, undefined, communicationEventId);
         if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [thread.id], messageAttachments);
       }
-      if (!sourceMasterMessage && communication && directMessageMasterChatId) {
-        sourceMasterMessage = store.getMasterChatMessages(directMessageMasterChatId, "main")
+      if (!sourceMasterMessage && communication && directMessageConversationId) {
+        sourceMasterMessage = store.getConversationMessages(directMessageConversationId, "main")
           .find((message) => message.communicationEventId === communication.eventId);
       }
       const mentionDepth = request.body.agentMentionDepth;
@@ -3102,7 +3102,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         effort: request.body.effort,
         agentMentionDepth: mentionDepth ?? 0,
         agentMentionTrail: mentionTrail,
-        collaborationMasterChatId,
+        collaborationConversationId,
         collaborationDeliveryId,
         collaborationDeliveryIds,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
@@ -3150,7 +3150,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         const createdAt = new Date().toISOString();
         const delivery = queueCollaborationDelivery({
-          masterChatId: sourceMasterChatId ?? thread.masterChatId,
+          conversationId: sourceConversationId ?? thread.conversationId,
           messageId: `direct-${randomUUID()}`,
           communicationEventId,
           targetThreadId: thread.id,
@@ -3175,7 +3175,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (!message.communicationEventId) return true;
           const communication = store.getCommunicationEvent(project.id, message.communicationEventId);
           if (communication?.intent !== "broadcast") return true;
-          // Master Chat supplies shared Broadcast context explicitly. Individual
+          // Conversation supplies shared Broadcast context explicitly. Individual
           // history retains only Broadcasts actually authored by this agent.
           return request.body.sourceChannel !== "main" && communication.sender.kind === "agent" &&
             communication.sender.agentId === thread.id;
@@ -3201,47 +3201,47 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const mode = resumeSessionId ? "continue" : "seed";
       const history = boundedSeedHistory(fullHistory);
 
-      // Main-chat turns receive the manager-facing room. Collaboration context is
+      // Project-chat turns receive the user-facing conversation. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
       // particular linked agent.
-      const routingMasterChatId = sourceMasterChatId ?? thread.masterChatId;
-      const masterChat = routingMasterChatId
-        ? masterChatDetail(routingMasterChatId)
+      const routingConversationId = sourceConversationId ?? thread.conversationId;
+      const conversation = routingConversationId
+        ? conversationDetail(routingConversationId)
         : undefined;
-      const collaboration = collaborationMasterChatId
-        ? collaborationChatDetail(collaborationMasterChatId)
+      const collaboration = collaborationConversationId
+        ? collaborationViewDetail(collaborationConversationId)
         : undefined;
       const sourceChannel: AgentMessageChannel = collaboration
         ? "collaboration"
         : request.body.sourceChannel === "main"
           ? "main"
           : "individual";
-      const contextThreads = collaboration?.threads ?? masterChat?.threads ?? [thread];
+      const contextThreads = collaboration?.threads ?? conversation?.threads ?? [thread];
       const sourceAuthor = collaboration && request.body.sourceAuthorThreadId
         ? contextThreads.find((candidate) => candidate.id === request.body.sourceAuthorThreadId)?.title ?? "Agent"
         : "Manager";
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextThreads, thread.id);
       const cursorChannel = sourceChannel === "main" || sourceChannel === "collaboration" ? sourceChannel : undefined;
-      const cursorMasterChatId = cursorChannel ? routingMasterChatId : undefined;
+      const cursorConversationId = cursorChannel ? routingConversationId : undefined;
       const cursorModel = request.body.model ?? "(default)";
-      const routingMetadata = cursorMasterChatId && cursorChannel
+      const routingMetadata = cursorConversationId && cursorChannel
         ? [
             "Current room routing and membership:",
-            `- room: ${cursorMasterChatId}`,
+            `- room: ${cursorConversationId}`,
             `- channel: ${cursorChannel}`,
-            `- primary room: ${thread.masterChatId ?? "none"}`,
-            `- room memberships: ${thread.masterChatIds.join(", ") || "none"}`,
+            `- primary room: ${thread.conversationId ?? "none"}`,
+            `- room memberships: ${thread.conversationIds.join(", ") || "none"}`,
             `- visible agents: ${contextThreads.map((candidate) => `${candidate.title} (${candidate.id})`).join(", ") || "none"}`,
           ].join("\n")
         : undefined;
       const routingHash = createHash("sha256").update(routingMetadata ?? "").digest("hex");
-      const cursorScope = resumeSessionId && cursorMasterChatId && cursorChannel
+      const cursorScope = resumeSessionId && cursorConversationId && cursorChannel
         ? {
             threadId: thread.id,
             engine: thread.activeEngine,
             model: cursorModel,
             sessionId: resumeSessionId,
-            masterChatId: cursorMasterChatId,
+            conversationId: cursorConversationId,
             channel: cursorChannel,
           }
         : undefined;
@@ -3256,13 +3256,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             project.id,
             thread.id,
           )
-        : masterChat && sourceChannel === "main"
+        : conversation && sourceChannel === "main"
           ? organizationalMasterMessages(
-              masterChat.messages,
+              conversation.messages,
               store.readCommunicationEvents(project.id),
               project.id,
               thread.id,
-              masterChat.threads,
+              conversation.threads,
             )
           : [];
       const allRoomMessages = pendingTurn.communicationEventId
@@ -3277,24 +3277,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const roomMessages = incremental
         ? allRoomMessages.slice(previousCursor?.lastMessageId ? previousIndex + 1 : 0)
         : boundedSeedHistory(allRoomMessages);
-      const initialBroadcastContext = !resumeSessionId && masterChat && sourceChannel !== "main"
+      const initialBroadcastContext = !resumeSessionId && conversation && sourceChannel !== "main"
         ? boundedSeedHistory(organizationalMasterMessages(
-            masterChat.messages,
+            conversation.messages,
             store.readCommunicationEvents(project.id),
             project.id,
             thread.id,
-            masterChat.threads,
+            conversation.threads,
           ))
         : [];
       const changedRoutingMetadata = !previousCursor || previousCursor.routingHash !== routingHash
         ? routingMetadata
         : undefined;
       const basePrompt = collaboration
-        ? collaborationChatPrompt(roomMessages, collaboration.threads, text, context, inboxDelivery?.messageId, incremental, changedRoutingMetadata)
-        : masterChat && sourceChannel === "main"
-          ? masterChatPrompt(
+        ? collaborationPrompt(roomMessages, collaboration.threads, text, context, inboxDelivery?.messageId, incremental, changedRoutingMetadata)
+        : conversation && sourceChannel === "main"
+          ? conversationPrompt(
               roomMessages,
-              masterChat.threads,
+              conversation.threads,
               text,
               context,
               sharedTaskTurn ? "broadcast" : "direct_to_user",
@@ -3314,7 +3314,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ? { ...agent, status: "running", currentActivity: agent.currentActivity ?? "Working" }
           : agent),
       };
-      const prompt = `${runtimeIdentityPrompt(thread, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(thread).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, masterChat?.threads ?? [])}` : ""}\n\n${guidedPrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${runtimeIdentityPrompt(thread, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(thread).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.threads ?? [])}` : ""}\n\n${guidedPrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       let durableClaim: ReturnType<RunLedger["claim"]>;
@@ -3350,7 +3350,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       claimActiveRun(thread.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
         threadId: thread.id,
-        masterChatId: routingMasterChatId,
+        conversationId: routingConversationId,
         runId,
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
@@ -3359,7 +3359,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
       void (async () => {
         // Consolidate ordinary response deltas into one durable, execution-scoped
-        // Thinking entry. Communication is created only by explicit intent calls.
+        // Work log entry. Communication is created only by explicit intent calls.
         let runError: string | undefined;
         let finalText = "";
         let firstTextSeq: number | undefined;
@@ -3559,7 +3559,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             }
             else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
           }
-          if (released && !closed && !controller.signal.aborted && !runError && cursorMasterChatId && cursorChannel) {
+          if (released && !closed && !controller.signal.aborted && !runError && cursorConversationId && cursorChannel) {
             const acceptedSessionId = store.resumeSessionId(thread.id);
             if (acceptedSessionId) {
               contextCursors.commit({
@@ -3567,7 +3567,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 engine: thread.activeEngine,
                 model: cursorModel,
                 sessionId: acceptedSessionId,
-                masterChatId: cursorMasterChatId,
+                conversationId: cursorConversationId,
                 channel: cursorChannel,
                 lastMessageId: allRoomMessagesIncludingCurrent.at(-1)?.id,
                 routingHash,

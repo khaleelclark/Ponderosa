@@ -95,10 +95,10 @@ export interface WorkspaceFileReviewDto {
   truncated: boolean;
 }
 
-// ─── Master chats ────────────────────────────────────────────────────────────
+// ─── Conversations ────────────────────────────────────────────────────────────
 
 /** A model-agnostic project control room that can spawn many agent threads. */
-export interface MasterChatDto {
+export interface ConversationDto {
   id: string;
   projectId: string;
   title: string;
@@ -110,16 +110,16 @@ export interface MasterChatDto {
   archived: boolean;
 }
 
-/** POST /api/projects/:id/master-chats body. */
-export interface CreateMasterChatRequest {
+/** POST /api/projects/:id/conversations body. */
+export interface CreateConversationRequest {
   title: string;
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
 }
 
-/** PATCH /api/master-chats/:id body. */
-export interface UpdateMasterChatRequest {
+/** PATCH /api/conversations/:id body. */
+export interface UpdateConversationRequest {
   title?: string;
   defaultEngine?: EngineId | null;
   defaultModel?: string | null;
@@ -127,12 +127,12 @@ export interface UpdateMasterChatRequest {
   archived?: boolean;
 }
 
-/** A message in the project-level master chat (a team group chat). */
-export interface MasterChatMessageDto {
+/** A message in the project-level conversation (a team group chat). */
+export interface ConversationMessageDto {
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
-  masterChatId: string;
+  conversationId: string;
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
@@ -179,31 +179,31 @@ export interface MessageReferenceDto {
   authorThreadId?: string;
 }
 
-/** The two deliberately separate conversations owned by a master chat. */
-export type MasterChatChannel = "main" | "collaboration";
+/** The two communication projections available for one project conversation. */
+export type ConversationChannel = "main" | "collaboration";
 
-/** A message in the private, opt-in agent collaboration chat. */
-export interface CollaborationChatDetailDto {
-  messages: MasterChatMessageDto[];
+/** The private, opt-in agent-collaboration projection. */
+export interface CollaborationViewDto {
+  messages: ConversationMessageDto[];
   threads: ThreadDto[];
 }
 
-/** GET /api/master-chats/:id response. */
-export interface MasterChatDetailDto {
-  masterChat: MasterChatDto;
-  messages: MasterChatMessageDto[];
+/** GET /api/conversations/:id response. */
+export interface ConversationDetailDto {
+  conversation: ConversationDto;
+  messages: ConversationMessageDto[];
   threads: ThreadDto[];
 }
 
-/** POST /api/master-chats/:id/messages body. */
-export interface CreateMasterChatMessageRequest {
+/** POST /api/conversations/:id/messages body. */
+export interface CreateConversationMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
   replyToMessageId?: string;
   attachments?: ImageAttachmentDto[];
 }
 
-/** POST /api/master-chats/:id/collaboration/messages body. */
+/** POST /api/conversations/:id/collaboration/messages body. */
 export interface CreateCollaborationMessageRequest {
   text: string;
   /** Stable IDs resolved by the client; display handles are never routing input. */
@@ -213,12 +213,12 @@ export interface CreateCollaborationMessageRequest {
 
 /** POST collaboration message response; recipients are the immutable resolved audience. */
 export interface CreateCollaborationMessageResponse {
-  message: MasterChatMessageDto;
+  message: ConversationMessageDto;
   audience: "mention" | "everyone";
   notifiedAgentIds: string[];
 }
 
-/** POST /api/master-chats/:id/direct-replies body. */
+/** POST /api/conversations/:id/direct-replies body. */
 export interface CreateDirectReplyRequest {
   text: string;
   replyToMessageId: string;
@@ -261,10 +261,10 @@ export interface ThreadState {
 export interface ThreadDto {
   id: string;
   projectId: string;
-  /** Optional control-room/master chat that spawned or groups this agent. */
-  masterChatId?: string;
-  /** All control rooms this agent belongs to. `masterChatId` is the primary/home member. */
-  masterChatIds: string[];
+  /** Optional control-room/conversation that spawned or groups this agent. */
+  conversationId?: string;
+  /** All control rooms this agent belongs to. `conversationId` is the primary/home member. */
+  conversationIds: string[];
   title: string;
   /** The engine currently bound to this thread. */
   activeEngine: EngineId;
@@ -306,7 +306,7 @@ export interface TeamDirectoryDto {
 export interface CreateThreadRequest {
   title: string;
   engine: EngineId;
-  masterChatId?: string;
+  conversationId?: string;
   model?: string;
   effort?: string;
   /** Optional first turn, dispatched atomically with thread creation. */
@@ -356,11 +356,11 @@ export interface AgentOrganizationEvent {
   createdAt: string;
 }
 
-/** PUT /api/threads/:id/master-chat-memberships body. Replaces membership atomically. */
-export interface UpdateThreadMasterChatMembershipsRequest {
-  masterChatIds: string[];
-  /** Must be one of `masterChatIds`; omit only when the resulting set is empty. */
-  primaryMasterChatId?: string;
+/** PUT /api/threads/:id/conversation-memberships body. Replaces membership atomically. */
+export interface UpdateThreadConversationMembershipsRequest {
+  conversationIds: string[];
+  /** Must be one of `conversationIds`; omit only when the resulting set is empty. */
+  primaryConversationId?: string;
 }
 
 // ─── Messages / Tasks / Artifacts ────────────────────────────────────────────
@@ -499,7 +499,7 @@ export type AgentExecutionDeltaEvent =
   | (Extract<AgentEvent, { type: "text" }> & { executionId?: string })
   | (Extract<AgentEvent, { type: "reasoning" }> & { executionId?: string });
 
-export interface ThinkingEntryDto {
+export interface RunOutputDto {
   id: string;
   threadId: string;
   executionId: string;
@@ -514,12 +514,12 @@ export interface ThinkingEntryDto {
 
 /**
  * GET /api/threads/:id — the full thread view. Chat contains only explicit
- * communications; Thinking contains execution-scoped ordinary output.
+ * communications; Work log contains execution-scoped ordinary output.
  */
 export interface ThreadDetailDto {
   thread: ThreadDto;
   messages: MessageDto[];
-  thinking: ThinkingEntryDto[];
+  runOutput: RunOutputDto[];
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];
   tasks: TaskDto[];
@@ -535,13 +535,13 @@ export interface SendMessageRequest {
   attachmentIds?: string[];
   model?: string;
   effort?: string;
-  /** Set by a master-chat client when this turn originated in that room. */
+  /** Set by a conversation client when this turn originated in that room. */
   sourceChannel?: "main";
-  /** A plain Master Chat request is shared context while still starting this agent. */
+  /** A plain Conversation request is shared context while still starting this agent. */
   shareWithOrganization?: boolean;
   replyToMessageId?: string;
   /** Membership used for this main-chat turn; omitted by direct/legacy callers. */
-  sourceMasterChatId?: string;
+  sourceConversationId?: string;
   /**
    * How a direct message should be delivered if this agent has an active turn.
    * Steering is the interactive default; queueing is always an explicit user choice.
@@ -685,7 +685,7 @@ export interface AgentHealthDto {
 }
 
 export interface AgentHealthProjectionDto {
-  scope: { type: "project" | "master_chat"; id: string };
+  scope: { type: "project" | "conversation"; id: string };
   generatedAt: string;
   agents: AgentHealthDto[];
 }

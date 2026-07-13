@@ -57,7 +57,7 @@ describe("projectEvent — routing (SPEC §5)", () => {
   it("reasoning → NOT a Chat message (events index only; keeps Chat clean)", () => {
     const { ops } = projectEvent(T, initProjectionState("codex"), stored(3, {
       type: "reasoning",
-      delta: "thinking…",
+      delta: "runOutput…",
     }));
     expect(kinds(ops)).toEqual(["insert_event"]);
     expect(ops.some((o) => o.kind === "insert_message")).toBe(false);

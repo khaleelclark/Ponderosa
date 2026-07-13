@@ -22,7 +22,7 @@ export interface TokenUsage {
 /**
  * The normalized agent event union — SPEC §5, verbatim in shape.
  *
- * Server routing (SPEC §5): `text`/`reasoning` → execution-scoped Thinking;
+ * Server routing (SPEC §5): `text`/`reasoning` → execution-scoped Work log;
  * `command`/`file_change`/`test_result` → Tasks & Artifacts; `session` → the
  * thread's active session id. Runtime output never implies communication scope.
  * This union is the single contract between engines and everything downstream;
@@ -30,8 +30,8 @@ export interface TokenUsage {
  */
 export type AgentEvent =
   | { type: "session"; sessionId: string } // persist for resume
-  | { type: "text"; delta: string } // ordinary response delta → Thinking
-  | { type: "reasoning"; delta: string } // transient reasoning → Thinking
+  | { type: "text"; delta: string } // ordinary response delta → Work log
+  | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError?: boolean }
   | { type: "command"; command: string; cwd: string } // → Task/Artifact

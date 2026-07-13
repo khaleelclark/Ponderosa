@@ -3,22 +3,22 @@ import type {
   CommunicationDocumentContentDto,
   AgentHealthProjectionDto,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
-  CollaborationChatDetailDto,
+  CollaborationViewDto,
   CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
   CreateDirectReplyRequest,
   CreateMultiAgentDirectMessageRequest,
-  CreateMasterChatMessageRequest,
-  CreateMasterChatRequest,
+  CreateConversationMessageRequest,
+  CreateConversationRequest,
   CreateUserReactionRequest,
   CreateUserReactionResponse,
   CreateProjectRequest,
   CreateThreadRequest,
-  MasterChatDetailDto,
-  MasterChatDto,
-  UpdateMasterChatRequest,
+  ConversationDetailDto,
+  ConversationDto,
+  UpdateConversationRequest,
   UpdateThreadRequest,
-  UpdateThreadMasterChatMembershipsRequest,
+  UpdateThreadConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   EngineDto,
   DirectReplyResponse,
@@ -74,16 +74,16 @@ export interface PonderosaApi {
   updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto>;
   deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
-  listMasterChats(projectId: string): Promise<MasterChatDto[]>;
-  createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
-  getMasterChat(masterChatId: string): Promise<MasterChatDetailDto>;
-  getCollaborationChat(masterChatId: string): Promise<CollaborationChatDetailDto>;
-  updateMasterChat(masterChatId: string, patch: UpdateMasterChatRequest): Promise<MasterChatDto>;
-  deleteMasterChat(masterChatId: string): Promise<void>;
-  sendMasterChatMessage(masterChatId: string, request: CreateMasterChatMessageRequest): Promise<void>;
-  sendCollaborationMessage(masterChatId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
-  sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
-  sendMultiAgentDirectMessage(masterChatId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
+  listConversations(projectId: string): Promise<ConversationDto[]>;
+  createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto>;
+  getConversation(conversationId: string): Promise<ConversationDetailDto>;
+  getCollaborationView(conversationId: string): Promise<CollaborationViewDto>;
+  updateConversation(conversationId: string, patch: UpdateConversationRequest): Promise<ConversationDto>;
+  deleteConversation(conversationId: string): Promise<void>;
+  sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void>;
+  sendCollaborationMessage(conversationId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
+  sendDirectReply(conversationId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
+  sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
   sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;
   listThreads(projectId: string): Promise<ThreadDto[]>;
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]>;
@@ -91,10 +91,10 @@ export interface PonderosaApi {
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto>;
   deleteAgentPreset(id: string): Promise<void>;
   createThread(projectId: string, request: CreateThreadRequest): Promise<ThreadDto>;
-  /** User-facing wrapper around createThread that spawns an agent, optionally under a master chat. */
-  createAgent(projectId: string, masterChatId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
+  /** User-facing wrapper around createThread that spawns an agent, optionally under a conversation. */
+  createAgent(projectId: string, conversationId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
   updateThread(threadId: string, patch: UpdateThreadRequest): Promise<ThreadDto>;
-  updateThreadMasterChatMemberships(threadId: string, request: UpdateThreadMasterChatMembershipsRequest): Promise<ThreadDto>;
+  updateThreadConversationMemberships(threadId: string, request: UpdateThreadConversationMembershipsRequest): Promise<ThreadDto>;
   updateAgentOrganization(threadId: string, request: UpdateAgentOrganizationRequest): Promise<ThreadDto>;
   deleteThread(threadId: string): Promise<void>;
   getThread(threadId: string): Promise<ThreadDetailDto>;

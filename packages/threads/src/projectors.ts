@@ -5,9 +5,9 @@
 //
 // Routing (SPEC §5, AGENTS.md invariant 3 — Chat is human-facing only):
 //   user_message → messages (role user)            ← Chat
-//   text         → events index ONLY                 ← transient Thinking detail
-//   agent_output → events index ONLY                 ← durable Thinking response
-//   reasoning    → events index ONLY (NOT Chat)     ← transient Thinking detail
+//   text         → events index ONLY                 ← transient Work log detail
+//   agent_output → events index ONLY                 ← durable Work log response
+//   reasoning    → events index ONLY (NOT Chat)     ← transient Work log detail
 //   command      → Tasks (timeline) + task lifecycle
 //   file_change  → Tasks + Artifacts (a diff artifact)
 //   test_result  → Tasks + Artifacts (a test_report artifact)

@@ -151,11 +151,11 @@ describe("enforced execution leases", () => {
 
   it("requeues a claimed collaboration delivery and resumes FIFO dispatch after expiry", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
     const app = server();
     const queued = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "queued follow-up", recipientAgentIds: [thread.id] },
     });
     expect(queued.statusCode).toBe(200);
@@ -175,11 +175,11 @@ describe("enforced execution leases", () => {
   it("bounds repeated lease-expired recipient turns using the durable turn-attempt policy", async () => {
     adapter.hangRuns = 2;
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
     const app = server();
     const queued = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "bounded expiry", recipientAgentIds: [thread.id] },
     });
     const messageId = queued.json<{ message: { id: string } }>().message.id;

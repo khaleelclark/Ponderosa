@@ -20,7 +20,7 @@ import type { CodexMapContext } from "./events.js";
 interface RawBlock {
   type?: string;
   text?: string;
-  thinking?: string;
+  runOutput?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -135,9 +135,9 @@ function mapAssistant(message: RawMessage | undefined, ctx: CodexMapContext): Ag
       case "text":
         if (b.text && b.text.trim() !== "") out.push({ type: "text", delta: b.text });
         break;
-      case "thinking":
-        if (b.thinking && b.thinking.trim() !== "")
-          out.push({ type: "reasoning", delta: b.thinking });
+      case "runOutput":
+        if (b.runOutput && b.runOutput.trim() !== "")
+          out.push({ type: "reasoning", delta: b.runOutput });
         break;
       case "tool_use": {
         const name = b.name ?? "";

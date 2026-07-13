@@ -1,15 +1,15 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import { MasterChatMessage } from "../src/components/MasterChatView";
+import { ConversationMessage } from "../src/components/ConversationView";
 import { ChatPane } from "../src/components/panes";
 
-describe("Master Chat #tags", () => {
+describe("Conversation #tags", () => {
   it("links agent tags while styling reserved and unknown tags without navigation", () => {
-    const html = renderToStaticMarkup(<MasterChatMessage
+    const html = renderToStaticMarkup(<ConversationMessage
       message={{
         id: "tagged",
-        masterChatId: "room",
+        conversationId: "room",
         role: "user",
         text: "#Cabrillo hello #user #broadcast #unknown `#Olympic` [#Denali](https://example.com)",
         createdAt: "2026-07-12T00:00:00.000Z",
@@ -32,12 +32,12 @@ describe("Master Chat #tags", () => {
     expect(html).toContain('href="https://example.com"');
   });
 
-  it("opens Direct Agent Chat for a recognized agent tag", () => {
+  it("opens Agent chat for a recognized agent tag", () => {
     const onOpenAgent = vi.fn();
-    const view = create(<MasterChatMessage
+    const view = create(<ConversationMessage
       message={{
         id: "tagged",
-        masterChatId: "room",
+        conversationId: "room",
         role: "assistant",
         text: "Ask #Cabrillo",
         createdAt: "2026-07-12T00:00:00.000Z",
@@ -58,7 +58,7 @@ describe("Master Chat #tags", () => {
     view.unmount();
   });
 
-  it("uses the same agent-tag navigation in Direct Agent Chat", () => {
+  it("uses the same agent-tag navigation in Agent chat", () => {
     const onOpenAgent = vi.fn();
     const view = create(<ChatPane
       messages={[{

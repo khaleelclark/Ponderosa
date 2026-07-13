@@ -5,7 +5,7 @@ import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgent, findMe
 const thread = (title: string): ThreadDto => ({
   id: title,
   projectId: "project",
-  masterChatId: "master",
+  conversationId: "master",
   title,
   activeEngine: "codex",
   state: {},

@@ -63,8 +63,8 @@ export function agentDescendants(agentId: string, agents: ThreadDto[]): ThreadDt
   return descendants;
 }
 
-export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {
-  return agent.masterChatIds.includes(masterChatId);
+export function agentBelongsToConversation(agent: ThreadDto, conversationId: string): boolean {
+  return agent.conversationIds.includes(conversationId);
 }
 
 export type AgentStatus = AgentLifecycleStatus;

@@ -6,7 +6,7 @@ import { projectAgentHealth } from "../src/agent-health.js";
 const t0 = "2026-07-12T00:00:00.000Z";
 const t1 = "2026-07-12T00:01:00.000Z";
 const thread = (id: string): ThreadDto => ({
-  id, projectId: "project", masterChatId: "master", masterChatIds: ["master"],
+  id, projectId: "project", conversationId: "master", conversationIds: ["master"],
   title: id, activeEngine: "codex", state: {}, createdAt: t0, updatedAt: t0, archived: false,
 });
 const event = (value: StoredLogEvent["event"], ts = t1): StoredLogEvent => ({ seq: 1, ts, event: value });
@@ -19,7 +19,7 @@ function project(options: {
   events?: Record<string, StoredLogEvent[]>;
 } = {}) {
   return projectAgentHealth({
-    scope: { type: "master_chat", id: "master" },
+    scope: { type: "conversation", id: "master" },
     threads: options.threads ?? [thread("agent")],
     activeRuns: options.active ?? new Map(),
     compactingAgents: options.compacting ?? new Map(),

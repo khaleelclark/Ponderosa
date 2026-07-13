@@ -4,7 +4,7 @@ import { agentStatusLabel, deriveAgentStatus, orderedAgentOrganization } from ".
 import { eligibleOrganizationParents } from "../src/components/AgentDetail";
 
 const organizationAgent = (id: string, title: string, parent?: string): ThreadDto => ({
-  id, title, projectId: "project", masterChatIds: [], activeEngine: "codex", state: {},
+  id, title, projectId: "project", conversationIds: [], activeEngine: "codex", state: {},
   createdAt: "2026-07-12T00:00:00.000Z", updatedAt: "2026-07-12T00:00:00.000Z", archived: false,
   ...(parent ? { managerAgentId: parent } : {}),
 });

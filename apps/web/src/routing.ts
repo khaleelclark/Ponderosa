@@ -1,7 +1,7 @@
 // Lightweight URL-driven navigation (no router dependency). Durable URLs let a
 // refresh or browser back/forward restore the exact project + selection:
 //
-//   /projects/:projectId/master-chats/:masterChatId
+//   /projects/:projectId/conversations/:conversationId
 //   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId
 //
@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 export type Route =
   | { kind: "home" }
   | { kind: "project"; projectId: string }
-  | { kind: "master-chat"; projectId: string; masterChatId: string }
+  | { kind: "conversation"; projectId: string; conversationId: string }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string };
 
@@ -25,8 +25,8 @@ export function parseRoute(pathname: string): Route {
     return { kind: "home" };
   }
   const projectId = decodeURIComponent(parts[1]);
-  if (parts[2] === "master-chats" && parts[3]) {
-    return { kind: "master-chat", projectId, masterChatId: decodeURIComponent(parts[3]) };
+  if (parts[2] === "conversations" && parts[3]) {
+    return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]) };
   }
   if (parts[2] === "agents" && parts[3]) {
     return { kind: "agent", projectId, agentId: decodeURIComponent(parts[3]) };
@@ -41,8 +41,8 @@ export function routeToPath(route: Route): string {
   switch (route.kind) {
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
-    case "master-chat":
-      return `/projects/${encodeURIComponent(route.projectId)}/master-chats/${encodeURIComponent(route.masterChatId)}`;
+    case "conversation":
+      return `/projects/${encodeURIComponent(route.projectId)}/conversations/${encodeURIComponent(route.conversationId)}`;
     case "agents":
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
     case "agent":

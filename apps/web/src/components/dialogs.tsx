@@ -14,12 +14,12 @@ import {
   TextField,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentPresetDto, EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
+import type { AgentPresetDto, EngineDto, ConversationDto, ThreadDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 
 const UNSET = "";
 
-export interface CreateMasterChatInput {
+export interface CreateConversationInput {
   title: string;
   defaultEngine?: string;
   defaultModel?: string;
@@ -54,11 +54,11 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
 }
 
 /**
- * Master chats are model-agnostic control rooms: an optional default engine just
+ * Conversations are model-agnostic control rooms: an optional default engine just
  * prefills the agents spawned from here. The user can pick any engine per agent
  * and change it any time.
  */
-export function CreateMasterChatDialog({
+export function CreateConversationDialog({
   open,
   engines,
   pending,
@@ -71,7 +71,7 @@ export function CreateMasterChatDialog({
   pending: boolean;
   error?: string;
   onClose(): void;
-  onCreate(input: CreateMasterChatInput): void;
+  onCreate(input: CreateConversationInput): void;
 }): JSX.Element {
   const [title, setTitle] = useState("");
   const [engine, setEngine] = useState(UNSET);
@@ -85,7 +85,7 @@ export function CreateMasterChatDialog({
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>New Master Chat</DialogTitle>
+      <DialogTitle>New Conversation</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           <TextField
@@ -136,7 +136,7 @@ export interface CreateAgentInput {
   engine: string;
   model?: string;
   effort?: string;
-  masterChatId?: string;
+  conversationId?: string;
   presetId?: string;
   managerAgentId?: string;
   initialMessage?: string;
@@ -151,7 +151,7 @@ export function createAgentInputFromForm(input: {
   engine: string;
   model: string;
   effort: string;
-  masterChatId: string;
+  conversationId: string;
   presetId: string;
   managerAgentId: string;
   initialMessage: string;
@@ -161,7 +161,7 @@ export function createAgentInputFromForm(input: {
     engine: input.engine,
     model: input.model || undefined,
     effort: input.effort || undefined,
-    masterChatId: input.masterChatId || undefined,
+    conversationId: input.conversationId || undefined,
     presetId: input.presetId || undefined,
     managerAgentId: input.managerAgentId || undefined,
     initialMessage: input.initialMessage.trim() || undefined,
@@ -169,17 +169,17 @@ export function createAgentInputFromForm(input: {
 }
 
 /**
- * Spawns an agent (thread). From a master chat, `fixedMasterChatId` locks the
+ * Spawns an agent (thread). From a conversation, `fixedConversationId` locks the
  * manager and prefills defaults; from the Agents tab, the user may optionally
- * assign it to a master chat.
+ * assign it to a conversation.
  */
 export function CreateAgentDialog({
   open,
   engines,
-  masterChats,
+  conversations,
   presets,
   agents,
-  fixedMasterChatId,
+  fixedConversationId,
   defaultEngine,
   defaultModel,
   defaultEffort,
@@ -192,10 +192,10 @@ export function CreateAgentDialog({
 }: {
   open: boolean;
   engines: EngineDto[];
-  masterChats: MasterChatDto[];
+  conversations: ConversationDto[];
   presets: AgentPresetDto[];
   agents: ThreadDto[];
-  fixedMasterChatId?: string;
+  fixedConversationId?: string;
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
@@ -211,7 +211,7 @@ export function CreateAgentDialog({
   const [engine, setEngine] = useState(UNSET);
   const [model, setModel] = useState(UNSET);
   const [effort, setEffort] = useState(UNSET);
-  const [masterChatId, setMasterChatId] = useState(UNSET);
+  const [conversationId, setConversationId] = useState(UNSET);
   const [presetId, setPresetId] = useState(UNSET);
   const [managerAgentId, setManagerAgentId] = useState(UNSET);
   const [initialMessage, setInitialMessage] = useState("");
@@ -222,12 +222,12 @@ export function CreateAgentDialog({
       setEngine(defaultEngine ?? engines.find((candidate) => candidate.authenticated)?.id ?? engines[0]?.id ?? UNSET);
       setModel(defaultModel ?? UNSET);
       setEffort(defaultEffort ?? UNSET);
-      setMasterChatId(fixedMasterChatId ?? UNSET);
+      setConversationId(fixedConversationId ?? UNSET);
       setPresetId(UNSET);
       setManagerAgentId(defaultManagerAgentId ?? UNSET);
       setInitialMessage("");
     }
-  }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, defaultManagerAgentId, fixedMasterChatId, engines]);
+  }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, defaultManagerAgentId, fixedConversationId, engines]);
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
   const models = activeEngine?.models ?? [];
@@ -311,17 +311,17 @@ export function CreateAgentDialog({
               </Select>
             </FormControl>
           ) : null}
-          {!fixedMasterChatId ? (
+          {!fixedConversationId ? (
             <FormControl fullWidth size="small">
               <InputLabel id="agent-master-label">Master chat (optional)</InputLabel>
               <Select
                 labelId="agent-master-label"
                 label="Master chat (optional)"
-                value={masterChatId}
-                onChange={(event: SelectChangeEvent) => setMasterChatId(event.target.value)}
+                value={conversationId}
+                onChange={(event: SelectChangeEvent) => setConversationId(event.target.value)}
               >
                 <MenuItem value={UNSET}>Unassigned</MenuItem>
-                {masterChats.map((master) => (
+                {conversations.map((master) => (
                   <MenuItem key={master.id} value={master.id}>
                     {master.title}
                   </MenuItem>
@@ -366,7 +366,7 @@ export function CreateAgentDialog({
               engine,
               model,
               effort,
-              masterChatId: fixedMasterChatId ?? masterChatId,
+              conversationId: fixedConversationId ?? conversationId,
               presetId,
               managerAgentId,
               initialMessage,

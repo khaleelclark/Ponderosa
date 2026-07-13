@@ -4,9 +4,9 @@ import type {
   ArtifactContentDto,
   ArtifactDto,
   EngineDto,
-  MasterChatDto,
-  MasterChatMessageDto,
-  CollaborationChatDetailDto,
+  ConversationDto,
+  ConversationMessageDto,
+  CollaborationViewDto,
   MessageDto,
   ProjectDto,
   SendMessageRequest,
@@ -36,24 +36,24 @@ const projects: ProjectDto[] = [
   },
 ];
 
-const masterChats: MasterChatDto[] = [
+const conversations: ConversationDto[] = [
   { id: "master-release", projectId: "ponderosa", title: "Release coordination", createdAt: now, updatedAt: now, archived: false },
   { id: "master-mobile", projectId: "mobile", title: "Mobile quality", createdAt: now, updatedAt: now, archived: false },
 ];
 
-const masterMessages: Record<string, MasterChatMessageDto[]> = {
-  "master-release": [{ id: "master-note-1", masterChatId: "master-release", role: "user", text: "Keep this release stable and split work into focused agents.", createdAt: now }],
+const masterMessages: Record<string, ConversationMessageDto[]> = {
+  "master-release": [{ id: "master-note-1", conversationId: "master-release", role: "user", text: "Keep this release stable and split work into focused agents.", createdAt: now }],
   "master-mobile": [],
 };
-const collaborationMessages: Record<string, MasterChatMessageDto[]> = {};
+const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const agentPresets: AgentPresetDto[] = [];
 
 const threads: ThreadDto[] = [
   {
     id: "thread-auth",
     projectId: "ponderosa",
-    masterChatId: "master-release",
-    masterChatIds: ["master-release"],
+    conversationId: "master-release",
+    conversationIds: ["master-release"],
     title: "Chunk G web PWA",
     activeEngine: "codex",
     state: { branch: "feature/web-pwa", commit: "local" },
@@ -64,7 +64,7 @@ const threads: ThreadDto[] = [
   {
     id: "thread-sse",
     projectId: "ponderosa",
-    masterChatIds: [],
+    conversationIds: [],
     title: "SSE reconnect audit",
     activeEngine: "codex",
     state: { branch: "main", commit: "b7f4c2a" },
@@ -75,7 +75,7 @@ const threads: ThreadDto[] = [
   {
     id: "thread-login",
     projectId: "mobile",
-    masterChatIds: [],
+    conversationIds: [],
     title: "Phone login regression",
     activeEngine: "codex",
     state: { branch: "fix/login" },
@@ -335,57 +335,57 @@ export const mockApi: PonderosaApi = {
   createAgentPreset(projectId, request) { const now = new Date().toISOString(); const preset: AgentPresetDto = { id: `preset-${Date.now()}`, projectId, ...request, enabled: request.enabled ?? true, createdAt: now, updatedAt: now }; agentPresets.push(preset); return delay(preset); },
   updateAgentPreset(id, patch) { const preset = agentPresets.find((item) => item.id === id); if (!preset) return Promise.reject(new Error("Preset not found")); Object.assign(preset, patch, { updatedAt: new Date().toISOString() }); return delay(preset); },
   deleteAgentPreset(id) { const index = agentPresets.findIndex((item) => item.id === id); if (index >= 0) agentPresets.splice(index, 1); return delay(undefined); },
-  listMasterChats(projectId) {
-    return delay(masterChats.filter((master) => master.projectId === projectId && !master.archived));
+  listConversations(projectId) {
+    return delay(conversations.filter((master) => master.projectId === projectId && !master.archived));
   },
-  createMasterChat(projectId, request) {
-    const master: MasterChatDto = { id: "master-" + Date.now(), projectId, title: request.title, defaultEngine: request.defaultEngine, defaultModel: request.defaultModel, defaultEffort: request.defaultEffort, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archived: false };
-    masterChats.push(master);
+  createConversation(projectId, request) {
+    const master: ConversationDto = { id: "master-" + Date.now(), projectId, title: request.title, defaultEngine: request.defaultEngine, defaultModel: request.defaultModel, defaultEffort: request.defaultEffort, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archived: false };
+    conversations.push(master);
     masterMessages[master.id] = [];
     return delay(master);
   },
-  getMasterChat(masterChatId) {
-    const masterChat = masterChats.find((master) => master.id === masterChatId);
-    if (!masterChat) return Promise.reject(new Error("Master chat not found"));
-    return delay({ masterChat, messages: masterMessages[masterChatId] ?? [], threads: threads.filter((thread) => thread.masterChatId === masterChatId) });
+  getConversation(conversationId) {
+    const conversation = conversations.find((master) => master.id === conversationId);
+    if (!conversation) return Promise.reject(new Error("Master chat not found"));
+    return delay({ conversation, messages: masterMessages[conversationId] ?? [], threads: threads.filter((thread) => thread.conversationId === conversationId) });
   },
-  getCollaborationChat(masterChatId) {
-    const masterChat = masterChats.find((master) => master.id === masterChatId);
-    if (!masterChat) return Promise.reject(new Error("Master chat not found"));
-    const detail: CollaborationChatDetailDto = {
-      messages: collaborationMessages[masterChatId] ?? [],
-      threads: threads.filter((thread) => thread.masterChatId === masterChatId),
+  getCollaborationView(conversationId) {
+    const conversation = conversations.find((master) => master.id === conversationId);
+    if (!conversation) return Promise.reject(new Error("Master chat not found"));
+    const detail: CollaborationViewDto = {
+      messages: collaborationMessages[conversationId] ?? [],
+      threads: threads.filter((thread) => thread.conversationId === conversationId),
     };
     return delay(detail);
   },
-  updateMasterChat(masterChatId, patch) {
-    const master = masterChats.find((candidate) => candidate.id === masterChatId);
+  updateConversation(conversationId, patch) {
+    const master = conversations.find((candidate) => candidate.id === conversationId);
     if (!master) return Promise.reject(new Error("Master chat not found"));
     Object.assign(master, patch, { updatedAt: new Date().toISOString() });
     return delay(master);
   },
-  deleteMasterChat(masterChatId) {
-    const index = masterChats.findIndex((candidate) => candidate.id === masterChatId);
+  deleteConversation(conversationId) {
+    const index = conversations.findIndex((candidate) => candidate.id === conversationId);
     if (index === -1) return Promise.reject(new Error("Master chat not found"));
-    masterChats.splice(index, 1);
-    delete masterMessages[masterChatId];
+    conversations.splice(index, 1);
+    delete masterMessages[conversationId];
     for (const thread of threads) {
-      if (thread.masterChatId === masterChatId) thread.masterChatId = undefined;
+      if (thread.conversationId === conversationId) thread.conversationId = undefined;
     }
     return delay(undefined, 80);
   },
-  async sendMasterChatMessage(masterChatId, request) {
-    if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+  async sendConversationMessage(conversationId, request) {
+    if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
     const text = request.text.replace(/^#broadcast(?=$|\s)\s*/iu, "").trim();
-    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), { id: "master-message-" + Date.now(), masterChatId, role: request.role ?? "user", text: `#broadcast ${text}`, createdAt: new Date().toISOString() }];
+    masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), { id: "master-message-" + Date.now(), conversationId, role: request.role ?? "user", text: `#broadcast ${text}`, createdAt: new Date().toISOString() }];
     await delay(undefined, 80);
   },
-  async sendDirectReply(masterChatId, request) {
+  async sendDirectReply(conversationId, request) {
     const target = threads.find((thread) => thread.id === request.targetAuthorThreadId);
     if (!target) throw new Error("Agent not found");
-    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), {
+    masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), {
       id: request.idempotencyKey,
-      masterChatId,
+      conversationId,
       role: "user",
       text: `#${target.title.replace(/\s+/g, "-")} ${request.text}`,
       replyTo: { messageId: request.replyToMessageId, text: "", role: "assistant", authorThreadId: target.id },
@@ -393,11 +393,11 @@ export const mockApi: PonderosaApi = {
     }];
     return { messageId: request.idempotencyKey, targetAuthorThreadId: request.targetAuthorThreadId, replayed: false, queued: false };
   },
-  async sendMultiAgentDirectMessage(masterChatId, request) {
-    if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
-    masterMessages[masterChatId] = [...(masterMessages[masterChatId] ?? []), {
+  async sendMultiAgentDirectMessage(conversationId, request) {
+    if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
+    masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), {
       id: request.idempotencyKey,
-      masterChatId,
+      conversationId,
       role: "user",
       text: request.text,
       createdAt: new Date().toISOString(),
@@ -426,18 +426,18 @@ export const mockApi: PonderosaApi = {
     if (!targetAuthorThreadId) throw new Error("Agent-authored message not found");
     return { replayed: false, queued: false, targetAuthorThreadId, reactions: [reaction] };
   },
-  async sendCollaborationMessage(masterChatId, request) {
-    if (!masterChats.some((master) => master.id === masterChatId)) throw new Error("Master chat not found");
+  async sendCollaborationMessage(conversationId, request) {
+    if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
     if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");
     const message = {
       id: "collaboration-message-" + Date.now(),
-      masterChatId,
+      conversationId,
       role: "user" as const,
       text: request.text,
       createdAt: new Date().toISOString(),
     };
-    collaborationMessages[masterChatId] = [
-      ...(collaborationMessages[masterChatId] ?? []),
+    collaborationMessages[conversationId] = [
+      ...(collaborationMessages[conversationId] ?? []),
       message,
     ];
     return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
@@ -449,8 +449,8 @@ export const mockApi: PonderosaApi = {
     const thread: ThreadDto = {
       id: `thread-${Date.now()}`,
       projectId,
-      masterChatId: request.masterChatId,
-      masterChatIds: request.masterChatId ? [request.masterChatId] : [],
+      conversationId: request.conversationId,
+      conversationIds: request.conversationId ? [request.conversationId] : [],
       title: request.title,
       activeEngine: request.engine,
       state: {},
@@ -466,17 +466,17 @@ export const mockApi: PonderosaApi = {
     threadSeq.set(thread.id, 0);
     return delay(thread);
   },
-  async createAgent(projectId, masterChatId, options) {
+  async createAgent(projectId, conversationId, options) {
     const thread = await this.createThread(projectId, {
       title: options.title,
       engine: options.engine as ThreadDto["activeEngine"],
-      masterChatId,
+      conversationId,
       model: options.model,
       effort: options.effort,
       managerAgentId: options.managerAgentId,
     });
     if (options.initialMessage) {
-      if (masterChatId) await this.sendMasterChatMessage(masterChatId, { text: options.initialMessage });
+      if (conversationId) await this.sendConversationMessage(conversationId, { text: options.initialMessage });
       await this.sendMessage(thread.id, {
         text: options.initialMessage,
         model: options.model,
@@ -493,11 +493,11 @@ export const mockApi: PonderosaApi = {
     thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
-  updateThreadMasterChatMemberships(threadId, membership) {
+  updateThreadConversationMemberships(threadId, membership) {
     const thread = threads.find((candidate) => candidate.id === threadId);
     if (!thread) return Promise.reject(new Error("Thread not found"));
-    thread.masterChatIds = [...membership.masterChatIds];
-    thread.masterChatId = membership.primaryMasterChatId;
+    thread.conversationIds = [...membership.conversationIds];
+    thread.conversationId = membership.primaryConversationId;
     thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
@@ -527,7 +527,7 @@ export const mockApi: PonderosaApi = {
     return delay({
       thread,
       messages: messages[threadId] ?? [],
-      thinking: [],
+      runOutput: [],
       activity: [],
       changedFiles: [],
       tasks: tasks[threadId] ?? [],

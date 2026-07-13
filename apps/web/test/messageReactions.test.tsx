@@ -1,12 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { EmojiReactionPicker, isSingleEmoji, userReactionMessage } from "../src/components/EmojiReactionPicker";
-import { MasterChatMessage } from "../src/components/MasterChatView";
+import { ConversationMessage } from "../src/components/ConversationView";
 
-const renderMessage = (authorThreadId?: string) => renderToStaticMarkup(<MasterChatMessage
+const renderMessage = (authorThreadId?: string) => renderToStaticMarkup(<ConversationMessage
   message={{
     id: "m1",
-    masterChatId: "room",
+    conversationId: "room",
     role: authorThreadId ? "assistant" : "user",
     text: "Result",
     createdAt: "2026-07-12T00:00:00.000Z",
@@ -35,9 +35,9 @@ describe("user emoji reactions", () => {
   });
 
   it("shows the user's emoji on the reacted-to message", () => {
-    const html = renderToStaticMarkup(<MasterChatMessage
+    const html = renderToStaticMarkup(<ConversationMessage
       message={{
-        id: "m1", communicationEventId: "communication-1", masterChatId: "room", role: "assistant",
+        id: "m1", communicationEventId: "communication-1", conversationId: "room", role: "assistant",
         text: "Result", createdAt: "2026-07-12T00:00:00.000Z", authorThreadId: "olympic",
         reactions: [{ emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] }],
       }}
