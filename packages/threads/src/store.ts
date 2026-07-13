@@ -412,10 +412,13 @@ export class ThreadStore {
 
   private communicationProjectionAllowed(
     projectId: string,
-    projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey">,
+    projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey" | "message">,
   ): boolean {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!event) throw new Error("communication projection source event not found");
+    // Deleted rooms are hard context boundaries. Their retained append-only
+    // records are historical storage only and may not materialize anywhere.
+    if (event.masterChatId && !this.getMasterChat(event.masterChatId)) return false;
     const roomKeyAllowed = event.masterChatId === projection.projectionKey && (() => {
       const room = this.getMasterChat(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
@@ -427,7 +430,16 @@ export class ThreadStore {
     if (projection.surface === "direct_agent_audit") {
       if (event.intent === "broadcast") {
         const thread = this.getThread(projection.projectionKey);
-        return Boolean(thread && thread.projectId === projectId && !thread.archived);
+        return Boolean(
+          thread && thread.projectId === projectId && !thread.archived &&
+          (
+            (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey) ||
+            // The responsible agent's original user turn is local input, not a
+            // passive room backfill. Passive copies are rendered with #broadcast.
+            (event.sender.kind === "user" && projection.message?.role === "user" &&
+              projection.message.renderedText === event.text)
+          ),
+        );
       }
       if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
       if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
@@ -509,7 +521,8 @@ export class ThreadStore {
 
   readCommunicationProjections(projectId: string): CommunicationProjection[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return [...this.projectionIndex(projectId).projections];
+    return this.projectionIndex(projectId).projections.filter((projection) =>
+      this.communicationProjectionAllowed(projectId, projection));
   }
 
   readProjectedCommunicationMessages(
@@ -519,7 +532,8 @@ export class ThreadStore {
   ): ProjectedCommunicationMessage[] {
     const events = this.communicationIndex(projectId).byId;
     return this.projectionIndex(projectId).projections
-      .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey && projection.message)
+      .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey &&
+        projection.message && this.communicationProjectionAllowed(projectId, projection))
       .flatMap((projection) => {
         const event = events.get(projection.eventId);
         const message = projection.message;
@@ -569,10 +583,13 @@ export class ThreadStore {
           ? stored.event.communicationEventId : undefined;
         const message = communicationMessageProjection(thread.id, stored);
         if (eventId && message && canonicalIds.has(eventId)) {
-          this.appendCommunicationProjection(projectId, {
+          const projection: CommunicationProjection = {
             eventId, surface: "direct_agent_audit", projectionKey: thread.id, projectedAt: stored.ts,
             message,
-          });
+          };
+          if (this.communicationProjectionAllowed(projectId, projection)) {
+            this.appendCommunicationProjection(projectId, projection);
+          }
         }
       }
     }
@@ -580,7 +597,8 @@ export class ThreadStore {
 
   /** Compare canonical events with legacy disk projections during shadow mode. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
-    const canonical = this.readCommunicationEvents(projectId);
+    const canonical = this.readCommunicationEvents(projectId).filter((event) =>
+      !event.masterChatId || Boolean(this.getMasterChat(event.masterChatId)));
     const canonicalIds = new Set(canonical.map((event) => event.eventId));
     const projections = this.readCommunicationProjections(projectId);
     const counts = new Map<string, number>();
