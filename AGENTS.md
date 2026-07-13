@@ -201,6 +201,10 @@ Ordinary runtime output → execution-scoped Work log
 - Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
+- Explicit user cancellation is terminal for the active Run and its claimed
+  delivery. It revokes runtime capabilities and must never requeue or respawn the
+  same delivery; later queued work remains eligible to run. Genuine runtime
+  failures may retain their separate bounded retry policy.
 - Activity and Changed Files are projections of canonical execution events.
   Review may layer read-only, current Git working-tree state over that provenance;
   it never rewrites the event log or attributes unscoped changes to an agent.

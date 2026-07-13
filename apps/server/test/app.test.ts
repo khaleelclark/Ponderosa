@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -479,6 +479,25 @@ describe("persistent engine steering", () => {
 
     expect(persistent.opened).toBe(1);
     await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await app.close();
+  });
+
+  it("closes an active persistent runtime and removes its ownership ledger when the agent is deleted", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Delete active runtime", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Ephemeral", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "keep running" } });
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
+    expect(deleted.statusCode).toBe(200);
+    expect(persistent.closed).toBe(1);
+    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
+      .toEqual({ cancelled: false });
     await app.close();
   });
 
@@ -2628,7 +2647,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("persists several active-turn tags, retries a cancelled delivery, and de-duplicates an agent retry", async () => {
+  it("preserves queued tags when an unrelated active turn is cancelled and de-duplicates an agent retry", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Async handoffs" });
@@ -2669,6 +2688,33 @@ describe("server chunk F", () => {
     expect(batchPrompt.indexOf("#Parent second completed result")).toBeLessThan(batchPrompt.indexOf("#Parent third completed result"));
     expect(store.getCollaborationViewDetail(master.id)?.messages.filter((message) => message.text === "#Parent first completed result")).toHaveLength(1);
     await cancelAndWait(app, child.id);
+    await app.close();
+  });
+
+  it("does not resurrect an active collaboration delivery after explicit user cancellation", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Cancel delivery", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Cancellation" });
+    const agent = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: master.id });
+    adapter.mode = "hang";
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${master.id}/collaboration/messages`,
+      payload: { text: "Stop this delivery", recipientAgentIds: [agent.id] },
+    });
+    expect(sent.statusCode).toBe(200);
+    await waitForSeedCount(1);
+
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
+      .toEqual({ cancelled: true });
+    await vi.waitFor(() => expect(adapter.abortedSeeds).toBe(1));
+    await sleep(20);
+    expect(adapter.seeds).toHaveLength(1);
+
+    const messageId = sent.json<{ message: { id: string } }>().message.id;
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, agent.id);
+    expect(delivery).toMatchObject({ status: "cancelled", failure: "cancelled by user", attempts: 1 });
     await app.close();
   });
 
@@ -3201,17 +3247,89 @@ describe("server chunk F", () => {
     expect(() => statSync(dataDir)).toThrow();
   });
 
-  it("rejects invalid agent mention relay depths", async () => {
+  it("allows collaboration beyond the legacy 12-handoff cap", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Long collaboration", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Long chain" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const priorTrail = Array.from({ length: 12 }, (_, index) =>
+      createHash("sha256").update(`prior-handoff-${index}`).digest("hex"));
+    let handoffStatus: number | undefined;
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "thirteenth useful handoff" },
+      });
+      handoffStatus = response.statusCode;
+    };
+
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/agents/${author.id}/messages`,
+      payload: { text: "continue the coordination", agentMentionDepth: 12, agentMentionTrail: priorTrail },
+    });
+    expect(started.statusCode).toBe(200);
+    await waitForRun(author.id);
+    expect(handoffStatus).toBe(200);
+
+    const message = store.getCollaborationViewDetail(master.id)?.messages
+      .find((item) => item.text === "#Reviewer thirteenth useful handoff");
+    expect(message).toBeDefined();
+    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(message!.id, reviewer.id);
+    expect(delivery).toMatchObject({ relayDepth: 13 });
+    expect(delivery?.mentionTrail).toHaveLength(13);
+    await app.close();
+  });
+
+  it("still blocks an exact repeated handoff inside the bounded replay window", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Replay protection", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Replay chain" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const renderedText = "#Reviewer repeat this handoff";
+    const fingerprint = createHash("sha256")
+      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
+      .digest("hex");
+    let replayResponse: { statusCode: number; body: string } | undefined;
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "repeat this handoff" },
+      });
+      replayResponse = { statusCode: response.statusCode, body: response.body };
+    };
+
+    await app.inject({
+      method: "POST",
+      url: `/api/agents/${author.id}/messages`,
+      payload: { text: "try the replay", agentMentionDepth: 1, agentMentionTrail: [fingerprint] },
+    });
+    await waitForRun(author.id);
+    expect(replayResponse?.statusCode).toBe(400);
+    expect(JSON.parse(replayResponse!.body)).toEqual({
+      error: "the same collaboration handoff already occurred in this delivery chain",
+    });
+    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
+    await app.close();
+  });
+
+  it("rejects invalid agent mention replay-window depths", async () => {
     const { app, agent } = await createProjectAndAgent();
 
-    for (const agentMentionDepth of [-1, 1.5, 13]) {
+    for (const agentMentionDepth of [-1, 1.5, 65]) {
       const response = await app.inject({
         method: "POST",
         url: `/api/agents/${agent.id}/messages`,
         payload: { text: "relay", agentMentionDepth },
       });
       expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ error: "agentMentionDepth must be an integer from 0 to 12" });
+      expect(response.json()).toEqual({ error: "agentMentionDepth must be an integer from 0 to 64" });
     }
 
     expect(adapter.seeds).toHaveLength(0);
