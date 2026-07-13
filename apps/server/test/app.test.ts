@@ -3363,6 +3363,62 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("splits a batch before disjoint replay lineages would exceed the bounded window", async () => {
+    const project = store.createProject({ label: "Bounded batch lineage", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Bounded batch chain" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const renderedText = "#Reviewer replay from the first full lineage";
+    const repeatedFingerprint = createHash("sha256")
+      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
+      .digest("hex");
+    const firstTrail = [
+      repeatedFingerprint,
+      ...Array.from({ length: 63 }, (_, index) =>
+        createHash("sha256").update(`first-full-lineage-${index}`).digest("hex")),
+    ];
+    const secondTrail = Array.from({ length: 64 }, (_, index) =>
+      createHash("sha256").update(`second-full-lineage-${index}`).digest("hex"));
+    const ledger = new CollaborationDeliveryStore(dataDir);
+    const first = ledger.queue({
+      conversationId: master.id, messageId: "full-batch-first", targetAgentId: author.id,
+      text: "first full delivery", relayDepth: 64, mentionTrail: firstTrail, kind: "tag", orderKey: "0001",
+    }).delivery;
+    const second = ledger.queue({
+      conversationId: master.id, messageId: "full-batch-second", targetAgentId: author.id,
+      text: "second full delivery", relayDepth: 64, mentionTrail: secondTrail, kind: "tag", orderKey: "0002",
+    }).delivery;
+    let replayResponse: { statusCode: number; body: string } | undefined;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: {
+          intent: "collaboration",
+          recipientAgentIds: [reviewer.id],
+          text: "replay from the first full lineage",
+        },
+      });
+      replayResponse = { statusCode: response.statusCode, body: response.body };
+    };
+
+    await app.ready();
+    await waitForRun(author.id, 2);
+    expect(replayResponse?.statusCode).toBe(400);
+    expect(JSON.parse(replayResponse!.body)).toEqual({
+      error: "the same collaboration handoff already occurred in this delivery chain",
+    });
+    expect(adapter.seeds[0]?.prompt).not.toContain("CollaborationDeliveryBatch");
+    expect(adapter.seeds.length + adapter.continues.length).toBe(2);
+    const completed = new CollaborationDeliveryStore(dataDir);
+    expect(completed.get(first.id)?.status).toBe("acknowledged");
+    expect(completed.get(second.id)?.status).toBe("acknowledged");
+    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
+    await app.close();
+  });
+
   it("rejects invalid agent mention replay-window depths", async () => {
     const { app, agent } = await createProjectAndAgent();
 

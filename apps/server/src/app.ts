@@ -290,7 +290,7 @@ function mergeMentionTrails(deliveries: CollaborationDelivery[]): string[] {
       merged.push(fingerprint);
     }
   }
-  return merged.slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+  return merged;
 }
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
@@ -1209,6 +1209,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const candidate of pending) {
       if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
       const proposed = [...batch, candidate];
+      // A batch is one causal turn. Never flatten away an earlier delivery's
+      // replay evidence just to fit the bounded lineage window; leave the
+      // candidate queued for its own subsequent turn instead.
+      if (mergeMentionTrails(proposed).length > MAX_AGENT_MENTION_REPLAY_WINDOW) break;
       const bytes = Buffer.byteLength(formatDeliveryBatch({ deliveries: proposed }), "utf8");
       if (bytes > COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes) break;
       batch.push(candidate);
