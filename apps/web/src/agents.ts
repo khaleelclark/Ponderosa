@@ -9,6 +9,11 @@ export interface AgentOrganizationRow {
   depth: number;
 }
 
+/** Keep deep hierarchy cues inside a fixed-width roster instead of widening it. */
+export function agentRosterIndent(depth: number): number {
+  return Math.min(Math.max(depth, 0), 3) * 2;
+}
+
 /** Stable parent-first roster order. Missing/cyclic parentage fails closed to top level. */
 export function orderedAgentOrganization(agents: AgentDto[]): AgentOrganizationRow[] {
   const active = agents.filter((agent) => !agent.archived);

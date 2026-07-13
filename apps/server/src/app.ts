@@ -94,6 +94,9 @@ export interface CreateServerOptions {
   /** Bound persistent runtime resources after a turn becomes idle. */
   runtimeSessionScheduling?: {
     idleTtlMs?: number;
+    /** Maximum number of completed runtimes kept warm across all agents. */
+    maxIdleSessions?: number;
+    now?: () => number;
     setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimer?: (timer: NodeJS.Timeout) => void;
   };
@@ -126,6 +129,8 @@ interface PersistentRuntime {
   iterator: AsyncIterator<AgentEvent>;
   /** Stable secrets injected once into the persistent engine process. */
   messageCapability: string;
+  /** Set only while the runtime is eligible for warm-pool eviction. */
+  idleSince?: number;
   idleTimer?: NodeJS.Timeout;
 }
 
@@ -876,13 +881,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const setDeliveryTimer = opts.deliveryScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const runtimeStallAfterMs = opts.runtimeEventFaults?.stallAfterMs ?? 30_000;
   const runtimeIdleTtlMs = opts.runtimeSessionScheduling?.idleTtlMs ?? 90_000;
+  const configuredMaxIdleSessions = Number.parseInt(process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS ?? "", 10);
+  const requestedMaxIdleSessions = opts.runtimeSessionScheduling?.maxIdleSessions ?? configuredMaxIdleSessions;
+  const runtimeMaxIdleSessions = Number.isInteger(requestedMaxIdleSessions) && requestedMaxIdleSessions >= 0
+    ? requestedMaxIdleSessions
+    : 8;
+  const runtimeSessionNow = opts.runtimeSessionScheduling?.now ?? Date.now;
   const setRuntimeIdleTimer = opts.runtimeSessionScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearRuntimeIdleTimer = opts.runtimeSessionScheduling?.clearTimer ?? clearTimeout;
 
   function cancelRuntimeIdleClose(runtime: PersistentRuntime | undefined): void {
-    if (!runtime?.idleTimer) return;
-    clearRuntimeIdleTimer(runtime.idleTimer);
-    runtime.idleTimer = undefined;
+    if (!runtime) return;
+    runtime.idleSince = undefined;
+    if (runtime.idleTimer) {
+      clearRuntimeIdleTimer(runtime.idleTimer);
+      runtime.idleTimer = undefined;
+    }
   }
 
   function removePersistentRuntime(agentId: string, runtime: PersistentRuntime): void {
@@ -891,14 +905,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     runtimeSessions.delete(agentId);
   }
 
+  function trimIdleRuntimeSessions(): void {
+    const idle = [...runtimeSessions.entries()]
+      .filter(([agentId, runtime]) => !activeRuns.has(agentId) && runtime.idleSince !== undefined)
+      .sort((left, right) => left[1].idleSince! - right[1].idleSince!);
+    for (const [agentId, runtime] of idle.slice(0, Math.max(0, idle.length - runtimeMaxIdleSessions))) {
+      removePersistentRuntime(agentId, runtime);
+      void runtime.session.close().catch(() => undefined);
+    }
+  }
+
   function scheduleRuntimeIdleClose(agentId: string, runtime: PersistentRuntime): void {
     cancelRuntimeIdleClose(runtime);
+    runtime.idleSince = runtimeSessionNow();
     runtime.idleTimer = setRuntimeIdleTimer(() => {
       if (closed || activeRuns.has(agentId) || runtimeSessions.get(agentId) !== runtime) return;
       removePersistentRuntime(agentId, runtime);
       void runtime.session.close().catch(() => undefined);
     }, runtimeIdleTtlMs);
     runtime.idleTimer.unref?.();
+    trimIdleRuntimeSessions();
   }
 
   const runFence = (agentId: string, run: ActiveRun): RunFence => ({ agentId, runId: run.runId, generation: run.generation });
