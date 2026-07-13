@@ -70,6 +70,8 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
+  /** Immutable source revision for deploy/runtime parity checks. */
+  buildRevision?: string;
   /** Host-local origin injected into runtime tools; agents run on this server host. */
   agentBaseUrl?: string;
   logger?: boolean;
@@ -1953,6 +1955,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     status: "ok",
     service: "ponderosa",
     version: "0.0.0",
+    revision: opts.buildRevision?.trim() || "development",
   }));
 
   app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {

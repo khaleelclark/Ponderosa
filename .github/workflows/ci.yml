@@ -67,7 +67,34 @@ jobs:
           cd "$DEPLOY_DIR"
           pnpm install --frozen-lockfile
           pnpm build
-          sudo -n /usr/bin/systemctl restart ponderosa.service
+
+          # The production daemon must run from the checkout that was just built.
+          # Keep the source revision in the process environment so health checks
+          # cannot accidentally succeed against an older process on the same port.
+          sudo -n /usr/bin/systemctl stop ponderosa.service
+          if [ -n "$(/usr/bin/ss -H -ltn 'sport = :8787')" ]; then
+            echo "Port 8787 is still owned after ponderosa.service stopped; refusing to validate an unmanaged process."
+            sudo -n /usr/bin/ss -ltnp 'sport = :8787' || true
+            exit 1
+          fi
+          sudo -n /usr/bin/install -d -m 0755 /etc/systemd/system/ponderosa.service.d
+          printf '[Service]\nWorkingDirectory=%s\nEnvironment=PONDEROSA_BUILD_SHA=%s\n' "$DEPLOY_DIR" "$DEPLOY_SHA" \
+            | sudo -n /usr/bin/tee /etc/systemd/system/ponderosa.service.d/20-production-checkout.conf >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start ponderosa.service
 
       - name: Wait for the health check
-        run: curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 2 http://127.0.0.1:8787/api/health
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          sudo -n /usr/bin/systemctl is-active --quiet ponderosa.service
+          HEALTH_JSON="$(curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 2 http://127.0.0.1:8787/api/health)"
+          HEALTH_JSON="$HEALTH_JSON" node -e '
+            const health = JSON.parse(process.env.HEALTH_JSON);
+            if (health.status !== "ok") throw new Error(`unexpected health status: ${health.status}`);
+            if (health.revision !== process.env.DEPLOY_SHA) {
+              throw new Error(`stale Ponderosa daemon: expected ${process.env.DEPLOY_SHA}, received ${health.revision ?? "no revision"}`);
+            }
+            process.stdout.write(`${JSON.stringify(health)}\n`);
+          '

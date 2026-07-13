@@ -648,6 +648,8 @@ export interface HealthDto {
   status: "ok";
   service: "ponderosa";
   version: string;
+  /** Exact deployed source revision captured when this daemon started. */
+  revision: string;
 }
 
 /** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
