@@ -75,4 +75,21 @@ describe("individual chat sender identity", () => {
     expect(html.indexOf(">You</div>")).toBeGreaterThan(html.indexOf('data-message-bubble="true"'));
     expect(html.indexOf(">You</div>")).toBeLessThan(html.indexOf("Manager-authored message"));
   });
+
+  it("renders an inbound collaboration with the sending agent's identity", () => {
+    const report = {
+      ...message("2", "assistant", "Private finding for the manager."),
+      authorThreadId: "child-agent",
+    } satisfies MessageDto;
+    const html = renderToStaticMarkup(createElement(ChatPane, {
+      agentName: "Castle Clinton",
+      agentNameForId: (agentId: string) => agentId === "child-agent" ? "Status QA Liaison" : undefined,
+      messages: [report],
+    }));
+
+    expect(html).toContain('aria-label="Status QA Liaison message"');
+    expect(html).toContain(">Status QA Liaison</div>");
+    expect(html).not.toContain(">You</div>");
+    expect(html).not.toContain(">Castle Clinton</div>");
+  });
 });

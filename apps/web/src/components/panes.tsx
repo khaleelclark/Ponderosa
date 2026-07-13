@@ -488,6 +488,7 @@ export function UserMessageLabel(): JSX.Element {
 export function ChatPane({
   messages,
   agentName = "Agent",
+  agentNameForId,
   agentIdForHandle,
   onOpenAgent,
   onReact,
@@ -496,6 +497,7 @@ export function ChatPane({
 }: {
   messages: MessageDto[];
   agentName?: string;
+  agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
@@ -543,7 +545,10 @@ export function ChatPane({
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
       {chatMessages.map((message) => {
-        const senderLabel = individualChatSenderLabel(message.role, agentName);
+        const visibleAgentName = message.authorThreadId
+          ? agentNameForId?.(message.authorThreadId) ?? "Agent"
+          : agentName;
+        const senderLabel = individualChatSenderLabel(message.role, visibleAgentName);
         return (
         <Box
           key={message.id}
@@ -603,7 +608,7 @@ export function ChatPane({
             <MessageActionsAndTimestamp
               value={message.createdAt}
               actions={message.role === "assistant" || onReply ? <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
-                {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={agentName} onReact={(emoji) => onReact(message, emoji)} /> : null}
+                {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
                 {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit" }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
               </Stack> : undefined}
             />

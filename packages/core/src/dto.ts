@@ -375,6 +375,8 @@ export interface MessageDto {
   role: "user" | "assistant";
   text: string;
   createdAt: string;
+  /** Stable agent author for explicit agent communication shown in this audit. */
+  authorThreadId?: string;
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];
