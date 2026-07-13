@@ -114,6 +114,8 @@ export type RuntimeSteerResult =
 export interface RuntimeSession {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
+  /** True while the persistent engine transport is still owned and running. */
+  isAlive(): boolean;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;

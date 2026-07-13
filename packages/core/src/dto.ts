@@ -678,7 +678,8 @@ export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "work_item_waiting_approval" | "queued_delivery"
   | "work_item_completed" | "turn_completed" | "runtime_error"
   | "session_rollover_scheduled" | "agent_cancelled"
-  | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled";
+  | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled"
+  | "manager_report_missing";
 
 export interface AgentHealthDto {
   /** Stable agent identity; titles and mention handles are presentation only. */
