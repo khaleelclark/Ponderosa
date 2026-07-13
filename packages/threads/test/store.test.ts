@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, collaborationChatMessagesPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
+import { artifactContentPath, collaborationChatMessagesPath, communicationEventsPath, masterChatMessagesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -477,6 +477,10 @@ describe("ThreadStore — append + projection", () => {
       sourceSeqStart: 3,
       sourceSeqEnd: 7,
     })]);
+    expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);
+    expect(detail.changedFiles).toEqual([expect.objectContaining({
+      path: "auth.ts", kind: "edit", lastSeq: 6, diff: "diff --git a/auth.ts b/auth.ts\n",
+    })]);
     // Tasks: one task, closed done by turn_done
     expect(detail.tasks).toHaveLength(1);
     expect(detail.tasks[0]!.status).toBe("done");
@@ -517,6 +521,27 @@ describe("ThreadStore — append + projection", () => {
       { executionId: "legacy-run-1", text: "first legacy response", completed: true },
       { executionId: "legacy-run-2", text: "second legacy response", completed: true },
     ]);
+  });
+
+  it("rebuilds chronological activity and per-file execution history after restart", () => {
+    const { threadId } = seedThread();
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-a" });
+    store.appendEvent(threadId, { type: "command", command: "pnpm test", cwd: "/repo" });
+    store.appendEvent(threadId, { type: "file_change", path: "src/a.ts", kind: "create", diff: "+first" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-a" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-b" });
+    store.appendEvent(threadId, { type: "test_result", passed: true, summary: "unit tests" });
+    store.appendEvent(threadId, { type: "file_change", path: "src/a.ts", kind: "edit", diff: "+second" });
+
+    store.close();
+    store = new ThreadStore(dir);
+    const detail = store.getThreadDetail(threadId)!;
+    expect(detail.activity.map(({ executionId, event }) => [executionId, event.type])).toEqual([
+      ["run-a", "command"], ["run-a", "file_change"], ["run-b", "test_result"], ["run-b", "file_change"],
+    ]);
+    expect(detail.changedFiles).toEqual([expect.objectContaining({
+      path: "src/a.ts", kind: "edit", diff: "+second", executionIds: ["run-a", "run-b"],
+    })]);
   });
 
   it("assigns monotonic per-thread seq and is append-only (readSince works)", () => {
@@ -731,6 +756,52 @@ describe("artifactContentPath", () => {
   });
 });
 
+describe("agent organizational hierarchy", () => {
+  it("persists mutable reporting lines canonically without allowing invalid parents or cycles", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex" });
+    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex" });
+    store.updateThread(archived.id, { archived: true });
+
+    expect(store.updateAgentOrganization(child.id, { parentAgentId: parent.id }))
+      .toMatchObject({ organizationalParentAgentId: parent.id });
+    expect(store.updateAgentOrganization(grandchild.id, { parentAgentId: child.id }))
+      .toMatchObject({ organizationalParentAgentId: child.id });
+    expect(() => store.updateAgentOrganization(parent.id, { parentAgentId: grandchild.id })).toThrow(/cycle/);
+    expect(() => store.updateAgentOrganization(parent.id, { parentAgentId: parent.id })).toThrow(/itself/);
+    expect(() => store.updateAgentOrganization(child.id, { parentAgentId: foreign.id })).toThrow(/same project/);
+    expect(() => store.updateAgentOrganization(child.id, { parentAgentId: archived.id })).toThrow(/active/);
+    expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(2);
+
+    store.rebuildProjections();
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBe(parent.id);
+    expect(store.getThread(grandchild.id)?.organizationalParentAgentId).toBe(child.id);
+
+    expect(store.updateAgentOrganization(child.id, { parentAgentId: null })?.organizationalParentAgentId).toBeUndefined();
+    expect(store.readAgentOrganizationEvents(project.id).at(-1)).toMatchObject({ agentId: child.id, parentAgentId: null });
+  });
+
+  it("promotes organizational children when a parent is archived or deleted", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    store.updateAgentOrganization(child.id, { parentAgentId: parent.id });
+    store.updateThread(parent.id, { archived: true });
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+
+    const replacement = store.createThread(project.id, { title: "Replacement", engine: "codex" });
+    store.updateAgentOrganization(child.id, { parentAgentId: replacement.id });
+    expect(store.deleteThread(replacement.id)).toBe(true);
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+    store.rebuildProjections();
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+  });
+});
+
 describe("agent presets", () => {
   it("seeds editable suggestions, persists CRUD canonically, and snapshots guidance at spawn", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
@@ -743,5 +814,38 @@ describe("agent presets", () => {
     store.rebuildProjections();
     expect(store.getAgentPreset(preset.id)).toBeUndefined();
     expect(store.getThread(thread.id)?.presetSnapshot?.name).toBe("Release");
+  });
+});
+
+describe("project lifecycle", () => {
+  it("renames canonically and rebuilds the renamed projection", () => {
+    const project = store.createProject({ label: "Before", hostPath: "/repo" });
+    expect(store.updateProject(project.id, { label: "After" })?.label).toBe("After");
+    expect(JSON.parse(readFileSync(projectJsonPath(dir, project.id), "utf8"))).toMatchObject({ label: "After", hostPath: "/repo" });
+    store.rebuildProjections();
+    expect(store.getProject(project.id)?.label).toBe("After");
+  });
+
+  it("permanently deletes one canonical project tree and all of its projections", () => {
+    const removed = store.createProject({ label: "Remove", hostPath: "/remove" });
+    const room = store.createMasterChat(removed.id, { title: "Room" });
+    const thread = store.createThread(removed.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    store.appendEvent(thread.id, { type: "user_message", text: "work" });
+    const retained = store.createProject({ label: "Keep", hostPath: "/keep" });
+    const retainedThread = store.createThread(retained.id, { title: "Keeper", engine: "codex" });
+
+    expect(store.deleteProject(removed.id)).toBe(true);
+    expect(existsSync(projectDir(dir, removed.id))).toBe(false);
+    expect(store.getProject(removed.id)).toBeUndefined();
+    for (const table of ["master_chats", "master_chat_messages", "threads", "messages", "tasks", "artifacts", "events"]) {
+      const projectRows = table === "master_chats" || table === "threads"
+        ? store.sqlite.prepare(`SELECT * FROM ${table} WHERE project_id = ?`).all(removed.id)
+        : [];
+      expect(projectRows).toEqual([]);
+    }
+    expect(store.getProject(retained.id)).toBeDefined();
+    expect(store.getThread(retainedThread.id)).toBeDefined();
+    store.rebuildProjections();
+    expect(store.getProject(removed.id)).toBeUndefined();
   });
 });

@@ -39,7 +39,27 @@ export type UpdateAgentPresetRequest = Partial<Omit<CreateAgentPresetRequest, "e
 /** POST /api/projects body. */
 export interface CreateProjectRequest {
   label: string;
+  /** Existing absolute host folder. Omit to use a new managed empty workspace. */
+  hostPath?: string;
+  /** Create a named empty folder below Ponderosa's managed workspace root. */
+  createFolderName?: string;
+}
+
+/** PATCH /api/projects/:id body. Project working folders are immutable after creation. */
+export interface UpdateProjectRequest {
+  label: string;
+}
+
+export interface ProjectFolderOptionDto {
   hostPath: string;
+  name: string;
+  source: "registered" | "managed";
+}
+
+/** GET /api/project-folders response. Never exposes arbitrary host directories. */
+export interface ProjectFolderOptionsDto {
+  managedRoot: string;
+  folders: ProjectFolderOptionDto[];
 }
 
 // ─── Master chats ────────────────────────────────────────────────────────────
@@ -218,6 +238,8 @@ export interface ThreadDto {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Mutable organizational reporting line; separate from immutable delegation provenance. */
+  organizationalParentAgentId?: string;
   /** Immutable-at-spawn preset provenance and guidance snapshot. */
   presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
 }
@@ -240,6 +262,21 @@ export interface CreateThreadRequest {
 export interface UpdateThreadRequest {
   title?: string;
   archived?: boolean;
+}
+
+/** PUT /api/threads/:id/organizational-parent body. Null promotes to top level. */
+export interface UpdateAgentOrganizationRequest {
+  parentAgentId: string | null;
+}
+
+/** Canonical append-only record for mutable agent organization. */
+export interface AgentOrganizationEvent {
+  eventId: string;
+  type: "organizational_parent_changed";
+  projectId: string;
+  agentId: string;
+  parentAgentId: string | null;
+  createdAt: string;
 }
 
 /** PUT /api/threads/:id/master-chat-memberships body. Replaces membership atomically. */
@@ -319,7 +356,32 @@ export interface TaskDto {
 }
 
 /** Kind of artifact (SPEC §2/§12): the "what changed". */
-export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log";
+export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document";
+
+export type AgentActivityEvent = Extract<AgentEvent, {
+  type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error";
+}>;
+
+/** Canonical, refresh-safe execution activity projected from the agent event log. */
+export interface AgentActivityDto {
+  id: string;
+  threadId: string;
+  executionId?: string;
+  seq: number;
+  createdAt: string;
+  event: AgentActivityEvent;
+}
+
+/** Latest state of a path touched by this agent, rebuilt from canonical file-change events. */
+export interface ChangedFileDto {
+  path: string;
+  kind: "create" | "edit" | "delete";
+  lastSeq: number;
+  lastChangedAt: string;
+  executionIds: string[];
+  /** Most recent engine-provided unified diff, when available. */
+  diff?: string;
+}
 
 /** An Artifacts-pane entry (SPEC §7 `artifacts`). Metadata only; content via :aid. */
 export interface ArtifactDto {
@@ -331,6 +393,10 @@ export interface ArtifactDto {
   path: string;
   summary?: string;
   createdAt: string;
+  /** Generated files are served through opaque, project-scoped URLs. */
+  mediaType?: "application/pdf";
+  previewUrl?: string;
+  downloadUrl?: string;
 }
 
 /** GET /api/threads/:id/artifacts/:aid — the artifact plus its rendered content. */
@@ -374,6 +440,8 @@ export interface ThreadDetailDto {
   thread: ThreadDto;
   messages: MessageDto[];
   thinking: ThinkingEntryDto[];
+  activity: AgentActivityDto[];
+  changedFiles: ChangedFileDto[];
   tasks: TaskDto[];
   artifacts: ArtifactDto[];
   state: ThreadState;
@@ -394,6 +462,11 @@ export interface SendMessageRequest {
   replyToMessageId?: string;
   /** Membership used for this main-chat turn; omitted by direct/legacy callers. */
   sourceMasterChatId?: string;
+  /**
+   * How a direct message should be delivered if this agent has an active turn.
+   * Steering is the interactive default; queueing is always an explicit user choice.
+   */
+  activeRunDelivery?: "steer" | "queue";
 }
 
 /** POST /api/threads/:id/messages response when a turn starts immediately. */
@@ -637,6 +710,12 @@ export interface AgentHealthDto {
   executionId?: string;
   leaseExpiresAt?: string;
   runtimeOwnership?: "running" | "stalled" | "cancelling" | "interrupted";
+  /** Present only while the server canonically owns an active execution. */
+  runtimeActivity?: {
+    state: "responding";
+    executionId: string;
+    startedAt: string;
+  };
 }
 
 export interface AgentHealthProjectionDto {

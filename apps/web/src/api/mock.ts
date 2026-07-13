@@ -296,12 +296,26 @@ export const mockApi: PonderosaApi = {
     const project: ProjectDto = {
       id: `project-${Date.now()}`,
       label: request.label,
-      hostPath: request.hostPath,
+      hostPath: request.hostPath ?? `/tmp/ponderosa-workspaces/${request.createFolderName ?? `project-${Date.now()}`}`,
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
     };
     projects.push(project);
     return delay(project);
+  },
+  getProjectFolders() {
+    return delay({ managedRoot: "/tmp/ponderosa-workspaces", folders: projects.map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const })) });
+  },
+  updateProject(projectId, patch) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) return Promise.reject(new Error("Project not found"));
+    project.label = patch.label;
+    return delay(project);
+  },
+  deleteProject(projectId) {
+    const index = projects.findIndex((item) => item.id === projectId);
+    if (index >= 0) projects.splice(index, 1);
+    return delay(undefined);
   },
   getAgentHealth(projectId) {
     const generatedAt = new Date().toISOString();
@@ -495,6 +509,13 @@ export const mockApi: PonderosaApi = {
     thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
+  updateAgentOrganization(threadId, organization) {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (!thread) return Promise.reject(new Error("Thread not found"));
+    thread.organizationalParentAgentId = organization.parentAgentId ?? undefined;
+    thread.updatedAt = new Date().toISOString();
+    return delay(thread);
+  },
   deleteThread(threadId) {
     const index = threads.findIndex((candidate) => candidate.id === threadId);
     if (index !== -1) threads.splice(index, 1);
@@ -515,6 +536,8 @@ export const mockApi: PonderosaApi = {
       thread,
       messages: messages[threadId] ?? [],
       thinking: [],
+      activity: [],
+      changedFiles: [],
       tasks: tasks[threadId] ?? [],
       artifacts: artifacts[threadId] ?? [],
       state: thread.state,

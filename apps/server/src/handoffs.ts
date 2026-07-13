@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { MessageReferenceDto } from "@ponderosa/core";
 
@@ -198,6 +198,34 @@ export class CollaborationDeliveryStore {
   getForMessageTarget(messageId: string, targetThreadId: string): CollaborationDelivery | undefined {
     const id = this.byMessageTarget.get(`${messageId}:${targetThreadId}`);
     return id ? this.deliveries.get(id) : undefined;
+  }
+
+  deleteThreads(threadIds: ReadonlySet<string>): void {
+    const rawRecords = readFileSync(this.file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record);
+    const removedMessageIds = new Set(rawRecords.flatMap((record) =>
+      (record.type === "delivery" || record.type === "replace") &&
+      (threadIds.has(record.delivery.targetThreadId) || (record.delivery.authorThreadId ? threadIds.has(record.delivery.authorThreadId) : false))
+        ? [record.delivery.messageId] : []));
+    for (const [id, delivery] of this.deliveries) {
+      if (threadIds.has(delivery.targetThreadId) || (delivery.authorThreadId ? threadIds.has(delivery.authorThreadId) : false)) {
+        this.deliveries.delete(id);
+      }
+    }
+    this.byMessageTarget.clear();
+    this.pendingByTarget.clear();
+    this.insertionOrder.clear();
+    this.nextInsertionOrder = 0;
+    for (const delivery of this.deliveries.values()) {
+      this.replaceInMemory(delivery);
+      this.byMessageTarget.set(`${delivery.messageId}:${delivery.targetThreadId}`, delivery.id);
+    }
+    for (const [key, messageId] of this.messageReceipts) if (removedMessageIds.has(messageId)) this.messageReceipts.delete(key);
+    const records = rawRecords.filter((record) => {
+      if (record.type === "reconciliation_boundary") return true;
+      if (record.type === "message_receipt") return !removedMessageIds.has(record.messageId);
+      return !threadIds.has(record.delivery.targetThreadId) && !(record.delivery.authorThreadId ? threadIds.has(record.delivery.authorThreadId) : false);
+    });
+    writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
   }
 
   markDelivered(id: string): CollaborationDelivery | undefined {

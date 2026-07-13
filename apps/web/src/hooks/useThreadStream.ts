@@ -1,4 +1,4 @@
-import type { AgentEvent, ArtifactDto, SseEventEnvelope, TaskDto, ThinkingEntryDto, ThreadDetailDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentEvent, ArtifactDto, ChangedFileDto, SseEventEnvelope, TaskDto, ThinkingEntryDto, ThreadDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -51,6 +51,36 @@ function projectedTaskUpdateId(threadId: string, taskId: string): string {
 
 export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope, detail: ThreadDetailDto): ThreadDetailDto {
   const { event, seq, ts } = envelope;
+
+  if (executionTypes.has(event.type)) {
+    const activity = detail.activity ?? [];
+    const id = `${threadId}:activity:${seq}`;
+    if (!activity.some((item) => item.id === id)) {
+      const entry: AgentActivityDto = {
+        id, threadId, seq, createdAt: ts,
+        event: event as AgentActivityDto["event"],
+      };
+      detail = { ...detail, activity: [...activity, entry].sort((a, b) => a.seq - b.seq) };
+    }
+    if (event.type === "file_change") {
+      const changedFiles = detail.changedFiles ?? [];
+      const previous = changedFiles.find((item) => item.path === event.path);
+      const changed: ChangedFileDto = {
+        path: event.path,
+        kind: event.kind,
+        lastSeq: seq,
+        lastChangedAt: ts,
+        executionIds: previous?.executionIds ?? [],
+        ...(event.diff ? { diff: event.diff } : {}),
+      };
+      detail = {
+        ...detail,
+        changedFiles: previous
+          ? changedFiles.map((item) => item.path === event.path ? changed : item)
+          : [...changedFiles, changed],
+      };
+    }
+  }
 
   if (event.type === "text" || event.type === "reasoning") {
     if (envelope.replayed) return detail;
@@ -134,13 +164,15 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
     ) {
       return detail;
     }
+    const isPdf = event.path.toLowerCase().endsWith(".pdf");
     const artifact: ArtifactDto = {
       id: `live-artifact-${seq}`,
       threadId,
-      kind: "diff",
+      kind: isPdf ? "document" : "diff",
       path: event.path,
       summary: `${event.kind} ${event.path}`,
       createdAt: ts,
+      ...(isPdf ? { mediaType: "application/pdf" as const } : {}),
     };
     return { ...detail, artifacts: [...artifacts, artifact] };
   }
@@ -229,6 +261,9 @@ export function useThreadStream(threadId: string | undefined): StreamState {
         if (envelope.event.type === "turn_done") {
           void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
           void queryClient.invalidateQueries({ queryKey: ["threads"] });
+        }
+        if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
+          void queryClient.invalidateQueries({ queryKey: ["agent-health"] });
         }
       },
     });

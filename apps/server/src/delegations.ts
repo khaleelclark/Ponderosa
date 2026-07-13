@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
   CancelSubagentResponse,
@@ -135,6 +135,26 @@ export class DelegationStore {
 
   all(): SubagentRunDto[] {
     return [...this.runs.values()].map(publicRun);
+  }
+
+  deleteProject(masterChatIds: ReadonlySet<string>, threadIds: ReadonlySet<string>): void {
+    const removedRunIds = new Set([...this.runs.values()]
+      .filter((run) => masterChatIds.has(run.masterChatId) || (run.parentThreadId ? threadIds.has(run.parentThreadId) : false) || (run.childThreadId ? threadIds.has(run.childThreadId) : false))
+      .map((run) => run.id));
+    for (const runId of removedRunIds) this.runs.delete(runId);
+    for (const [key, runId] of this.idempotency) if (removedRunIds.has(runId)) this.idempotency.delete(key);
+    for (const [key, response] of this.cancellations) if (removedRunIds.has(response.requestedRunId)) this.cancellations.delete(key);
+    const keptEvents = this.events.filter((event) => !masterChatIds.has(event.masterChatId));
+    this.events.length = 0;
+    this.events.push(...keptEvents);
+    const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as PersistedRecord)
+      .filter((record) => {
+        if (record.type === "event") return !masterChatIds.has(record.envelope.masterChatId);
+        if (record.type === "cancel") return !removedRunIds.has(record.response.requestedRunId);
+        return !removedRunIds.has(record.run.id);
+      });
+    writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 
   get(runId: string): SubagentRunDto | undefined {

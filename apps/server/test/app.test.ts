@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -214,6 +214,82 @@ async function waitForSeedCount(expected: number): Promise<void> {
   throw new Error(`timed out waiting for ${expected} seeded runs`);
 }
 
+describe("generated artifact endpoints", () => {
+  it("previews and downloads a canonical PDF only inside its owning project", async () => {
+    const { app, project, thread } = await createProjectAndThread();
+    const pdf = Buffer.from("%PDF-1.4\n% test\n");
+    const pdfPath = path.join(repoDir, "report.pdf");
+    writeFileSync(pdfPath, pdf);
+    store.appendEvent(thread.id, { type: "file_change", path: pdfPath, kind: "create" });
+    const artifact = store.getArtifacts(thread.id).find((item) => item.kind === "document")!;
+
+    expect(artifact).toMatchObject({ mediaType: "application/pdf", previewUrl: expect.any(String), downloadUrl: expect.any(String) });
+    const preview = await app.inject({ method: "GET", url: artifact.previewUrl! });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["content-type"]).toContain("application/pdf");
+    expect(preview.headers["content-disposition"]).toContain("inline");
+    expect(preview.rawPayload).toEqual(pdf);
+
+    const download = await app.inject({ method: "GET", url: artifact.downloadUrl! });
+    expect(download.statusCode).toBe(200);
+    expect(download.headers["content-disposition"]).toContain("attachment");
+    const foreign = artifact.previewUrl!.replace(`/projects/${project.id}/`, "/projects/not-the-owner/");
+    expect((await app.inject({ method: "GET", url: foreign })).statusCode).toBe(404);
+    await app.close();
+  });
+});
+
+describe("project lifecycle API", () => {
+  it("creates a safe managed workspace when working folder selection is omitted", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const response = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Optional folder" } });
+    expect(response.statusCode).toBe(200);
+    const project = response.json<{ id: string; hostPath: string }>();
+    expect(project.hostPath.startsWith(path.join(dataDir, "workspaces") + path.sep)).toBe(true);
+    expect(statSync(project.hostPath).isDirectory()).toBe(true);
+    await app.close();
+  });
+
+  it("lists only registered and managed folders and creates a named empty managed folder", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    store.createProject({ label: "Registered", hostPath: repoDir });
+    const outside = mkdtempSync(path.join(tmpdir(), "pond-unregistered-"));
+    const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Created", createFolderName: "fresh-work" } });
+    expect(created.statusCode).toBe(200);
+    const createdProject = created.json<{ hostPath: string }>();
+    expect(createdProject.hostPath).toBe(path.join(dataDir, "workspaces", "fresh-work"));
+    expect(readdirSync(createdProject.hostPath)).toEqual([]);
+    const choices = await app.inject({ method: "GET", url: "/api/project-folders" });
+    const paths = choices.json<{ folders: Array<{ hostPath: string }> }>().folders.map((folder) => folder.hostPath);
+    expect(paths).toContain(repoDir);
+    expect(paths).toContain(createdProject.hostPath);
+    expect(paths).not.toContain(outside);
+    const collision = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Collision", createFolderName: "fresh-work" } });
+    expect(collision.statusCode).toBe(409);
+    rmSync(outside, { recursive: true, force: true });
+    await app.close();
+  });
+
+  it("renames and permanently deletes canonical project data without deleting source files", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Before", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
+    store.appendEvent(thread.id, { type: "user_message", text: "canonical execution input" });
+    const renamed = await app.inject({ method: "PATCH", url: `/api/projects/${project.id}`, payload: { label: "After" } });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({ id: project.id, label: "After", hostPath: repoDir });
+    const deleted = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(deleted.statusCode).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getThread(thread.id)).toBeUndefined();
+    expect(existsSync(path.join(dataDir, "projects", project.id))).toBe(false);
+    expect(existsSync(path.join(repoDir, "README.md"))).toBe(true);
+    expect((await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}` })).statusCode).toBe(404);
+    await app.close();
+  });
+});
+
 describe("persistent engine steering", () => {
   it("steers an active agent immediately instead of adding a FIFO delivery", async () => {
     const steerable = new SteerableMockAdapter();
@@ -245,6 +321,34 @@ describe("persistent engine steering", () => {
       expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "steered result", completed: true }),
     ]);
     expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
+    await app.close();
+  });
+
+  it("queues explicitly instead of steering an active agent", async () => {
+    const steerable = new SteerableMockAdapter();
+    engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Explicit queue", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Persistent", engine: "codex" });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" },
+    })).statusCode).toBe(200);
+    await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
+      .toMatchObject({ agents: [expect.objectContaining({
+        agentId: thread.id,
+        runtimeActivity: { state: "responding", executionId: expect.any(String), startedAt: expect.any(String) },
+      })] });
+
+    const queued = await app.inject({
+      method: "POST", url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "Do this after", activeRunDelivery: "queue" },
+    });
+    expect(queued.statusCode).toBe(202);
+    expect(queued.json()).toMatchObject({ queued: true, position: 1 });
+    expect(steerable.steers).toHaveLength(0);
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(1);
     await app.close();
   });
 
@@ -2950,9 +3054,11 @@ describe("server chunk F", () => {
     const childId = created.run.childThreadId!;
     const childDetail = (await app.inject({ method: "GET", url: `/api/threads/${childId}` })).json();
     expect(childDetail).toMatchObject({
-      thread: { id: childId, title: "Safe review", masterChatId: master.id },
+      thread: { id: childId, title: "Safe review", masterChatId: master.id, organizationalParentAgentId: thread.id },
       messages: [{ role: "user", text: "Delegated task: Safe review" }],
     });
+    store.updateAgentOrganization(childId, { parentAgentId: null });
+    expect(new DelegationStore(dataDir).get(created.run.id)).toMatchObject({ parentThreadId: thread.id, childThreadId: childId });
     expect(JSON.stringify(childDetail)).not.toContain("private secret task");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
@@ -3275,6 +3381,28 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
     for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
     expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+    await app.close();
+  });
+
+  it("updates mutable agent organization through stable IDs without rewriting delegation provenance", async () => {
+    const { app, project, thread: parent } = await createProjectAndThread();
+    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex" });
+
+    const demoted = await app.inject({
+      method: "PUT", url: `/api/threads/${child.id}/organizational-parent`, payload: { parentAgentId: parent.id },
+    });
+    expect(demoted.statusCode).toBe(200);
+    expect(demoted.json()).toMatchObject({ id: child.id, organizationalParentAgentId: parent.id });
+    await app.inject({ method: "PUT", url: `/api/threads/${grandchild.id}/organizational-parent`, payload: { parentAgentId: child.id } });
+    const cycle = await app.inject({ method: "PUT", url: `/api/threads/${parent.id}/organizational-parent`, payload: { parentAgentId: grandchild.id } });
+    expect(cycle.statusCode).toBe(400);
+    expect(cycle.json()).toMatchObject({ error: expect.stringMatching(/cycle/) });
+
+    const promoted = await app.inject({ method: "PUT", url: `/api/threads/${child.id}/organizational-parent`, payload: { parentAgentId: null } });
+    expect(promoted.statusCode).toBe(200);
+    expect(promoted.json()).not.toHaveProperty("organizationalParentAgentId");
+    expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(3);
     await app.close();
   });
 });

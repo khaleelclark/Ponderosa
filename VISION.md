@@ -36,6 +36,38 @@ engage with it.
    interface polish should improve continuously without blocking foundational
    correctness.
 
+## Interaction and execution state
+
+When an agent is already responding, a new direct message steers its active turn
+by default. Queue is an explicit alternative shown only while the manager is
+drafting to that running agent. This keeps conversation fluid without removing
+the ability to schedule a follow-up at a safe turn boundary.
+
+Typing/responding indicators and elapsed-time stopwatches reflect canonical
+execution ownership. Drafts, selected chat/detail tabs, and reading position are
+restored across navigation and refresh so inspecting another agent does not
+discard the manager's place.
+
+Agent Detail separates durable views of the same execution domain: Chat for
+explicit communication, Thinking for ordinary runtime output, Activity for the
+chronological command/test/tool/file feed, Changed Files for the accumulated
+file set, Tasks for structured work state, and Artifacts for durable outputs.
+Sources remain attached to their message in a compact footer. Generated PDFs are
+previewable and downloadable as project-scoped artifacts.
+
+## Projects and agent organization
+
+Selecting an existing working folder when creating a project is optional. A
+manager may choose a registered folder, create a new empty managed folder, or
+accept Ponderosa's managed default. Projects can be renamed or permanently
+deleted; deletion removes Ponderosa-owned chats, agents, executions, artifacts,
+and projections without deleting the selected source folder.
+
+Delegation history and organization are different facts. Delegation provenance
+records how work originated and never changes. Organizational parentage controls
+where an agent appears now and can be promoted, demoted, or re-parented without
+rewriting execution history.
+
 ## The communication model
 
 Ponderosa has three communication surfaces. Each has one purpose.

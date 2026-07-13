@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSubmitComposerText, matchingEngineCommands, shouldIgnoreComposerKey, shouldSendComposerKey } from "../src/components/panes";
+import { canSubmitComposerText, matchingEngineCommands, shouldIgnoreComposerKey, shouldSendComposerKey, shouldShowQueueControl } from "../src/components/panes";
 
 describe("composer keyboard behavior", () => {
   it("returns every matching inherited command instead of truncating the menu", () => {
@@ -56,5 +56,14 @@ describe("composer submission availability", () => {
 
   it("blocks an unmentioned spawn when the selected engine is unavailable", () => {
     expect(canSubmitComposerText({ ...base, mentionedHandles: [] })).toBe(false);
+  });
+});
+
+describe("explicit queue control", () => {
+  it("appears only for a non-empty draft while the agent is responding", () => {
+    expect(shouldShowQueueControl({ text: "later", agentResponding: true, disabled: false })).toBe(true);
+    expect(shouldShowQueueControl({ text: "   ", agentResponding: true, disabled: false })).toBe(false);
+    expect(shouldShowQueueControl({ text: "later", agentResponding: false, disabled: false })).toBe(false);
+    expect(shouldShowQueueControl({ text: "later", agentResponding: true, disabled: true })).toBe(false);
   });
 });

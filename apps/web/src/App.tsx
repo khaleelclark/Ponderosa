@@ -2,6 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import LightModeIcon from "@mui/icons-material/LightMode";
+import SettingsIcon from "@mui/icons-material/Settings";
 import {
   Alert,
   AppBar,
@@ -13,6 +14,10 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   Tab,
   Tabs,
@@ -26,7 +31,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
-import { useEngines, useProjects } from "./hooks/queries";
+import { useEngines, useProjectFolders, useProjects } from "./hooks/queries";
 import {
   loadLastProjectId,
   routeProjectId,
@@ -35,17 +40,20 @@ import {
   type Route,
 } from "./routing";
 import type { ColorMode } from "./theme";
+import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
 
 function ProjectTabs({
   projects,
   selectedProjectId,
   onSelect,
   onCreate,
+  onManage,
 }: {
   projects: ProjectDto[];
   selectedProjectId: string | undefined;
   onSelect(projectId: string): void;
   onCreate(): void;
+  onManage(): void;
 }): JSX.Element {
   return (
     <Stack direction="row" sx={{ alignItems: "center", borderBottom: 1, borderColor: "divider" }}>
@@ -72,6 +80,7 @@ function ProjectTabs({
           <AddIcon />
         </IconButton>
       </Tooltip>
+      {selectedProjectId ? <Tooltip title="Project settings"><IconButton onClick={onManage} aria-label="Project settings" sx={{ mr: 1 }}><SettingsIcon /></IconButton></Tooltip> : null}
     </Stack>
   );
 }
@@ -93,6 +102,12 @@ export default function App({
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectLabel, setProjectLabel] = useState("");
   const [projectPath, setProjectPath] = useState("");
+  const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("automatic");
+  const [projectFolderName, setProjectFolderName] = useState("");
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const projectFoldersQuery = useProjectFolders(projectDialogOpen);
 
   const routedProjectId = routeProjectId(route);
   const selectedProjectId =
@@ -119,13 +134,32 @@ export default function App({
 
   const createProject = useMutation({
     mutationFn: () =>
-      api.createProject({ label: projectLabel.trim(), hostPath: projectPath.trim() }),
+      api.createProject(createProjectRequest({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName })),
     onSuccess: (project) => {
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       setProjectDialogOpen(false);
       setProjectLabel("");
       setProjectPath("");
+      setProjectFolderName("");
+      setProjectFolderMode("automatic");
       navigate({ kind: "project", projectId: project.id });
+    },
+  });
+
+  const updateProject = useMutation({
+    mutationFn: () => api.updateProject(selectedProjectId!, { label: renamedProjectLabel.trim() }),
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["projects"] }); setProjectSettingsOpen(false); },
+  });
+
+  const deleteProject = useMutation({
+    mutationFn: () => api.deleteProject(selectedProjectId!),
+    onSuccess: () => {
+      const next = nextProjectAfterDelete(projects, selectedProjectId!);
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setDeleteConfirmationOpen(false);
+      setProjectSettingsOpen(false);
+      if (next) { saveLastProjectId(next.id); navigate({ kind: "project", projectId: next.id }); }
+      else navigate({ kind: "home" });
     },
   });
 
@@ -176,6 +210,11 @@ export default function App({
           selectedProjectId={selectedProjectId}
           onCreate={() => setProjectDialogOpen(true)}
           onSelect={selectProject}
+          onManage={() => {
+            const selected = projects.find((project) => project.id === selectedProjectId);
+            setRenamedProjectLabel(selected?.label ?? "");
+            setProjectSettingsOpen(true);
+          }}
         />
       </AppBar>
 
@@ -227,13 +266,18 @@ export default function App({
               autoFocus
               fullWidth
             />
-            <TextField
-              label="Host path"
-              value={projectPath}
-              onChange={(event) => setProjectPath(event.target.value)}
-              placeholder="/Users/you/Projects/app"
-              fullWidth
-            />
+            <FormControl fullWidth><InputLabel id="project-folder-mode-label">Working folder</InputLabel><Select labelId="project-folder-mode-label" label="Working folder" value={projectFolderMode} onChange={(event) => setProjectFolderMode(event.target.value as typeof projectFolderMode)}>
+              <MenuItem value="automatic">Optional — create a managed folder automatically</MenuItem>
+              <MenuItem value="existing">Choose an existing folder</MenuItem>
+              <MenuItem value="create">Create a named empty folder</MenuItem>
+            </Select></FormControl>
+            {projectFolderMode === "existing" ? <>
+              <FormControl fullWidth><InputLabel id="existing-project-folder-label">Registered or managed folder</InputLabel><Select labelId="existing-project-folder-label" label="Registered or managed folder" value={projectPath} onChange={(event) => setProjectPath(event.target.value)}>
+                {(projectFoldersQuery.data?.folders ?? []).map((folder) => <MenuItem key={folder.hostPath} value={folder.hostPath}>{folder.name} — {folder.hostPath}</MenuItem>)}
+              </Select></FormControl>
+              <TextField label="Or enter an existing absolute path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="/Users/you/Projects/app" fullWidth />
+            </> : null}
+            {projectFolderMode === "create" ? <TextField label="New folder name" value={projectFolderName} onChange={(event) => setProjectFolderName(event.target.value)} helperText={`Created inside ${projectFoldersQuery.data?.managedRoot ?? "the managed workspace"}`} fullWidth /> : null}
             {createProject.isError ? <Alert severity="error">{String(createProject.error)}</Alert> : null}
           </Stack>
         </DialogContent>
@@ -241,12 +285,25 @@ export default function App({
           <Button onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={!projectLabel.trim() || !projectPath.trim() || createProject.isPending}
+            disabled={projectCreationDisabled({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName, pending: createProject.isPending })}
             onClick={() => createProject.mutate()}
           >
             Create
           </Button>
         </DialogActions>
+      </Dialog>
+
+      <Dialog open={projectSettingsOpen} onClose={() => setProjectSettingsOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Project settings</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
+          <TextField label="Project name" value={renamedProjectLabel} onChange={(event) => setRenamedProjectLabel(event.target.value)} fullWidth />
+          {updateProject.isError ? <Alert severity="error">{String(updateProject.error)}</Alert> : null}
+          <Button color="error" variant="outlined" onClick={() => setDeleteConfirmationOpen(true)}>Delete project permanently</Button>
+        </Stack></DialogContent><DialogActions><Button onClick={() => setProjectSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={!renamedProjectLabel.trim() || updateProject.isPending} onClick={() => updateProject.mutate()}>Save</Button></DialogActions>
+      </Dialog>
+
+      <Dialog open={deleteConfirmationOpen} onClose={() => setDeleteConfirmationOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Delete this project?</DialogTitle><DialogContent><Alert severity="warning">This permanently deletes its chats, agents, executions, artifacts, and projections. The working folder and its source files are not deleted.</Alert>{deleteProject.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProject.error)}</Alert> : null}</DialogContent>
+        <DialogActions><Button onClick={() => setDeleteConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteProject.isPending} onClick={() => deleteProject.mutate()}>Delete permanently</Button></DialogActions>
       </Dialog>
     </Box>
   );

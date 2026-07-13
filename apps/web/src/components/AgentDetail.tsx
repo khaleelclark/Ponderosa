@@ -2,11 +2,13 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DifferenceIcon from "@mui/icons-material/Difference";
+import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
+import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import {
   Alert,
   Box,
@@ -36,7 +38,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -46,25 +48,68 @@ import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane, ThinkingPane } from "./panes";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
+import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, TasksPane, ThinkingPane } from "./panes";
 
-type AgentTab = "chat" | "thinking" | "log" | "tasks" | "artifacts";
+type AgentTab = "chat" | "thinking" | "activity" | "changed_files" | "tasks" | "artifacts";
+
+export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
+  const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function RespondingIndicator({ agentName, startedAt }: { agentName: string; startedAt: string }): JSX.Element {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return (
+    <Typography variant="body2" color="info.main" role="status" aria-live="polite">
+      {agentName} is responding · {formatExecutionElapsed(startedAt, now)}
+    </Typography>
+  );
+}
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
   { value: "thinking", label: "Thinking", icon: <PsychologyOutlinedIcon /> },
-  { value: "log", label: "Live Log", icon: <TimelineIcon /> },
+  { value: "activity", label: "Activity", icon: <TimelineIcon /> },
+  { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
   { value: "tasks", label: "Tasks", icon: <TerminalIcon /> },
   { value: "artifacts", label: "Artifacts", icon: <DifferenceIcon /> },
 ];
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
 
+export function eligibleOrganizationParents(agent: ThreadDto, agents: ThreadDto[]): ThreadDto[] {
+  const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
+  const isDescendant = (candidate: ThreadDto): boolean => {
+    const seen = new Set<string>();
+    let parentId = candidate.organizationalParentAgentId;
+    while (parentId && !seen.has(parentId)) {
+      if (parentId === agent.id) return true;
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.organizationalParentAgentId;
+    }
+    return false;
+  };
+  return agents
+    .filter((candidate) => candidate.id !== agent.id && candidate.projectId === agent.projectId && !candidate.archived && !isDescendant(candidate))
+    .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+}
+
 export function AgentDetail({
   agentId,
   engines,
   engineCapabilities,
   projectedStatus,
+  projectedHealth,
   agents,
   masterChats,
   subagent,
@@ -77,6 +122,7 @@ export function AgentDetail({
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   projectedStatus?: AgentStatus;
+  projectedHealth?: AgentHealthDto;
   agents: ThreadDto[];
   masterChats: MasterChatDto[];
   subagent?: SubagentRunDto;
@@ -89,13 +135,18 @@ export function AgentDetail({
   const threadQuery = useThread(agentId);
   const stream = useThreadStream(agentId);
   const sendMessage = useSendMessage(agentId);
-  const [tab, setTab] = useState<AgentTab>("chat");
+  const [tab, setTab] = useState<AgentTab>(() => {
+    const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
+    return AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat";
+  });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const [organizationParentId, setOrganizationParentId] = useState("");
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
   const [primaryMasterChatId, setPrimaryMasterChatId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
@@ -103,6 +154,15 @@ export function AgentDetail({
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const theme = useTheme();
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
+
+  useEffect(() => {
+    const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
+    setTab(AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat");
+  }, [agentId]);
+
+  useEffect(() => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
+  }, [agentId, tab]);
 
   const detail = threadQuery.data;
   const engine =
@@ -125,13 +185,14 @@ export function AgentDetail({
     setEffort((current) => (current === "" || engine.efforts.some((o) => o.id === current) ? current : ""));
   }, [engine]);
 
-  const running = stream.running || sendMessage.isPending;
+  const runtimeActivity = projectedHealth?.runtimeActivity;
+  const running = Boolean(runtimeActivity) || sendMessage.isPending;
 
   const errorHint = useMemo(
     () => stream.timeline.at(-1)?.event.type === "error",
     [stream.timeline],
   );
-  const status = stream.running ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
+  const status = runtimeActivity ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
   const connectedMcps = engineCapability?.mcpServers.filter((server) => server.status === "connected") ?? [];
   const mcpSummary = engineCapability?.mcpServers.map((server) => `${server.name}: ${server.status}`).join("\n") || "No inherited MCP servers reported by this engine.";
 
@@ -189,6 +250,17 @@ export function AgentDetail({
     },
   });
 
+  const updateOrganization = useMutation({
+    mutationFn: () => api.updateAgentOrganization(agentId, { parentAgentId: organizationParentId || null }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
+        current ? { ...current, thread: updated } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["threads", updated.projectId] });
+      setOrganizationOpen(false);
+    },
+  });
+
   if (threadQuery.isLoading) {
     return (
       <Box sx={{ p: 3 }} role="status" aria-live="polite">
@@ -228,9 +300,48 @@ export function AgentDetail({
     ? masterChats.find((candidate) => candidate.id === detail.thread.masterChatId)
     : undefined;
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
+  const organizationalParent = detail.thread.organizationalParentAgentId
+    ? agents.find((candidate) => candidate.id === detail.thread.organizationalParentAgentId)
+    : undefined;
+
+  const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
+    (text: string, files: File[]) => {
+      const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
+        try {
+          return await sendMessage.mutateAsync(
+            {
+              text,
+              attachmentIds: attachments.map((item) => item.id),
+              model: model || undefined,
+              effort: effort || undefined,
+              replyToMessageId: replyTo?.id,
+              activeRunDelivery,
+            },
+            {
+              onSuccess: (response) => {
+                setReplyTo(undefined);
+                setQueuedMessageNotice(
+                  response.queued
+                    ? `Queued in position ${response.position}; it will start when the current response finishes.`
+                    : response.steered
+                      ? "Steered into the active turn."
+                      : undefined,
+                );
+                void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.thread.projectId] });
+              },
+            },
+          );
+        } catch (error) {
+          await Promise.allSettled(attachments.map((item) => api.deleteAttachment(agentId, item.id)));
+          throw error;
+        }
+      });
+      setTab("chat");
+      return sent;
+    };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.thread.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
@@ -239,7 +350,8 @@ export function AgentDetail({
       void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
     })} onReply={setReplyTo} />,
     thinking: <ThinkingPane entries={detail.thinking} />,
-    log: <LiveLogPane timeline={stream.timeline} connected={stream.connected} running={stream.running} />,
+    activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} />,
+    changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={detail.thread.id} timeline={stream.timeline} />,
   };
@@ -292,12 +404,22 @@ export function AgentDetail({
             <Chip
               size="small"
               color="secondary"
-              label="Subagent"
+              label="Delegated"
               onClick={subagent.parentThreadId ? () => onOpenAgent(subagent.parentThreadId!) : undefined}
               clickable={Boolean(subagent.parentThreadId)}
               sx={{ minHeight: compactViewport ? 44 : undefined }}
             />
           ) : null}
+          {organizationalParent ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              icon={<AccountTreeOutlinedIcon />}
+              label={`Reports to ${organizationalParent.title}`}
+              clickable
+              onClick={() => onOpenAgent(organizationalParent.id)}
+            />
+          ) : <Chip size="small" variant="outlined" icon={<AccountTreeOutlinedIcon />} label="Top level" />}
           <Chip
             size="small"
             label={stream.connected ? "Live" : "Reconnecting"}
@@ -339,6 +461,12 @@ export function AgentDetail({
             setMembershipOpen(true);
           }}>
             Assign chats
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<AccountTreeOutlinedIcon />} sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
+            setOrganizationParentId(detail.thread.organizationalParentAgentId ?? "");
+            setOrganizationOpen(true);
+          }}>
+            Organize
           </Button>
           {compactViewport ? (
             <Button
@@ -399,6 +527,7 @@ export function AgentDetail({
           </FormControl>
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
+        {runtimeActivity ? <RespondingIndicator agentName={detail.thread.title} startedAt={runtimeActivity.startedAt} /> : null}
       </Box>
 
       <Tabs
@@ -412,13 +541,13 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48 }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "log" ? "Live log" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>
 
       <Box sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
-        {stream.running ? (
+        {runtimeActivity ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
-            This agent is working. New messages steer the active turn when supported and otherwise wait in its durable mailbox.
+            Send steers the active response. Choose Queue to deliver the draft after it finishes.
           </Alert>
         ) : null}
         {sendMessage.isError || cancelRun.isError ? (
@@ -430,9 +559,11 @@ export function AgentDetail({
         <Composer
           commands={commands}
           projectId={detail.thread.projectId}
+          draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           disabled={sendMessage.isPending}
           running={false}
-          placeholder={stream.running ? "Steer this agent's active turn" : "Message this agent directly"}
+          placeholder={runtimeActivity ? "Steer this agent's active response" : "Message this agent directly"}
+          agentResponding={Boolean(runtimeActivity)}
           onSend={(text, files) => {
             if (files.length === 0 && text === "/cancel") {
               setQueuedMessageNotice("Cancelling the active turn…");
@@ -446,31 +577,9 @@ export function AgentDetail({
               setQueuedMessageNotice(`${detail.thread.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
               return Promise.resolve();
             }
-            const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
-              try {
-                return await sendMessage.mutateAsync(
-                  { text, attachmentIds: attachments.map((item) => item.id), model: model || undefined, effort: effort || undefined, replyToMessageId: replyTo?.id },
-                  {
-                    onSuccess: (response) => {
-                      setReplyTo(undefined);
-                      setQueuedMessageNotice(
-                        response.queued
-                          ? `Queued in position ${response.position}; it will start when the current response finishes.`
-                          : response.steered
-                            ? "Steered into the active turn."
-                            : undefined,
-                      );
-                    },
-                  },
-                );
-              } catch (error) {
-                await Promise.allSettled(attachments.map((item) => api.deleteAttachment(agentId, item.id)));
-                throw error;
-              }
-            });
-            setTab("chat");
-            return sent;
+            return submitAgentMessage("steer")(text, files);
           }}
+          onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
           onCancel={() => cancelRun.mutate()}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(undefined)}
@@ -565,6 +674,35 @@ export function AgentDetail({
           <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
           <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryMasterChatId)} onClick={() => updateMemberships.mutate()}>
             Save membership
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={organizationOpen} onClose={() => setOrganizationOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Agent organization</DialogTitle>
+        <DialogContent>
+          <FormControl fullWidth sx={{ mt: 1 }}>
+            <InputLabel id="agent-organizational-parent-label">Reports to</InputLabel>
+            <Select
+              labelId="agent-organizational-parent-label"
+              value={organizationParentId}
+              label="Reports to"
+              onChange={(event) => setOrganizationParentId(event.target.value)}
+            >
+              <MenuItem value="">Top level</MenuItem>
+              {eligibleOrganizationParents(detail.thread, agents)
+                .map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.title}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            This changes only the organizational view. Delegation and execution history remain attached to their original runs.
+          </Typography>
+          {updateOrganization.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateOrganization.error)}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOrganizationOpen(false)} disabled={updateOrganization.isPending}>Cancel</Button>
+          <Button variant="contained" disabled={updateOrganization.isPending} onClick={() => updateOrganization.mutate()}>
+            Save organization
           </Button>
         </DialogActions>
       </Dialog>

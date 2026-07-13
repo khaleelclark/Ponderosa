@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MessageReactionDto, MessageReferenceDto } from "@ponderosa/core";
@@ -66,6 +66,15 @@ export class UserReactionStore {
         reactedByCurrentActor: true,
         reactors: [{ kind: "manager" }],
       }));
+  }
+
+  deleteProject(projectId: string): void {
+    const kept = this.events.filter((event) => event.projectId !== projectId);
+    this.events.length = 0;
+    this.byIdempotencyKey.clear();
+    this.byCommunicationEmoji.clear();
+    for (const event of kept) this.remember(event);
+    writeFileSync(this.file, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 
   private remember(event: UserReactionEvent): void {

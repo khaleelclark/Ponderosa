@@ -8,6 +8,14 @@ export function useProjects() {
   });
 }
 
+export function useProjectFolders(open: boolean) {
+  return useQuery({
+    queryKey: ["project-folders"],
+    queryFn: () => api.getProjectFolders(),
+    enabled: open,
+  });
+}
+
 export function useMasterChats(projectId: string | undefined) {
   return useQuery({
     queryKey: ["master-chats", projectId],

@@ -9,6 +9,7 @@
 //         communication-events.jsonl   ← canonical cross-surface communication
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
+//         agent-organization.jsonl    ← canonical mutable reporting relationships
 //         master-chats/
 //           <master-chat-id>/
 //             master-chat.json         ← title, defaults, timestamps
@@ -29,6 +30,10 @@ export function dbPath(dataDir: string): string {
 
 export function projectsDir(dataDir: string): string {
   return path.join(dataDir, "projects");
+}
+
+export function managedWorkspacesDir(dataDir: string): string {
+  return path.join(dataDir, "workspaces");
 }
 
 export function projectDir(dataDir: string, projectId: string): string {
@@ -54,6 +59,10 @@ export function communicationProjectionsPath(dataDir: string, projectId: string)
 
 export function agentPresetsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "agent-presets.jsonl");
+}
+
+export function agentOrganizationEventsPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "agent-organization.jsonl");
 }
 
 export function masterChatsDir(dataDir: string, projectId: string): string {

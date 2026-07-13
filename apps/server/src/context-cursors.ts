@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export interface ContextCursor {
@@ -48,5 +48,14 @@ export class ContextCursorStore {
     const stored = { ...cursor, updatedAt: new Date().toISOString() };
     appendFileSync(this.file, `${JSON.stringify({ type: "cursor", cursor: stored })}\n`, "utf8");
     this.cursors.set(ContextCursorStore.key(stored), stored);
+  }
+
+  deleteThreads(threadIds: ReadonlySet<string>): void {
+    const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: "cursor"; cursor: ContextCursor })
+      .filter((record) => !threadIds.has(record.cursor.threadId));
+    this.cursors.clear();
+    for (const { cursor } of records) this.cursors.set(ContextCursorStore.key(cursor), cursor);
+    writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 }

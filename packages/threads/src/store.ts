@@ -17,6 +17,9 @@ import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
+  AgentActivityDto,
+  ChangedFileDto,
+  AgentOrganizationEvent,
   CommunicationEvent,
   CommunicationContextClassification,
   CommunicationProjection,
@@ -41,14 +44,16 @@ import type {
   ThreadDto,
   ThreadState,
   ThinkingEntryDto,
+  UpdateProjectRequest,
   UpdateThreadMasterChatMembershipsRequest,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
+  UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
-import { messageId as projectedMessageId } from "./ids.js";
+import { artifactId, messageId as projectedMessageId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
@@ -86,7 +91,9 @@ import {
   masterChatsDir,
   projectJsonPath,
   agentPresetsPath,
+  agentOrganizationEventsPath,
   projectsDir,
+  projectDir,
   threadDir,
   threadJsonPath,
   threadsDir,
@@ -690,7 +697,7 @@ export class ThreadStore {
 
   // ─── Projects ──────────────────────────────────────────────────────────────
 
-  createProject(input: CreateProjectRequest): ProjectDto {
+  createProject(input: CreateProjectRequest & { hostPath: string }): ProjectDto {
     const id = randomUUID();
     const now = new Date().toISOString();
     const record: ProjectJson = {
@@ -708,6 +715,34 @@ export class ThreadStore {
       .run();
     for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now };
+  }
+
+  updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
+    const current = this.getProject(id);
+    if (!current) return undefined;
+    const label = input.label.trim();
+    if (!label) throw new Error("project label is required");
+    const record: ProjectJson = { ...current, label };
+    writeJson(projectJsonPath(this.dataDir, id), record);
+    this.db.update(projects).set({ label }).where(eq(projects.id, id)).run();
+    return { ...current, label };
+  }
+
+  /** Permanently remove the canonical project tree and every rebuildable projection. */
+  deleteProject(id: string): boolean {
+    const current = this.getProject(id);
+    if (!current) return false;
+    const threadIds = this.listThreads(id).map((thread) => thread.id);
+    rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+    this.communicationEventCache.delete(id);
+    this.contextClassificationCache.delete(id);
+    this.communicationProjectionCache.delete(id);
+    for (const threadId of threadIds) {
+      this.logs.delete(threadId);
+      this.states.delete(threadId);
+    }
+    this.rebuildProjections();
+    return true;
   }
 
   listAgentPresets(projectId: string): AgentPresetDto[] {
@@ -1181,6 +1216,12 @@ export class ThreadStore {
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
+    if (archived && row.archived !== 1) {
+      for (const child of this.listThreads(row.projectId).filter((thread) => thread.organizationalParentAgentId === id)) {
+        this.updateAgentOrganization(child.id, { parentAgentId: null });
+      }
+      if (this.getThread(id)?.organizationalParentAgentId) this.updateAgentOrganization(id, { parentAgentId: null });
+    }
     this.db
       .update(threads)
       .set({ title, archived: archived ? 1 : 0, updatedAt: now })
@@ -1195,6 +1236,49 @@ export class ThreadStore {
       updatedAt: now,
     });
     return this.rowToThreadDto(id);
+  }
+
+  /**
+   * Change only the mutable organizational reporting line. Delegation records
+   * remain immutable historical provenance and are never rewritten here.
+   */
+  updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): ThreadDto | undefined {
+    const agent = this.getThread(id);
+    if (!agent) return undefined;
+    if (agent.archived) throw new Error("archived agents cannot be reorganized");
+    const parentId = input.parentAgentId ?? undefined;
+    if (parentId === id) throw new Error("an agent cannot report to itself");
+    if (parentId) {
+      const parent = this.getThread(parentId);
+      if (!parent || parent.projectId !== agent.projectId) throw new Error("organizational parent must belong to the same project");
+      if (parent.archived) throw new Error("organizational parent must be active");
+      const visited = new Set<string>([id]);
+      let cursor: ThreadDto | undefined = parent;
+      while (cursor) {
+        if (visited.has(cursor.id)) throw new Error("organizational parent would create a cycle");
+        if (cursor.projectId !== agent.projectId || cursor.archived) throw new Error("organizational ancestry must contain active agents from the same project");
+        visited.add(cursor.id);
+        cursor = cursor.organizationalParentAgentId ? this.getThread(cursor.organizationalParentAgentId) : undefined;
+      }
+    }
+    if (agent.organizationalParentAgentId === parentId) return agent;
+    const event: AgentOrganizationEvent = {
+      eventId: randomUUID(), type: "organizational_parent_changed", projectId: agent.projectId,
+      agentId: id, parentAgentId: parentId ?? null, createdAt: new Date().toISOString(),
+    };
+    appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, agent.projectId), [event]);
+    this.db.update(threads).set({
+      organizationalParentAgentId: parentId ?? null,
+      updatedAt: event.createdAt,
+    }).where(eq(threads.id, id)).run();
+    return this.getThread(id);
+  }
+
+  readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
+    if (!this.getProject(projectId)) throw new Error("organization project not found");
+    return readRepairableJsonl<AgentOrganizationEvent>(
+      agentOrganizationEventsPath(this.dataDir, projectId), "agent organization log", true,
+    );
   }
 
   updateThreadMasterChatMemberships(
@@ -1229,6 +1313,12 @@ export class ThreadStore {
     const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
     if (!row) return false;
 
+    // Promote direct organizational children before their parent disappears so
+    // the canonical projection never retains a dangling reporting line.
+    for (const child of this.listThreads(row.projectId).filter((thread) => thread.organizationalParentAgentId === id)) {
+      this.updateAgentOrganization(child.id, { parentAgentId: null });
+    }
+
     this.db.transaction((tx) => {
       tx.delete(events).where(eq(events.threadId, id)).run();
       tx.delete(artifacts).where(eq(artifacts.threadId, id)).run();
@@ -1255,6 +1345,8 @@ export class ThreadStore {
       thread,
       messages: this.getMessages(id),
       thinking: this.getThinkingEntries(id),
+      activity: this.getActivity(id),
+      changedFiles: this.getChangedFiles(id),
       tasks: this.getTasks(id),
       artifacts: this.getArtifacts(id),
       state: thread.state,
@@ -1361,6 +1453,51 @@ export class ThreadStore {
     return entries.sort((a, b) => a.seq - b.seq);
   }
 
+  /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
+  getActivity(threadId: string): AgentActivityDto[] {
+    const activityTypes = new Set(["command", "file_change", "test_result", "tool_call", "tool_result", "error"]);
+    let activeExecutionId: string | undefined;
+    const result: AgentActivityDto[] = [];
+    for (const stored of this.readEvents(threadId)) {
+      const event = stored.event;
+      if (event.type === "agent_lifecycle" && event.status === "running") activeExecutionId = event.executionId;
+      if (activityTypes.has(event.type)) {
+        result.push({
+          id: `${threadId}:activity:${stored.seq}`,
+          threadId,
+          ...(activeExecutionId ? { executionId: activeExecutionId } : {}),
+          seq: stored.seq,
+          createdAt: stored.ts,
+          event: event as AgentActivityDto["event"],
+        });
+      }
+      if (event.type === "turn_done" || (event.type === "agent_lifecycle" && event.status !== "running")) {
+        activeExecutionId = undefined;
+      }
+    }
+    return result;
+  }
+
+  /** One persistent row per touched path, retaining the latest canonical change and executions. */
+  getChangedFiles(threadId: string): ChangedFileDto[] {
+    const byPath = new Map<string, ChangedFileDto>();
+    for (const item of this.getActivity(threadId)) {
+      if (item.event.type !== "file_change") continue;
+      const previous = byPath.get(item.event.path);
+      const executionIds = [...(previous?.executionIds ?? [])];
+      if (item.executionId && !executionIds.includes(item.executionId)) executionIds.push(item.executionId);
+      byPath.set(item.event.path, {
+        path: item.event.path,
+        kind: item.event.kind,
+        lastSeq: item.seq,
+        lastChangedAt: item.createdAt,
+        executionIds,
+        ...(item.event.diff ? { diff: item.event.diff } : {}),
+      });
+    }
+    return [...byPath.values()].sort((a, b) => a.lastSeq - b.lastSeq);
+  }
+
   getProjectedThreadMessages(threadId: string): MessageDto[] {
     const thread = this.getThread(threadId);
     if (!thread) return [];
@@ -1400,21 +1537,46 @@ export class ThreadStore {
   }
 
   getArtifacts(threadId: string): ArtifactDto[] {
+    const generatedPdfs = new Map(this.readEvents(threadId).flatMap((stored) =>
+      stored.event.type === "file_change" && stored.event.path.toLowerCase().endsWith(".pdf")
+        ? [[artifactId(threadId, stored.seq, 0), stored.event.path] as const]
+        : [],
+    ));
+    const thread = this.getThread(threadId);
     return this.db
       .select()
       .from(artifacts)
       .where(eq(artifacts.threadId, threadId))
       .orderBy(asc(artifacts.createdAt))
       .all()
-      .map((r) => ({
-        id: r.id,
-        threadId: r.threadId,
-        taskId: r.taskId ?? undefined,
-        kind: r.kind as ArtifactKind,
-        path: r.path,
-        summary: r.summary ?? undefined,
-        createdAt: r.createdAt,
-      }));
+      .map((r) => {
+        const generatedPath = generatedPdfs.get(r.id);
+        if (generatedPath && thread) {
+          const root = `/api/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(threadId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
+          return {
+            id: r.id, threadId: r.threadId, taskId: r.taskId ?? undefined,
+            kind: "document" as const, path: generatedPath, summary: generatedPath,
+            createdAt: r.createdAt, mediaType: "application/pdf" as const,
+            previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+          };
+        }
+        return {
+          id: r.id, threadId: r.threadId, taskId: r.taskId ?? undefined,
+          kind: r.kind as ArtifactKind, path: r.path, summary: r.summary ?? undefined,
+          createdAt: r.createdAt,
+        };
+      });
+  }
+
+  getGeneratedPdfPath(threadId: string, artifactIdValue: string): string | undefined {
+    const stored = this.readEvents(threadId).find((candidate) =>
+      artifactId(threadId, candidate.seq, 0) === artifactIdValue &&
+      candidate.event.type === "file_change" &&
+      candidate.event.path.toLowerCase().endsWith(".pdf")
+    );
+    return stored?.event.type === "file_change"
+      ? stored.event.path
+      : undefined;
   }
 
   getArtifact(threadId: string, artifactId: string): ArtifactDto | undefined {
@@ -1521,6 +1683,12 @@ export class ThreadStore {
       const resolved = new Map<string, AgentPresetDto>();
       for (const event of readJsonLines<PresetEvent>(agentPresetsPath(this.dataDir, projectId))) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
+      const organizationalParents = new Map<string, string | null>();
+      for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {
+        if (event.projectId === projectId && event.type === "organizational_parent_changed") {
+          organizationalParents.set(event.agentId, event.parentAgentId);
+        }
+      }
 
       const mDir = masterChatsDir(this.dataDir, projectId);
       if (existsSync(mDir)) {
@@ -1585,6 +1753,7 @@ export class ThreadStore {
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             archived: t.archived ? 1 : 0,
+            organizationalParentAgentId: organizationalParents.get(t.id) ?? null,
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
           })
           .run();
@@ -1606,6 +1775,7 @@ export class ThreadStore {
         const ops = projectAll(threadId, stored, t.activeEngine);
         this.applyOps(threadId, projectId, ops);
       }
+      this.sanitizeOrganizationProjection(projectId);
     }
   }
 
@@ -1681,6 +1851,27 @@ export class ThreadStore {
     });
   }
 
+  private sanitizeOrganizationProjection(projectId: string): void {
+    const agents = this.listThreads(projectId);
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    for (const agent of agents) {
+      if (!agent.organizationalParentAgentId) continue;
+      const seen = new Set<string>([agent.id]);
+      let parentId: string | undefined = agent.organizationalParentAgentId;
+      let valid = true;
+      while (parentId) {
+        const parent = byId.get(parentId);
+        if (!parent || parent.archived || seen.has(parentId)) {
+          valid = false;
+          break;
+        }
+        seen.add(parentId);
+        parentId = parent.organizationalParentAgentId;
+      }
+      if (!valid) this.db.update(threads).set({ organizationalParentAgentId: null }).where(eq(threads.id, agent.id)).run();
+    }
+  }
+
   private projectIdOf(threadId: string): string {
     const row = this.db
       .select({ projectId: threads.projectId })
@@ -1746,6 +1937,7 @@ export class ThreadStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
+      organizationalParentAgentId: row.organizationalParentAgentId ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
   }

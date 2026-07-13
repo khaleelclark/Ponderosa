@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -67,6 +67,14 @@ export class RunLedger {
     if (!this.owns(fence)) return undefined;
     const current = this.claims.get(fence.threadId)!;
     return this.persist({ ...current, ...patch, ...fence, state, updatedAt: patch.updatedAt ?? new Date().toISOString() }, "transition");
+  }
+
+  deleteThreads(threadIds: ReadonlySet<string>): void {
+    for (const threadId of threadIds) this.claims.delete(threadId);
+    const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
+      .map((line) => JSON.parse(line) as RunRecord)
+      .filter((record) => !threadIds.has(record.claim.threadId));
+    writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 
   private persist(claim: RunClaim, type: RunRecord["type"]): RunClaim {

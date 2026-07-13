@@ -18,11 +18,14 @@ import type {
   UpdateMasterChatRequest,
   UpdateThreadRequest,
   UpdateThreadMasterChatMembershipsRequest,
+  UpdateAgentOrganizationRequest,
   EngineDto,
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
   ImageAttachmentDto,
   ProjectDto,
+  ProjectFolderOptionsDto,
+  UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
   SendMessageRequest,
@@ -73,6 +76,9 @@ export class ApiRequestError extends Error {
 export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
+  getProjectFolders(): Promise<ProjectFolderOptionsDto>;
+  updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto>;
+  deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
   listMasterChats(projectId: string): Promise<MasterChatDto[]>;
   createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;
@@ -98,6 +104,7 @@ export interface PonderosaApi {
   createAgent(projectId: string, masterChatId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
   updateThread(threadId: string, patch: UpdateThreadRequest): Promise<ThreadDto>;
   updateThreadMasterChatMemberships(threadId: string, request: UpdateThreadMasterChatMembershipsRequest): Promise<ThreadDto>;
+  updateAgentOrganization(threadId: string, request: UpdateAgentOrganizationRequest): Promise<ThreadDto>;
   deleteThread(threadId: string): Promise<void>;
   getThread(threadId: string): Promise<ThreadDetailDto>;
   listEngines(): Promise<EngineDto[]>;

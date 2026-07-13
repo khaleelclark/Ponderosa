@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   individualChatSenderLabel,
+  isLongChatMessage,
   isChatNearBottom,
   replyFallbackText,
   scrollChatToBottom,
@@ -21,6 +22,14 @@ describe("scrollChatToBottom", () => {
 
   it("stops following messages when the reader scrolls up", () => {
     expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 400 })).toBe(false);
+  });
+});
+
+describe("long message presentation", () => {
+  it("identifies long prose and heavily structured messages for progressive disclosure", () => {
+    expect(isLongChatMessage("short answer")).toBe(false);
+    expect(isLongChatMessage("x".repeat(1_601))).toBe(true);
+    expect(isLongChatMessage(Array.from({ length: 19 }, (_, index) => `line ${index}`).join("\n"))).toBe(true);
   });
 });
 

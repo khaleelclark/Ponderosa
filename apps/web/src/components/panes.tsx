@@ -3,6 +3,8 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DifferenceIcon from "@mui/icons-material/Difference";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SendIcon from "@mui/icons-material/Send";
 import ReplyIcon from "@mui/icons-material/Reply";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
@@ -12,6 +14,7 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import {
   Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
   ClickAwayListener,
@@ -28,7 +31,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ArtifactContentDto, ArtifactDto, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
+import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -36,11 +39,13 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { readChatState, readScrollPosition, writeChatState } from "../chatState";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
+import { MessageContextMenu } from "./MessageContextMenu";
 
 export function taskStatusLabel(status: TaskDto["status"]): string {
   if (status === "waiting_approval") {
@@ -81,6 +86,14 @@ export function canSubmitComposerText(input: {
     !input.running &&
     (input.allowUnmentionedSend || input.mentionedHandles.length > 0)
   );
+}
+
+export function shouldShowQueueControl(input: {
+  text: string;
+  agentResponding: boolean;
+  disabled: boolean;
+}): boolean {
+  return input.agentResponding && !input.disabled && input.text.trim().length > 0;
 }
 
 const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
@@ -209,6 +222,10 @@ export function replyFallbackText(text: string): string {
   return text.trim() || "Original message unavailable";
 }
 
+export function isLongChatMessage(text: string): boolean {
+  return text.length > 1_600 || text.split("\n").length > 18;
+}
+
 export function individualChatSenderLabel(
   role: MessageDto["role"],
   agentName: string,
@@ -334,6 +351,7 @@ export function ChatMarkdown({
     <Box
       sx={{
         overflowWrap: "anywhere",
+        whiteSpace: "pre-wrap",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
         "& p": { my: 0.75 },
@@ -373,6 +391,64 @@ export function ChatMarkdown({
   );
 }
 
+export function splitMessageSources(text: string): { body: string; sources?: string } {
+  const matches = [...text.matchAll(/(?:^|\n)(#{1,6})\s+(Sources?|Citations?)\s*\n/gi)];
+  const match = matches.at(-1);
+  if (match?.index === undefined || match.index === 0) return { body: text };
+  return {
+    body: text.slice(0, match.index).trimEnd(),
+    sources: text.slice(match.index + (match[0].startsWith("\n") ? 1 : 0)).trim(),
+  };
+}
+
+export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent }: {
+  text: string;
+  agentIdForHandle?(handle: string): string | undefined;
+  onOpenAgent?(agentId: string): void;
+}): JSX.Element {
+  const { body, sources } = splitMessageSources(text);
+  return <>
+    <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{body}</ChatMarkdown>
+    {sources ? <Box component="aside" aria-label="Sources" sx={{ mt: 1.25, pt: 1, borderTop: 1, borderColor: "divider", color: "text.secondary", "& h1, & h2, & h3, & h4, & h5, & h6": { fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: ".06em" }, "& p, & li": { fontSize: "0.82rem" } }}>
+      <ChatMarkdown>{sources}</ChatMarkdown>
+    </Box> : null}
+  </>;
+}
+
+export function ChatMessageBody({ text, agentIdForHandle, onOpenAgent }: {
+  text: string;
+  agentIdForHandle?(handle: string): string | undefined;
+  onOpenAgent?(agentId: string): void;
+}): JSX.Element {
+  const collapsible = isLongChatMessage(text);
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <Box>
+      <Box
+        sx={collapsible && !expanded ? {
+          maxHeight: "22rem",
+          overflow: "hidden",
+          maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
+        } : undefined}
+      >
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+      </Box>
+      {collapsible ? (
+        <Button
+          size="small"
+          color="inherit"
+          startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
+          sx={{ mt: 0.5 }}
+        >
+          {expanded ? "Show less" : "Show full message"}
+        </Button>
+      ) : null}
+    </Box>
+  );
+}
+
 export function UserMessageLabel(): JSX.Element {
   return (
     <Typography
@@ -392,6 +468,7 @@ export function ChatPane({
   onOpenAgent,
   onReact,
   onReply,
+  scrollStorageKey,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -399,18 +476,30 @@ export function ChatPane({
   onOpenAgent?(agentId: string): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
+  scrollStorageKey?: string;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowNewMessages = useRef(true);
+  const restoredScrollKey = useRef<string>();
 
   useLayoutEffect(() => {
-    if (scrollRef.current && shouldFollowNewMessages.current) {
+    if (!scrollRef.current) return;
+    if (scrollStorageKey && restoredScrollKey.current !== scrollStorageKey) {
+      restoredScrollKey.current = scrollStorageKey;
+      const saved = readScrollPosition(scrollStorageKey);
+      if (saved !== undefined) {
+        scrollRef.current.scrollTop = saved;
+        shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+        return;
+      }
+    }
+    if (shouldFollowNewMessages.current) {
       scrollChatToBottom(scrollRef.current);
     }
-  }, [chatMessages]);
+  }, [chatMessages, scrollStorageKey]);
 
   return (
     <Stack
@@ -421,6 +510,7 @@ export function ChatPane({
       onScroll={() => {
         if (scrollRef.current) {
           shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+          if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
       sx={{ p: 1.5, pb: 3, height: "100%", minHeight: 0, overflowY: "auto" }}
@@ -444,6 +534,10 @@ export function ChatPane({
           }}
         >
           {message.role === "user" ? <UserMessageLabel /> : null}
+          <MessageContextMenu
+            text={message.text}
+            onReply={onReply ? () => onReply(message) : undefined}
+          >
           <Box
             data-message-bubble="true"
             sx={{
@@ -472,7 +566,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{message.text}</ChatMarkdown>
+            <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
                 {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
@@ -489,6 +583,7 @@ export function ChatPane({
               </Stack> : undefined}
             />
           </Box>
+          </MessageContextMenu>
         </Box>
         );
       })}
@@ -685,6 +780,53 @@ export function LiveLogPane({
   );
 }
 
+/** Refresh-safe chronological projection of canonical execution events. */
+export function ActivityPane({ activity, connected, running }: {
+  activity: AgentActivityDto[];
+  connected: boolean;
+  running: boolean;
+}): JSX.Element {
+  const ordered = [...activity].sort((a, b) => a.seq - b.seq);
+  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent activity">
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Activity</Typography>
+      <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
+      {running ? <Chip size="small" color="info" label="Working" /> : null}
+    </Stack>
+    {ordered.length === 0 ? <Alert severity="info">Commands, tests, file changes, and tool output will appear here.</Alert> : ordered.map((item) =>
+      <Paper component="details" key={item.id} variant="outlined" sx={{ p: 1, "& > summary": { cursor: "pointer" } }}>
+        <Box component="summary">
+          <EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} />
+        </Box>
+        <Stack direction="row" spacing={1} sx={{ pl: 1.25, pt: 0.5 }}>
+          <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
+          {item.executionId ? <Typography variant="caption" color="text.secondary">Execution {item.executionId.slice(0, 8)}</Typography> : null}
+        </Stack>
+      </Paper>)}
+  </Stack>;
+}
+
+export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.Element {
+  const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
+  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
+    <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Changed Files</Typography>
+      <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
+    </Stack>
+    {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
+      <Paper component="details" key={file.path} variant="outlined" sx={{ p: 1.25, "& > summary": { cursor: "pointer" } }}>
+        <Stack component="summary" direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          <Chip size="small" label={file.kind} color={file.kind === "delete" ? "error" : file.kind === "create" ? "success" : "default"} />
+          <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{file.path}</Typography>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+          Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} execution{file.executionIds.length === 1 ? "" : "s"}
+        </Typography>
+        {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this change.</Typography>}
+      </Paper>)}
+  </Stack>;
+}
+
 function MarkdownViewer({ content }: { content: string }): JSX.Element {
   return (
     <Box
@@ -732,7 +874,7 @@ function ArtifactViewer({
   const contentQuery = useQuery({
     queryKey: ["artifact", threadId, artifact?.id],
     queryFn: () => api.getArtifact(threadId, artifact?.id ?? ""),
-    enabled: Boolean(artifact && !artifact.id.startsWith("live-artifact-")),
+    enabled: Boolean(artifact && artifact.kind !== "document" && !artifact.id.startsWith("live-artifact-")),
   });
 
   const content: ArtifactContentDto | undefined =
@@ -748,6 +890,17 @@ function ArtifactViewer({
         </Typography>
       </Box>
     );
+  }
+
+  if (artifact.kind === "document" && artifact.mediaType === "application/pdf") {
+    return <Box sx={{ p: 1.5, minWidth: 0 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifact.summary ?? artifact.path}</Typography>
+        {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open preview</Button> : null}
+        {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
+      </Stack>
+      {artifact.previewUrl ? <Box component="iframe" title={`Preview ${artifact.path}`} src={artifact.previewUrl} sx={{ width: "100%", height: { xs: "55vh", md: "66vh" }, border: 1, borderColor: "divider", borderRadius: 1, bgcolor: "background.paper" }} /> : <Alert severity="info">The PDF is still being indexed. Refresh to preview or download it.</Alert>}
+    </Box>;
   }
 
   if (contentQuery.isLoading && !content) {
@@ -856,10 +1009,13 @@ export function Composer({
   busyMentionHandles,
   allowUnmentionedSend = true,
   onSend,
+  onQueue,
+  agentResponding = false,
   onCancel,
   replyTo,
   onCancelReply,
   replyLabel,
+  draftStorageKey,
 }: {
   disabled: boolean;
   running: boolean;
@@ -875,16 +1031,23 @@ export function Composer({
   /** Whether text without a valid mention may be submitted. */
   allowUnmentionedSend?: boolean;
   onSend(text: string, files: File[]): Promise<unknown> | unknown;
+  /** Explicitly enqueue this draft instead of steering the active agent turn. */
+  onQueue?(text: string, files: File[]): Promise<unknown> | unknown;
+  /** Canonical server-owned activity; used only to reveal the explicit Queue action. */
+  agentResponding?: boolean;
   onCancel?(): void;
   replyTo?: { text: string };
   onCancelReply?(): void;
   replyLabel?: string;
+  /** Stable surface key used to preserve an unsent draft across tabs and refreshes. */
+  draftStorageKey?: string;
 }): JSX.Element {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
   const files = attachments.files;
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const previousDraftStorageKey = useRef(draftStorageKey);
   const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
@@ -909,6 +1072,17 @@ export function Composer({
   const update = (next: string) => {
     setText(next);
   };
+
+  useEffect(() => {
+    if (previousDraftStorageKey.current !== draftStorageKey) {
+      previousDraftStorageKey.current = draftStorageKey;
+      setText(draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
+    }
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    if (draftStorageKey) writeChatState(draftStorageKey, text);
+  }, [draftStorageKey, text]);
 
   const addFiles = (candidates: File[]) => {
     dispatchAttachments({ type: "add", candidates });
@@ -1006,17 +1180,23 @@ export function Composer({
     });
   };
 
-  const send = () => {
+  const submit = (handler: (message: string, selectedFiles: File[]) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
     sendingRef.current = true;
     setSendError(undefined);
-    void Promise.resolve(onSend(text.trim(), files)).then(() => {
+    void Promise.resolve(handler(text.trim(), files)).then(() => {
       update("");
       dispatchAttachments({ type: "clear" });
       setCaret(0);
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
       .finally(() => { sendingRef.current = false; });
   };
+  const send = () => submit(onSend);
+  const queue = () => {
+    if (!onQueue || files.length > 0) return;
+    submit(onQueue);
+  };
+  const showQueue = Boolean(onQueue) && shouldShowQueueControl({ text, agentResponding, disabled });
 
   return (
     <Paper
@@ -1173,6 +1353,22 @@ export function Composer({
             </ClickAwayListener>
           </Popper>
         </Box>
+        {showQueue ? (
+          <Tooltip title={files.length > 0 ? "Attachments cannot be queued while the agent is responding" : "Send after the active response finishes"}>
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!canSend || files.length > 0}
+                onClick={queue}
+                aria-label="Queue message"
+                sx={{ minHeight: 44 }}
+              >
+                Queue
+              </Button>
+            </span>
+          </Tooltip>
+        ) : null}
         {canCancel ? (
           <Tooltip title="Cancel run">
             <IconButton color="error" onClick={onCancel} aria-label="Cancel run" sx={{ minWidth: 44, minHeight: 44 }}>
