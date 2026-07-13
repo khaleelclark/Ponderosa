@@ -106,6 +106,11 @@ export interface CreateServerOptions {
     stallAfterMs?: number;
     onOwnershipState?: (context: { agentId: string; runId: string; generation: number; state: RuntimeOwnershipState }) => void;
   };
+  /** Deterministic message-claim race seam; never enabled in production configuration. */
+  messageLifecycleFaults?: {
+    beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
+    afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
+  };
 }
 
 interface ActiveRun {
@@ -271,8 +276,21 @@ function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, t
     .digest("hex");
 }
 
-function advanceMentionTrail(mentionTrail: string[], fingerprint: string): string[] {
-  return [...mentionTrail, fingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+function advanceMentionTrail(mentionTrail: string[], messageFingerprint: string): string[] {
+  return [...mentionTrail, messageFingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+}
+
+function mergeMentionTrails(deliveries: CollaborationDelivery[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const delivery of deliveries) {
+    for (const fingerprint of delivery.mentionTrail) {
+      if (seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
+      merged.push(fingerprint);
+    }
+  }
+  return merged;
 }
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
@@ -874,6 +892,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const turnDispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
   const directReplyClaims = new Set<string>();
+  const deletingAgentIds = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent =>
@@ -1169,9 +1188,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function pendingTurnFromBatch(deliveries: CollaborationDelivery[]): PendingTurn {
     const first = deliveries[0]!;
+    const mentionTrail = mergeMentionTrails(deliveries);
     return {
       ...pendingTurnFromDelivery(first),
       text: formatDeliveryBatch({ deliveries }),
+      agentMentionDepth: mentionTrail.length,
+      agentMentionTrail: mentionTrail,
       communicationEventId: undefined,
       sourceAuthorAgentId: undefined,
       collaborationDeliveryId: undefined,
@@ -1187,6 +1209,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const candidate of pending) {
       if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
       const proposed = [...batch, candidate];
+      // A batch is one causal turn. Never flatten away an earlier delivery's
+      // replay evidence just to fit the bounded lineage window; leave the
+      // candidate queued for its own subsequent turn instead.
+      if (mergeMentionTrails(proposed).length > MAX_AGENT_MENTION_REPLAY_WINDOW) break;
       const bytes = Buffer.byteLength(formatDeliveryBatch({ deliveries: proposed }), "utf8");
       if (bytes > COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes) break;
       batch.push(candidate);
@@ -2136,6 +2162,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
     const agentIds = new Set(agents.map((agent) => agent.id));
+    for (const agentId of agentIds) deletingAgentIds.add(agentId);
     const conversationIds = new Set(store.listConversations(project.id).map((master) => master.id));
     for (const agentId of agentIds) {
       const active = activeRuns.get(agentId);
@@ -2159,6 +2186,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     contextCursors.deleteAgents(agentIds);
     runLedger.deleteAgents(agentIds);
     store.deleteProject(project.id);
+    for (const agentId of agentIds) deletingAgentIds.delete(agentId);
     engineCapabilityCache.clear();
     return { deleted: true };
   });
@@ -2920,6 +2948,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const { id } = request.params;
     const subtree = store.listAgentSubtree(id);
     if (subtree.length === 0) return reply.code(404).send({ error: "agent not found" });
+    for (const agent of subtree) deletingAgentIds.add(agent.id);
     for (const agent of subtree) {
       const run = activeRuns.get(agent.id);
       if (run) {
@@ -2931,11 +2960,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const runtime = runtimeSessions.get(agent.id);
       if (runtime) {
         removePersistentRuntime(agent.id, runtime);
-        await runtime.session.close();
+        await runtime.session.close().catch(() => undefined);
       }
     }
     const deleted = store.deleteAgent(id);
-    if (!deleted) return reply.code(404).send({ error: "agent not found" });
+    if (!deleted) {
+      for (const agent of subtree) deletingAgentIds.delete(agent.id);
+      return reply.code(404).send({ error: "agent not found" });
+    }
     const deletedAgentIds = new Set(subtree.map((agent) => agent.id));
     for (const agentId of deletedAgentIds) {
       subscribers.delete(agentId);
@@ -2945,6 +2977,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     collaborationDeliveries.deleteAgents(deletedAgentIds);
     contextCursors.deleteAgents(deletedAgentIds);
     runLedger.deleteAgents(deletedAgentIds);
+    for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
     return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
   });
 
@@ -3049,6 +3082,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>(
     "/api/agents/:id/messages",
     async (request, reply) => {
+      if (deletingAgentIds.has(request.params.id)) return reply.code(404).send({ error: "agent not found" });
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "agent not found" });
       const project = store.getProject(agent.projectId);
@@ -3433,11 +3467,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
+      await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
+      // No await may be introduced between this recheck and the claim. Deletion
+      // marks the agent unavailable before its own first await.
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        return reply.code(404).send({ error: "agent not found" });
+      }
       let durableClaim: ReturnType<RunLedger["claim"]>;
       try {
         durableClaim = runLedger.claim(agent.id, runId, requestedDeliveryIds);
       } catch {
         return reply.code(409).send({ error: "agent run ownership changed; retry safely", retryable: true });
+      }
+      await opts.messageLifecycleFaults?.afterRunClaim?.({
+        agentId: agent.id,
+        runId,
+        generation: durableClaim.generation,
+      });
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "cancelled");
+        return reply.code(404).send({ error: "agent not found" });
       }
 
       if (pendingTurn.communicationEventId) {
@@ -3458,6 +3507,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } catch (error) {
         runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
         throw error;
+      }
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "cancelled");
+        return reply.code(404).send({ error: "agent not found" });
       }
       publish(agent.id, userStored);
 

@@ -3319,6 +3319,106 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("merges replay lineage from every delivery in a collaboration batch", async () => {
+    const project = store.createProject({ label: "Batch lineage", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Batch chain" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const renderedText = "#Reviewer replay from second lineage";
+    const repeatedFingerprint = createHash("sha256")
+      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
+      .digest("hex");
+    const ledger = new CollaborationDeliveryStore(dataDir);
+    ledger.queue({
+      conversationId: master.id, messageId: "batch-first", targetAgentId: author.id,
+      text: "first delivery", relayDepth: 1,
+      mentionTrail: [createHash("sha256").update("first-lineage").digest("hex")], kind: "tag",
+    });
+    ledger.queue({
+      conversationId: master.id, messageId: "batch-second", targetAgentId: author.id,
+      text: "second delivery", relayDepth: 1,
+      mentionTrail: [repeatedFingerprint], kind: "tag",
+    });
+    let replayResponse: { statusCode: number; body: string } | undefined;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "replay from second lineage" },
+      });
+      replayResponse = { statusCode: response.statusCode, body: response.body };
+    };
+
+    await app.ready();
+    await waitForRun(author.id);
+    expect(adapter.seeds.find((turn) => turn.agentId === author.id)?.prompt)
+      .toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
+    expect(replayResponse?.statusCode).toBe(400);
+    expect(JSON.parse(replayResponse!.body)).toEqual({
+      error: "the same collaboration handoff already occurred in this delivery chain",
+    });
+    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
+    await app.close();
+  });
+
+  it("splits a batch before disjoint replay lineages would exceed the bounded window", async () => {
+    const project = store.createProject({ label: "Bounded batch lineage", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Bounded batch chain" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const renderedText = "#Reviewer replay from the first full lineage";
+    const repeatedFingerprint = createHash("sha256")
+      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
+      .digest("hex");
+    const firstTrail = [
+      repeatedFingerprint,
+      ...Array.from({ length: 63 }, (_, index) =>
+        createHash("sha256").update(`first-full-lineage-${index}`).digest("hex")),
+    ];
+    const secondTrail = Array.from({ length: 64 }, (_, index) =>
+      createHash("sha256").update(`second-full-lineage-${index}`).digest("hex"));
+    const ledger = new CollaborationDeliveryStore(dataDir);
+    const first = ledger.queue({
+      conversationId: master.id, messageId: "full-batch-first", targetAgentId: author.id,
+      text: "first full delivery", relayDepth: 64, mentionTrail: firstTrail, kind: "tag", orderKey: "0001",
+    }).delivery;
+    const second = ledger.queue({
+      conversationId: master.id, messageId: "full-batch-second", targetAgentId: author.id,
+      text: "second full delivery", relayDepth: 64, mentionTrail: secondTrail, kind: "tag", orderKey: "0002",
+    }).delivery;
+    let replayResponse: { statusCode: number; body: string } | undefined;
+    const app = createServer({ dataDir, store, engines, logger: false });
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: {
+          intent: "collaboration",
+          recipientAgentIds: [reviewer.id],
+          text: "replay from the first full lineage",
+        },
+      });
+      replayResponse = { statusCode: response.statusCode, body: response.body };
+    };
+
+    await app.ready();
+    await waitForRun(author.id, 2);
+    expect(replayResponse?.statusCode).toBe(400);
+    expect(JSON.parse(replayResponse!.body)).toEqual({
+      error: "the same collaboration handoff already occurred in this delivery chain",
+    });
+    expect(adapter.seeds[0]?.prompt).not.toContain("CollaborationDeliveryBatch");
+    expect(adapter.seeds.length + adapter.continues.length).toBe(2);
+    const completed = new CollaborationDeliveryStore(dataDir);
+    expect(completed.get(first.id)?.status).toBe("acknowledged");
+    expect(completed.get(second.id)?.status).toBe("acknowledged");
+    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
+    await app.close();
+  });
+
   it("rejects invalid agent mention replay-window depths", async () => {
     const { app, agent } = await createProjectAndAgent();
 
@@ -3600,6 +3700,82 @@ describe("server chunk F", () => {
     store.rebuildProjections();
     const afterRebuild = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
     expect(afterRebuild.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("does not recreate a run claim when deletion finishes before claim creation", async () => {
+    let beforeClaimReached = false;
+    let releaseClaim!: () => void;
+    const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      messageLifecycleFaults: {
+        beforeRunClaim: async () => {
+          beforeClaimReached = true;
+          await claimGate;
+        },
+      },
+    });
+    const project = store.createProject({ label: "Pre-claim deletion race", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Pre-claim Racing", engine: "codex" });
+
+    const pendingMessage = app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "must never claim after deletion" },
+    });
+    await vi.waitFor(() => expect(beforeClaimReached).toBe(true));
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
+    expect(deleted.statusCode).toBe(200);
+    releaseClaim();
+
+    const messageResponse = await pendingMessage;
+    expect(messageResponse.statusCode).toBe(404);
+    expect(adapter.seeds).toHaveLength(0);
+    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
+      .toEqual({ cancelled: false });
+    await app.close();
+  });
+
+  it("fences a message handler whose durable claim races agent deletion", async () => {
+    let claimReached = false;
+    let releaseClaim!: () => void;
+    const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      messageLifecycleFaults: {
+        afterRunClaim: async () => {
+          claimReached = true;
+          await claimGate;
+        },
+      },
+    });
+    const project = store.createProject({ label: "Deletion race", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Racing", engine: "codex" });
+
+    const pendingMessage = app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "must never start after deletion" },
+    });
+    await vi.waitFor(() => expect(claimReached).toBe(true));
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
+    expect(deleted.statusCode).toBe(200);
+    releaseClaim();
+
+    const messageResponse = await pendingMessage;
+    expect(messageResponse.statusCode).toBe(404);
+    expect(adapter.seeds).toHaveLength(0);
+    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
+      .toEqual({ cancelled: false });
     await app.close();
   });
 

@@ -205,6 +205,10 @@ Ordinary runtime output → execution-scoped Work log
   delivery. It revokes runtime capabilities and must never requeue or respawn the
   same delivery; later queued work remains eligible to run. Genuine runtime
   failures may retain their separate bounded retry policy.
+- Collaboration delivery rejects exact replay within bounded recent causal
+  lineage, and batched deliveries preserve every constituent lineage. Do not add
+  an arbitrary total-handoff or topology cap without an observed product need;
+  healthy organizations may coordinate for as long as their agents choose.
 - Activity and Changed Files are projections of canonical execution events.
   Review may layer read-only, current Git working-tree state over that provenance;
   it never rewrites the event log or attributes unscoped changes to an agent.
