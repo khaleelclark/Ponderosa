@@ -624,7 +624,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("shares plain Master Chat requests and passively projects broadcasts into every agent audit", async () => {
+  it("shares Master Chat context without copying broadcasts into unrelated agent histories", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Shared default", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Project chat" });
@@ -663,9 +663,7 @@ describe("server chunk F", () => {
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.sender.kind === "agent" && event.text === "done")).toBe(false);
-    expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text: "#broadcast Fix the onboarding flow", communicationEventId: eventId }),
-    ]));
+    expect(store.getMessages(observer.id)).toHaveLength(0);
     expect(store.getMessages(responsible.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "Fix the onboarding flow", communicationEventId: eventId }),
     ]));
@@ -683,11 +681,10 @@ describe("server chunk F", () => {
       expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
     ]));
     expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
-    expect(store.getMessages(observer.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
-    ]));
+    expect(store.getMessages(observer.id)).toHaveLength(0);
 
-    // The public creation path backfills historical Broadcasts without a run.
+    // A future agent receives room context only when it runs; its private
+    // history starts empty and is never backfilled with organizational prose.
     const futureViaApi = await app.inject({
       method: "POST",
       url: `/api/projects/${project.id}/threads`,
@@ -695,8 +692,50 @@ describe("server chunk F", () => {
     });
     expect(futureViaApi.statusCode).toBe(200);
     const futureId = futureViaApi.json<{ id: string }>().id;
-    expect(store.getMessages(futureId).filter((message) => message.text.startsWith("#broadcast "))).toHaveLength(2);
+    expect(store.getMessages(futureId)).toHaveLength(0);
     expect(adapter.seeds.filter((turn) => turn.threadId === futureId)).toHaveLength(0);
+    await app.close();
+  });
+
+  it("isolates reused display names and deleted Master Chat context", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Isolated rooms", hostPath: repoDir });
+    const oldMaster = store.createMasterChat(project.id, { title: "Deleted room" });
+    appendBroadcast(store, project.id, oldMaster.id, "OLD ROOM SECRET MARKER");
+    const oldAgent = store.createThread(project.id, {
+      title: "Olympic", engine: "codex", masterChatId: oldMaster.id,
+    });
+    store.appendEvent(oldAgent.id, { type: "session", sessionId: "old-provider-session" });
+
+    const deleted = await app.inject({ method: "DELETE", url: `/api/master-chats/${oldMaster.id}` });
+    expect(deleted.statusCode).toBe(204);
+    const freshMaster = store.createMasterChat(project.id, { title: "Fresh room" });
+    const created = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/threads`,
+      payload: { title: "Olympic", engine: "codex", masterChatId: freshMaster.id },
+    });
+    expect(created.statusCode).toBe(200);
+    const freshAgent = created.json<{ id: string }>();
+    expect(freshAgent.id).not.toBe(oldAgent.id);
+    expect(store.resumeSessionId(freshAgent.id)).toBeUndefined();
+    expect(store.getMessages(freshAgent.id)).toHaveLength(0);
+
+    const turn = await app.inject({
+      method: "POST", url: `/api/threads/${freshAgent.id}/messages`,
+      payload: {
+        text: "Start completely fresh", sourceChannel: "main",
+        sourceMasterChatId: freshMaster.id, shareWithOrganization: true,
+      },
+    });
+    expect(turn.statusCode, turn.body).toBe(200);
+    await waitForRun(freshAgent.id);
+    const prompt = adapter.seeds.find((seed) => seed.threadId === freshAgent.id)?.prompt ?? "";
+    expect(prompt).toContain("Start completely fresh");
+    expect(prompt).not.toContain("OLD ROOM SECRET MARKER");
+    expect(adapter.continues.some((entry) => entry.threadId === freshAgent.id)).toBe(false);
+    expect(store.readCommunicationProjections(project.id).some((projection) =>
+      store.getCommunicationEvent(project.id, projection.eventId)?.masterChatId === oldMaster.id)).toBe(false);
+    expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
 
@@ -1859,10 +1898,12 @@ describe("server chunk F", () => {
     expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
     ]));
-    for (const agent of [author, reviewer, verifier]) {
-      expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ text: "#broadcast Manager-facing checkpoint." }),
-      ]));
+    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: "#broadcast Manager-facing checkpoint." }),
+    ]));
+    for (const agent of [reviewer, verifier]) {
+      expect(store.getMessages(agent.id).some((message) =>
+        message.text === "#broadcast Manager-facing checkpoint.")).toBe(false);
     }
     expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
@@ -1877,7 +1918,7 @@ describe("server chunk F", () => {
       .toEqual([collaborationEventId, collaborationEventId]);
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 4,
-      linkedProjections: 15,
+      linkedProjections: 13,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -1892,7 +1933,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 15 });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 13 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });

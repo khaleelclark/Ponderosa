@@ -98,8 +98,8 @@ prefix. Starting a message with `#broadcast` records shared informational
 context without starting an agent and retains that visible prefix. Starting with
 one or more agent `#names` creates one Direct Message with that immutable
 audience and one delivery per addressed agent. Only an explicit `#everyone`
-action may wake every agent; passively projecting a Broadcast into audit
-timelines never starts a run.
+action may wake every agent. Broadcast context is supplied from the current
+Master Chat at a turn boundary; it is not copied into private agent history.
 
 Agent `#names` in rendered message history are links to the corresponding Direct
 Agent Chat, making the visible recipient or referenced agent directly
@@ -154,9 +154,10 @@ When a user writes from this surface, the result is a Direct Message addressed t
 that agent. It remains visible in Master Chat without creating a duplicate
 canonical message.
 
-Broadcasts appear passively in every Direct Agent Chat, including agents created
-after the Broadcast. This visibility exists for debugging and shared situational
-awareness; it does not enqueue, steer, or start those agents.
+Broadcasts remain in their originating Master Chat and may be supplied as that
+room's shared context. They are never retroactively copied into a new agent's
+Direct Agent Chat. An agent's own explicit Broadcast remains visible in its audit
+timeline, but another agent's Broadcast never masquerades as local authorship.
 
 Direct Agent Chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because

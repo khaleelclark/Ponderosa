@@ -70,6 +70,11 @@ pay-per-token provider API keys.
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
+   Shared does not mean copied into every private thread. Resolve Broadcast
+   context from the current Master Chat at the turn boundary. A new thread must
+   begin with a new provider session and an empty Direct Agent history regardless
+   of display-name reuse; deleted-room events are inert and fail closed.
+
    A plain Master Chat request starts shared work. The responsible agent must use
    an explicit Broadcast for a completed answer or result, an explicit Direct
    Message for a question or private manager update, and explicit Collaboration

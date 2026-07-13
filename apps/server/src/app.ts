@@ -1243,20 +1243,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     attachments?: AssetDto[],
   ): void {
     const excluded = new Set(excludedThreadIds);
-    for (const candidate of store.listThreads(event.projectId)) {
-      if (!candidate.archived && !excluded.has(candidate.id)) projectBroadcastToAgentAudit(candidate.id, event, attachments);
-    }
-  }
-
-  function projectExistingBroadcastsToAgentAudit(threadId: string, projectId: string): void {
-    for (const event of store.readCommunicationEvents(projectId)) {
-      if (event.intent === "broadcast") {
-        const attachments = store.listMasterChats(projectId)
-          .flatMap((master) => store.getMasterChatMessages(master.id, "main"))
-          .find((message) => message.communicationEventId === event.eventId)?.attachments;
-        projectBroadcastToAgentAudit(threadId, event, attachments);
-      }
-    }
+    // A Broadcast is shared through its Master Chat context, not copied into
+    // every agent's private history. Only its actual agent author owns a local
+    // audit projection; user/system broadcasts have no individual author.
+    if (event.sender.kind !== "agent" || excluded.has(event.sender.agentId)) return;
+    const author = store.getThread(event.sender.agentId);
+    if (author && !author.archived) projectBroadcastToAgentAudit(author.id, event, attachments);
   }
 
   function subscribe(threadId: string, subscriber: Subscriber): () => void {
@@ -2745,7 +2737,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const initialMessage = request.body.initialMessage?.trim();
       let thread; try { thread = store.createThread(request.params.id, request.body); } catch { return reply.code(400).send({ error: "preset is unavailable for this project" }); }
-      projectExistingBroadcastsToAgentAudit(thread.id, thread.projectId);
       if (initialMessage) {
         let initialCommunicationEventId: string | undefined;
         if (thread.masterChatId) {
@@ -3187,8 +3178,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
 
       const fullHistory: ChatMessage[] = threadMessages(thread.id)
-        .filter((message) => request.body.sourceChannel !== "main" || !message.communicationEventId ||
-          store.getCommunicationEvent(project.id, message.communicationEventId)?.intent !== "broadcast")
+        .filter((message) => {
+          if (!message.communicationEventId) return true;
+          const communication = store.getCommunicationEvent(project.id, message.communicationEventId);
+          if (communication?.intent !== "broadcast") return true;
+          // Master Chat supplies shared Broadcast context explicitly. Individual
+          // history retains only Broadcasts actually authored by this agent.
+          return request.body.sourceChannel !== "main" && communication.sender.kind === "agent" &&
+            communication.sender.agentId === thread.id;
+        })
         .map((message) => ({
         role: message.role,
         text: message.text,
