@@ -232,6 +232,32 @@ describe("ThreadStore — canonical communication events", () => {
       .toThrow("target agent");
   });
 
+  it("preserves an agent collaborator as the visible author in the recipient audit", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex", masterChatId: room.id });
+    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", masterChatId: room.id });
+    const report: CommunicationEvent = {
+      eventId: "child-report", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "agent", agentId: child.id }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [manager.id] }, text: "Private finding",
+      createdAt: "2026-07-13T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(report);
+    store.appendMasterChatMessage(room.id, { role: "assistant", text: report.text }, child.id, "collaboration", undefined, undefined, report.eventId);
+    store.appendEvent(manager.id, { type: "user_message", text: report.text, communicationEventId: report.eventId });
+
+    expect(store.getProjectedThreadMessages(manager.id)).toEqual([
+      expect.objectContaining({
+        communicationEventId: report.eventId,
+        role: "assistant",
+        authorThreadId: child.id,
+        text: report.text,
+      }),
+    ]);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true });
+  });
+
   it("rejects self-recipient collaboration before writing the canonical ledger", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createMasterChat(project.id, { title: "Room" });

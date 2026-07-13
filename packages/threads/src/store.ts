@@ -569,11 +569,17 @@ export class ThreadStore {
         const event = events.get(projection.eventId);
         const message = projection.message;
         if (!event || !message) return [];
+        const canonicalAuthorAgentId = event.sender.kind === "agent" ? event.sender.agentId : undefined;
+        const canonicalRole = event.sender.kind === "agent"
+          ? "assistant"
+          : event.sender.kind === "user"
+            ? "user"
+            : message.role;
         return [{
           eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
-          role: message.role, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          role: canonicalRole, text: message.renderedText ?? event.text, createdAt: message.createdAt,
           ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
-          ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
+          ...(canonicalAuthorAgentId ? { authorAgentId: canonicalAuthorAgentId } : {}),
           ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
@@ -684,7 +690,7 @@ export class ThreadStore {
         const candidate = projected.get(message.id);
         const parityKey = (item: MessageDto) => JSON.stringify([
           item.id, item.communicationEventId, item.threadId, item.seq, item.role, item.text,
-          item.createdAt, item.replyTo, item.attachments ?? [],
+          item.createdAt, item.authorThreadId, item.replyTo, item.attachments ?? [],
         ]);
         if (!candidate || parityKey(candidate) !== parityKey(message)) {
           projectionReadMismatchMessageIds.push(message.id);
@@ -1141,6 +1147,8 @@ export class ThreadStore {
   }
 
   getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
+    const master = this.getMasterChat(masterChatId);
+    if (!master) return [];
     return this.db
       .select()
       .from(masterChatMessages)
@@ -1148,20 +1156,32 @@ export class ThreadStore {
       .orderBy(asc(masterChatMessages.createdAt))
       .all()
       .filter((row) => row.channel === channel)
-      .map((row) => ({
-        id: row.id,
-        communicationEventId: row.communicationEventId ?? undefined,
-        masterChatId: row.masterChatId,
-        role:
-          row.role === "assistant" || row.role === "system"
-            ? row.role
-            : "user",
-        text: row.text,
-        createdAt: row.createdAt,
-        authorThreadId: row.authorThreadId ?? undefined,
-        replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
-        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
-      }));
+      .map((row) => {
+        const communication = row.communicationEventId
+          ? this.getCommunicationEvent(master.projectId, row.communicationEventId)
+          : undefined;
+        const authorThreadId = communication?.sender.kind === "agent"
+          ? communication.sender.agentId
+          : row.authorThreadId ?? undefined;
+        const role = communication?.sender.kind === "agent"
+          ? "assistant"
+          : communication?.sender.kind === "user"
+            ? "user"
+            : row.role === "assistant" || row.role === "system"
+              ? row.role
+              : "user";
+        return {
+          id: row.id,
+          communicationEventId: row.communicationEventId ?? undefined,
+          masterChatId: row.masterChatId,
+          role,
+          text: row.text,
+          createdAt: row.createdAt,
+          authorThreadId,
+          replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
+          attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
+        };
+      });
   }
 
   /**
@@ -1436,23 +1456,33 @@ export class ThreadStore {
   }
 
   getMessages(threadId: string): MessageDto[] {
+    const projectId = this.projectIdOf(threadId);
     return this.db
       .select()
       .from(messages)
       .where(eq(messages.threadId, threadId))
       .orderBy(asc(messages.seq))
       .all()
-      .map((r) => ({
-        id: r.id,
-        communicationEventId: r.communicationEventId ?? undefined,
-        threadId: r.threadId,
-        seq: r.seq,
-        role: r.role === "user" ? "user" : "assistant",
-        text: r.text,
-        createdAt: r.createdAt,
-        replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
-        attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
-      }));
+      .map((r) => {
+        const communication = r.communicationEventId
+          ? this.getCommunicationEvent(projectId, r.communicationEventId)
+          : undefined;
+        const authorThreadId = communication?.sender.kind === "agent"
+          ? communication.sender.agentId
+          : undefined;
+        return {
+          id: r.id,
+          communicationEventId: r.communicationEventId ?? undefined,
+          threadId: r.threadId,
+          seq: r.seq,
+          role: authorThreadId ? "assistant" : r.role === "user" ? "user" : "assistant",
+          text: r.text,
+          createdAt: r.createdAt,
+          ...(authorThreadId ? { authorThreadId } : {}),
+          replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
+          attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
+        } satisfies MessageDto;
+      });
   }
 
   /**
@@ -1594,6 +1624,7 @@ export class ThreadStore {
           role: message.role,
           text: message.text,
           createdAt: message.createdAt,
+          ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(message.document ? { document: message.document } : {}),

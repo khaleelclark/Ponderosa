@@ -2483,6 +2483,8 @@ describe("server chunk F", () => {
     expect(childSeed?.prompt).toContain(`Your direct manager is the stable agent id ${parent.id}`);
     expect(childSeed?.prompt).toContain(`recipientAgentIds ["${parent.id}"]`);
     expect(childSeed?.prompt).toContain("Do not Broadcast");
+    expect(childSeed?.prompt).toContain("do not also send the user a routine completion notice");
+    expect(childSeed?.prompt).toContain("ordinary wrap-up remains in Thinking");
     expect(childSeed?.prompt).toContain("Shared policy: verify claims before reporting.");
     expect(childSeed?.prompt).toContain("Research and report back.");
 
@@ -2514,7 +2516,8 @@ describe("server chunk F", () => {
       payload: { intent: "collaboration", recipientAgentIds: [parent.id], text: "Huntsville result is ready.", idempotencyKey: "huntsville-result" },
     });
     expect(result.statusCode).toBe(200);
-    expect(store.getCommunicationEvent(project.id, result.json<{ eventId: string }>().eventId)).toMatchObject({
+    const resultEventId = result.json<{ eventId: string }>().eventId;
+    expect(store.getCommunicationEvent(project.id, resultEventId)).toMatchObject({
       intent: "collaboration",
       audience: { kind: "agents", agentIds: [parent.id] },
     });
@@ -2524,6 +2527,11 @@ describe("server chunk F", () => {
     expect(adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt).toContain(
       "Latest message for you:\n#Cedar-Breaks Huntsville result is ready.",
     );
+    expect(store.getProjectedThreadMessages(parent.id).find((message) => message.communicationEventId === resultEventId)).toMatchObject({
+      role: "assistant",
+      authorThreadId: child.id,
+      text: "#Cedar-Breaks Huntsville result is ready.",
+    });
     expect(store.getCollaborationChatDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("delivery dispatch rejected (400)") })]),
     );

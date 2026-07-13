@@ -392,7 +392,7 @@ function agentMessagingPrompt(): string[] {
     'Discover current teammates with GET "$PONDEROSA_AGENT_DIRECTORY_URL" or one stable identity with GET "$PONDEROSA_AGENT_DIRECTORY_URL/<agent-id>" using the same Bearer token.',
     "If you are a top-level agent, Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
-    "Use Collaboration for agent-to-agent coordination and direct_to_user for an additional private manager note. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
+    "Use Collaboration for agent-to-agent coordination. Use direct_to_user only for a question or private update the user themselves needs, never as an automatic completion receipt. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After asking another agent to work, end your turn. Do not poll, sleep, or remain active waiting for results. Managed agents run independently and report through Collaboration.",
     "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
@@ -438,7 +438,9 @@ function managerRelationshipPrompt(agent: Pick<ThreadDto, "managerAgentId">): st
   return [
     `You are a managed agent. Your direct manager is the stable agent id ${agent.managerAgentId}.`,
     `Send questions, interim findings, and completed results to that manager with Collaboration recipientAgentIds ["${agent.managerAgentId}"].`,
-    "You may Direct Message the user and reply to any agent that contacts you. Do not Broadcast; your manager owns organizational synthesis and publication.",
+    "You may Direct Message the user when you need the user's decision or input, have genuinely user-only information, or are replying to a user message with an answer that your manager report does not already provide.",
+    "After sending a finding or result to your manager, do not also send the user a routine completion notice, acknowledgment, or duplicate summary. End the turn; any ordinary wrap-up remains in Thinking.",
+    "You may reply to any agent that contacts you. Do not Broadcast; your manager owns organizational synthesis and publication.",
   ];
 }
 
