@@ -12,6 +12,11 @@ import type { SpawnFn } from "./process.js";
 interface ThreadResponse { thread: { id: string } }
 interface TurnResponse { turn: { id: string } }
 interface SteerResponse { turnId: string }
+interface DynamicToolCallParams {
+  tool: string;
+  namespace?: string | null;
+  arguments: unknown;
+}
 
 interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
@@ -46,6 +51,20 @@ export class CodexAppServerSession implements RuntimeSession {
       signal: opts.signal,
       spawnFn: opts.spawnFn,
       killGraceMs: opts.killGraceMs,
+      handleServerRequest: async (method, params) => {
+        if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
+          throw new Error(`unsupported server request: ${method}`);
+        }
+        const call = params as DynamicToolCallParams;
+        const result = await opts.handleDynamicToolCall({
+          name: call.namespace ? `${call.namespace}.${call.tool}` : call.tool,
+          arguments: call.arguments,
+        });
+        return {
+          success: result.success,
+          contentItems: [{ type: "inputText", text: result.text }],
+        };
+      },
     });
     await rpc.initialize();
     const response = opts.resumeSessionId
@@ -64,6 +83,12 @@ export class CodexAppServerSession implements RuntimeSession {
           sandbox: opts.sandboxMode,
           ephemeral: false,
           experimentalRawEvents: false,
+          dynamicTools: opts.dynamicTools?.map((tool) => ({
+            type: "function",
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          })) ?? null,
         });
     return new CodexAppServerSession(response.thread.id, rpc, opts.cwd);
   }
@@ -191,6 +216,23 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
       id: typeof item.id === "string" ? item.id : "mcp",
       output: JSON.stringify(item.result ?? item.error ?? ""),
       ...(item.error ? { isError: true } : {}),
+    }];
+  }
+  if (notification.method === "item/started" && item.type === "dynamicToolCall") {
+    const namespace = typeof item.namespace === "string" && item.namespace ? `${item.namespace}.` : "";
+    return [{
+      type: "tool_call",
+      id: typeof item.id === "string" ? item.id : "dynamic-tool",
+      name: `${namespace}${String(item.tool ?? "tool")}`,
+      input: item.arguments,
+    }];
+  }
+  if (notification.method === "item/completed" && item.type === "dynamicToolCall") {
+    return [{
+      type: "tool_result",
+      id: typeof item.id === "string" ? item.id : "dynamic-tool",
+      output: JSON.stringify(item.contentItems ?? []),
+      ...(item.success === false ? { isError: true } : {}),
     }];
   }
   return [];

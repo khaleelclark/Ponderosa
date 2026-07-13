@@ -1448,18 +1448,23 @@ export function Composer({
         zIndex: 3,
         borderTop: 1,
         borderColor: "divider",
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
         px: { xs: 0.75, sm: 1 },
         pt: { xs: 0.75, sm: 1 },
         pb: "max(8px, env(safe-area-inset-bottom))",
       }}
     >
       {replyTo ? (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5 }}>
-          <Box sx={{ minWidth: 0, flex: 1, borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5, minWidth: 0, width: "100%", overflow: "hidden" }}>
+          <Box sx={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
             <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
-            <Typography variant="body2" noWrap>{replyTo.text}</Typography>
+            <Typography variant="body2" noWrap title={replyTo.text} sx={{ display: "block", maxWidth: "100%" }}>
+              {replyPreviewText(replyTo.text)}
+            </Typography>
           </Box>
-          <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
+          <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply} sx={{ flex: "0 0 auto" }}><CloseIcon fontSize="small" /></IconButton>
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
@@ -1627,4 +1632,9 @@ export function Composer({
       </Stack>
     </Paper>
   );
+}
+
+export function replyPreviewText(text: string, maxLength = 240): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }

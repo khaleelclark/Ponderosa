@@ -86,20 +86,8 @@ export function conversationJsonPath(
   return path.join(conversationDir(dataDir, projectId, conversationId), "conversation.json");
 }
 
-export function conversationMessagesPath(
-  dataDir: string,
-  projectId: string,
-  conversationId: string,
-): string {
-  return path.join(conversationDir(dataDir, projectId, conversationId), "messages.jsonl");
-}
-
-export function collaborationMessagesPath(
-  dataDir: string,
-  projectId: string,
-  conversationId: string,
-): string {
-  return path.join(conversationDir(dataDir, projectId, conversationId), "collaboration.jsonl");
+export function messageDispatchesPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "message-dispatches.jsonl");
 }
 
 export function agentsDir(dataDir: string, projectId: string): string {

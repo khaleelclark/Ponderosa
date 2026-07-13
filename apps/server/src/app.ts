@@ -45,7 +45,7 @@ import type {
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
 } from "@ponderosa/core";
-import { deriveCommunicationBehavior } from "@ponderosa/core";
+import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore } from "@ponderosa/agents";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
@@ -379,8 +379,9 @@ function agentMessagingPrompt(): string[] {
   return [
     "Communication scope is immutable. Choose the scope when creating a message; never try to promote or re-scope an existing message.",
     "Your ordinary runtime response is execution-scoped output saved in your Work log tab. It is never delivered to the manager, agents, or organization.",
-    "If anyone should receive information, you must explicitly use the messaging tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
-    'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
+    "If anyone should receive information, explicitly call the Ponderosa send-message tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
+    "The tool is named ponderosa_send_message in Codex and mcp__ponderosa__send_message in Claude.",
+    'Example arguments: {"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}.',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
     'For a long-form result, keep text as a concise summary and add document: {"title":"Useful title","content":"# Full Markdown...","mediaType":"text/markdown"}. Documents may be up to 256 KiB; do not truncate them into the 4,000-character summary.',
     'A document inherits the message intent exactly. Broadcast documents are organizational; direct_to_user and collaboration documents remain private to that audience.',
@@ -398,6 +399,27 @@ function agentMessagingPrompt(): string[] {
     "Accumulate results across those notification turns and update the manager once every expected task has reported.",
     'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
   ];
+}
+
+function sharedRequestCompletionPrompt(): string {
+  return [
+    "Required completion contract for this Project-chat request:",
+    "- Before this run ends, send exactly one broadcast containing the final answer, completed result, or material blocker for the user.",
+    "- The user cannot see your ordinary runtime response; it is audit-only Work log output.",
+    "- Do not finish with only ordinary response text. Do not broadcast an acknowledgment or promise to act.",
+    "- Use this exact completion action, replacing <final answer> with your concise result:",
+    '  Call the Ponderosa send-message tool with {"intent":"broadcast","text":"<final answer>"}.',
+  ].join("\n");
+}
+
+function directUserRequestCompletionPrompt(): string {
+  return [
+    "Required completion contract for this private user-to-agent request:",
+    "- Before this run ends, send exactly one direct_to_user message containing the answer, completed result, question, or material blocker for the user.",
+    "- Do not Broadcast this private reply. Broadcast is only for a separate durable organizational update you intentionally choose to make.",
+    "- The user cannot see your ordinary runtime response; it is audit-only Work log output.",
+    "- Call the Ponderosa send-message tool with {\"intent\":\"direct_to_user\",\"text\":\"<reply>\"}.",
+  ].join("\n");
 }
 
 function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
@@ -1644,11 +1666,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
-    const legacyChannel = legacyBody?.channel;
-    if (legacyChannel) {
-      return reply.code(410).send({ error: "legacy channel routing is retired; send an explicit communication intent" });
-    }
     const intent = request.body?.intent;
     const text = request.body?.text?.trim();
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
@@ -1739,7 +1756,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? capability.plainSharedReply ? stripLeadingScopeTag(text, "broadcast") : renderScopedMessage("broadcast", text)
       : text;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
-    if (intent === "collaboration" && !legacyChannel) {
+    if (intent === "collaboration") {
       const recipientAgentIds = request.body.recipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
         return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
@@ -1756,14 +1773,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (resolved.error) return reply.code(400).send({ error: resolved.error });
       renderedText = resolved.text;
       routing = { intents: resolved.intents, blocked: [] };
-    } else if (intent === "collaboration") {
-      routing = resolveCollaborationIntents(
-        capability.conversationId,
-        capability.agentId,
-        text,
-        capability.mentionDepth,
-        capability.mentionTrail,
-      );
     }
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const communication = recordCommunication(intent === "broadcast" ? {
@@ -3062,6 +3071,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : undefined;
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && (shareWithOrganization || serverCommunicationEventId));
+      const directUserTaskTurn = Boolean(
+        communication?.schemaVersion === 2 &&
+        communication.intent === "user_dm" &&
+        communication.sender.kind === "user" &&
+        (communication.audience.kind === "user_agent"
+          ? communication.audience.agentId === agent.id
+          : communication.audience.agentIds.includes(agent.id)),
+      );
       let sourceMasterMessage: ConversationMessageDto | undefined;
       if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
         if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
@@ -3330,7 +3347,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ? { ...directoryAgent, status: "running", currentActivity: directoryAgent.currentActivity ?? "Working" }
           : directoryAgent),
       };
-      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const completionContract = sharedTaskTurn
+        ? sharedRequestCompletionPrompt()
+        : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
+      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       let durableClaim: ReturnType<RunLedger["claim"]>;
@@ -3409,6 +3429,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: request.body.model,
               effort: request.body.effort,
               environment,
+              dynamicTools: [PONDEROSA_SEND_MESSAGE_TOOL],
+              handleDynamicToolCall: async (call) => {
+                if (call.name !== PONDEROSA_SEND_MESSAGE_TOOL.name) {
+                  return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
+                }
+                const response = await app.inject({
+                  method: "POST",
+                  url: "/api/agent-messages",
+                  headers: {
+                    authorization: `Bearer ${messageCapability}`,
+                    "content-type": "application/json",
+                  },
+                  payload: JSON.stringify(call.arguments ?? {}),
+                });
+                return {
+                  success: response.statusCode >= 200 && response.statusCode < 300,
+                  text: response.body,
+                };
+              },
               signal: controller.signal,
             });
             persistentRuntime = {
