@@ -1,25 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { pickAgentName } from "../src/parkNames";
+import { AGENT_NAMES, pickAgentName } from "../src/parkNames";
 
-describe("pickAgentName", () => {
+describe("agent name configuration", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("uses complete names for multi-word National Parks", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0);
-    expect(pickAgentName(["Acadia", "American Samoa", "Arches", "Badlands", "Big Bend", "Biscayne", "Black Canyon of the Gunnison"]))
-      .toBe("Bryce Canyon");
-
-    expect(pickAgentName(["Acadia", "American Samoa", "Arches", "Badlands"])).toBe("Big Bend");
+  it("contains all 433 National Park System units", () => {
+    expect(AGENT_NAMES).toHaveLength(433);
+    expect(new Set(AGENT_NAMES.map((name) => name.toLowerCase())).size).toBe(433);
+    expect(AGENT_NAMES).toContain("Antietam National Battlefield");
+    expect(AGENT_NAMES).toContain("Gates of the Arctic National Park");
+    expect(AGENT_NAMES).toContain("Wolf Trap National Park for the Performing Arts");
   });
 
-  it("includes National Monuments in the available name pool", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.999999);
-    expect(pickAgentName([])).toBe("Wupatki");
+  it("selects a complete configured name", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    expect(pickAgentName([])).toBe("Antietam National Battlefield");
   });
 
-  it("treats complete names as taken case-insensitively", () => {
+  it("treats configured names as taken case-insensitively", () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
-    expect(pickAgentName([" acadia "])).toBe("American Samoa");
+    expect(pickAgentName([" antietam national battlefield "])).toBe("Big Hole National Battlefield");
   });
 });
