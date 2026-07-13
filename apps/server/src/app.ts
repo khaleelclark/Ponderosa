@@ -108,6 +108,7 @@ export interface CreateServerOptions {
   };
   /** Deterministic message-claim race seam; never enabled in production configuration. */
   messageLifecycleFaults?: {
+    beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
     afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
   };
 }
@@ -242,7 +243,6 @@ type Subscriber = (stored: StoredLogEvent) => void;
 // collaboration-hop limit: a healthy organization may have a long-running
 // exchange, while exact repeated handoffs still need cycle protection.
 const MAX_AGENT_MENTION_REPLAY_WINDOW = 64;
-const MAX_REPEATED_AGENT_ROUTE_HANDOFFS = 16;
 const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
@@ -276,46 +276,18 @@ function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, t
     .digest("hex");
 }
 
-function mentionRouteFingerprint(authorAgentId: string, targetAgentId: string): string {
-  return createHash("sha256")
-    .update("route\0")
-    .update(authorAgentId)
-    .update("\0")
-    .update(targetAgentId)
-    .digest("hex");
-}
-
-function repeatedRouteCount(mentionTrail: string[], routeFingerprint: string): number {
-  return mentionTrail.reduce((count, fingerprint) => count + Number(fingerprint === routeFingerprint), 0);
-}
-
-function advanceMentionTrail(
-  mentionTrail: string[],
-  messageFingerprint: string,
-  routeFingerprint: string,
-): string[] {
-  return [...mentionTrail, messageFingerprint, routeFingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+function advanceMentionTrail(mentionTrail: string[], messageFingerprint: string): string[] {
+  return [...mentionTrail, messageFingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
 }
 
 function mergeMentionTrails(deliveries: CollaborationDelivery[]): string[] {
-  const maximumCounts = new Map<string, number>();
-  for (const delivery of deliveries) {
-    const deliveryCounts = new Map<string, number>();
-    for (const fingerprint of delivery.mentionTrail) {
-      deliveryCounts.set(fingerprint, (deliveryCounts.get(fingerprint) ?? 0) + 1);
-    }
-    for (const [fingerprint, count] of deliveryCounts) {
-      maximumCounts.set(fingerprint, Math.max(maximumCounts.get(fingerprint) ?? 0, count));
-    }
-  }
   const merged: string[] = [];
-  const emittedCounts = new Map<string, number>();
+  const seen = new Set<string>();
   for (const delivery of deliveries) {
     for (const fingerprint of delivery.mentionTrail) {
-      const emitted = emittedCounts.get(fingerprint) ?? 0;
-      if (emitted >= (maximumCounts.get(fingerprint) ?? 0)) continue;
+      if (seen.has(fingerprint)) continue;
+      seen.add(fingerprint);
       merged.push(fingerprint);
-      emittedCounts.set(fingerprint, emitted + 1);
     }
   }
   return merged.slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
@@ -1568,18 +1540,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const blocked: Array<{ title: string; reason: string }> = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target.id, text);
-      const routeFingerprint = mentionRouteFingerprint(authorAgentId, target.id);
       const blockedReason = authorAgentId && mentionTrail.includes(fingerprint)
         ? "the same handoff already occurred in this collaboration chain"
-        : authorAgentId && repeatedRouteCount(mentionTrail, routeFingerprint) >= MAX_REPEATED_AGENT_ROUTE_HANDOFFS
-          ? "the same agent route repeated 16 times in the recent collaboration chain"
         : undefined;
       if (blockedReason) {
         blocked.push({ title: target.title, reason: blockedReason });
       } else {
-        const nextTrail = authorAgentId
-          ? advanceMentionTrail(mentionTrail, fingerprint, routeFingerprint)
-          : [];
+        const nextTrail = authorAgentId ? advanceMentionTrail(mentionTrail, fingerprint) : [];
         intents.push({
           targetAgentId: target.id,
           relayDepth: nextTrail.length,
@@ -1611,14 +1578,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const intents: ConversationDeliveryIntent[] = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target!.id, renderedText);
-      const routeFingerprint = mentionRouteFingerprint(authorAgentId, target!.id);
       if (mentionTrail.includes(fingerprint)) {
         return { text, intents: [], error: "the same collaboration handoff already occurred in this delivery chain" };
       }
-      if (repeatedRouteCount(mentionTrail, routeFingerprint) >= MAX_REPEATED_AGENT_ROUTE_HANDOFFS) {
-        return { text, intents: [], error: "the same agent route repeated 16 times in the recent collaboration chain" };
-      }
-      const nextTrail = advanceMentionTrail(mentionTrail, fingerprint, routeFingerprint);
+      const nextTrail = advanceMentionTrail(mentionTrail, fingerprint);
       intents.push({
         targetAgentId: target!.id,
         relayDepth: nextTrail.length,
@@ -3500,6 +3463,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
+      await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
+      // No await may be introduced between this recheck and the claim. Deletion
+      // marks the agent unavailable before its own first await.
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        return reply.code(404).send({ error: "agent not found" });
+      }
       let durableClaim: ReturnType<RunLedger["claim"]>;
       try {
         durableClaim = runLedger.claim(agent.id, runId, requestedDeliveryIds);

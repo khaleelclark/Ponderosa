@@ -3279,8 +3279,8 @@ describe("server chunk F", () => {
       .find((item) => item.text === "#Reviewer thirteenth useful handoff");
     expect(message).toBeDefined();
     const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(message!.id, reviewer.id);
-    expect(delivery).toMatchObject({ relayDepth: 14 });
-    expect(delivery?.mentionTrail).toHaveLength(14);
+    expect(delivery).toMatchObject({ relayDepth: 13 });
+    expect(delivery?.mentionTrail).toHaveLength(13);
     await app.close();
   });
 
@@ -3319,44 +3319,6 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("blocks varied-text ping-pong after one stable agent route repeats excessively", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Route protection", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Route chain" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const routeFingerprint = createHash("sha256")
-      .update("route\0").update(author.id).update("\0").update(reviewer.id)
-      .digest("hex");
-    let routeResponse: { statusCode: number; body: string } | undefined;
-    adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "new wording on the same route" },
-      });
-      routeResponse = { statusCode: response.statusCode, body: response.body };
-    };
-
-    await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/messages`,
-      payload: {
-        text: "continue the ping-pong",
-        agentMentionDepth: 16,
-        agentMentionTrail: Array.from({ length: 16 }, () => routeFingerprint),
-      },
-    });
-    await waitForRun(author.id);
-    expect(routeResponse?.statusCode).toBe(400);
-    expect(JSON.parse(routeResponse!.body)).toEqual({
-      error: "the same agent route repeated 16 times in the recent collaboration chain",
-    });
-    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
-    await app.close();
-  });
-
   it("merges replay lineage from every delivery in a collaboration batch", async () => {
     const project = store.createProject({ label: "Batch lineage", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Batch chain" });
@@ -3366,9 +3328,6 @@ describe("server chunk F", () => {
     const repeatedFingerprint = createHash("sha256")
       .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
       .digest("hex");
-    const routeFingerprint = createHash("sha256")
-      .update("route\0").update(author.id).update("\0").update(reviewer.id)
-      .digest("hex");
     const ledger = new CollaborationDeliveryStore(dataDir);
     ledger.queue({
       conversationId: master.id, messageId: "batch-first", targetAgentId: author.id,
@@ -3377,32 +3336,29 @@ describe("server chunk F", () => {
     });
     ledger.queue({
       conversationId: master.id, messageId: "batch-second", targetAgentId: author.id,
-      text: "second delivery", relayDepth: 17,
-      mentionTrail: [...Array.from({ length: 16 }, () => routeFingerprint), repeatedFingerprint], kind: "tag",
+      text: "second delivery", relayDepth: 1,
+      mentionTrail: [repeatedFingerprint], kind: "tag",
     });
-    const replayResponses: Array<{ statusCode: number; body: string }> = [];
+    let replayResponse: { statusCode: number; body: string } | undefined;
     const app = createServer({ dataDir, store, engines, logger: false });
     adapter.beforeResponse = async (opts) => {
-      for (const text of ["replay from second lineage", "new wording on the batched route"]) {
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/agent-messages",
-          headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-          payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text },
-        });
-        replayResponses.push({ statusCode: response.statusCode, body: response.body });
-      }
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "replay from second lineage" },
+      });
+      replayResponse = { statusCode: response.statusCode, body: response.body };
     };
 
     await app.ready();
     await waitForRun(author.id);
     expect(adapter.seeds.find((turn) => turn.agentId === author.id)?.prompt)
       .toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(replayResponses.map((response) => response.statusCode)).toEqual([400, 400]);
-    expect(replayResponses.map((response) => JSON.parse(response.body))).toEqual([
-      { error: "the same collaboration handoff already occurred in this delivery chain" },
-      { error: "the same agent route repeated 16 times in the recent collaboration chain" },
-    ]);
+    expect(replayResponse?.statusCode).toBe(400);
+    expect(JSON.parse(replayResponse!.body)).toEqual({
+      error: "the same collaboration handoff already occurred in this delivery chain",
+    });
     expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
     await app.close();
   });
@@ -3688,6 +3644,44 @@ describe("server chunk F", () => {
     store.rebuildProjections();
     const afterRebuild = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
     expect(afterRebuild.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("does not recreate a run claim when deletion finishes before claim creation", async () => {
+    let beforeClaimReached = false;
+    let releaseClaim!: () => void;
+    const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      messageLifecycleFaults: {
+        beforeRunClaim: async () => {
+          beforeClaimReached = true;
+          await claimGate;
+        },
+      },
+    });
+    const project = store.createProject({ label: "Pre-claim deletion race", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Pre-claim Racing", engine: "codex" });
+
+    const pendingMessage = app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "must never claim after deletion" },
+    });
+    await vi.waitFor(() => expect(beforeClaimReached).toBe(true));
+    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
+    expect(deleted.statusCode).toBe(200);
+    releaseClaim();
+
+    const messageResponse = await pendingMessage;
+    expect(messageResponse.statusCode).toBe(404);
+    expect(adapter.seeds).toHaveLength(0);
+    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
+      .toEqual({ cancelled: false });
     await app.close();
   });
 
