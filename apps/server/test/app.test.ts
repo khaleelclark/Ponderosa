@@ -3054,9 +3054,11 @@ describe("server chunk F", () => {
     const childId = created.run.childThreadId!;
     const childDetail = (await app.inject({ method: "GET", url: `/api/threads/${childId}` })).json();
     expect(childDetail).toMatchObject({
-      thread: { id: childId, title: "Safe review", masterChatId: master.id },
+      thread: { id: childId, title: "Safe review", masterChatId: master.id, organizationalParentAgentId: thread.id },
       messages: [{ role: "user", text: "Delegated task: Safe review" }],
     });
+    store.updateAgentOrganization(childId, { parentAgentId: null });
+    expect(new DelegationStore(dataDir).get(created.run.id)).toMatchObject({ parentThreadId: thread.id, childThreadId: childId });
     expect(JSON.stringify(childDetail)).not.toContain("private secret task");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
@@ -3379,6 +3381,28 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });
     for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
     expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+    await app.close();
+  });
+
+  it("updates mutable agent organization through stable IDs without rewriting delegation provenance", async () => {
+    const { app, project, thread: parent } = await createProjectAndThread();
+    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex" });
+
+    const demoted = await app.inject({
+      method: "PUT", url: `/api/threads/${child.id}/organizational-parent`, payload: { parentAgentId: parent.id },
+    });
+    expect(demoted.statusCode).toBe(200);
+    expect(demoted.json()).toMatchObject({ id: child.id, organizationalParentAgentId: parent.id });
+    await app.inject({ method: "PUT", url: `/api/threads/${grandchild.id}/organizational-parent`, payload: { parentAgentId: child.id } });
+    const cycle = await app.inject({ method: "PUT", url: `/api/threads/${parent.id}/organizational-parent`, payload: { parentAgentId: grandchild.id } });
+    expect(cycle.statusCode).toBe(400);
+    expect(cycle.json()).toMatchObject({ error: expect.stringMatching(/cycle/) });
+
+    const promoted = await app.inject({ method: "PUT", url: `/api/threads/${child.id}/organizational-parent`, payload: { parentAgentId: null } });
+    expect(promoted.statusCode).toBe(200);
+    expect(promoted.json()).not.toHaveProperty("organizationalParentAgentId");
+    expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(3);
     await app.close();
   });
 });

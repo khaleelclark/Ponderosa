@@ -4,6 +4,48 @@
 
 import type { AgentLifecycleStatus, TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 
+export interface AgentOrganizationRow {
+  agent: ThreadDto;
+  depth: number;
+}
+
+/** Stable parent-first roster order. Missing/cyclic parentage fails closed to top level. */
+export function orderedAgentOrganization(agents: ThreadDto[]): AgentOrganizationRow[] {
+  const active = agents.filter((agent) => !agent.archived);
+  const byId = new Map(active.map((agent) => [agent.id, agent]));
+  const children = new Map<string, ThreadDto[]>();
+  const roots: ThreadDto[] = [];
+  const hasSafeParentChain = (agent: ThreadDto): boolean => {
+    const seen = new Set<string>([agent.id]);
+    let parentId = agent.organizationalParentAgentId;
+    while (parentId) {
+      if (seen.has(parentId)) return false;
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      if (!parent) return false;
+      parentId = parent.organizationalParentAgentId;
+    }
+    return Boolean(agent.organizationalParentAgentId);
+  };
+  for (const agent of active) {
+    const parentId = agent.organizationalParentAgentId;
+    if (!parentId || !hasSafeParentChain(agent)) roots.push(agent);
+    else children.set(parentId, [...(children.get(parentId) ?? []), agent]);
+  }
+  const sort = (items: ThreadDto[]) => items.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+  const rows: AgentOrganizationRow[] = [];
+  const visited = new Set<string>();
+  const visit = (agent: ThreadDto, depth: number) => {
+    if (visited.has(agent.id)) return;
+    visited.add(agent.id);
+    rows.push({ agent, depth });
+    for (const child of sort([...(children.get(agent.id) ?? [])])) visit(child, depth + 1);
+  };
+  for (const root of sort(roots)) visit(root, 0);
+  for (const agent of sort(active.filter((candidate) => !visited.has(candidate.id)))) visit(agent, 0);
+  return rows;
+}
+
 export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {
   return agent.masterChatIds.includes(masterChatId);
 }

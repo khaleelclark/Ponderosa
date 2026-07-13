@@ -32,6 +32,7 @@ export const threads = sqliteTable("threads", {
   updatedAt: text("updated_at").notNull(),
   // SQLite has no boolean: 0/1.
   archived: integer("archived").notNull().default(0),
+  organizationalParentAgentId: text("organizational_parent_agent_id"),
   presetSnapshotJson: text("preset_snapshot_json"),
 });
 

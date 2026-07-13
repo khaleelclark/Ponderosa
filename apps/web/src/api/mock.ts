@@ -509,6 +509,13 @@ export const mockApi: PonderosaApi = {
     thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
+  updateAgentOrganization(threadId, organization) {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (!thread) return Promise.reject(new Error("Thread not found"));
+    thread.organizationalParentAgentId = organization.parentAgentId ?? undefined;
+    thread.updatedAt = new Date().toISOString();
+    return delay(thread);
+  },
   deleteThread(threadId) {
     const index = threads.findIndex((candidate) => candidate.id === threadId);
     if (index !== -1) threads.splice(index, 1);

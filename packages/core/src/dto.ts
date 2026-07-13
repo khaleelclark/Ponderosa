@@ -238,6 +238,8 @@ export interface ThreadDto {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Mutable organizational reporting line; separate from immutable delegation provenance. */
+  organizationalParentAgentId?: string;
   /** Immutable-at-spawn preset provenance and guidance snapshot. */
   presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
 }
@@ -260,6 +262,21 @@ export interface CreateThreadRequest {
 export interface UpdateThreadRequest {
   title?: string;
   archived?: boolean;
+}
+
+/** PUT /api/threads/:id/organizational-parent body. Null promotes to top level. */
+export interface UpdateAgentOrganizationRequest {
+  parentAgentId: string | null;
+}
+
+/** Canonical append-only record for mutable agent organization. */
+export interface AgentOrganizationEvent {
+  eventId: string;
+  type: "organizational_parent_changed";
+  projectId: string;
+  agentId: string;
+  parentAgentId: string | null;
+  createdAt: string;
 }
 
 /** PUT /api/threads/:id/master-chat-memberships body. Replaces membership atomically. */

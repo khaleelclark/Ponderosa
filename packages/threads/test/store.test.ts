@@ -756,6 +756,52 @@ describe("artifactContentPath", () => {
   });
 });
 
+describe("agent organizational hierarchy", () => {
+  it("persists mutable reporting lines canonically without allowing invalid parents or cycles", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex" });
+    const foreign = store.createThread(otherProject.id, { title: "Foreign", engine: "codex" });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex" });
+    store.updateThread(archived.id, { archived: true });
+
+    expect(store.updateAgentOrganization(child.id, { parentAgentId: parent.id }))
+      .toMatchObject({ organizationalParentAgentId: parent.id });
+    expect(store.updateAgentOrganization(grandchild.id, { parentAgentId: child.id }))
+      .toMatchObject({ organizationalParentAgentId: child.id });
+    expect(() => store.updateAgentOrganization(parent.id, { parentAgentId: grandchild.id })).toThrow(/cycle/);
+    expect(() => store.updateAgentOrganization(parent.id, { parentAgentId: parent.id })).toThrow(/itself/);
+    expect(() => store.updateAgentOrganization(child.id, { parentAgentId: foreign.id })).toThrow(/same project/);
+    expect(() => store.updateAgentOrganization(child.id, { parentAgentId: archived.id })).toThrow(/active/);
+    expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(2);
+
+    store.rebuildProjections();
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBe(parent.id);
+    expect(store.getThread(grandchild.id)?.organizationalParentAgentId).toBe(child.id);
+
+    expect(store.updateAgentOrganization(child.id, { parentAgentId: null })?.organizationalParentAgentId).toBeUndefined();
+    expect(store.readAgentOrganizationEvents(project.id).at(-1)).toMatchObject({ agentId: child.id, parentAgentId: null });
+  });
+
+  it("promotes organizational children when a parent is archived or deleted", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex" });
+    store.updateAgentOrganization(child.id, { parentAgentId: parent.id });
+    store.updateThread(parent.id, { archived: true });
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+
+    const replacement = store.createThread(project.id, { title: "Replacement", engine: "codex" });
+    store.updateAgentOrganization(child.id, { parentAgentId: replacement.id });
+    expect(store.deleteThread(replacement.id)).toBe(true);
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+    store.rebuildProjections();
+    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+  });
+});
+
 describe("agent presets", () => {
   it("seeds editable suggestions, persists CRUD canonically, and snapshots guidance at spawn", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });

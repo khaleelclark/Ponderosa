@@ -13,6 +13,7 @@ import type {
   UpdateMasterChatRequest,
   UpdateThreadRequest,
   UpdateThreadMasterChatMembershipsRequest,
+  UpdateAgentOrganizationRequest,
   EngineDto,
   ImageAttachmentDto,
   ProjectDto,
@@ -199,6 +200,12 @@ export const realApi: PonderosaApi = {
     return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/master-chat-memberships`, {
       method: "PUT",
       body: JSON.stringify(membership satisfies UpdateThreadMasterChatMembershipsRequest),
+    });
+  },
+  updateAgentOrganization(threadId, organization) {
+    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/organizational-parent`, {
+      method: "PUT",
+      body: JSON.stringify(organization satisfies UpdateAgentOrganizationRequest),
     });
   },
   async deleteThread(threadId) {

@@ -1,5 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import {
   Alert,
   Box,
@@ -27,13 +28,13 @@ import type { MasterChatDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
-import { subagentRootsByParentThread, type SubagentTreeNode } from "../subagents";
 import {
   agentActivity,
   agentBelongsToMasterChat,
   agentStatusColor,
   agentStatusLabel,
   relativeTime,
+  orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
 
@@ -60,42 +61,7 @@ export function AgentsTab({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
-  const subagentsByParent = subagentRootsByParentThread(subagents);
-  const childThreadIds = new Set(subagents.flatMap((run) => run.childThreadId ? [run.childThreadId] : []));
-
-  const subagentColor = (status: SubagentRunDto["status"]): "default" | "info" | "success" | "error" => {
-    if (status === "running") return "info";
-    if (status === "completed") return "success";
-    if (status === "failed" || status === "blocked") return "error";
-    return "default";
-  };
-
-  const renderSubagent = (run: SubagentTreeNode): JSX.Element => (
-    <Box key={run.id} sx={{ ml: { xs: 1, sm: 4 }, minWidth: 0, borderLeft: 2, borderColor: "divider", pl: 1 }}>
-      <Paper
-        component={ButtonBase}
-        disabled={!run.childThreadId}
-        onClick={() => run.childThreadId && onOpenAgent(run.childThreadId)}
-        aria-label={`Open subagent ${run.displayLabel}`}
-        variant="outlined"
-        sx={{ p: 1.25, bgcolor: "action.hover", display: "block", width: "100%", maxWidth: "100%", boxSizing: "border-box", overflow: "hidden", textAlign: "left" }}
-      >
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-          <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, flexBasis: { xs: "100%", sm: 140 }, overflowWrap: "anywhere" }}>{run.displayLabel}</Typography>
-          <Chip size="small" variant="outlined" color="secondary" label="Subagent" />
-          <Chip size="small" label={run.status} color={subagentColor(run.status)} />
-        </Stack>
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 0.75, alignItems: "center" }}>
-          <Chip size="small" variant="outlined" label={run.runtime} />
-          <Typography variant="caption" color="text.secondary">
-            depth {run.depth} · updated {relativeTime(run.updatedAt)}
-          </Typography>
-        </Stack>
-        {run.failure ? <Alert severity="error" sx={{ mt: 1 }}>{run.failure.message}</Alert> : null}
-      </Paper>
-      {run.children.map(renderSubagent)}
-    </Box>
-  );
+  const delegationByChildId = new Map(subagents.flatMap((run) => run.childThreadId ? [[run.childThreadId, run] as const] : []));
 
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteThread(agentId),
@@ -106,12 +72,18 @@ export function AgentsTab({
       setPendingDelete(undefined);
     },
   });
+  const promoteAgent = useMutation({
+    mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { parentAgentId: null }),
+    onSuccess: (updated) => {
+      void queryClient.invalidateQueries({ queryKey: ["threads", updated.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["thread", updated.id] });
+    },
+  });
 
   const masterName = (id: string | undefined): string =>
     id ? (masterChats.find((master) => master.id === id)?.title ?? "Unknown master chat") : "Unassigned";
 
-  const filtered = agents.filter((agent) => {
-    if (childThreadIds.has(agent.id)) return false;
+  const filtered = orderedAgentOrganization(agents).filter(({ agent }) => {
     const status = statusByAgentId.get(agent.id) ?? "idle";
     if (statusFilter === "unassigned" && agent.masterChatIds.length > 0) {
       return false;
@@ -233,12 +205,15 @@ export function AgentsTab({
           </Alert>
         ) : (
           <Stack spacing={1.25}>
-            {filtered.map((agent) => {
+            {filtered.map(({ agent, depth }) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const activity = agentActivity(detailByAgentId.get(agent.id));
-              const delegated = subagentsByParent.get(agent.id) ?? [];
+              const delegation = delegationByChildId.get(agent.id);
+              const organizationParent = agent.organizationalParentAgentId
+                ? agents.find((candidate) => candidate.id === agent.organizationalParentAgentId)
+                : undefined;
               return (
-                <Stack key={agent.id} spacing={0.75}>
+                <Stack key={agent.id} spacing={0.75} sx={{ ml: { xs: Math.min(depth, 2), sm: depth * 3 }, borderLeft: depth ? 2 : 0, borderColor: "divider", pl: depth ? 1 : 0 }}>
                   <Paper
                     variant="outlined"
                     sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
@@ -262,6 +237,8 @@ export function AgentsTab({
                       sx={{ mt: 0.75, alignItems: "center" }}
                     >
                       <Chip size="small" variant="outlined" label={agent.activeEngine} />
+                      {organizationParent ? <Chip size="small" color="secondary" variant="outlined" label={`Reports to ${organizationParent.title}`} /> : null}
+                      {delegation ? <Chip size="small" variant="outlined" label={`Delegated · ${delegation.status}`} /> : null}
                       <Chip
                         size="small"
                         variant="outlined"
@@ -296,8 +273,20 @@ export function AgentsTab({
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
+                  {organizationParent ? (
+                    <Tooltip title="Promote to top level">
+                      <IconButton
+                        size="small"
+                        aria-label={`Promote agent ${agent.title} to top level`}
+                        disabled={promoteAgent.isPending}
+                        onClick={() => promoteAgent.mutate(agent.id)}
+                        sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}
+                      >
+                        <ArrowUpwardIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
                   </Paper>
-                  {delegated.map(renderSubagent)}
                 </Stack>
               );
             })}

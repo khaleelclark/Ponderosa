@@ -18,6 +18,7 @@ import type {
   UpdateMasterChatRequest,
   UpdateThreadRequest,
   UpdateThreadMasterChatMembershipsRequest,
+  UpdateAgentOrganizationRequest,
   EngineDto,
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
@@ -103,6 +104,7 @@ export interface PonderosaApi {
   createAgent(projectId: string, masterChatId: string | undefined, options: CreateAgentOptions): Promise<ThreadDto>;
   updateThread(threadId: string, patch: UpdateThreadRequest): Promise<ThreadDto>;
   updateThreadMasterChatMemberships(threadId: string, request: UpdateThreadMasterChatMembershipsRequest): Promise<ThreadDto>;
+  updateAgentOrganization(threadId: string, request: UpdateAgentOrganizationRequest): Promise<ThreadDto>;
   deleteThread(threadId: string): Promise<void>;
   getThread(threadId: string): Promise<ThreadDetailDto>;
   listEngines(): Promise<EngineDto[]>;

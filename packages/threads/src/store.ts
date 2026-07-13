@@ -19,6 +19,7 @@ import type {
   ArtifactDto,
   AgentActivityDto,
   ChangedFileDto,
+  AgentOrganizationEvent,
   CommunicationEvent,
   CommunicationContextClassification,
   CommunicationProjection,
@@ -47,6 +48,7 @@ import type {
   UpdateThreadMasterChatMembershipsRequest,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
+  UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
@@ -89,6 +91,7 @@ import {
   masterChatsDir,
   projectJsonPath,
   agentPresetsPath,
+  agentOrganizationEventsPath,
   projectsDir,
   projectDir,
   threadDir,
@@ -1213,6 +1216,12 @@ export class ThreadStore {
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
+    if (archived && row.archived !== 1) {
+      for (const child of this.listThreads(row.projectId).filter((thread) => thread.organizationalParentAgentId === id)) {
+        this.updateAgentOrganization(child.id, { parentAgentId: null });
+      }
+      if (this.getThread(id)?.organizationalParentAgentId) this.updateAgentOrganization(id, { parentAgentId: null });
+    }
     this.db
       .update(threads)
       .set({ title, archived: archived ? 1 : 0, updatedAt: now })
@@ -1227,6 +1236,49 @@ export class ThreadStore {
       updatedAt: now,
     });
     return this.rowToThreadDto(id);
+  }
+
+  /**
+   * Change only the mutable organizational reporting line. Delegation records
+   * remain immutable historical provenance and are never rewritten here.
+   */
+  updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): ThreadDto | undefined {
+    const agent = this.getThread(id);
+    if (!agent) return undefined;
+    if (agent.archived) throw new Error("archived agents cannot be reorganized");
+    const parentId = input.parentAgentId ?? undefined;
+    if (parentId === id) throw new Error("an agent cannot report to itself");
+    if (parentId) {
+      const parent = this.getThread(parentId);
+      if (!parent || parent.projectId !== agent.projectId) throw new Error("organizational parent must belong to the same project");
+      if (parent.archived) throw new Error("organizational parent must be active");
+      const visited = new Set<string>([id]);
+      let cursor: ThreadDto | undefined = parent;
+      while (cursor) {
+        if (visited.has(cursor.id)) throw new Error("organizational parent would create a cycle");
+        if (cursor.projectId !== agent.projectId || cursor.archived) throw new Error("organizational ancestry must contain active agents from the same project");
+        visited.add(cursor.id);
+        cursor = cursor.organizationalParentAgentId ? this.getThread(cursor.organizationalParentAgentId) : undefined;
+      }
+    }
+    if (agent.organizationalParentAgentId === parentId) return agent;
+    const event: AgentOrganizationEvent = {
+      eventId: randomUUID(), type: "organizational_parent_changed", projectId: agent.projectId,
+      agentId: id, parentAgentId: parentId ?? null, createdAt: new Date().toISOString(),
+    };
+    appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, agent.projectId), [event]);
+    this.db.update(threads).set({
+      organizationalParentAgentId: parentId ?? null,
+      updatedAt: event.createdAt,
+    }).where(eq(threads.id, id)).run();
+    return this.getThread(id);
+  }
+
+  readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
+    if (!this.getProject(projectId)) throw new Error("organization project not found");
+    return readRepairableJsonl<AgentOrganizationEvent>(
+      agentOrganizationEventsPath(this.dataDir, projectId), "agent organization log", true,
+    );
   }
 
   updateThreadMasterChatMemberships(
@@ -1260,6 +1312,12 @@ export class ThreadStore {
   deleteThread(id: string): boolean {
     const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
     if (!row) return false;
+
+    // Promote direct organizational children before their parent disappears so
+    // the canonical projection never retains a dangling reporting line.
+    for (const child of this.listThreads(row.projectId).filter((thread) => thread.organizationalParentAgentId === id)) {
+      this.updateAgentOrganization(child.id, { parentAgentId: null });
+    }
 
     this.db.transaction((tx) => {
       tx.delete(events).where(eq(events.threadId, id)).run();
@@ -1625,6 +1683,12 @@ export class ThreadStore {
       const resolved = new Map<string, AgentPresetDto>();
       for (const event of readJsonLines<PresetEvent>(agentPresetsPath(this.dataDir, projectId))) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
+      const organizationalParents = new Map<string, string | null>();
+      for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {
+        if (event.projectId === projectId && event.type === "organizational_parent_changed") {
+          organizationalParents.set(event.agentId, event.parentAgentId);
+        }
+      }
 
       const mDir = masterChatsDir(this.dataDir, projectId);
       if (existsSync(mDir)) {
@@ -1689,6 +1753,7 @@ export class ThreadStore {
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             archived: t.archived ? 1 : 0,
+            organizationalParentAgentId: organizationalParents.get(t.id) ?? null,
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
           })
           .run();
@@ -1710,6 +1775,7 @@ export class ThreadStore {
         const ops = projectAll(threadId, stored, t.activeEngine);
         this.applyOps(threadId, projectId, ops);
       }
+      this.sanitizeOrganizationProjection(projectId);
     }
   }
 
@@ -1785,6 +1851,27 @@ export class ThreadStore {
     });
   }
 
+  private sanitizeOrganizationProjection(projectId: string): void {
+    const agents = this.listThreads(projectId);
+    const byId = new Map(agents.map((agent) => [agent.id, agent]));
+    for (const agent of agents) {
+      if (!agent.organizationalParentAgentId) continue;
+      const seen = new Set<string>([agent.id]);
+      let parentId: string | undefined = agent.organizationalParentAgentId;
+      let valid = true;
+      while (parentId) {
+        const parent = byId.get(parentId);
+        if (!parent || parent.archived || seen.has(parentId)) {
+          valid = false;
+          break;
+        }
+        seen.add(parentId);
+        parentId = parent.organizationalParentAgentId;
+      }
+      if (!valid) this.db.update(threads).set({ organizationalParentAgentId: null }).where(eq(threads.id, agent.id)).run();
+    }
+  }
+
   private projectIdOf(threadId: string): string {
     const row = this.db
       .select({ projectId: threads.projectId })
@@ -1850,6 +1937,7 @@ export class ThreadStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
+      organizationalParentAgentId: row.organizationalParentAgentId ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
   }

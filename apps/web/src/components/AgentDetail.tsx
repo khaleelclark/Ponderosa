@@ -8,6 +8,7 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
+import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import {
   Alert,
   Box,
@@ -86,6 +87,23 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
 
+export function eligibleOrganizationParents(agent: ThreadDto, agents: ThreadDto[]): ThreadDto[] {
+  const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
+  const isDescendant = (candidate: ThreadDto): boolean => {
+    const seen = new Set<string>();
+    let parentId = candidate.organizationalParentAgentId;
+    while (parentId && !seen.has(parentId)) {
+      if (parentId === agent.id) return true;
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.organizationalParentAgentId;
+    }
+    return false;
+  };
+  return agents
+    .filter((candidate) => candidate.id !== agent.id && candidate.projectId === agent.projectId && !candidate.archived && !isDescendant(candidate))
+    .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+}
+
 export function AgentDetail({
   agentId,
   engines,
@@ -127,6 +145,8 @@ export function AgentDetail({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const [organizationParentId, setOrganizationParentId] = useState("");
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
   const [primaryMasterChatId, setPrimaryMasterChatId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
@@ -230,6 +250,17 @@ export function AgentDetail({
     },
   });
 
+  const updateOrganization = useMutation({
+    mutationFn: () => api.updateAgentOrganization(agentId, { parentAgentId: organizationParentId || null }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
+        current ? { ...current, thread: updated } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["threads", updated.projectId] });
+      setOrganizationOpen(false);
+    },
+  });
+
   if (threadQuery.isLoading) {
     return (
       <Box sx={{ p: 3 }} role="status" aria-live="polite">
@@ -269,6 +300,9 @@ export function AgentDetail({
     ? masterChats.find((candidate) => candidate.id === detail.thread.masterChatId)
     : undefined;
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
+  const organizationalParent = detail.thread.organizationalParentAgentId
+    ? agents.find((candidate) => candidate.id === detail.thread.organizationalParentAgentId)
+    : undefined;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
     (text: string, files: File[]) => {
@@ -370,12 +404,22 @@ export function AgentDetail({
             <Chip
               size="small"
               color="secondary"
-              label="Subagent"
+              label="Delegated"
               onClick={subagent.parentThreadId ? () => onOpenAgent(subagent.parentThreadId!) : undefined}
               clickable={Boolean(subagent.parentThreadId)}
               sx={{ minHeight: compactViewport ? 44 : undefined }}
             />
           ) : null}
+          {organizationalParent ? (
+            <Chip
+              size="small"
+              variant="outlined"
+              icon={<AccountTreeOutlinedIcon />}
+              label={`Reports to ${organizationalParent.title}`}
+              clickable
+              onClick={() => onOpenAgent(organizationalParent.id)}
+            />
+          ) : <Chip size="small" variant="outlined" icon={<AccountTreeOutlinedIcon />} label="Top level" />}
           <Chip
             size="small"
             label={stream.connected ? "Live" : "Reconnecting"}
@@ -417,6 +461,12 @@ export function AgentDetail({
             setMembershipOpen(true);
           }}>
             Assign chats
+          </Button>
+          <Button size="small" variant="outlined" startIcon={<AccountTreeOutlinedIcon />} sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
+            setOrganizationParentId(detail.thread.organizationalParentAgentId ?? "");
+            setOrganizationOpen(true);
+          }}>
+            Organize
           </Button>
           {compactViewport ? (
             <Button
@@ -624,6 +674,35 @@ export function AgentDetail({
           <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
           <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryMasterChatId)} onClick={() => updateMemberships.mutate()}>
             Save membership
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={organizationOpen} onClose={() => setOrganizationOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Agent organization</DialogTitle>
+        <DialogContent>
+          <FormControl fullWidth sx={{ mt: 1 }}>
+            <InputLabel id="agent-organizational-parent-label">Reports to</InputLabel>
+            <Select
+              labelId="agent-organizational-parent-label"
+              value={organizationParentId}
+              label="Reports to"
+              onChange={(event) => setOrganizationParentId(event.target.value)}
+            >
+              <MenuItem value="">Top level</MenuItem>
+              {eligibleOrganizationParents(detail.thread, agents)
+                .map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.title}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+            This changes only the organizational view. Delegation and execution history remain attached to their original runs.
+          </Typography>
+          {updateOrganization.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateOrganization.error)}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOrganizationOpen(false)} disabled={updateOrganization.isPending}>Cancel</Button>
+          <Button variant="contained" disabled={updateOrganization.isPending} onClick={() => updateOrganization.mutate()}>
+            Save organization
           </Button>
         </DialogActions>
       </Dialog>

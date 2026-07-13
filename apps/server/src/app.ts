@@ -40,6 +40,7 @@ import type {
   ThreadDto,
   MessageReferenceDto,
   RuntimeSession,
+  UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type MasterChatDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
@@ -1862,6 +1863,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             effort,
             presetId: preset?.id,
           });
+          store.updateAgentOrganization(child.id, { parentAgentId: capability.threadId });
           const initialText = `Delegated task: ${spawned.run.delegationSummary}`;
           const communication = recordCommunication({
             eventId: randomUUID(), schemaVersion: 1, projectId: masterChat.projectId, masterChatId: masterChat.id,
@@ -2802,6 +2804,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     async (request, reply) => {
       const thread = store.updateThread(request.params.id, request.body ?? {});
       return thread ?? reply.code(404).send({ error: "thread not found" });
+    },
+  );
+
+  app.put<{ Params: { id: string }; Body: UpdateAgentOrganizationRequest }>(
+    "/api/threads/:id/organizational-parent",
+    async (request, reply) => {
+      if (!request.body || !("parentAgentId" in request.body) ||
+        (request.body.parentAgentId !== null && (typeof request.body.parentAgentId !== "string" || !request.body.parentAgentId.trim()))) {
+        return reply.code(400).send({ error: "parentAgentId must be a stable agent ID or null" });
+      }
+      try {
+        const thread = store.updateAgentOrganization(request.params.id, request.body);
+        return thread ?? reply.code(404).send({ error: "thread not found" });
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid agent organization" });
+      }
     },
   );
 
