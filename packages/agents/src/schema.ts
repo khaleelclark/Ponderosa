@@ -3,7 +3,7 @@
 // (AGENTS.md invariant: everything derives from the log). If a projection is
 // wrong, fix the projector, don't write here as a second source.
 
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -59,21 +59,6 @@ export const agentConversationMemberships = sqliteTable("agent_conversation_memb
   position: integer("position").notNull(),
 });
 
-export const conversationMessages = sqliteTable("conversation_messages", {
-  id: text("id").primaryKey(),
-  communicationEventId: text("communication_event_id"),
-  conversationId: text("conversation_id").notNull(),
-  role: text("role").notNull(), // "user" | "assistant" | "system"
-  text: text("text").notNull(),
-  createdAt: text("created_at").notNull(),
-  // Set when an agent (agent) posts back into the group chat; null for the manager.
-  authorAgentId: text("author_agent_id"),
-  // Project chat is user-facing. Collaboration is opt-in and only sent to explicit agents.
-  channel: text("channel").notNull().default("main"),
-  replyToJson: text("reply_to_json"),
-  attachmentsJson: text("attachments_json"),
-});
-
 export const messages = sqliteTable("messages", {
   id: text("id").primaryKey(),
   communicationEventId: text("communication_event_id"),
@@ -87,7 +72,7 @@ export const messages = sqliteTable("messages", {
 });
 
 export const runs = sqliteTable("runs", {
-  id: text("id").primaryKey(),
+  id: text("id").notNull(),
   agentId: text("agent_id").notNull(),
   title: text("title").notNull(),
   status: text("status").notNull(),
@@ -97,7 +82,7 @@ export const runs = sqliteTable("runs", {
   startedAt: text("started_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   completedAt: text("completed_at"),
-});
+}, (table) => [primaryKey({ columns: [table.agentId, table.id] })]);
 
 export const workItems = sqliteTable("work_items", {
   id: text("id").primaryKey(),
@@ -134,7 +119,6 @@ export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
 export type AgentConversationMembershipRow = typeof agentConversationMemberships.$inferSelect;
-export type ConversationMessageRow = typeof conversationMessages.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type WorkItemRow = typeof workItems.$inferSelect;

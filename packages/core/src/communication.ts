@@ -224,12 +224,13 @@ export interface CommunicationProjection {
     /** Server-rendered text may add display handles without changing event text. */
     renderedText?: string;
     createdAt: string;
+    /** Stable per-project materialization order for identical timestamps. */
+    orderKey?: string;
     /** Direct-audit ordering key from the canonical agent log. */
     sequence?: number;
     authorAgentId?: string;
-    replyToLegacyMessageId?: string;
     attachmentIds?: string[];
-    /** Immutable snapshots required to retire legacy chat storage reads. */
+    /** Immutable presentation snapshots owned by the canonical projection. */
     replyTo?: MessageReferenceDto;
     attachments?: ImageAttachmentDto[];
   };
@@ -243,9 +244,9 @@ export interface ProjectedCommunicationMessage {
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
+  orderKey?: string;
   sequence?: number;
   authorAgentId?: string;
-  replyToLegacyMessageId?: string;
   attachmentIds?: string[];
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
@@ -281,7 +282,7 @@ export interface CommunicationContextClassification {
   classifiedBy: CommunicationActor;
 }
 
-/** Shadow-migration parity report computed from canonical disk records. */
+/** Integrity report computed entirely from canonical communication records. */
 export interface CommunicationReconciliationReport {
   projectId: string;
   canonicalEvents: number;
@@ -291,9 +292,5 @@ export interface CommunicationReconciliationReport {
   orphanProjectionEventIds: string[];
   missingClassificationEventIds: string[];
   missingProjectionMetadataEventIds: string[];
-  /** Legacy room rows that cannot yet be served from a canonical event. */
-  unlinkedLegacyMessageIds: string[];
-  /** Linked room rows whose authoritative materialization is not DTO-equivalent. */
-  projectionReadMismatchMessageIds: string[];
   ok: boolean;
 }

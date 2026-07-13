@@ -42,6 +42,12 @@ pay-per-token provider API keys.
    log is the source of truth and SQLite is rebuildable from it. Project chat,
    Team chat, Agent chat, and output views must project canonical
    events rather than create duplicate conversations or competing state.
+   A canonical Communication owns authored text, identity, scope, and audience.
+   A `MessageDispatch` owns only durable placement/routing evidence such as the
+   stable message ID, rendered label, reply snapshot, attachments, recipients,
+   receipt, and FIFO key. There is no separate Project/Team chat-message log or
+   SQLite room-message table. Every public chat API reads the same communication
+   projection ledger.
 
 4. **Communication scope is explicit and immutable.** A communication is created
    as exactly one of:

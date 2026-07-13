@@ -1644,11 +1644,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const legacyBody = request.body as unknown as { channel?: AgentMessageChannel; text?: string; idempotencyKey?: string };
-    const legacyChannel = legacyBody?.channel;
-    if (legacyChannel) {
-      return reply.code(410).send({ error: "legacy channel routing is retired; send an explicit communication intent" });
-    }
     const intent = request.body?.intent;
     const text = request.body?.text?.trim();
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
@@ -1739,7 +1734,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? capability.plainSharedReply ? stripLeadingScopeTag(text, "broadcast") : renderScopedMessage("broadcast", text)
       : text;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
-    if (intent === "collaboration" && !legacyChannel) {
+    if (intent === "collaboration") {
       const recipientAgentIds = request.body.recipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
         return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
@@ -1756,14 +1751,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (resolved.error) return reply.code(400).send({ error: resolved.error });
       renderedText = resolved.text;
       routing = { intents: resolved.intents, blocked: [] };
-    } else if (intent === "collaboration") {
-      routing = resolveCollaborationIntents(
-        capability.conversationId,
-        capability.agentId,
-        text,
-        capability.mentionDepth,
-        capability.mentionTrail,
-      );
     }
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const communication = recordCommunication(intent === "broadcast" ? {

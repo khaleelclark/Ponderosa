@@ -80,7 +80,6 @@ import {
   artifacts,
   agentPresets,
   events,
-  conversationMessages,
   conversations,
   messages,
   projects,
@@ -96,13 +95,12 @@ import {
   dbPath,
   eventsPath,
   conversationDir,
-  collaborationMessagesPath,
   communicationEventsPath,
   communicationContextPath,
   communicationProjectionsPath,
+  messageDispatchesPath,
   runTriggersPath,
   conversationJsonPath,
-  conversationMessagesPath,
   conversationsDir,
   projectJsonPath,
   agentPresetsPath,
@@ -177,20 +175,20 @@ export interface ConversationDeliveryIntent {
   attachmentIds?: string[];
 }
 
-interface ConversationMessageJson {
-  id: string;
-  communicationEventId?: string;
+interface MessageDispatchRecord {
+  schemaVersion: 1;
+  eventId: string;
+  messageId: string;
   conversationId: string;
+  channel: ConversationChannel;
   role: "user" | "assistant" | "system";
-  text: string;
+  renderedText: string;
   createdAt: string;
-  authorAgentId?: string | null;
-  channel?: ConversationChannel;
+  authorAgentId?: string;
   deliveryIntents?: ConversationDeliveryIntent[];
   messageReceiptKey?: string;
-  deliveryOrderKey?: string;
+  orderKey: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
-  directReplyToAuthorAgentId?: string;
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
@@ -211,42 +209,22 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
-/**
- * V1 intentionally drops test-only pre-V1 identity and Task-era layouts. Preserve
- * managed source workspaces, but clear Ponderosa-owned state before projections.
- */
-function resetPreV1Layout(dataDir: string): void {
-  if (!existsSync(dataDir)) return;
-  let preV1 = false;
-  const databaseFile = dbPath(dataDir);
-  if (existsSync(databaseFile)) {
-    let database: Database.Database | undefined;
-    try {
-      database = new Database(databaseFile, { readonly: true, fileMustExist: true });
-      preV1 = Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('threads', 'tasks') LIMIT 1").get());
-    } catch {
-      preV1 = true;
-    } finally {
-      database?.close();
-    }
-  }
-  if (!preV1) {
-    const root = join(dataDir, "projects");
-    preV1 = existsSync(root) && readdirSync(root).some((projectId) =>
-      existsSync(join(root, projectId, "threads")));
-  }
-  if (!preV1) return;
+/** V1 is a destructive test-data cutover; managed source workspaces are external. */
+function ensureV1Layout(dataDir: string): void {
+  const marker = join(dataDir, ".ponderosa-layout-version");
+  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === "1") return;
+  mkdirSync(dataDir, { recursive: true });
   for (const entry of readdirSync(dataDir)) {
-    if (entry === "workspaces") continue;
+    if (entry === "workspaces" || entry === ".ponderosa-layout-version") continue;
     rmSync(join(dataDir, entry), { recursive: true, force: true });
   }
+  writeFileSync(marker, "1\n", "utf8");
 }
 
 function communicationMessageProjection(agentId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
   const event = stored.event;
   if (event.type === "user_message") return {
     messageId: projectedMessageId(agentId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.replyTo ? { replyToLegacyMessageId: event.replyTo.messageId } : {}),
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
     ...(event.replyTo ? { replyTo: event.replyTo } : {}),
     ...(event.attachments?.length ? { attachments: event.attachments } : {}),
@@ -291,9 +269,10 @@ export class AgentStore {
     byId: Map<string, RunTriggerRecord>;
     byEventAgent: Map<string, RunTriggerRecord>;
   }>();
+  private readonly messageDispatchCache = new Map<string, MessageDispatchRecord[]>();
 
   constructor(private readonly dataDir: string) {
-    resetPreV1Layout(dataDir);
+    ensureV1Layout(dataDir);
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(projectsDir(dataDir), { recursive: true });
     this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
@@ -306,7 +285,7 @@ export class AgentStore {
     // on startup closes the crash window where a durable append succeeded but
     // the projection write did not, and keeps every read path deterministic.
     this.rebuildProjections();
-    for (const project of this.listProjects()) this.repairCommunicationProjectionLedger(project.id);
+    for (const project of this.listProjects()) this.ensureCommunicationProjectionLedger(project.id);
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -327,6 +306,32 @@ export class AgentStore {
     cached = { events, byId, byIdempotency };
     this.communicationEventCache.set(projectId, cached);
     return cached;
+  }
+
+  private messageDispatches(projectId: string): MessageDispatchRecord[] {
+    let cached = this.messageDispatchCache.get(projectId);
+    if (cached) return cached;
+    cached = readRepairableJsonl<MessageDispatchRecord>(
+      messageDispatchesPath(this.dataDir, projectId),
+      "message dispatch log",
+      true,
+    );
+    this.messageDispatchCache.set(projectId, cached);
+    return cached;
+  }
+
+  private appendMessageDispatch(projectId: string, record: MessageDispatchRecord): void {
+    const records = this.messageDispatches(projectId);
+    const existing = records.find((candidate) => candidate.messageId === record.messageId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error("message dispatch collision");
+      return;
+    }
+    if (record.messageReceiptKey && records.some((candidate) => candidate.messageReceiptKey === record.messageReceiptKey)) {
+      throw new Error("message dispatch receipt collision");
+    }
+    appendFsyncedJsonl(messageDispatchesPath(this.dataDir, projectId), [record]);
+    records.push(record);
   }
 
   private contextIndex(projectId: string): Map<string, CommunicationContextClassification> {
@@ -638,9 +643,6 @@ export class AgentStore {
           ...(!existing.message.authorAgentId && projection.message.authorAgentId
             ? { authorAgentId: projection.message.authorAgentId }
             : {}),
-          ...(!existing.message.replyToLegacyMessageId && projection.message.replyToLegacyMessageId
-            ? { replyToLegacyMessageId: projection.message.replyToLegacyMessageId }
-            : {}),
           ...(!existing.message.attachmentIds?.length && projection.message.attachmentIds?.length
             ? { attachmentIds: projection.message.attachmentIds }
             : {}),
@@ -702,43 +704,44 @@ export class AgentStore {
         return [{
           eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
           role: canonicalRole, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          ...(message.orderKey ? { orderKey: message.orderKey } : {}),
           ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
           ...(canonicalAuthorAgentId ? { authorAgentId: canonicalAuthorAgentId } : {}),
-          ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
         }];
       })
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
+      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
   }
 
-  private repairCommunicationProjectionLedger(projectId: string): void {
+  private ensureCommunicationProjectionLedger(projectId: string): void {
     const canonicalEvents = this.readCommunicationEvents(projectId);
     for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
     const canonicalIds = new Set(canonicalEvents.map((event) => event.eventId));
     if (canonicalIds.size === 0) return;
-    for (const master of this.listConversations(projectId)) {
-      for (const [surface, file] of [
-        ["conversation", conversationMessagesPath(this.dataDir, projectId, master.id)],
-        ["collaboration_view", collaborationMessagesPath(this.dataDir, projectId, master.id)],
-      ] as const) {
-        for (const message of readJsonLines<ConversationMessageJson>(file)) {
-          if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
-            this.appendCommunicationProjection(projectId, {
-              eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
-              message: {
-                messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
-                ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
-                ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
-                ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
-                ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-                ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-              },
-            });
-          }
-        }
+    for (const dispatch of this.messageDispatches(projectId)) {
+      if (!canonicalIds.has(dispatch.eventId)) continue;
+      const projection: CommunicationProjection = {
+        eventId: dispatch.eventId,
+        surface: dispatch.channel === "collaboration" ? "collaboration_view" : "conversation",
+        projectionKey: dispatch.conversationId,
+        projectedAt: dispatch.createdAt,
+        message: {
+          messageId: dispatch.messageId,
+          role: dispatch.role,
+          renderedText: dispatch.renderedText,
+          createdAt: dispatch.createdAt,
+          orderKey: dispatch.orderKey,
+          ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
+          ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
+          ...(dispatch.replyTo ? { replyTo: dispatch.replyTo } : {}),
+          ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+        },
+      };
+      if (this.communicationProjectionAllowed(projectId, projection)) {
+        this.appendCommunicationProjection(projectId, projection);
       }
     }
     for (const agent of this.listAgents(projectId)) {
@@ -759,7 +762,7 @@ export class AgentStore {
     }
   }
 
-  /** Compare canonical events with legacy disk projections during shadow mode. */
+  /** Verify that canonical events, classifications, and projections agree. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
     const canonical = this.readCommunicationEvents(projectId).filter((event) =>
       !event.conversationId || Boolean(this.getConversation(event.conversationId)));
@@ -784,45 +787,6 @@ export class AgentStore {
     const missingProjectionMetadataEventIds = [...new Set(projections
       .filter((projection) => (projection.surface === "conversation" || projection.surface === "collaboration_view" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
-    const unlinkedLegacyMessageIds: string[] = [];
-    const projectionReadMismatchMessageIds: string[] = [];
-    for (const master of this.listConversations(projectId)) {
-      for (const channel of ["main", "collaboration"] as const) {
-        const legacy = this.getConversationMessages(master.id, channel);
-        const projected = new Map(this.getProjectedConversationMessages(master.id, channel).map((message) => [message.id, message]));
-        for (const message of legacy) {
-          if (!message.communicationEventId) {
-            unlinkedLegacyMessageIds.push(message.id);
-            continue;
-          }
-          const candidate = projected.get(message.id);
-          const parityKey = (item: ConversationMessageDto) => JSON.stringify([
-            item.id, item.communicationEventId, item.conversationId, item.role, item.text, item.createdAt,
-            item.authorAgentId, item.replyTo, item.attachments ?? [],
-          ]);
-          if (!candidate || parityKey(candidate) !== parityKey(message)) {
-            projectionReadMismatchMessageIds.push(message.id);
-          }
-        }
-      }
-    }
-    for (const agent of this.listAgents(projectId)) {
-      const projected = new Map(this.getProjectedAgentMessages(agent.id).map((message) => [message.id, message]));
-      for (const message of this.getMessages(agent.id)) {
-        if (!message.communicationEventId) {
-          unlinkedLegacyMessageIds.push(message.id);
-          continue;
-        }
-        const candidate = projected.get(message.id);
-        const parityKey = (item: MessageDto) => JSON.stringify([
-          item.id, item.communicationEventId, item.agentId, item.seq, item.role, item.text,
-          item.createdAt, item.authorAgentId, item.replyTo, item.attachments ?? [],
-        ]);
-        if (!candidate || parityKey(candidate) !== parityKey(message)) {
-          projectionReadMismatchMessageIds.push(message.id);
-        }
-      }
-    }
     return {
       projectId,
       canonicalEvents: canonical.length,
@@ -832,12 +796,9 @@ export class AgentStore {
       orphanProjectionEventIds,
       missingClassificationEventIds,
       missingProjectionMetadataEventIds,
-      unlinkedLegacyMessageIds,
-      projectionReadMismatchMessageIds,
       ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
         orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
-        missingProjectionMetadataEventIds.length === 0 && unlinkedLegacyMessageIds.length === 0 &&
-        projectionReadMismatchMessageIds.length === 0,
+        missingProjectionMetadataEventIds.length === 0,
     };
   }
 
@@ -919,6 +880,7 @@ export class AgentStore {
     this.contextClassificationCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.runTriggerCache.delete(id);
+    this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
       this.logs.delete(agentId);
       this.states.delete(agentId);
@@ -1093,7 +1055,6 @@ export class AgentStore {
     const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationIds.includes(id));
     this.db.transaction((tx) => {
       tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.conversationId, id)).run();
-      tx.delete(conversationMessages).where(eq(conversationMessages.conversationId, id)).run();
       tx.delete(conversations).where(eq(conversations.id, id)).run();
     });
     for (const agent of linkedAgents) {
@@ -1116,20 +1077,17 @@ export class AgentStore {
   ): ConversationMessageDto | undefined {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return undefined;
-    if (communicationEventId && !this.communicationProjectionAllowed(conversation.projectId, {
+    if (!communicationEventId) {
+      throw new Error("conversation projections require a canonical communication event");
+    }
+    if (!this.communicationProjectionAllowed(conversation.projectId, {
       eventId: communicationEventId,
       surface: channel === "collaboration" ? "collaboration_view" : "conversation",
       projectionKey: conversationId,
     })) {
-      // Validate the canonical communication before writing a legacy placement.
-      // A failed projection must never leave a chat row that startup repair will
-      // later reinterpret or reject.
       throw new Error("communication scope cannot project to requested surface");
     }
     const now = new Date().toISOString();
-    const messagePath = channel === "collaboration"
-      ? collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId)
-      : conversationMessagesPath(this.dataDir, conversation.projectId, conversationId);
     const replyTo = input.replyToMessageId
       ? this.conversationReference(conversationId, channel, input.replyToMessageId)
       : undefined;
@@ -1142,42 +1100,43 @@ export class AgentStore {
         throw new Error("direct reply target is not an active agent in this conversation");
       }
     }
-    const message: ConversationMessageJson = {
-      id: randomUUID(),
-      ...(communicationEventId ? { communicationEventId } : {}),
+    const dispatch: MessageDispatchRecord = {
+      schemaVersion: 1,
+      eventId: communicationEventId,
+      // One authored communication has one stable identity across every view.
+      messageId: communicationEventId,
       conversationId,
-      role: input.role ?? "user",
-      text: input.text,
-      createdAt: now,
-      authorAgentId: authorAgentId ?? null,
       channel,
+      role: input.role ?? "user",
+      renderedText: input.text,
+      createdAt: now,
+      ...(authorAgentId ? { authorAgentId } : {}),
       ...(replyTo ? { replyTo } : {}),
-      ...(input.directReplyToAuthorAgentId ? { directReplyToAuthorAgentId: input.directReplyToAuthorAgentId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
-      ...(channel === "collaboration"
-        ? { deliveryOrderKey: this.nextDeliveryOrderKey(now) }
-        : {}),
+      orderKey: this.nextDeliveryOrderKey(now),
     };
-    mkdirSync(conversationDir(this.dataDir, conversation.projectId, conversationId), { recursive: true });
-    appendFileSync(
-      messagePath,
-      JSON.stringify(message) + "\n",
-      "utf8",
-    );
-    this.db.insert(conversationMessages).values({
-      id: message.id,
-      communicationEventId: message.communicationEventId ?? null,
-      conversationId: message.conversationId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
-      authorAgentId: message.authorAgentId,
-      channel: message.channel,
-      replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
-      attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
-    }).run();
+    // The dispatch record is durable first and contains enough immutable
+    // presentation metadata to reconstruct a projection after a crash.
+    this.appendMessageDispatch(conversation.projectId, dispatch);
+    this.appendCommunicationProjection(conversation.projectId, {
+      eventId: dispatch.eventId,
+      surface: channel === "collaboration" ? "collaboration_view" : "conversation",
+      projectionKey: conversationId,
+      projectedAt: now,
+      message: {
+        messageId: dispatch.messageId,
+        role: dispatch.role,
+        renderedText: dispatch.renderedText,
+        createdAt: dispatch.createdAt,
+        orderKey: dispatch.orderKey,
+        ...(authorAgentId ? { authorAgentId } : {}),
+        ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
+        ...(dispatch.replyTo ? { replyTo: dispatch.replyTo } : {}),
+        ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+      },
+    });
     this.db
       .update(conversations)
       .set({ updatedAt: now })
@@ -1186,32 +1145,16 @@ export class AgentStore {
     const jsonPath = conversationJsonPath(this.dataDir, conversation.projectId, conversationId);
     const json = readJson<ConversationJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
-    if (message.communicationEventId) {
-      this.appendCommunicationProjection(conversation.projectId, {
-        eventId: message.communicationEventId,
-        surface: channel === "collaboration" ? "collaboration_view" : "conversation",
-        projectionKey: conversationId,
-        projectedAt: now,
-        message: {
-          messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
-          ...(authorAgentId ? { authorAgentId: authorAgentId } : {}),
-          ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
-          ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
-          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-        },
-      });
-    }
     return {
-      id: message.id,
-      communicationEventId: message.communicationEventId,
-      conversationId: message.conversationId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
+      id: dispatch.messageId,
+      communicationEventId: dispatch.eventId,
+      conversationId: dispatch.conversationId,
+      role: dispatch.role,
+      text: dispatch.renderedText,
+      createdAt: dispatch.createdAt,
       authorAgentId: authorAgentId ?? undefined,
-      replyTo: message.replyTo,
-      attachments: message.attachments,
+      replyTo: dispatch.replyTo,
+      attachments: dispatch.attachments,
     };
   }
 
@@ -1223,98 +1166,41 @@ export class AgentStore {
   }> {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return [];
-    const messages = [
-      ...readJsonLines<ConversationMessageJson>(conversationMessagesPath(this.dataDir, conversation.projectId, conversationId)),
-      ...readJsonLines<ConversationMessageJson>(collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId)),
-    ];
-    return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
-      message: {
-        id: message.id,
-        communicationEventId: message.communicationEventId,
-        conversationId: message.conversationId,
-        role: message.role,
-        text: message.text,
-        createdAt: message.createdAt,
-        authorAgentId: message.authorAgentId ?? undefined,
-        replyTo: message.replyTo,
-        attachments: message.attachments,
-      },
+    return this.messageDispatches(conversation.projectId)
+      .filter((dispatch) => dispatch.conversationId === conversationId)
+      .flatMap((dispatch) => (dispatch.deliveryIntents ?? []).map((intent) => ({
+      message: this.getConversationMessages(conversationId, dispatch.channel)
+        .find((message) => message.id === dispatch.messageId)!,
       intent,
-      messageReceiptKey: message.messageReceiptKey,
-      deliveryOrderKey: message.deliveryOrderKey ?? `${message.createdAt}:${String(0).padStart(12, "0")}`,
-    })));
+      messageReceiptKey: dispatch.messageReceiptKey,
+      deliveryOrderKey: dispatch.orderKey,
+    }))).filter((item) => Boolean(item.message));
   }
 
   getConversationMessageByReceiptKey(conversationId: string, receiptKey: string): ConversationMessageDto | undefined {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return undefined;
-    const message = readJsonLines<ConversationMessageJson>(
-      conversationMessagesPath(this.dataDir, conversation.projectId, conversationId),
-    ).find((candidate) => candidate.messageReceiptKey === receiptKey);
-    return message ? {
-      id: message.id,
-      communicationEventId: message.communicationEventId,
-      conversationId: message.conversationId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
-      authorAgentId: message.authorAgentId ?? undefined,
-      replyTo: message.replyTo,
-      attachments: message.attachments,
-    } : undefined;
+    const dispatch = this.messageDispatches(conversation.projectId)
+      .find((candidate) => candidate.conversationId === conversationId && candidate.messageReceiptKey === receiptKey);
+    return dispatch
+      ? this.getConversationMessages(conversationId, dispatch.channel).find((message) => message.id === dispatch.messageId)
+      : undefined;
   }
 
   getConversationMessageDeliveryOrderKey(conversationId: string, messageId: string): string | undefined {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return undefined;
-    return readJsonLines<ConversationMessageJson>(
-      collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId),
-    ).find((message) => message.id === messageId)?.deliveryOrderKey;
+    return this.messageDispatches(conversation.projectId)
+      .find((dispatch) => dispatch.conversationId === conversationId && dispatch.messageId === messageId)?.orderKey;
   }
 
   getConversationMessages(conversationId: string, channel: ConversationChannel = "main"): ConversationMessageDto[] {
-    const master = this.getConversation(conversationId);
-    if (!master) return [];
-    return this.db
-      .select()
-      .from(conversationMessages)
-      .where(eq(conversationMessages.conversationId, conversationId))
-      .orderBy(asc(conversationMessages.createdAt))
-      .all()
-      .filter((row) => row.channel === channel)
-      .map((row) => {
-        const communication = row.communicationEventId
-          ? this.getCommunicationEvent(master.projectId, row.communicationEventId)
-          : undefined;
-        const authorAgentId = communication?.sender.kind === "agent"
-          ? communication.sender.agentId
-          : row.authorAgentId ?? undefined;
-        const role = communication?.sender.kind === "agent"
-          ? "assistant"
-          : communication?.sender.kind === "user"
-            ? "user"
-            : row.role === "assistant" || row.role === "system"
-              ? row.role
-              : "user";
-        return {
-          id: row.id,
-          communicationEventId: row.communicationEventId ?? undefined,
-          conversationId: row.conversationId,
-          role,
-          text: row.text,
-          createdAt: row.createdAt,
-          authorAgentId,
-          replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
-          attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
-        };
-      });
+    return this.getProjectedConversationMessages(conversationId, channel);
   }
 
   /**
-   * Materialize a room timeline from canonical communication events and their
-   * projection ledger. Legacy rows are consulted only for ancillary snapshots
-   * (attachments and quoted replies) until those immutable payloads move into
-   * the canonical envelope; they do not select membership, ordering, or text.
+   * Materialize a project-chat timeline from canonical communication events
+   * and their projection ledger.
    */
   getProjectedConversationMessages(
     conversationId: string,
@@ -1873,7 +1759,6 @@ export class AgentStore {
     this.db.delete(messages).run();
     this.db.delete(agents).run();
     this.db.delete(agentConversationMemberships).run();
-    this.db.delete(conversationMessages).run();
     this.db.delete(conversations).run();
     this.db.delete(projects).run();
     this.db.delete(agentPresets).run();
@@ -1927,25 +1812,6 @@ export class AgentStore {
               archived: m.archived ? 1 : 0,
             })
             .run();
-          for (const [channel, messagePath] of [
-            ["main", conversationMessagesPath(this.dataDir, projectId, conversationId)],
-            ["collaboration", collaborationMessagesPath(this.dataDir, projectId, conversationId)],
-          ] as const) {
-            for (const message of readJsonLines<ConversationMessageJson>(messagePath)) {
-              this.db.insert(conversationMessages).values({
-                id: message.id,
-                communicationEventId: message.communicationEventId ?? null,
-                conversationId: message.conversationId,
-                role: message.role,
-                text: message.text,
-                createdAt: message.createdAt,
-                authorAgentId: message.authorAgentId,
-                channel: message.channel ?? channel,
-                replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
-                attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
-              }).run();
-            }
-          }
         }
       }
 
@@ -2033,7 +1899,7 @@ export class AgentStore {
             tx.insert(runs)
               .values(op.row)
               .onConflictDoUpdate({
-                target: runs.id,
+                target: [runs.agentId, runs.id],
                 set: {
                   title: op.row.title,
                   status: op.row.status,
@@ -2049,7 +1915,7 @@ export class AgentStore {
           case "update_run":
             tx.update(runs)
               .set({ status: op.status, reason: op.reason, updatedAt: op.updatedAt, completedAt: op.completedAt })
-              .where(eq(runs.id, op.id))
+              .where(and(eq(runs.agentId, agentId), eq(runs.id, op.id)))
               .run();
             break;
           case "insert_work_item":

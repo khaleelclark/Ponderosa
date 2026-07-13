@@ -14,7 +14,7 @@ objects with different identity, audience, or lifetime must not share a noun.
 | One runtime activation | Run | `AgentRun` / `Execution` | Bounded agent activation ending in completion, failure, cancellation, or suspension. |
 | Provider-side continuity | Model session (diagnostics only) | `ProviderSession` | Optional Codex/Claude context continued across runs for exactly one agent. |
 | Explicit authored communication | Message | `Communication` / `Message` | Immutable content, author, audience, provenance, and project-chat association. |
-| Routing operation | Send; Queued, Delivered, Started | `MessageDispatch` | Routes one message and creates recipient deliveries. |
+| Routing operation | Send; Queued, Delivered, Started | `MessageDispatch` | Durably materializes one message in its authorized views and creates zero or more recipient deliveries. |
 | Recipient operation | Delivery | `MessageDelivery` | Durable recipient-specific queue and processing state. |
 | Runtime activation request | Start / Steer / Queue | `RunTrigger` | Operational decision that starts, steers, or queues a run; it is not a message. |
 | Execution-local prose | Work log | `RunOutput` | Ordinary response text and transient reasoning for one run. It is never implicitly sent. |

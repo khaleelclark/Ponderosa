@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, collaborationMessagesPath, communicationEventsPath, conversationMessagesPath, projectDir, projectJsonPath, runTriggersPath } from "../src/paths.js";
+import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, messageDispatchesPath, projectDir, projectJsonPath, runTriggersPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -28,7 +28,6 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "projects",
     "agent_presets",
     "conversations",
-    "conversation_messages",
     "agent_conversation_memberships",
     "agents",
     "messages",
@@ -39,7 +38,11 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
   ];
   const out: Record<string, unknown[]> = {};
   for (const t of tables) {
-    const order = t === "agent_conversation_memberships" ? "agent_id, position" : "id";
+    const order = t === "agent_conversation_memberships"
+      ? "agent_id, position"
+      : t === "runs"
+        ? "agent_id, id"
+        : "id";
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
   }
@@ -50,6 +53,45 @@ function seedAgent(): { projectId: string; agentId: string } {
   const project = store.createProject({ label: "Demo", hostPath: "/repo" });
   const agent = store.createAgent(project.id, { title: "Auth", engine: "codex" });
   return { projectId: project.id, agentId: agent.id };
+}
+
+function appendCanonicalConversationMessage(
+  conversationId: string,
+  input: Parameters<AgentStore["appendConversationMessage"]>[1],
+  authorAgentId?: string,
+  channel: Parameters<AgentStore["appendConversationMessage"]>[3] = "main",
+  deliveryIntents?: Parameters<AgentStore["appendConversationMessage"]>[4],
+  messageReceiptKey?: string,
+) {
+  const conversation = store.getConversation(conversationId)!;
+  const eventId = `test-message-${Math.random().toString(36).slice(2)}`;
+  const recipientIds = [...new Set((deliveryIntents ?? []).map((intent) => intent.targetAgentId))];
+  const event: CommunicationEvent = channel === "collaboration"
+    ? {
+        eventId, schemaVersion: 2, projectId: conversation.projectId, conversationId,
+        sender: authorAgentId ? { kind: "agent", agentId: authorAgentId } : { kind: "user", userId: "local-operator" },
+        intent: "collaboration", audience: { kind: "agents", agentIds: recipientIds as [string, ...string[]] },
+        text: input.text, createdAt: new Date().toISOString(),
+      }
+    : deliveryIntents?.length
+      ? {
+          eventId, schemaVersion: 2, projectId: conversation.projectId, conversationId,
+          sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+          audience: recipientIds.length === 1
+            ? { kind: "user_agent", userId: "local-operator", agentId: recipientIds[0]! }
+            : { kind: "user_agents", userId: "local-operator", agentIds: recipientIds as [string, ...string[]] },
+          text: input.text, createdAt: new Date().toISOString(),
+        }
+      : {
+          eventId, schemaVersion: 1, projectId: conversation.projectId, conversationId,
+          sender: authorAgentId ? { kind: "agent", agentId: authorAgentId } : { kind: "user", userId: "local-operator" },
+          intent: "broadcast", audience: { kind: "organization", organizationId: conversation.projectId },
+          text: input.text, createdAt: new Date().toISOString(),
+        };
+  store.appendCommunicationEvent(event);
+  return store.appendConversationMessage(
+    conversationId, input, authorAgentId, channel, deliveryIntents, messageReceiptKey, eventId,
+  );
 }
 
 describe("AgentStore — V1 layout", () => {
@@ -202,7 +244,7 @@ describe("AgentStore — canonical communication events", () => {
       dm.eventId,
     )).toThrow("scope cannot project");
     expect(store.getConversationMessages(room.id, "collaboration")).toEqual([]);
-    expect(existsSync(collaborationMessagesPath(dir, project.id, room.id))).toBe(false);
+    expect(existsSync(messageDispatchesPath(dir, project.id))).toBe(false);
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "unknown", audience: { ...dm.audience, agentId: "missing" } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "foreign", audience: { ...dm.audience, agentId: foreign.id } })).toThrow("active agent");
     expect(() => store.appendCommunicationEvent({ ...dm, eventId: "wrong-room", conversationId: otherRoom.id })).toThrow("belong to its conversation");
@@ -478,7 +520,7 @@ describe("AgentStore — canonical communication events", () => {
     });
   });
 
-  it("serves authoritative reply and attachment snapshots without reading the legacy room log", () => {
+  it("rebuilds authoritative reply and attachment snapshots from the dispatch ledger", () => {
     const project = store.createProject({ label: "Snapshots", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
     const firstEvent: CommunicationEvent = {
@@ -495,7 +537,9 @@ describe("AgentStore — canonical communication events", () => {
       attachments: [{ id: "asset-1", agentId: "manager", name: "diagram.png", mediaType: "image/png", size: 42, url: "/api/assets/asset-1" }],
     }, undefined, "main", undefined, undefined, secondEvent.eventId);
     const expected = store.getConversationMessages(room.id);
-    writeFileSync(conversationMessagesPath(dir, project.id, room.id), "", "utf8");
+    store.close();
+    rmSync(communicationProjectionsPath(dir, project.id), { force: true });
+    store = new AgentStore(dir);
     expect(store.getProjectedConversationMessages(room.id)).toEqual(expected);
   });
 
@@ -739,7 +783,6 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     for (const t of [
       "projects",
       "conversations",
-      "conversation_messages",
       "agents",
       "messages",
       "runs",
@@ -774,7 +817,7 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
       defaultModel: "gpt-5",
       defaultEffort: "high",
     });
-    const message = store.appendConversationMessage(conversation.id, {
+    const message = appendCanonicalConversationMessage(conversation.id, {
       text: "Spin up one agent for API work and one for UI work.",
     });
     const agent = store.createAgent(project.id, {
@@ -804,8 +847,8 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
   it("persists reply references canonically for agent and conversation messages", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const master = store.createConversation(project.id, { title: "Room" });
-    const first = store.appendConversationMessage(master.id, { text: "Original context" })!;
-    store.appendConversationMessage(master.id, { text: "Answer", replyToMessageId: first.id });
+    const first = appendCanonicalConversationMessage(master.id, { text: "Original context" })!;
+    appendCanonicalConversationMessage(master.id, { text: "Answer", replyToMessageId: first.id });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     store.appendEvent(agent.id, { type: "user_message", text: "Agent original" });
     const originalMessageId = store.getMessages(agent.id)[0]!.id;
@@ -818,7 +861,7 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     store.rebuildProjections();
     expect(store.getConversationMessages(master.id)[1]?.replyTo).toMatchObject({ messageId: first.id, text: "Original context" });
     expect(store.getMessages(agent.id)[1]?.replyTo).toMatchObject({ text: "Agent original" });
-    expect(() => store.appendConversationMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
+    expect(() => appendCanonicalConversationMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
   });
 
   it("records direct replies only for the referenced active agent author", () => {
@@ -826,10 +869,10 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     const master = store.createConversation(project.id, { title: "Room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
     const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
-    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Done" }, author.id)!;
-    const managerMessage = store.appendConversationMessage(master.id, { text: "Manager note" })!;
+    const report = appendCanonicalConversationMessage(master.id, { role: "assistant", text: "Done" }, author.id)!;
+    const managerMessage = appendCanonicalConversationMessage(master.id, { text: "Manager note" })!;
 
-    const direct = store.appendConversationMessage(master.id, {
+    const direct = appendCanonicalConversationMessage(master.id, {
       text: "Please revise",
       replyToMessageId: report.id,
       directReplyToAuthorAgentId: author.id,
@@ -837,21 +880,21 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     expect(direct.replyTo?.authorAgentId).toBe(author.id);
     expect(store.getConversationMessageByReceiptKey(master.id, "direct-receipt")?.id).toBe(direct.id);
     expect(store.getConversationDeliveryIntents(master.id)).toMatchObject([{ message: { id: direct.id }, intent: { kind: "direct", targetAgentId: author.id }, messageReceiptKey: "direct-receipt" }]);
-    expect(readFileSync(conversationMessagesPath(dir, project.id, master.id), "utf8"))
-      .toContain(`"directReplyToAuthorAgentId":"${author.id}"`);
-    expect(() => store.appendConversationMessage(master.id, {
+    expect(readFileSync(messageDispatchesPath(dir, project.id), "utf8"))
+      .toContain(`"messageReceiptKey":"direct-receipt"`);
+    expect(() => appendCanonicalConversationMessage(master.id, {
       text: "Spoofed",
       replyToMessageId: report.id,
       directReplyToAuthorAgentId: other.id,
     })).toThrow(/must be the author/);
-    expect(() => store.appendConversationMessage(master.id, {
+    expect(() => appendCanonicalConversationMessage(master.id, {
       text: "No agent author",
       replyToMessageId: managerMessage.id,
       directReplyToAuthorAgentId: author.id,
     })).toThrow(/must be the author/);
 
     store.updateAgent(author.id, { archived: true });
-    expect(() => store.appendConversationMessage(master.id, {
+    expect(() => appendCanonicalConversationMessage(master.id, {
       text: "Archived",
       replyToMessageId: report.id,
       directReplyToAuthorAgentId: author.id,
@@ -977,7 +1020,7 @@ describe("project lifecycle", () => {
     expect(store.deleteProject(removed.id)).toBe(true);
     expect(existsSync(projectDir(dir, removed.id))).toBe(false);
     expect(store.getProject(removed.id)).toBeUndefined();
-    for (const table of ["conversations", "conversation_messages", "agents", "messages", "runs", "work_items", "artifacts", "events"]) {
+    for (const table of ["conversations", "agents", "messages", "runs", "work_items", "artifacts", "events"]) {
       const projectRows = table === "conversations" || table === "agents"
         ? store.sqlite.prepare(`SELECT * FROM ${table} WHERE project_id = ?`).all(removed.id)
         : [];

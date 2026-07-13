@@ -4,14 +4,14 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore } from "@ponderosa/agents";
 import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function appendBroadcast(store: AgentStore, projectId: string, conversationId: string, text: string): void {
+function appendBroadcast(store: AgentStore, projectId: string, conversationId: string, text: string) {
   const eventId = randomUUID();
   store.appendCommunicationEvent({
     eventId, schemaVersion: 1, projectId, conversationId,
@@ -19,7 +19,47 @@ function appendBroadcast(store: AgentStore, projectId: string, conversationId: s
     intent: "broadcast", audience: { kind: "organization", organizationId: projectId },
     text, createdAt: new Date().toISOString(),
   });
-  store.appendConversationMessage(conversationId, { text }, undefined, "main", undefined, undefined, eventId);
+  return store.appendConversationMessage(conversationId, { text }, undefined, "main", undefined, undefined, eventId);
+}
+
+function appendCanonicalMessage(
+  store: AgentStore,
+  projectId: string,
+  conversationId: string,
+  input: Parameters<AgentStore["appendConversationMessage"]>[1],
+  authorAgentId?: string,
+  channel: Parameters<AgentStore["appendConversationMessage"]>[3] = "main",
+  deliveryIntents?: Parameters<AgentStore["appendConversationMessage"]>[4],
+  messageReceiptKey?: string,
+  audienceAgentIds = [...new Set((deliveryIntents ?? []).map((intent) => intent.targetAgentId))],
+) {
+  const eventId = randomUUID();
+  const event: CommunicationEvent = channel === "collaboration"
+    ? {
+        eventId, schemaVersion: 2, projectId, conversationId,
+        sender: authorAgentId ? { kind: "agent", agentId: authorAgentId } : { kind: "user", userId: "local-operator" },
+        intent: "collaboration", audience: { kind: "agents", agentIds: audienceAgentIds as [string, ...string[]] },
+        text: input.text, createdAt: new Date().toISOString(),
+      }
+    : audienceAgentIds.length
+      ? {
+          eventId, schemaVersion: 2, projectId, conversationId,
+          sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+          audience: audienceAgentIds.length === 1
+            ? { kind: "user_agent", userId: "local-operator", agentId: audienceAgentIds[0]! }
+            : { kind: "user_agents", userId: "local-operator", agentIds: audienceAgentIds as [string, ...string[]] },
+          text: input.text, createdAt: new Date().toISOString(),
+        }
+      : {
+          eventId, schemaVersion: 1, projectId, conversationId,
+          sender: authorAgentId ? { kind: "agent", agentId: authorAgentId } : { kind: "user", userId: "local-operator" },
+          intent: "broadcast", audience: { kind: "organization", organizationId: projectId },
+          text: input.text, createdAt: new Date().toISOString(),
+        };
+  store.appendCommunicationEvent(event);
+  return store.appendConversationMessage(
+    conversationId, input, authorAgentId, channel, deliveryIntents, messageReceiptKey, eventId,
+  );
 }
 
 class MockAdapter implements Adapter {
@@ -638,8 +678,6 @@ describe("server chunk F", () => {
       orphanProjectionEventIds: [],
       missingClassificationEventIds: [],
       missingProjectionMetadataEventIds: [],
-      unlinkedLegacyMessageIds: [],
-      projectionReadMismatchMessageIds: [],
       ok: false,
     });
     const app = createServer({ dataDir, store, engines, logger: false });
@@ -1650,7 +1688,7 @@ describe("server chunk F", () => {
       engine: "codex",
       conversationId: master.id,
     });
-    store.appendConversationMessage(master.id, { text: "Main-chat-only deployment plan." });
+    appendBroadcast(store, project.id, master.id, "Main-chat-only deployment plan.");
 
     const untargeted = await app.inject({
       method: "POST",
@@ -1672,7 +1710,8 @@ describe("server chunk F", () => {
     const prompt = adapter.seeds[0]?.prompt ?? "";
     expect(prompt).not.toContain("Private review notes that should not reach an agent yet.");
     expect(prompt).toContain("#Yosemite Please review the private notes.");
-    expect(prompt).not.toContain("Main-chat-only deployment plan.");
+    expect(prompt).toContain("Shared Broadcast context from Project chat");
+    expect(prompt).toContain("Main-chat-only deployment plan.");
     expect(store.getConversationMessages(master.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Main-chat-only deployment plan." })]),
     );
@@ -2080,8 +2119,6 @@ describe("server chunk F", () => {
       orphanProjectionEventIds: [],
       missingClassificationEventIds: [],
       missingProjectionMetadataEventIds: [],
-      unlinkedLegacyMessageIds: [],
-      projectionReadMismatchMessageIds: [],
       ok: true,
     });
     const reconciliation = await app.inject({
@@ -2094,7 +2131,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rejects retired routing syntax and preserves explicit intents", async () => {
+  it("rejects ambiguous routing payloads and preserves explicit intents", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Retirement", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Explicit room" });
@@ -2115,7 +2152,7 @@ describe("server chunk F", () => {
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
       payload: { channel: "collaboration", text: "#Reviewer legacy route" },
     });
-    expect(legacy.statusCode).toBe(410);
+    expect(legacy.statusCode).toBe(400);
     const explicit = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
       payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Explicit route" },
@@ -2590,18 +2627,23 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Restart recovery" });
     const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const firstMessage = store.appendConversationMessage(
+    const firstMessage = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#Parent interrupted first result" },
       undefined,
       "collaboration",
       [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
-    const secondMessage = store.appendConversationMessage(
+    const secondMessage = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#Parent queued second result" },
       undefined,
       "collaboration",
+      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const first = deliveries.queue({
@@ -2727,7 +2769,9 @@ describe("server chunk F", () => {
     const master = store.createConversation(project.id, { title: "Crash window" });
     const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
-    store.appendConversationMessage(
+    appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#Parent result persisted before the inbox write" },
       undefined,
@@ -2759,7 +2803,9 @@ describe("server chunk F", () => {
       kind: "tag" as const,
       audience: "everyone" as const,
     });
-    const message = store.appendConversationMessage(
+    const message = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#everyone recover this broadcast" },
       undefined,
@@ -2803,14 +2849,18 @@ describe("server chunk F", () => {
     const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
     vi.setSystemTime(afterReconciliationBoundary);
-    const older = store.appendConversationMessage(
+    const older = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#Parent older message missing its inbox write" },
       undefined,
       "collaboration",
       [intent],
     )!;
-    const newer = store.appendConversationMessage(
+    const newer = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#Parent newer message already queued" },
       undefined,
@@ -2853,7 +2903,9 @@ describe("server chunk F", () => {
     const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
     vi.setSystemTime(afterReconciliationBoundary);
-    const older = store.appendConversationMessage(
+    const older = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { role: "user", text: "#Parent older collaboration message missing its inbox write" },
       undefined,
@@ -2893,12 +2945,12 @@ describe("server chunk F", () => {
     const master = store.createConversation(project.id, { title: "Blocked recovery" });
     store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
-    store.appendConversationMessage(
+    expect(() => store.appendConversationMessage(
       master.id,
       { role: "assistant", text: "#Parent blocked or historical mention" },
       undefined,
       "collaboration",
-    );
+    )).toThrow(/canonical communication event/);
 
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
@@ -3420,7 +3472,7 @@ describe("server chunk F", () => {
     const master = store.createConversation(project.id, { title: "Room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
     const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
-    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Result" }, author.id)!;
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
     const upload = await app.inject({
       method: "POST",
@@ -3485,7 +3537,7 @@ describe("server chunk F", () => {
     const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Recovery room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Result" }, author.id)!;
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
     const upload = await app.inject({
       method: "POST",
@@ -3495,7 +3547,9 @@ describe("server chunk F", () => {
     });
     const attachmentId = upload.json<{ id: string }>().id;
     const receiptKey = `direct-reply:${master.id}:crash-window`;
-    const canonical = store.appendConversationMessage(
+    const canonical = appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { text: "#Author Recovered follow up", replyToMessageId: report.id, directReplyToAuthorAgentId: author.id, attachments: [upload.json()] },
       undefined,
@@ -3526,14 +3580,17 @@ describe("server chunk F", () => {
     const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Incomplete recovery room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
-    store.appendConversationMessage(
+    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Result" }, author.id)!;
+    appendCanonicalMessage(
+      store,
+      project.id,
       master.id,
       { text: "#Author Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorAgentId: author.id },
       undefined,
       "main",
       undefined,
       `direct-reply:${master.id}:missing-intent`,
+      [author.id],
     );
 
     const replay = await app.inject({
@@ -3552,7 +3609,7 @@ describe("server chunk F", () => {
     const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Busy room" });
     const author = store.createAgent(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
-    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Working" }, author.id)!;
+    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Working" }, author.id)!;
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
     await waitForSeedCount(1);
