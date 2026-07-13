@@ -9,6 +9,24 @@ export type CommunicationActor =
   | { kind: "agent"; agentId: string; executionId?: string }
   | { kind: "system"; component: string };
 
+/** Long-form Markdown owned by exactly one immutable communication event. */
+export interface CommunicationDocumentRecord {
+  id: string;
+  title: string;
+  mediaType: "text/markdown";
+  content: string;
+  byteLength: number;
+  authorAgentId: string;
+  executionId: string;
+  assignmentId?: string;
+  createdAt: string;
+}
+
+export type CommunicationDocumentReference = Omit<CommunicationDocumentRecord, "content"> & {
+  previewUrl: string;
+  downloadUrl: string;
+};
+
 interface CommunicationEventBase {
   eventId: string;
   schemaVersion: 1;
@@ -17,6 +35,7 @@ interface CommunicationEventBase {
   masterChatId?: string;
   sender: CommunicationActor;
   text: string;
+  document?: CommunicationDocumentRecord;
   createdAt: string;
   correlationId?: string;
   causationId?: string;
@@ -100,6 +119,7 @@ export interface ProjectedCommunicationMessage {
   attachmentIds?: string[];
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
+  document?: CommunicationDocumentReference;
 }
 
 export type CommunicationDeliveryStatus =

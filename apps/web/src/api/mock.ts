@@ -571,6 +571,9 @@ export const mockApi: PonderosaApi = {
     }
     return delay(content);
   },
+  getCommunicationDocument(previewUrl) {
+    return Promise.reject(new Error(`Communication document ${previewUrl} is unavailable in mock mode`));
+  },
   sendMessage(threadId, request: SendMessageRequest): Promise<SendMessageResponse> {
     const nextMessage: MessageDto = {
       id: `mock-user-${Date.now()}`,

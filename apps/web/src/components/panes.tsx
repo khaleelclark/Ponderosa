@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
+import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -416,6 +416,29 @@ export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent }: {
   </>;
 }
 
+export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const query = useQuery({
+    queryKey: ["communication-document", document.id],
+    queryFn: () => api.getCommunicationDocument(document.previewUrl),
+    enabled: expanded,
+  });
+  return <Paper variant="outlined" sx={{ mt: 1, p: 1 }}>
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <ArticleIcon fontSize="small" />
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography variant="subtitle2" noWrap>{document.title}</Typography>
+        <Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography>
+      </Box>
+      <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)}>{expanded ? "Hide" : "Preview"}</Button>
+      <Button size="small" component="a" href={document.downloadUrl} download>Download</Button>
+    </Stack>
+    {expanded ? <Box sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider", maxHeight: "60vh", overflow: "auto" }}>
+      {query.isLoading ? <CircularProgress size={20} /> : query.data ? <ChatMarkdown>{query.data.content}</ChatMarkdown> : <Alert severity="error">Document preview is unavailable.</Alert>}
+    </Box> : null}
+  </Paper>;
+}
+
 export function ChatMessageBody({ text, agentIdForHandle, onOpenAgent }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
@@ -568,6 +591,7 @@ export function ChatPane({
               </Box>
             ) : null}
             <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+            {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
                 {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")

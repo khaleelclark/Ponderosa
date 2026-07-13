@@ -47,7 +47,7 @@ import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEv
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
-import { ChatMessageBody, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
@@ -153,6 +153,7 @@ export function MasterChatMessage({
           </Box>
         ) : null}
         <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+        {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
             {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")

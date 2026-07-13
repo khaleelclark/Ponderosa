@@ -242,6 +242,9 @@ export const realApi: PonderosaApi = {
       `/api/threads/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(artifactId)}`,
     );
   },
+  getCommunicationDocument(previewUrl) {
+    return requestJson(previewUrl);
+  },
   sendMessage(threadId, request) {
     return requestJson<SendMessageResponse>(`/api/threads/${encodeURIComponent(threadId)}/messages`, {
       method: "POST",

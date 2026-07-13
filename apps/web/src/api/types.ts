@@ -1,5 +1,6 @@
 import type {
   ArtifactContentDto,
+  CommunicationDocumentContentDto,
   AgentHealthProjectionDto,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   CollaborationChatDetailDto,
@@ -115,6 +116,7 @@ export interface PonderosaApi {
   getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto>;
   getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto>;
   getArtifact(threadId: string, artifactId: string): Promise<ArtifactContentDto>;
+  getCommunicationDocument(previewUrl: string): Promise<CommunicationDocumentContentDto>;
   sendMessage(threadId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
   uploadAttachment(threadId: string, file: File): Promise<ImageAttachmentDto>;
   deleteAttachment(threadId: string, attachmentId: string): Promise<void>;

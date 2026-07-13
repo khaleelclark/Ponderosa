@@ -4,7 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TaskStatus } from "./events.js";
-import type { CommunicationIntent } from "./communication.js";
+import type { CommunicationDocumentReference, CommunicationIntent } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -146,6 +146,7 @@ export interface MasterChatMessageDto {
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];
+  document?: CommunicationDocumentReference;
 }
 
 /** User-authored emoji state projected onto one canonical agent communication. */
@@ -334,6 +335,7 @@ export interface MessageDto {
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];
+  document?: CommunicationDocumentReference;
 }
 
 export type AssetMediaType =
@@ -531,6 +533,8 @@ export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
 interface AgentMessageRequestBase {
   text: string;
+  /** Optional long-form Markdown; `text` remains the concise scoped summary. */
+  document?: { title: string; content: string; mediaType?: "text/markdown" };
   /** Stable across a transport retry so every durable effect occurs once. */
   idempotencyKey?: string;
 }
@@ -545,6 +549,10 @@ export type SendAgentMessageRequest = AgentMessageRequestBase & (
       recipientAgentIds: string[];
     }
 );
+
+export interface CommunicationDocumentContentDto extends CommunicationDocumentReference {
+  content: string;
+}
 
 /** POST /api/threads/:id/cancel response. */
 export interface CancelResponse {
