@@ -1,8 +1,9 @@
 # AGENTS.md — Ponderosa
 
 Rules for any AI agent (or human) working on **this repository**. Read this
-before editing. [VISION.md](./VISION.md) defines the current product direction and
-[VOCABULARY.md](./VOCABULARY.md) defines canonical UI and domain names;
+before editing. [VISION.md](./VISION.md) defines the current product direction,
+[VOCABULARY.md](./VOCABULARY.md) defines canonical UI and domain names, and
+[COMMUNICATION.md](./COMMUNICATION.md) defines the executable routing matrix;
 this file translates that vision into working invariants and repository rules.
 
 ---

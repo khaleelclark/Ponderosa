@@ -245,6 +245,7 @@ describe("ThreadStore — canonical communication events", () => {
     };
     store.appendCommunicationEvent(report);
     store.appendConversationMessage(room.id, { role: "assistant", text: report.text }, child.id, "collaboration", undefined, undefined, report.eventId);
+    store.appendEvent(child.id, { type: "communication_projection", text: report.text, communicationEventId: report.eventId });
     store.appendEvent(manager.id, { type: "user_message", text: report.text, communicationEventId: report.eventId });
 
     expect(store.getProjectedThreadMessages(manager.id)).toEqual([
@@ -334,7 +335,7 @@ describe("ThreadStore — canonical communication events", () => {
     };
     store.appendCommunicationEvent(event);
     store.appendEvent(thread.id, { type: "communication_projection", communicationEventId: event.eventId, text: event.text });
-    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 1, linkedProjections: 1 });
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true, canonicalEvents: 1, linkedProjections: 2 });
     expect(store.getMessages(thread.id)[0]).toMatchObject({ communicationEventId: event.eventId, text: event.text });
 
     store.rebuildProjections();
@@ -380,7 +381,7 @@ describe("ThreadStore — canonical communication events", () => {
       projectedAt: "later retry timestamp",
     }).replayed).toBe(true);
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
-      canonicalEvents: 1, linkedProjections: 2, duplicateProjectionEventIds: [], ok: true,
+      canonicalEvents: 1, linkedProjections: 3, duplicateProjectionEventIds: [], ok: true,
     });
     expect(store.readProjectedCommunicationMessages(project.id, "collaboration_view", room.id))
       .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);

@@ -45,6 +45,7 @@ import type {
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
 } from "@ponderosa/core";
+import { deriveCommunicationBehavior } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, ThreadStore } from "@ponderosa/threads";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
@@ -150,8 +151,9 @@ function canonicalAudienceIncludes(
   recipientAgentId: string,
 ): boolean {
   if (!event) return false;
-  if (event.intent === "collaboration") return event.audience.agentIds.includes(recipientAgentId);
-  return event.intent === "broadcast" && event.audience.organizationId === projectId;
+  const behavior = deriveCommunicationBehavior(event);
+  return (behavior.contextPolicy === "organizational" && event.projectId === projectId) ||
+    behavior.deliveryRecipients.some((recipient) => recipient.kind === "agent" && recipient.agentId === recipientAgentId);
 }
 
 function recipientCollaborationMessages(
@@ -168,26 +170,22 @@ function recipientCollaborationMessages(
 }
 
 /**
- * Future room context contains only events created as organizational broadcasts.
- * A manager-authored broadcast with explicit agent mentions is scoped to those
- * agents for runtime context, even though the rendered message remains visible
- * in the room. Untagged broadcasts and #everyone remain shared context.
+ * Future room context contains only canonical organizational communication.
+ * Rendered tags are display affordances and never narrow or widen context.
  */
 function organizationalMasterMessages(
   messages: ConversationMessageDto[],
   events: CommunicationEvent[],
   projectId: string,
-  recipientAgentId: string,
-  threads: ThreadDto[],
+  _recipientAgentId: string,
+  _threads: ThreadDto[],
 ): ConversationMessageDto[] {
   const eventsById = new Map(events.map((event) => [event.eventId, event]));
   return messages.filter((message) => {
     if (!message.communicationEventId) return false;
     const event = eventsById.get(message.communicationEventId);
-    if (event?.intent !== "broadcast" || event.audience.organizationId !== projectId) return false;
-    if (hasEveryoneMention(message.text)) return true;
-    const mentioned = mentionedAgentThreads(message.text, threads, "");
-    return mentioned.length === 0 || mentioned.some((thread) => thread.id === recipientAgentId);
+    if (!event || event.projectId !== projectId) return false;
+    return deriveCommunicationBehavior(event).contextPolicy === "organizational";
   });
 }
 
@@ -1405,7 +1403,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     attachments?: AssetDto[],
   ): void {
     if (store.readCommunicationProjections(event.projectId).some((projection) =>
-      projection.eventId === event.eventId && projection.surface === "direct_agent_audit" && projection.projectionKey === threadId)) return;
+      projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
+      projection.projectionKey === threadId && projection.message)) return;
     const role = event.sender.kind === "user" ? "user" : event.sender.kind === "system" ? "system" : "assistant";
     const stored = store.appendEvent(threadId, {
       type: "communication_projection",
@@ -1803,6 +1802,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     if (!message) return reply.code(404).send({ error: "conversation not found" });
     if (communication?.intent === "broadcast") projectBroadcastToAgentAudits(communication, [], message.attachments);
+    if (communication?.intent === "collaboration") {
+      const authorAudit = store.appendEvent(capability.threadId, {
+        type: "communication_projection",
+        communicationEventId: communication.eventId,
+        text: renderedText,
+        role: "assistant",
+        attachments: message.attachments,
+      });
+      publish(capability.threadId, authorAudit);
+    }
     if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (intent === "collaboration") {
       queueRecordedCollaborationMessage(capability.conversationId, message, capability.threadId, routing.intents);

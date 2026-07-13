@@ -52,6 +52,7 @@ import type {
   UpdateThreadRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
+import { communicationHasProjectionTarget, deriveCommunicationBehavior } from "@ponderosa/core";
 
 function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
   const { content: _content, ...metadata } = document;
@@ -373,9 +374,10 @@ export class ThreadStore {
       if (!master || master.projectId !== event.projectId || master.archived) throw new Error("communication conversation must be active in its project");
     }
     const file = communicationEventsPath(this.dataDir, event.projectId);
+    const behavior = deriveCommunicationBehavior(event);
     const classification: CommunicationContextClassification = {
       eventId: event.eventId,
-      policy: event.intent === "broadcast" ? "organizational" : "local_only",
+      policy: behavior.contextPolicy,
       classifiedAt: event.createdAt,
       classifiedBy: { kind: "system", component: "communication-router" },
     };
@@ -389,16 +391,18 @@ export class ThreadStore {
       if (!equivalent) throw new Error("communication idempotency collision");
       this.appendContextClassification(event.projectId, {
         eventId: idempotent.eventId,
-        policy: idempotent.intent === "broadcast" ? "organizational" : "local_only",
+        policy: deriveCommunicationBehavior(idempotent).contextPolicy,
         classifiedAt: idempotent.createdAt,
         classifiedBy: { kind: "system", component: "communication-router" },
       });
+      this.ensureCommunicationBehaviorProjections(idempotent);
       return { event: idempotent, replayed: true };
     }
     const existing = index.byId.get(event.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
       this.appendContextClassification(event.projectId, classification);
+      this.ensureCommunicationBehaviorProjections(existing);
       return { event: existing, replayed: true };
     }
     appendFsyncedJsonl(file, [event]);
@@ -406,7 +410,29 @@ export class ThreadStore {
     index.byId.set(event.eventId, event);
     if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
     this.appendContextClassification(event.projectId, classification);
+    this.ensureCommunicationBehaviorProjections(event);
     return { event, replayed: false };
+  }
+
+  /**
+   * Materialize every placement declared by the behavior matrix immediately
+   * after the canonical append. Message metadata can enrich these records later;
+   * missing route-specific writes can no longer erase a surface from the ledger.
+   */
+  private ensureCommunicationBehaviorProjections(event: CommunicationEvent): void {
+    for (const target of deriveCommunicationBehavior(event).projectionTargets) {
+      const projection: CommunicationProjection = {
+        eventId: event.eventId,
+        surface: target.surface,
+        projectionKey: target.projectionKey,
+        projectedAt: event.createdAt,
+      };
+      // Replayable V1 records can reference agents or rooms that predate the
+      // current store. Ambiguous historical placement fails closed.
+      if (this.communicationProjectionAllowed(event.projectId, projection)) {
+        this.appendCommunicationProjection(event.projectId, projection);
+      }
+    }
   }
 
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
@@ -454,36 +480,22 @@ export class ThreadStore {
       const room = this.getConversation(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
     })();
-    if (projection.surface === "conversation") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
-      (event.schemaVersion === 2 && event.intent === "user_dm"));
-    if (projection.surface === "collaboration_view") return roomKeyAllowed && (event.intent === "collaboration" ||
-      (event.schemaVersion === 1 && event.intent === "direct_to_user"));
-    if (projection.surface === "direct_agent_audit") {
-      if (event.intent === "broadcast") {
+    const targetAllowed = communicationHasProjectionTarget(event, projection.surface, projection.projectionKey);
+    if (targetAllowed) {
+      if (projection.surface === "conversation" || projection.surface === "collaboration_view") return roomKeyAllowed;
+      if (projection.surface === "direct_agent_audit" || projection.surface === "agent_inbox") {
         const thread = this.getThread(projection.projectionKey);
-        return Boolean(
-          thread && thread.projectId === projectId && !thread.archived &&
-          (
-            (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey) ||
-            // The responsible agent's original user turn is local input, not a
-            // passive room backfill. Passive copies are rendered with #broadcast.
-            (event.sender.kind === "user" && projection.message?.role === "user" &&
-              projection.message.renderedText === event.text)
-          ),
-        );
+        return Boolean(thread && thread.projectId === projectId && !thread.archived);
       }
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
-      if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
-        (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
-      return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
+      return true;
     }
-    if (projection.surface === "agent_inbox") {
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
-      return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
-    }
-    if (projection.surface === "user_inbox") {
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
-      return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
+    // Replay-only bridge for the pre-RunTrigger representation of an unscoped
+    // user request. No new API should rely on rendered text to authorize scope.
+    const behavior = deriveCommunicationBehavior(event);
+    if (projection.surface === "direct_agent_audit" && behavior.permitsLegacyUserBroadcastRunAudit) {
+      const thread = this.getThread(projection.projectionKey);
+      return Boolean(thread && thread.projectId === projectId && !thread.archived &&
+        projection.message?.role === "user" && projection.message.renderedText === event.text);
     }
     return false;
   }
@@ -591,7 +603,9 @@ export class ThreadStore {
   }
 
   private repairCommunicationProjectionLedger(projectId: string): void {
-    const canonicalIds = new Set(this.readCommunicationEvents(projectId).map((event) => event.eventId));
+    const canonicalEvents = this.readCommunicationEvents(projectId);
+    for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
+    const canonicalIds = new Set(canonicalEvents.map((event) => event.eventId));
     if (canonicalIds.size === 0) return;
     for (const master of this.listConversations(projectId)) {
       for (const [surface, file] of [

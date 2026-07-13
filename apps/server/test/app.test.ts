@@ -1315,7 +1315,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("keeps agent-tagged conversation messages out of other agents' runtime context", async () => {
+  it("treats tags on organizational messages as display-only context", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Scoped room" });
@@ -1332,8 +1332,8 @@ describe("server chunk F", () => {
     await waitForRun(birch.id);
 
     expect(adapter.seeds[0]?.prompt).toContain("Shared release context.");
-    expect(adapter.seeds[0]?.prompt).not.toContain("private assignment marker");
-    expect(adapter.seeds[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=23");
+    expect(adapter.seeds[0]?.prompt).toContain("#Aspen private assignment marker");
+    expect(adapter.seeds[0]?.prompt).toContain("Context injection accounting: room_messages=2; room_characters=55");
 
     await app.inject({
       method: "POST",
@@ -2060,7 +2060,7 @@ describe("server chunk F", () => {
       .toEqual([collaborationEventId, collaborationEventId]);
     expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
       canonicalEvents: 4,
-      linkedProjections: 13,
+      linkedProjections: 15,
       missingProjectionEventIds: [],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
@@ -2075,7 +2075,7 @@ describe("server chunk F", () => {
       url: `/api/projects/${project.id}/communication-reconciliation`,
     });
     expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 13 });
+    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 15 });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
   });
@@ -2258,7 +2258,7 @@ describe("server chunk F", () => {
     expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
     await waitForSeedCount(2);
     expect(adapter.seeds).toHaveLength(2);
-    expect(store.getMessages(author.id).filter((message) => message.text.includes("review this"))).toHaveLength(0);
+    expect(store.getMessages(author.id).filter((message) => message.text.includes("review this"))).toHaveLength(1);
     expect(store.getMessages(reviewer.id).filter((message) => message.text.includes("review this"))).toHaveLength(1);
     expect(store.getConversationDeliveryIntents(master.id).filter(({ message }) => message.id === first.json<{ messageId: string }>().messageId))
       .toHaveLength(1);
