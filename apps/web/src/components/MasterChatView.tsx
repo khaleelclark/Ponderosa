@@ -55,7 +55,7 @@ import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { MessageContextMenu } from "./MessageContextMenu";
-import { chatStateKey, readChatState, writeChatState } from "../chatState";
+import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 
 export function MasterChatMessage({
   message,
@@ -222,8 +222,8 @@ export function MasterChatView({
   const initializedFor = useRef<string | undefined>(undefined);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowNewMessages = useRef(true);
-  const displayedMasterChatId = useRef(masterChatId);
-  const displayedConversation = useRef(conversation);
+  const displayedMasterChatId = useRef<string>();
+  const displayedConversation = useRef<"main" | "collaboration">();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
@@ -257,6 +257,13 @@ export function MasterChatView({
     ) {
       displayedMasterChatId.current = masterChatId;
       displayedConversation.current = conversation;
+      const key = chatStateKey("scroll", `master.${masterChatId}.${conversation}`);
+      const saved = readScrollPosition(key);
+      if (chatScrollRef.current && saved !== undefined) {
+        chatScrollRef.current.scrollTop = saved;
+        shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
+        return;
+      }
       shouldFollowNewMessages.current = true;
     }
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
@@ -737,6 +744,10 @@ export function MasterChatView({
         onScroll={() => {
           if (chatScrollRef.current) {
             shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
+            writeChatState(
+              chatStateKey("scroll", `master.${masterChatId}.${conversation}`),
+              String(chatScrollRef.current.scrollTop),
+            );
           }
         }}
         sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}

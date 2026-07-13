@@ -39,7 +39,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
-import { readChatState, writeChatState } from "../chatState";
+import { readChatState, readScrollPosition, writeChatState } from "../chatState";
 import type { ExecutionItem } from "../hooks/useThreadStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
@@ -448,6 +448,7 @@ export function ChatPane({
   onOpenAgent,
   onReact,
   onReply,
+  scrollStorageKey,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -455,18 +456,30 @@ export function ChatPane({
   onOpenAgent?(agentId: string): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
+  scrollStorageKey?: string;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowNewMessages = useRef(true);
+  const restoredScrollKey = useRef<string>();
 
   useLayoutEffect(() => {
-    if (scrollRef.current && shouldFollowNewMessages.current) {
+    if (!scrollRef.current) return;
+    if (scrollStorageKey && restoredScrollKey.current !== scrollStorageKey) {
+      restoredScrollKey.current = scrollStorageKey;
+      const saved = readScrollPosition(scrollStorageKey);
+      if (saved !== undefined) {
+        scrollRef.current.scrollTop = saved;
+        shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+        return;
+      }
+    }
+    if (shouldFollowNewMessages.current) {
       scrollChatToBottom(scrollRef.current);
     }
-  }, [chatMessages]);
+  }, [chatMessages, scrollStorageKey]);
 
   return (
     <Stack
@@ -477,6 +490,7 @@ export function ChatPane({
       onScroll={() => {
         if (scrollRef.current) {
           shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+          if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
       sx={{ p: 1.5, pb: 3, height: "100%", minHeight: 0, overflowY: "auto" }}

@@ -305,7 +305,7 @@ export function AgentDetail({
     };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.thread.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
