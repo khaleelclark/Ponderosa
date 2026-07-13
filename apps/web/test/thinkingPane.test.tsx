@@ -5,7 +5,7 @@ import { AGENT_DETAIL_TAB_LABELS } from "../src/components/AgentDetail";
 
 describe("ThinkingPane", () => {
   it("is a dedicated agent-detail tab beside the existing panes", () => {
-    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Thinking", "Activity", "Changed Files", "Tasks", "Artifacts"]);
+    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Thinking", "Activity", "Changed Files"]);
   });
 
   it("renders completed responses and transient reasoning distinctly in chronological order", () => {
