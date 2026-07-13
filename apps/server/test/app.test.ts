@@ -788,6 +788,12 @@ describe("server chunk F", () => {
       audience: { kind: "organization", organizationId: project.id },
       text: "Fix the onboarding flow",
     });
+    expect(store.readRunTriggers(project.id, responsible.id)).toEqual([
+      expect.objectContaining({ communicationEventId: eventId, agentId: responsible.id, source: "project_request" }),
+    ]);
+    const responsibleDetail = await app.inject({ method: "GET", url: `/api/threads/${responsible.id}` });
+    expect(responsibleDetail.json<{ runTriggers: Array<{ communicationEventId: string }> }>().runTriggers)
+      .toEqual([expect.objectContaining({ communicationEventId: eventId })]);
     expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
       expect.objectContaining({
         role: "user",

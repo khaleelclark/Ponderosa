@@ -27,11 +27,10 @@ describe("V1 communication behavior matrix", () => {
       ],
       deliveryRecipients: [],
       runTriggerAgentIds: [],
-      permitsLegacyUserBroadcastRunAudit: false,
     });
   });
 
-  it("keeps the pre-RunTrigger user-broadcast audit bridge explicit and non-delivering", () => {
+  it("keeps a user broadcast non-delivering until a separate RunTrigger exists", () => {
     const event: CommunicationEvent = {
       ...base,
       eventId: "user-broadcast",
@@ -45,7 +44,6 @@ describe("V1 communication behavior matrix", () => {
       projectionTargets: [{ surface: "conversation", projectionKey: base.conversationId }],
       deliveryRecipients: [],
       runTriggerAgentIds: [],
-      permitsLegacyUserBroadcastRunAudit: true,
     });
   });
 
@@ -68,7 +66,6 @@ describe("V1 communication behavior matrix", () => {
       ],
       deliveryRecipients: [{ kind: "agent", agentId: "agent-a" }],
       runTriggerAgentIds: ["agent-a"],
-      permitsLegacyUserBroadcastRunAudit: false,
     });
   });
 
@@ -90,7 +87,6 @@ describe("V1 communication behavior matrix", () => {
       ],
       deliveryRecipients: [{ kind: "user", userId: "user-1" }],
       runTriggerAgentIds: [],
-      permitsLegacyUserBroadcastRunAudit: false,
     });
   });
 
@@ -118,7 +114,6 @@ describe("V1 communication behavior matrix", () => {
         { kind: "agent", agentId: "agent-c" },
       ],
       runTriggerAgentIds: ["agent-b", "agent-c"],
-      permitsLegacyUserBroadcastRunAudit: false,
     });
   });
 
@@ -142,7 +137,6 @@ describe("V1 communication behavior matrix", () => {
       ],
       deliveryRecipients: [{ kind: "user", userId: "user-1" }],
       runTriggerAgentIds: [],
-      permitsLegacyUserBroadcastRunAudit: false,
     });
   });
 });

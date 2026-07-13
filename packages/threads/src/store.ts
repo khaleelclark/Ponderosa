@@ -26,6 +26,7 @@ import type {
   CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
+  RunTriggerRecord,
   ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
@@ -95,6 +96,7 @@ import {
   communicationEventsPath,
   communicationContextPath,
   communicationProjectionsPath,
+  runTriggersPath,
   conversationJsonPath,
   conversationMessagesPath,
   conversationsDir,
@@ -249,6 +251,11 @@ export class ThreadStore {
     projections: CommunicationProjection[];
     byTuple: Map<string, CommunicationProjection>;
   }>();
+  private readonly runTriggerCache = new Map<string, {
+    records: RunTriggerRecord[];
+    byId: Map<string, RunTriggerRecord>;
+    byEventAgent: Map<string, RunTriggerRecord>;
+  }>();
 
   constructor(private readonly dataDir: string) {
     mkdirSync(dataDir, { recursive: true });
@@ -304,6 +311,19 @@ export class ThreadStore {
     ]));
     cached = { projections: [...byTuple.values()], byTuple };
     this.communicationProjectionCache.set(projectId, cached);
+    return cached;
+  }
+
+  private runTriggerIndex(projectId: string) {
+    let cached = this.runTriggerCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<RunTriggerRecord>(runTriggersPath(this.dataDir, projectId), "run trigger log", true);
+    cached = {
+      records,
+      byId: new Map(records.map((record) => [record.triggerId, record])),
+      byEventAgent: new Map(records.map((record) => [`${record.communicationEventId}\u0000${record.agentId}`, record])),
+    };
+    this.runTriggerCache.set(projectId, cached);
     return cached;
   }
 
@@ -445,6 +465,63 @@ export class ThreadStore {
     return this.communicationIndex(projectId).byId.get(eventId);
   }
 
+  /**
+   * Persist the explicit communication-to-agent edge before a run is started,
+   * steered, or queued. Text and room placement are never consulted.
+   */
+  recordRunTrigger(
+    projectId: string,
+    communicationEventId: string,
+    agentId: string,
+    createdAt = new Date().toISOString(),
+  ): { trigger: RunTriggerRecord; replayed: boolean } {
+    const event = this.getCommunicationEvent(projectId, communicationEventId);
+    if (!event) throw new Error("run trigger communication was not found");
+    const agent = this.getThread(agentId);
+    if (!agent || agent.projectId !== projectId || agent.archived) throw new Error("run trigger agent must be active in its project");
+    if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) {
+      throw new Error("run trigger agent must belong to the communication conversation");
+    }
+    const behavior = deriveCommunicationBehavior(event);
+    const source = event.intent === "broadcast" && event.sender.kind === "user"
+      ? "project_request" as const
+      : behavior.runTriggerAgentIds.includes(agentId)
+        ? event.intent === "collaboration" ? "collaboration" as const : "direct_message" as const
+        : undefined;
+    if (!source) throw new Error("communication is not eligible to trigger this agent");
+    const trigger: RunTriggerRecord = {
+      triggerId: `${communicationEventId}:agent:${agentId}`,
+      projectId,
+      agentId,
+      communicationEventId,
+      source,
+      createdAt,
+    };
+    const index = this.runTriggerIndex(projectId);
+    const existing = index.byId.get(trigger.triggerId);
+    if (existing) {
+      if (existing.projectId !== trigger.projectId || existing.agentId !== trigger.agentId ||
+          existing.communicationEventId !== trigger.communicationEventId || existing.source !== trigger.source) {
+        throw new Error("run trigger identity collision");
+      }
+      return { trigger: existing, replayed: true };
+    }
+    appendFsyncedJsonl(runTriggersPath(this.dataDir, projectId), [trigger]);
+    index.records.push(trigger);
+    index.byId.set(trigger.triggerId, trigger);
+    index.byEventAgent.set(`${communicationEventId}\u0000${agentId}`, trigger);
+    return { trigger, replayed: false };
+  }
+
+  readRunTriggers(projectId: string, agentId?: string): RunTriggerRecord[] {
+    if (!this.getProject(projectId)) throw new Error("run trigger project not found");
+    return this.runTriggerIndex(projectId).records.filter((record) => !agentId || record.agentId === agentId);
+  }
+
+  hasRunTrigger(projectId: string, communicationEventId: string, agentId: string): boolean {
+    return this.runTriggerIndex(projectId).byEventAgent.has(`${communicationEventId}\u0000${agentId}`);
+  }
+
   getCommunicationDocument(projectId: string, documentId: string) {
     const event = this.readCommunicationEvents(projectId).find((candidate) => candidate.document?.id === documentId);
     return event?.document ? { event, document: event.document } : undefined;
@@ -489,13 +566,12 @@ export class ThreadStore {
       }
       return true;
     }
-    // Replay-only bridge for the pre-RunTrigger representation of an unscoped
-    // user request. No new API should rely on rendered text to authorize scope.
-    const behavior = deriveCommunicationBehavior(event);
-    if (projection.surface === "direct_agent_audit" && behavior.permitsLegacyUserBroadcastRunAudit) {
+    // A Project request is a Broadcast plus a separate, explicit RunTrigger.
+    // That edge authorizes only the responsible agent's local audit.
+    if (projection.surface === "direct_agent_audit" && event.intent === "broadcast" && event.sender.kind === "user") {
       const thread = this.getThread(projection.projectionKey);
       return Boolean(thread && thread.projectId === projectId && !thread.archived &&
-        projection.message?.role === "user" && projection.message.renderedText === event.text);
+        this.hasRunTrigger(projectId, event.eventId, projection.projectionKey));
     }
     return false;
   }
@@ -807,6 +883,7 @@ export class ThreadStore {
     this.communicationEventCache.delete(id);
     this.contextClassificationCache.delete(id);
     this.communicationProjectionCache.delete(id);
+    this.runTriggerCache.delete(id);
     for (const threadId of threadIds) {
       this.logs.delete(threadId);
       this.states.delete(threadId);
@@ -1460,6 +1537,7 @@ export class ThreadStore {
     return {
       thread,
       messages: this.getMessages(id),
+      runTriggers: this.readRunTriggers(thread.projectId, id),
       runOutput: this.getRunOutputs(id),
       activity: this.getActivity(id),
       changedFiles: this.getChangedFiles(id),
@@ -1735,6 +1813,17 @@ export class ThreadStore {
    */
   appendEvent(threadId: string, event: LogEvent): StoredLogEvent {
     const projectId = this.projectIdOf(threadId);
+    const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
+      ? event.communicationEventId : undefined;
+    if (communicationEventId && !this.communicationProjectionAllowed(projectId, {
+      eventId: communicationEventId,
+      surface: "direct_agent_audit",
+      projectionKey: threadId,
+    })) {
+      // Scope validation must precede the canonical thread append. A rejected
+      // projection may not leave an unprojectable user_message in events.jsonl.
+      throw new Error("communication scope cannot project to requested surface");
+    }
     const log = this.logFor(threadId, projectId);
     const stored = log.append(event);
 
@@ -1742,8 +1831,6 @@ export class ThreadStore {
     const { state: nextState, ops } = projectEvent(threadId, state, stored);
     this.states.set(threadId, nextState);
     this.applyOps(threadId, projectId, ops);
-    const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
-      ? event.communicationEventId : undefined;
     const message = communicationMessageProjection(threadId, stored);
     if (communicationEventId && message) {
       this.appendCommunicationProjection(projectId, {

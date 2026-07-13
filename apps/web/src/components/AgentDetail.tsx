@@ -362,7 +362,7 @@ export function AgentDetail({
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.thread.projectId} files={detail.changedFiles} running={stream.running} />,
-    tasks: <RunsPane tasks={detail.tasks} timeline={stream.timeline} />,
+    tasks: <RunsPane tasks={detail.tasks} runTriggers={detail.runTriggers} messages={detail.messages} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={agentId} timeline={stream.timeline} />,
   };
 

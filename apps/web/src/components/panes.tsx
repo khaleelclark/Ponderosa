@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, TaskDto, RunOutputDto } from "@ponderosa/core";
+import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, TaskDto, RunOutputDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -694,11 +694,17 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
 
 export function RunsPane({
   tasks,
+  runTriggers,
+  messages,
   timeline,
 }: {
   tasks: TaskDto[];
+  runTriggers: RunTriggerRecord[];
+  messages: MessageDto[];
   timeline: ExecutionItem[];
 }): JSX.Element {
+  const messageByCommunication = new Map(messages.flatMap((message) =>
+    message.communicationEventId ? [[message.communicationEventId, message] as const] : []));
   return (
     <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
@@ -743,6 +749,38 @@ export function RunsPane({
           ))}
         </Box>
       )}
+      <Divider />
+      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
+          Starts & deliveries
+        </Typography>
+        <Typography variant="caption" color="text.secondary">{runTriggers.length}</Typography>
+      </Stack>
+      {runTriggers.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">No accepted run triggers yet.</Typography>
+      ) : runTriggers.map((trigger) => {
+        const sourceMessage = messageByCommunication.get(trigger.communicationEventId);
+        const sourceLabel = trigger.source === "project_request"
+          ? "Project request"
+          : trigger.source === "collaboration"
+            ? "Collaboration"
+            : "Direct message";
+        return (
+          <Paper key={trigger.triggerId} variant="outlined" sx={{ p: 1.25 }}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: sourceMessage ? 0.75 : 0 }}>
+              <Chip size="small" variant="outlined" label={sourceLabel} />
+              <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                {new Date(trigger.createdAt).toLocaleString()}
+              </Typography>
+            </Stack>
+            {sourceMessage ? (
+              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                {sourceMessage.text}
+              </Typography>
+            ) : null}
+          </Paper>
+        );
+      })}
       <Divider />
       <Typography variant="overline" color="text.secondary">
         Timeline

@@ -98,12 +98,18 @@ export interface CommunicationBehavior {
   deliveryRecipients: CommunicationRecipient[];
   /** Agent deliveries that are allowed to start or steer a run. */
   runTriggerAgentIds: string[];
-  /**
-   * Pre-V1 user broadcasts could also open one explicitly dispatched agent
-   * audit. New code must represent that relationship with a RunTrigger record;
-   * this flag exists only while those stored events remain replayable.
-   */
-  permitsLegacyUserBroadcastRunAudit: boolean;
+}
+
+export type RunTriggerSource = "project_request" | "direct_message" | "collaboration";
+
+/** Durable proof that one accepted communication was dispatched to one agent. */
+export interface RunTriggerRecord {
+  triggerId: string;
+  projectId: string;
+  agentId: string;
+  communicationEventId: string;
+  source: RunTriggerSource;
+  createdAt: string;
 }
 
 function uniqueSorted(values: readonly string[]): string[] {
@@ -191,7 +197,6 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
     projectionTargets,
     deliveryRecipients,
     runTriggerAgentIds: uniqueSorted(runTriggerAgentIds),
-    permitsLegacyUserBroadcastRunAudit: event.intent === "broadcast" && event.sender.kind === "user",
   };
 }
 

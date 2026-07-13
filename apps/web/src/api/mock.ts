@@ -527,6 +527,7 @@ export const mockApi: PonderosaApi = {
     return delay({
       thread,
       messages: messages[threadId] ?? [],
+      runTriggers: [],
       runOutput: [],
       activity: [],
       changedFiles: [],

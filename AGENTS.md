@@ -65,6 +65,11 @@ pay-per-token provider API keys.
    into execution data, never communication. To share a private finding more
    broadly, create a new communication with the intended scope.
 
+   Every accepted communication-to-agent dispatch has one durable `RunTrigger`
+   linking the canonical message to that agent. A plain Project request is an
+   organizational Broadcast plus a separate trigger for its responsible agent;
+   the Broadcast itself still does not deliver or wake agents.
+
 5. **Only Broadcasts are shared knowledge.** Plain Project-chat requests are
    intentionally created as Broadcasts. Visibility does not otherwise imply context
    inheritance. Direct Messages, Collaboration, agent-creation records, tool calls,

@@ -4,7 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TaskStatus } from "./events.js";
-import type { CommunicationDocumentReference, CommunicationIntent } from "./communication.js";
+import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -519,6 +519,7 @@ export interface RunOutputDto {
 export interface ThreadDetailDto {
   thread: ThreadDto;
   messages: MessageDto[];
+  runTriggers: RunTriggerRecord[];
   runOutput: RunOutputDto[];
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];

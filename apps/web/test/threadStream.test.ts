@@ -17,6 +17,7 @@ describe("updateThreadDetail", () => {
   it("keeps streamed response and reasoning deltas in distinct transient Work log entries", () => {
     const detail = {
       messages: [],
+      runTriggers: [],
       runOutput: [],
       activity: [],
       changedFiles: [],
@@ -46,6 +47,7 @@ describe("updateThreadDetail", () => {
   it("replaces transient response text with the canonical completed output", () => {
     const detail = {
       messages: [],
+      runTriggers: [],
       runOutput: [{
         id: "live-runOutput:run-1:response", threadId: "thread-1", executionId: "run-1", kind: "response",
         text: "partial", completed: false, seq: 2, sourceSeqStart: 2, sourceSeqEnd: 2, createdAt: "2026-07-11T08:00:00.000Z",
@@ -101,7 +103,7 @@ describe("updateThreadDetail", () => {
 
   it("projects streamed execution activity and changed files without duplicating replay", () => {
     const detail = {
-      messages: [], runOutput: [], activity: [], changedFiles: [], tasks: [], artifacts: [],
+      messages: [], runTriggers: [], runOutput: [], activity: [], changedFiles: [], tasks: [], artifacts: [],
       thread: { activeEngine: "codex" },
     } as unknown as ThreadDetailDto;
     const envelope = {

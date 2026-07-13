@@ -9,6 +9,7 @@
 //         communication-events.jsonl   ← canonical cross-surface communication
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
+//         run-triggers.jsonl              ← accepted communication-to-agent dispatches
 //         agent-organization.jsonl    ← canonical mutable reporting relationships
 //         conversations/
 //           <conversation-id>/
@@ -55,6 +56,10 @@ export function communicationContextPath(dataDir: string, projectId: string): st
 
 export function communicationProjectionsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "communication-projections.jsonl");
+}
+
+export function runTriggersPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "run-triggers.jsonl");
 }
 
 export function agentPresetsPath(dataDir: string, projectId: string): string {

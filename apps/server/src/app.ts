@@ -3128,6 +3128,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
+        if (communicationEventId) {
+          try {
+            store.recordRunTrigger(project.id, communicationEventId, thread.id);
+          } catch (error) {
+            return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });
+          }
+        }
         if (activeRunDelivery === "steer" && existingRun.runtimeSession) {
           const steered = await existingRun.runtimeSession.steer({
             prompt: `${runtimeIdentityPrompt(thread, existingRun.runId)}\n\nSteering update for the active turn:\n${text}${replyContext(pendingTurn.replyTo)}`,
@@ -3331,6 +3338,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         durableClaim = runLedger.claim(thread.id, runId, requestedDeliveryIds);
       } catch {
         return reply.code(409).send({ error: "thread run ownership changed; retry safely", retryable: true });
+      }
+
+      if (pendingTurn.communicationEventId) {
+        try {
+          store.recordRunTrigger(project.id, pendingTurn.communicationEventId, thread.id);
+        } catch (error) {
+          runLedger.transition({ threadId: thread.id, runId, generation: durableClaim.generation }, "failed");
+          return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });
+        }
       }
 
       const userStored = store.appendEvent(thread.id, {

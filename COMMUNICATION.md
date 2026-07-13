@@ -27,7 +27,7 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
   reparses them.
 - V1 `direct_to_user` records remain replayable, but all new bidirectional user
   communication is represented by `user_dm`.
-- Until canonical `RunTrigger` records replace the old shared-request bridge, a
-  user broadcast may also be linked to the one agent explicitly dispatched by
-  the server. This exception cannot create a delivery and must not be inferred
-  from arbitrary tags.
+- A plain Project request is represented by both an organizational Broadcast and
+  a canonical `RunTrigger` linking that request to its one responsible agent.
+  The Broadcast itself still creates no delivery. The separate trigger authorizes
+  the responsible agent's run and local audit without parsing arbitrary tags.

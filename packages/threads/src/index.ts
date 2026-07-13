@@ -10,6 +10,7 @@ export {
   artifactContentPath, artifactsDir, attachmentPath, attachmentsDir,
   communicationEventsPath, communicationContextPath,
   communicationProjectionsPath,
+  runTriggersPath,
 } from "./paths.js";
 export type { Db } from "./db.js";
 
