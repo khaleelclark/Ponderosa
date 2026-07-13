@@ -104,6 +104,14 @@ pay-per-token provider API keys.
    delivery, enter a future agent's context, or escape its originating agent and
    execution.
 
+   A `RunTrigger` explains why activation was accepted; an `AgentRun` is the
+   resulting execution and is keyed by its real execution ID. Create and finish
+   Runs only from explicit lifecycle events—never infer them from a user message,
+   rendered text, `turn_done`, or provider session continuity. `WorkItem` is
+   optional provider-reported progress inside or across Runs, not a synonym for
+   either the prompt or execution. Artifacts, output, and activity retain their
+   originating execution ID.
+
    Broadcasts inherited as context are shown through the originating execution's
    inspectable context manifest, not manufactured as Agent-chat messages.
    Projection alone must never enqueue, steer, or start an agent; only explicit
@@ -242,7 +250,7 @@ that way; don't duplicate these types per app.
 - **Keep secrets out of the repo and images:** engine auth token files
   (`~/.codex`, Claude profile), OAuth secrets, `.env`. Never commit them.
 - **Persist execution events.** Commands, tool calls, file changes, failures, and
-  lifecycle events belong in the audit trail even when no dedicated task UI
+  lifecycle events belong in the audit trail even when no dedicated Work-item UI
   presents them.
 
 ---

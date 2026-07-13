@@ -32,20 +32,33 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS tasks (
-  id         TEXT PRIMARY KEY,
-  agent_id  TEXT NOT NULL,
-  title      TEXT NOT NULL,
-  status     TEXT NOT NULL,
-  engine     TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS runs (
+  id                     TEXT PRIMARY KEY,
+  agent_id               TEXT NOT NULL,
+  title                  TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  reason                 TEXT NOT NULL,
+  engine                 TEXT NOT NULL,
+  communication_event_id TEXT,
+  started_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  completed_at           TEXT
+);
+
+CREATE TABLE IF NOT EXISTS work_items (
+  id           TEXT PRIMARY KEY,
+  agent_id     TEXT NOT NULL,
+  execution_id TEXT,
+  title        TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (
   id         TEXT PRIMARY KEY,
   agent_id  TEXT NOT NULL,
-  task_id    TEXT,
+  execution_id TEXT,
   kind       TEXT NOT NULL,
   path       TEXT NOT NULL,
   summary    TEXT,
@@ -63,7 +76,8 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_agents_project ON agents (project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages (agent_id, seq);
-CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks (agent_id);
+CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs (agent_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_work_items_agent ON work_items (agent_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_artifacts_agent ON artifacts (agent_id);
 CREATE INDEX IF NOT EXISTS idx_events_agent_seq ON events (agent_id, seq);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events (type);

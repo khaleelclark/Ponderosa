@@ -42,8 +42,11 @@ import type {
   ConversationMessageDto,
   MessageDto,
   ProjectDto,
-  TaskDto,
-  TaskStatus,
+  AgentRunDto,
+  WorkItemDto,
+  WorkItemStatus,
+  AgentLifecycleReason,
+  AgentRunStatus,
   AgentDetailDto,
   AgentDto,
   AgentState,
@@ -81,7 +84,8 @@ import {
   conversations,
   messages,
   projects,
-  tasks,
+  runs,
+  workItems,
   agents,
   agentConversationMemberships,
 } from "./schema.js";
@@ -208,30 +212,30 @@ function readJsonLines<T>(file: string): T[] {
 }
 
 /**
- * V1 intentionally drops the test-only Thread-era data model. Preserve managed
- * source workspaces, but clear Ponderosa-owned state before opening projections.
+ * V1 intentionally drops test-only pre-V1 identity and Task-era layouts. Preserve
+ * managed source workspaces, but clear Ponderosa-owned state before projections.
  */
-function resetLegacyAgentLayout(dataDir: string): void {
+function resetPreV1Layout(dataDir: string): void {
   if (!existsSync(dataDir)) return;
-  let legacy = false;
+  let preV1 = false;
   const databaseFile = dbPath(dataDir);
   if (existsSync(databaseFile)) {
     let database: Database.Database | undefined;
     try {
       database = new Database(databaseFile, { readonly: true, fileMustExist: true });
-      legacy = Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='threads'").get());
+      preV1 = Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name IN ('threads', 'tasks') LIMIT 1").get());
     } catch {
-      legacy = true;
+      preV1 = true;
     } finally {
       database?.close();
     }
   }
-  if (!legacy) {
+  if (!preV1) {
     const root = join(dataDir, "projects");
-    legacy = existsSync(root) && readdirSync(root).some((projectId) =>
+    preV1 = existsSync(root) && readdirSync(root).some((projectId) =>
       existsSync(join(root, projectId, "threads")));
   }
-  if (!legacy) return;
+  if (!preV1) return;
   for (const entry of readdirSync(dataDir)) {
     if (entry === "workspaces") continue;
     rmSync(join(dataDir, entry), { recursive: true, force: true });
@@ -289,7 +293,7 @@ export class AgentStore {
   }>();
 
   constructor(private readonly dataDir: string) {
-    resetLegacyAgentLayout(dataDir);
+    resetPreV1Layout(dataDir);
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(projectsDir(dataDir), { recursive: true });
     this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
@@ -854,13 +858,12 @@ export class AgentStore {
         if (startedIndex < 0) continue;
         const start = events[startedIndex]!;
         const terminal = events.slice(startedIndex + 1).some((stored) =>
-          stored.event.type === "turn_done" || stored.event.type === "error" ||
-          (stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed"].includes(stored.event.status)));
+          stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed", "interrupted"].includes(stored.event.status));
         if (terminal) continue;
-        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : undefined;
+        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : `recovered:${agent.id}`;
         this.appendEvent(agent.id, {
           type: "agent_lifecycle", status: "failed", reason: "execution_interrupted",
-          ...(executionId ? { executionId } : {}),
+          executionId,
         });
         recovered.push(agent.id);
       }
@@ -1530,7 +1533,7 @@ export class AgentStore {
   }
 
   /**
-   * Permanently delete a agent: its projection rows AND its on-disk canonical
+   * Permanently delete an agent: its projection rows AND its on-disk canonical
    * log directory (`agent.json`, `events.jsonl`, artifacts, attachments). This is
    * a whole-agent removal — a deliberate user action, distinct from the
    * append-only rule (which forbids mutating events *within* a live agent, not
@@ -1547,7 +1550,8 @@ export class AgentStore {
     this.db.transaction((tx) => {
       tx.delete(events).where(eq(events.agentId, id)).run();
       tx.delete(artifacts).where(eq(artifacts.agentId, id)).run();
-      tx.delete(tasks).where(eq(tasks.agentId, id)).run();
+      tx.delete(workItems).where(eq(workItems.agentId, id)).run();
+      tx.delete(runs).where(eq(runs.agentId, id)).run();
       tx.delete(messages).where(eq(messages.agentId, id)).run();
       tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
       tx.delete(agents).where(eq(agents.id, id)).run();
@@ -1573,7 +1577,8 @@ export class AgentStore {
       runOutput: this.getRunOutputs(id),
       activity: this.getActivity(id),
       changedFiles: this.getChangedFiles(id),
-      tasks: this.getTasks(id),
+      runs: this.getRuns(id),
+      workItems: this.getWorkItems(id),
       artifacts: this.getArtifacts(id),
       state: agent.state,
     };
@@ -1609,52 +1614,11 @@ export class AgentStore {
       });
   }
 
-  /**
-   * Completed ordinary responses are read from the canonical agent log. Legacy
-   * text events are grouped by their surrounding execution and fail closed into
-   * Work log rather than being inferred as communication.
-   */
+  /** Completed ordinary responses are read only from canonical agent_output records. */
   getRunOutputs(agentId: string): RunOutputDto[] {
-    const storedEvents = this.readEvents(agentId);
-    const completedExecutionIds = new Set(storedEvents.flatMap(({ event }) =>
-      event.type === "agent_output" ? [event.executionId] : [],
-    ));
     const entries: RunOutputDto[] = [];
-    const legacy = new Map<string, { text: string; firstSeq: number; lastSeq: number; createdAt: string }>();
-    let activeExecutionId: string | undefined;
-    let fallbackExecutionId: string | undefined;
-
-    for (const stored of storedEvents) {
+    for (const stored of this.readEvents(agentId)) {
       const { event } = stored;
-      if (event.type === "agent_lifecycle" && event.status === "running") {
-        activeExecutionId = event.executionId;
-        fallbackExecutionId = undefined;
-      } else if (event.type === "user_message") {
-        fallbackExecutionId = undefined;
-      } else if (event.type === "text" && !event.executionId) {
-        const executionId = activeExecutionId ?? fallbackExecutionId ?? `legacy:${stored.seq}`;
-        fallbackExecutionId = executionId;
-        if (!completedExecutionIds.has(executionId)) {
-          const current = legacy.get(executionId);
-          legacy.set(executionId, current ? {
-            ...current,
-            text: `${current.text}${event.delta}`,
-            lastSeq: stored.seq,
-            createdAt: stored.ts,
-          } : {
-            text: event.delta,
-            firstSeq: stored.seq,
-            lastSeq: stored.seq,
-            createdAt: stored.ts,
-          });
-        }
-      } else if (event.type === "turn_done") {
-        fallbackExecutionId = undefined;
-      } else if (event.type === "agent_lifecycle" && event.status !== "running" && event.executionId === activeExecutionId) {
-        activeExecutionId = undefined;
-        fallbackExecutionId = undefined;
-      }
-
       if (event.type === "agent_output" && event.text.trim()) {
         entries.push({
           id: `${agentId}:runOutput:${stored.seq}`,
@@ -1669,22 +1633,6 @@ export class AgentStore {
           createdAt: stored.ts,
         });
       }
-    }
-
-    for (const [executionId, item] of legacy) {
-      if (!item.text.trim()) continue;
-      entries.push({
-        id: `${agentId}:runOutput:legacy:${item.lastSeq}`,
-        agentId,
-        executionId,
-        kind: "response",
-        text: item.text,
-        completed: true,
-        seq: item.lastSeq,
-        sourceSeqStart: item.firstSeq,
-        sourceSeqEnd: item.lastSeq,
-        createdAt: item.createdAt,
-      });
     }
     return entries.sort((a, b) => a.seq - b.seq);
   }
@@ -1756,19 +1704,40 @@ export class AgentStore {
       });
   }
 
-  getTasks(agentId: string): TaskDto[] {
+  getRuns(agentId: string): AgentRunDto[] {
     return this.db
       .select()
-      .from(tasks)
-      .where(eq(tasks.agentId, agentId))
-      .orderBy(asc(tasks.createdAt))
+      .from(runs)
+      .where(eq(runs.agentId, agentId))
+      .orderBy(asc(runs.startedAt))
       .all()
       .map((r) => ({
         id: r.id,
         agentId: r.agentId,
         title: r.title,
-        status: r.status as TaskStatus,
+        status: r.status as AgentRunStatus,
+        reason: r.reason as AgentLifecycleReason,
         engine: r.engine,
+        communicationEventId: r.communicationEventId ?? undefined,
+        startedAt: r.startedAt,
+        updatedAt: r.updatedAt,
+        completedAt: r.completedAt ?? undefined,
+      }));
+  }
+
+  getWorkItems(agentId: string): WorkItemDto[] {
+    return this.db
+      .select()
+      .from(workItems)
+      .where(eq(workItems.agentId, agentId))
+      .orderBy(asc(workItems.createdAt))
+      .all()
+      .map((r) => ({
+        id: r.id,
+        agentId: r.agentId,
+        executionId: r.executionId ?? undefined,
+        title: r.title,
+        status: r.status as WorkItemStatus,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
       }));
@@ -1792,14 +1761,14 @@ export class AgentStore {
         if (generatedPath && agent) {
           const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
           return {
-            id: r.id, agentId: r.agentId, taskId: r.taskId ?? undefined,
+            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
             kind: "document" as const, path: generatedPath, summary: generatedPath,
             createdAt: r.createdAt, mediaType: "application/pdf" as const,
             previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
           };
         }
         return {
-          id: r.id, agentId: r.agentId, taskId: r.taskId ?? undefined,
+          id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
           kind: r.kind as ArtifactKind, path: r.path, summary: r.summary ?? undefined,
           createdAt: r.createdAt,
         };
@@ -1827,7 +1796,7 @@ export class AgentStore {
     return {
       id: r.id,
       agentId: r.agentId,
-      taskId: r.taskId ?? undefined,
+      executionId: r.executionId ?? undefined,
       kind: r.kind as ArtifactKind,
       path: r.path,
       summary: r.summary ?? undefined,
@@ -1838,7 +1807,7 @@ export class AgentStore {
   // ─── Event log (append-only) + projection ──────────────────────────────────
 
   /**
-   * Append one event to a agent's canonical log AND update its projections.
+   * Append one event to an agent's canonical log AND update its projections.
    * The log write happens (and fsyncs) BEFORE the projection, so the log is always
    * complete for replay (SPEC §8: log write before broadcast). Returns the stored
    * event (seq + ts) so the caller can broadcast it over SSE.
@@ -1899,7 +1868,8 @@ export class AgentStore {
   rebuildProjections(): void {
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
-    this.db.delete(tasks).run();
+    this.db.delete(workItems).run();
+    this.db.delete(runs).run();
     this.db.delete(messages).run();
     this.db.delete(agents).run();
     this.db.delete(agentConversationMemberships).run();
@@ -2059,24 +2029,41 @@ export class AgentStore {
           case "insert_artifact":
             tx.insert(artifacts).values(op.row).onConflictDoNothing().run();
             break;
-          case "insert_task":
-            tx.insert(tasks)
+          case "insert_run":
+            tx.insert(runs)
               .values(op.row)
               .onConflictDoUpdate({
-                target: tasks.id,
+                target: runs.id,
                 set: {
                   title: op.row.title,
                   status: op.row.status,
+                  reason: op.row.reason,
                   engine: op.row.engine,
+                  communicationEventId: op.row.communicationEventId,
                   updatedAt: op.row.updatedAt,
+                  completedAt: op.row.completedAt,
                 },
               })
               .run();
             break;
-          case "update_task":
-            tx.update(tasks)
-              .set({ status: op.status, updatedAt: op.updatedAt })
-              .where(eq(tasks.id, op.id))
+          case "update_run":
+            tx.update(runs)
+              .set({ status: op.status, reason: op.reason, updatedAt: op.updatedAt, completedAt: op.completedAt })
+              .where(eq(runs.id, op.id))
+              .run();
+            break;
+          case "insert_work_item":
+            tx.insert(workItems)
+              .values(op.row)
+              .onConflictDoUpdate({
+                target: workItems.id,
+                set: {
+                  executionId: op.row.executionId,
+                  title: op.row.title,
+                  status: op.row.status,
+                  updatedAt: op.row.updatedAt,
+                },
+              })
               .run();
             break;
           case "set_session":
@@ -2228,7 +2215,7 @@ export class AgentStore {
     };
   }
 
-  /** The engine session id to resume for a agent (undefined if none yet). */
+  /** The engine session id to resume for an agent (undefined if none yet). */
   resumeSessionId(agentId: string): string | undefined {
     const row = this.db
       .select({

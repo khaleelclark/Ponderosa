@@ -3527,7 +3527,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 persistRuntimeEvent(agent.id, activeRun, buffered);
               }
               if (event.type !== "error") sawMaterialRuntimeEvent = true;
-              const logEvent: LogEvent = event.type === "text" || event.type === "reasoning"
+              const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update"
                 ? { ...event, executionId: runId }
                 : event;
               const stored = persistRuntimeEvent(agent.id, activeRun, logEvent);
@@ -3676,6 +3676,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const lifecycle = store.appendEvent(request.params.id, {
       type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",
+      executionId: run.executionId,
     });
     publish(request.params.id, lifecycle);
     return { cancelled: true };
@@ -3684,7 +3685,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     if (activeRuns.has(request.params.id)) {
-      return reply.code(409).send({ error: "cannot compact a agent with an active run", retryable: true });
+      return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
     }
     const runtime = runtimeSessions.get(request.params.id);
     if (runtime) {
@@ -3694,9 +3695,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
   });
 
-  app.get<{ Params: { id: string } }>("/api/agents/:id/tasks", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/api/agents/:id/runs", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    return store.getTasks(request.params.id);
+    return store.getRuns(request.params.id);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agents/:id/work-items", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    return store.getWorkItems(request.params.id);
   });
 
   app.get<{ Params: { id: string } }>("/api/agents/:id/artifacts", async (request, reply) => {

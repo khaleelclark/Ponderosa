@@ -1,8 +1,8 @@
-// Agent = a Agent, presented to the user. This module centralizes the
+// Agent is the stable identity presented to the user. This module centralizes the
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentLifecycleStatus, TaskDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentLifecycleStatus, AgentRunDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
   agent: AgentDto;
@@ -78,7 +78,7 @@ export interface AgentLiveHints {
 
 /**
  * Derive the coarse agent status shown in lists and filters from the agent's
- * tasks plus any live-stream hints. Live hints win over projected task state so
+ * canonical runs plus any live-stream hints. Live hints win over projected state so
  * a running agent reads as running the instant the stream reports it.
  */
 export function deriveAgentStatus(
@@ -88,19 +88,18 @@ export function deriveAgentStatus(
   if (hints.running) {
     return "running";
   }
-  const tasks = detail?.tasks ?? [];
-  if (tasks.some((task) => task.status === "running")) {
+  const runs = detail?.runs ?? [];
+  if (runs.some((run) => run.status === "running")) {
     return "running";
   }
-  if (tasks.some((task) => task.status === "waiting_approval")) {
+  if ((detail?.workItems ?? []).some((item) => item.status === "waiting_approval")) {
     return "waiting";
   }
   if (hints.error) {
     return "failed";
   }
-  if (tasks.length > 0 && tasks.every((task) => task.status === "done")) {
-    return "idle";
-  }
+  const latest = [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  if (latest && ["failed", "cancelled", "interrupted", "blocked", "stalled"].includes(latest.status)) return latest.status;
   return "idle";
 }
 
@@ -150,20 +149,20 @@ export function agentStatusColor(
   }
 }
 
-/** Short "current task or latest activity" line for an agent row. */
+/** Short current-run or latest-activity line for an agent row. */
 export function agentActivity(detail: AgentDetailDto | undefined): string | undefined {
   if (!detail) {
     return undefined;
   }
-  const activeTask = [...detail.tasks]
+  const activeRun = [...detail.runs]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .find((task: TaskDto) => task.status !== "done");
-  if (activeTask) {
-    return activeTask.title;
+    .find((run: AgentRunDto) => run.status === "running");
+  if (activeRun) {
+    return activeRun.title;
   }
-  const lastTask = [...detail.tasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  if (lastTask) {
-    return lastTask.title;
+  const lastRun = [...detail.runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  if (lastRun) {
+    return lastRun.title;
   }
   const lastMessage = detail.messages.at(-1);
   return lastMessage?.text.slice(0, 80);

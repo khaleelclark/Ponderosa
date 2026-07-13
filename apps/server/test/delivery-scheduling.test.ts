@@ -149,7 +149,7 @@ describe("bounded collaboration delivery scheduling", () => {
       const agent = store.createAgent(project.id, { title: `Agent ${index}`, engine: "codex" });
       agents.push(agent);
       ledger.queue({ messageId: `busy-${index}`, targetAgentId: agent.id, text: "queued", relayDepth: 0, mentionTrail: [], kind: "direct" });
-      store.appendEvent(agent.id, { type: "task_update", taskId: `task-${index}`, status: "running" });
+      store.appendEvent(agent.id, { type: "work_item_update", workItemId: `item-${index}`, status: "running" });
       store.appendEvent(agent.id, { type: "text", delta: "busy output" });
       events.set(agent.id, store.readEvents(agent.id));
     }

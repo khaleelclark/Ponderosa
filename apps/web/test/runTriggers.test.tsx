@@ -5,7 +5,8 @@ import { RunsPane } from "../src/components/panes.js";
 describe("Runs trigger audit", () => {
   it("shows the accepted source message and structural trigger type", () => {
     const html = renderToStaticMarkup(<RunsPane
-      tasks={[]}
+      runs={[]}
+      workItems={[]}
       timeline={[]}
       runTriggers={[{
         triggerId: "event-1:agent:agent-1",
@@ -26,7 +27,7 @@ describe("Runs trigger audit", () => {
       }]}
     />);
 
-    expect(html).toContain("Starts &amp; deliveries");
+    expect(html).toContain("Run triggers");
     expect(html).toContain("Project request");
     expect(html).toContain("Review the onboarding flow");
   });

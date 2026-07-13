@@ -32,7 +32,8 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "agent_conversation_memberships",
     "agents",
     "messages",
-    "tasks",
+    "runs",
+    "work_items",
     "artifacts",
     "events",
   ];
@@ -52,7 +53,7 @@ function seedAgent(): { projectId: string; agentId: string } {
 }
 
 describe("AgentStore — V1 layout", () => {
-  it("drops Thread-era test state while preserving managed source workspaces", () => {
+  it("drops pre-V1 identity and Task-era state while preserving managed source workspaces", () => {
     const legacyDir = join(dir, "legacy-state");
     const workspaceFile = join(legacyDir, "workspaces", "demo", "README.md");
     const legacyAgentFile = join(legacyDir, "projects", "project-old", "threads", "thread-old", "thread.json");
@@ -62,6 +63,7 @@ describe("AgentStore — V1 layout", () => {
     writeFileSync(legacyAgentFile, "{}\n", "utf8");
     const legacyDb = new Database(join(legacyDir, "ponderosa.db"));
     legacyDb.exec("CREATE TABLE threads (id TEXT PRIMARY KEY)");
+    legacyDb.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY)");
     legacyDb.close();
 
     const migrated = new AgentStore(legacyDir);
@@ -72,6 +74,10 @@ describe("AgentStore — V1 layout", () => {
         .toEqual({ name: "agents" });
       expect(migrated.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='threads'").get())
         .toBeUndefined();
+      expect(migrated.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'").get())
+        .toBeUndefined();
+      expect(migrated.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='runs'").get())
+        .toEqual({ name: "runs" });
     } finally {
       migrated.close();
     }
@@ -499,6 +505,8 @@ describe("AgentStore — canonical communication events", () => {
     store.appendEvent(agent.id, {
       type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "execution-before-crash",
     });
+    // Provider completion alone is not a canonical Run terminal.
+    store.appendEvent(agent.id, { type: "turn_done" });
     store.close();
     store = new AgentStore(dir);
 
@@ -558,6 +566,7 @@ describe("AgentStore — multi-conversation membership", () => {
 
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
+  { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1" },
   { type: "session", sessionId: "sess-abc" },
   { type: "text", delta: "I'll handle this.", executionId: "run-1" },
   { type: "command", command: "pnpm test", cwd: "/repo" },
@@ -570,11 +579,12 @@ const RUN: LogEvent[] = [
   },
   { type: "text", delta: "Done — auth refactor complete.", executionId: "run-1" },
   { type: "turn_done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
-  { type: "agent_output", executionId: "run-1", text: "I'll handle this.Done — auth refactor complete.", sourceSeqStart: 3, sourceSeqEnd: 7 },
+  { type: "agent_output", executionId: "run-1", text: "I'll handle this.Done — auth refactor complete.", sourceSeqStart: 4, sourceSeqEnd: 8 },
+  { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-1" },
 ];
 
 describe("AgentStore — append + projection", () => {
-  it("projects a full run into Chat, Work log, Tasks, and Artifacts", () => {
+  it("projects a full run into Chat, Work log, Runs, and Artifacts", () => {
     const { projectId, agentId } = seedAgent();
     for (const ev of RUN) store.appendEvent(agentId, ev);
 
@@ -585,22 +595,23 @@ describe("AgentStore — append + projection", () => {
       kind: "response",
       completed: true,
       text: "I'll handle this.Done — auth refactor complete.",
-      sourceSeqStart: 3,
-      sourceSeqEnd: 7,
+      sourceSeqStart: 4,
+      sourceSeqEnd: 8,
     })]);
     expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);
     expect(detail.changedFiles).toEqual([expect.objectContaining({
-      path: "auth.ts", kind: "edit", lastSeq: 6, diff: "diff --git a/auth.ts b/auth.ts\n",
+      path: "auth.ts", kind: "edit", lastSeq: 7, diff: "diff --git a/auth.ts b/auth.ts\n",
     })]);
-    // Tasks: one task, closed done by turn_done
-    expect(detail.tasks).toHaveLength(1);
-    expect(detail.tasks[0]!.status).toBe("done");
-    expect(detail.tasks[0]!.title).toBe("Refactor authentication");
+    expect(detail.runs).toEqual([expect.objectContaining({
+      id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication",
+    })]);
+    expect(detail.workItems).toEqual([]);
     // Artifacts: command log + diff from the file_change
     expect(detail.artifacts).toHaveLength(2);
     expect(detail.artifacts.map((a) => a.kind)).toEqual(["log", "diff"]);
-    expect(detail.artifacts[0]!.path).toBe("000004-command.md");
-    expect(detail.artifacts[1]!.path).toBe("000006-diff.patch");
+    expect(detail.artifacts.every((artifact) => artifact.executionId === "run-1")).toBe(true);
+    expect(detail.artifacts[0]!.path).toBe("000005-command.md");
+    expect(detail.artifacts[1]!.path).toBe("000007-diff.patch");
     const commandFile = artifactContentPath(
       dir,
       projectId,
@@ -613,25 +624,19 @@ describe("AgentStore — append + projection", () => {
     expect(store.resumeSessionId(agentId)).toBe("sess-abc");
   });
 
-  it("recovers legacy text into ordered execution-scoped Work log entries after restart", () => {
+  it("does not manufacture durable Work log responses from transient deltas", () => {
     const { agentId } = seedAgent();
-    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-1" });
-    store.appendEvent(agentId, { type: "text", delta: "first legacy response" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1" });
+    store.appendEvent(agentId, { type: "text", delta: "transient response", executionId: "run-1" });
     store.appendEvent(agentId, { type: "turn_done" });
-    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-1" });
-    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run-2" });
-    store.appendEvent(agentId, { type: "text", delta: "second legacy response" });
-    store.appendEvent(agentId, { type: "turn_done" });
-    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run-2" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-1" });
 
     store.close();
     store = new AgentStore(dir);
     const detail = store.getAgentDetail(agentId)!;
     expect(detail.messages).toEqual([]);
-    expect(detail.runOutput.map(({ executionId, text, completed }) => ({ executionId, text, completed }))).toEqual([
-      { executionId: "legacy-run-1", text: "first legacy response", completed: true },
-      { executionId: "legacy-run-2", text: "second legacy response", completed: true },
-    ]);
+    expect(detail.runOutput).toEqual([]);
+    expect(detail.runs).toEqual([expect.objectContaining({ id: "run-1", status: "completed" })]);
   });
 
   it("rebuilds chronological activity and per-file execution history after restart", () => {
@@ -658,10 +663,10 @@ describe("AgentStore — append + projection", () => {
   it("assigns monotonic per-agent seq and is append-only (readSince works)", () => {
     const { agentId } = seedAgent();
     const seqs = RUN.map((ev) => store.appendEvent(agentId, ev).seq);
-    expect(seqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(store.readEvents(agentId)).toHaveLength(9);
+    expect(seqs).toEqual(RUN.map((_, index) => index + 1));
+    expect(store.readEvents(agentId)).toHaveLength(RUN.length);
     // SSE replay-from-seq
-    expect(store.readEventsSince(agentId, 5).map((e) => e.seq)).toEqual([6, 7, 8, 9]);
+    expect(store.readEventsSince(agentId, 5).map((e) => e.seq)).toEqual(RUN.slice(5).map((_, index) => index + 6));
     // The public surface has no update/delete of events (append-only by design).
     expect((store as unknown as Record<string, unknown>)["deleteEvent"]).toBeUndefined();
   });
@@ -701,11 +706,13 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     for (const ev of RUN.slice(0, 5)) store.appendEvent(t2.id, ev);
     // a second run on t1
     store.appendEvent(t1.id, { type: "user_message", text: "Now fix mobile login" });
+    store.appendEvent(t1.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-2" });
     store.appendEvent(t1.id, { type: "command", command: "pnpm build", cwd: "/repo" });
     store.appendEvent(t1.id, { type: "turn_done" });
+    store.appendEvent(t1.id, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-2" });
 
     const before = snapshot(store);
-    const commandFile = artifactContentPath(dir, p.id, t1.id, "000004-command.md");
+    const commandFile = artifactContentPath(dir, p.id, t1.id, "000005-command.md");
     const staleFile = artifactContentPath(dir, p.id, t1.id, "stale.txt");
     writeFileSync(commandFile, "stale command content", "utf8");
     writeFileSync(staleFile, "old derived artifact", "utf8");
@@ -718,7 +725,7 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     expect(existsSync(staleFile)).toBe(false);
     // sanity: it actually contained data
     expect((before.messages as unknown[]).length).toBeGreaterThan(0);
-    expect((before.tasks as unknown[]).length).toBeGreaterThan(0);
+    expect((before.runs as unknown[]).length).toBeGreaterThan(0);
     expect((before.events as unknown[]).length).toBeGreaterThan(0);
   });
 
@@ -735,7 +742,8 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
       "conversation_messages",
       "agents",
       "messages",
-      "tasks",
+      "runs",
+      "work_items",
       "artifacts",
       "events",
     ]) {
@@ -751,7 +759,7 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
     const { agentId } = seedAgent();
     for (const ev of RUN) store.appendEvent(agentId, ev);
     const before = snapshot(store);
-    store.sqlite.exec("DELETE FROM events; DELETE FROM messages; DELETE FROM tasks; DELETE FROM artifacts;");
+    store.sqlite.exec("DELETE FROM events; DELETE FROM messages; DELETE FROM runs; DELETE FROM work_items; DELETE FROM artifacts;");
     store.close();
 
     store = new AgentStore(dir);
@@ -969,7 +977,7 @@ describe("project lifecycle", () => {
     expect(store.deleteProject(removed.id)).toBe(true);
     expect(existsSync(projectDir(dir, removed.id))).toBe(false);
     expect(store.getProject(removed.id)).toBeUndefined();
-    for (const table of ["conversations", "conversation_messages", "agents", "messages", "tasks", "artifacts", "events"]) {
+    for (const table of ["conversations", "conversation_messages", "agents", "messages", "runs", "work_items", "artifacts", "events"]) {
       const projectRows = table === "conversations" || table === "agents"
         ? store.sqlite.prepare(`SELECT * FROM ${table} WHERE project_id = ?`).all(removed.id)
         : [];

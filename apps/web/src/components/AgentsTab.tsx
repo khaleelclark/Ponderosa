@@ -321,7 +321,7 @@ export function AgentsTab({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its event log, tasks, and artifacts. Any in-flight run is stopped.
+            its run history, work items, and artifacts. Any in-flight run is stopped.
             {pendingDelete && agentDescendants(pendingDelete.id, agents).length
               ? ` Its ${agentDescendants(pendingDelete.id, agents).length} direct and indirect reports will also be deleted unless promoted or reparented first.`
               : ""}

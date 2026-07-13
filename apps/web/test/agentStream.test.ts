@@ -10,8 +10,27 @@ describe("updateAgentDetail", () => {
   });
   it("does not resurrect a finished run when its terminal lifecycle record arrives", () => {
     expect(runningAfterAgentEvent(true, { type: "turn_done" })).toBe(false);
-    expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "completed", reason: "turn_completed" })).toBe(false);
-    expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "running", reason: "active_run" })).toBe(true);
+    expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run" })).toBe(false);
+    expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run" })).toBe(true);
+  });
+
+  it("projects lifecycle events onto the real execution id", () => {
+    const detail = {
+      messages: [{ id: "message", agentId: "agent-1", seq: 1, role: "user", text: "Inspect routing", createdAt: "2026-07-11T08:00:00.000Z", communicationEventId: "event-1" }],
+      runs: [], workItems: [], runTriggers: [], runOutput: [], activity: [], changedFiles: [], artifacts: [],
+      agent: { activeEngine: "codex" },
+    } as unknown as AgentDetailDto;
+    const started = updateAgentDetail("agent-1", {
+      seq: 2, ts: "2026-07-11T08:00:01.000Z",
+      event: { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-real" },
+    } as SseEventEnvelope, detail);
+    const completed = updateAgentDetail("agent-1", {
+      seq: 3, ts: "2026-07-11T08:00:02.000Z",
+      event: { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-real" },
+    } as SseEventEnvelope, started);
+    expect(completed.runs).toEqual([expect.objectContaining({
+      id: "run-real", title: "Inspect routing", communicationEventId: "event-1", status: "completed",
+    })]);
   });
 
   it("keeps streamed response and reasoning deltas in distinct transient Work log entries", () => {
@@ -21,7 +40,8 @@ describe("updateAgentDetail", () => {
       runOutput: [],
       activity: [],
       changedFiles: [],
-      tasks: [],
+      runs: [],
+      workItems: [],
       artifacts: [],
       agent: { activeEngine: "codex" },
     } as unknown as AgentDetailDto;
@@ -52,7 +72,7 @@ describe("updateAgentDetail", () => {
         id: "live-runOutput:run-1:response", agentId: "agent-1", executionId: "run-1", kind: "response",
         text: "partial", completed: false, seq: 2, sourceSeqStart: 2, sourceSeqEnd: 2, createdAt: "2026-07-11T08:00:00.000Z",
       }],
-      tasks: [], artifacts: [], agent: { activeEngine: "codex" },
+      runs: [], workItems: [], artifacts: [], agent: { activeEngine: "codex" },
     } as unknown as AgentDetailDto;
     const envelope = {
       seq: 5,
@@ -65,28 +85,29 @@ describe("updateAgentDetail", () => {
     ]);
   });
 
-  it("ignores invalid cached tasks while projecting a task update", () => {
+  it("ignores invalid cached work items while projecting a work-item update", () => {
     const detail = {
       messages: [],
-      tasks: [undefined],
+      runs: [],
+      workItems: [undefined],
       artifacts: [],
       agent: { activeEngine: "codex" },
     } as unknown as AgentDetailDto;
     const envelope = {
       seq: 4,
       ts: "2026-07-11T08:00:02.000Z",
-      event: { type: "task_update", taskId: "task-1", title: "Run checks", status: "running" },
+      event: { type: "work_item_update", workItemId: "checks", title: "Run checks", status: "running", executionId: "run-1" },
     } as SseEventEnvelope;
 
-    expect(updateAgentDetail("agent-1", envelope, detail).tasks).toEqual([
-      expect.objectContaining({ id: "agent-1:t:task-1", title: "Run checks", status: "running" }),
+    expect(updateAgentDetail("agent-1", envelope, detail).workItems).toEqual([
+      expect.objectContaining({ id: "agent-1:work-item:checks", executionId: "run-1", title: "Run checks", status: "running" }),
     ]);
   });
 
   it("ignores invalid cached artifacts while projecting a file change", () => {
     const detail = {
       messages: [],
-      tasks: [],
+      runs: [], workItems: [],
       artifacts: [undefined],
       agent: { activeEngine: "codex" },
     } as unknown as AgentDetailDto;
@@ -103,7 +124,7 @@ describe("updateAgentDetail", () => {
 
   it("projects streamed execution activity and changed files without duplicating replay", () => {
     const detail = {
-      messages: [], runTriggers: [], runOutput: [], activity: [], changedFiles: [], tasks: [], artifacts: [],
+      messages: [], runTriggers: [], runOutput: [], activity: [], changedFiles: [], runs: [], workItems: [], artifacts: [],
       agent: { activeEngine: "codex" },
     } as unknown as AgentDetailDto;
     const envelope = {

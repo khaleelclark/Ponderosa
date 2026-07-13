@@ -3,11 +3,9 @@
 // projectors, and UI all render uniformly and never see runtime-specific shapes.
 
 /**
- * Status of a Task (an execution unit in the Tasks pane). SPEC §2/§12 name three
- * states; encoded here as JSON-safe snake_case identifiers.
- * (Decision recorded in CONTRACTS.md — kept minimal, extend only via a SPEC edit.)
+ * Status of an engine-reported work item inside an agent run.
  */
-export type TaskStatus = "running" | "waiting_approval" | "done";
+export type WorkItemStatus = "running" | "waiting_approval" | "done";
 
 /** Kind of change applied to a file, for `file_change` events → Artifacts. */
 export type FileChangeKind = "create" | "edit" | "delete";
@@ -23,7 +21,7 @@ export interface TokenUsage {
  * The normalized agent event union — SPEC §5, verbatim in shape.
  *
  * Server routing (SPEC §5): `text`/`reasoning` → execution-scoped Work log;
- * `command`/`file_change`/`test_result` → Tasks & Artifacts; `session` → the
+ * `command`/`file_change`/`test_result` → Run activity & Artifacts; `session` → the
  * agent's active session id. Runtime output never implies communication scope.
  * This union is the single contract between engines and everything downstream;
  * changing it requires a SPEC edit (AGENTS.md).
@@ -34,10 +32,10 @@ export type AgentEvent =
   | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError?: boolean }
-  | { type: "command"; command: string; cwd: string } // → Task/Artifact
+  | { type: "command"; command: string; cwd: string } // → Run activity / Artifact
   | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string } // → Artifact
   | { type: "test_result"; passed: boolean; summary: string } // → Artifact
-  | { type: "task_update"; taskId: string; status: TaskStatus; title?: string }
+  | { type: "work_item_update"; workItemId: string; status: WorkItemStatus; title?: string; executionId?: string }
   | { type: "turn_done"; usage?: TokenUsage }
   | { type: "error"; message: string };
 
@@ -45,7 +43,7 @@ export type AgentEvent =
 export type AgentEventType = AgentEvent["type"];
 
 /**
- * One line of a agent's append-only event log (`events.jsonl`, SPEC §4/§7).
+ * One line of an agent's append-only event log (`events.jsonl`, SPEC §4/§7).
  * `seq` is monotonic per agent and doubles as the SSE event id for reconnect
  * dedupe (SPEC §8 streaming contract). The log is the canonical source of truth;
  * SQLite projections are rebuildable from it.

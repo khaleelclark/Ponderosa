@@ -1,4 +1,4 @@
-import type { AgentActivityDto, AgentEvent, ArtifactDto, ChangedFileDto, SseEventEnvelope, TaskDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFileDto, SseEventEnvelope, WorkItemDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -36,7 +36,7 @@ const executionTypes: ReadonlySet<string> = new Set([
 export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {
   if (event.type === "turn_done" || event.type === "error") return false;
   if (event.type === "agent_lifecycle") return event.status === "running" || event.status === "compacting";
-  return current || event.type === "session" || event.type === "task_update" || executionTypes.has(event.type);
+  return current || event.type === "session" || event.type === "work_item_update" || executionTypes.has(event.type);
 }
 
 const streamCursors = new Map<string, { lastSeq?: number; seenSeqs: Set<number> }>();
@@ -45,8 +45,8 @@ function projectedArtifactId(agentId: string, seq: number): string {
   return `${agentId}:a:${seq}:0`;
 }
 
-function projectedTaskUpdateId(agentId: string, taskId: string): string {
-  return `${agentId}:t:${taskId}`;
+function projectedWorkItemId(agentId: string, workItemId: string): string {
+  return `${agentId}:work-item:${workItemId}`;
 }
 
 export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
@@ -136,23 +136,43 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     };
   }
 
-  if (event.type === "task_update") {
-    const tasks = compactDefined(detail.tasks);
-    const canonicalId = projectedTaskUpdateId(agentId, event.taskId);
-    const existing = tasks.find((task) => task.id === canonicalId || task.id === event.taskId);
-    const nextTask: TaskDto = {
+  if (event.type === "agent_lifecycle") {
+    const runs = compactDefined(detail.runs);
+    const existing = runs.find((run) => run.id === event.executionId);
+    const sourceMessage = [...detail.messages].reverse().find((message) => message.role === "user");
+    const terminal = ["cancelled", "completed", "failed", "interrupted"].includes(event.status);
+    const nextRun: AgentRunDto = {
+      id: event.executionId,
+      agentId,
+      title: existing?.title ?? sourceMessage?.text.slice(0, 80) ?? "Run",
+      status: event.status,
+      reason: event.reason,
+      engine: detail.agent.activeEngine,
+      communicationEventId: existing?.communicationEventId ?? sourceMessage?.communicationEventId,
+      startedAt: existing?.startedAt ?? ts,
+      updatedAt: ts,
+      completedAt: terminal ? ts : existing?.completedAt,
+    };
+    return { ...detail, runs: existing ? runs.map((run) => run.id === event.executionId ? nextRun : run) : [...runs, nextRun] };
+  }
+
+  if (event.type === "work_item_update") {
+    const workItems = compactDefined(detail.workItems);
+    const canonicalId = projectedWorkItemId(agentId, event.workItemId);
+    const existing = workItems.find((item) => item.id === canonicalId || item.id === event.workItemId);
+    const nextWorkItem: WorkItemDto = {
       id: existing?.id ?? canonicalId,
       agentId,
-      title: event.title ?? existing?.title ?? "Agent task",
+      executionId: event.executionId ?? existing?.executionId,
+      title: event.title ?? existing?.title ?? "Work item",
       status: event.status,
-      engine: detail.agent.activeEngine,
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
     };
-    const nextTasks = existing
-      ? tasks.map((task) => (task.id === canonicalId || task.id === event.taskId ? nextTask : task))
-      : [...tasks, nextTask];
-    return { ...detail, tasks: nextTasks };
+    const nextWorkItems = existing
+      ? workItems.map((item) => (item.id === canonicalId || item.id === event.workItemId ? nextWorkItem : item))
+      : [...workItems, nextWorkItem];
+    return { ...detail, workItems: nextWorkItems };
   }
 
   if (event.type === "file_change") {
@@ -168,6 +188,7 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     const artifact: ArtifactDto = {
       id: `live-artifact-${seq}`,
       agentId,
+      executionId: [...(detail.runs ?? [])].reverse().find((run) => run.status === "running")?.id,
       kind: isPdf ? "document" : "diff",
       path: event.path,
       summary: `${event.kind} ${event.path}`,
@@ -189,6 +210,7 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     const artifact: ArtifactDto = {
       id: `live-artifact-${seq}`,
       agentId,
+      executionId: [...(detail.runs ?? [])].reverse().find((run) => run.status === "running")?.id,
       kind: "test_report",
       path: `test-result-${seq}.md`,
       summary: event.summary,

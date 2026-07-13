@@ -8,7 +8,7 @@
 // redefinition of a core type).
 
 import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, ImageAttachmentDto } from "@ponderosa/core";
-import type { AgentLifecycleReason, AgentLifecycleStatus } from "@ponderosa/core";
+import type { AgentLifecycleReason, AgentRunStatus } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
 export interface UserMessageEvent {
@@ -37,12 +37,12 @@ export interface CommunicationProjectionEvent {
 /** Durable manager-facing lifecycle transition for ordinary agents. */
 export interface AgentLifecycleEvent {
   type: "agent_lifecycle";
-  status: AgentLifecycleStatus;
+  status: AgentRunStatus;
   reason: AgentLifecycleReason;
-  executionId?: string;
+  executionId: string;
 }
 
-/** Anything that can be appended to a agent's `events.jsonl`. */
+/** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent |
   AgentOutputEvent | Exclude<AgentEvent, { type: "text" | "reasoning" }> | AgentExecutionDeltaEvent;
 

@@ -3,7 +3,7 @@
 // directly so the SSE/REST contract is typechecked end to end (SPEC §6, §1).
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
-import type { AgentEvent, TaskStatus } from "./events.js";
+import type { AgentEvent, WorkItemStatus } from "./events.js";
 import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -363,7 +363,7 @@ export interface UpdateAgentConversationMembershipsRequest {
   primaryConversationId?: string;
 }
 
-// ─── Messages / Tasks / Artifacts ────────────────────────────────────────────
+// ─── Messages / Runs / Work items / Artifacts ────────────────────────────────
 
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
@@ -424,13 +424,27 @@ export interface ImageAttachmentLimitsDto {
   acceptedMediaTypes: AssetMediaType[];
 }
 
-/** A Tasks-pane execution unit (SPEC §7 `tasks`). */
-export interface TaskDto {
+/** One canonical execution of an Agent. */
+export interface AgentRunDto {
   id: string;
   agentId: string;
   title: string;
-  status: TaskStatus;
+  status: AgentRunStatus;
+  reason: AgentLifecycleReason;
   engine: EngineId;
+  communicationEventId?: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+/** Optional engine-reported progress inside a Run; never a Run itself. */
+export interface WorkItemDto {
+  id: string;
+  agentId: string;
+  executionId?: string;
+  title: string;
+  status: WorkItemStatus;
   createdAt: string;
   updatedAt: string;
 }
@@ -467,7 +481,7 @@ export interface ChangedFileDto {
 export interface ArtifactDto {
   id: string;
   agentId: string;
-  taskId?: string;
+  executionId?: string;
   kind: ArtifactKind;
   /** Relative path under the agent's `artifacts/` dir. */
   path: string;
@@ -523,7 +537,8 @@ export interface AgentDetailDto {
   runOutput: RunOutputDto[];
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];
-  tasks: TaskDto[];
+  runs: AgentRunDto[];
+  workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
   state: AgentState;
 }
@@ -657,10 +672,11 @@ export interface HealthDto {
 
 /** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
 export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
+export type AgentRunStatus = Exclude<AgentLifecycleStatus, "idle">;
 
 export type AgentLifecycleReason =
-  | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
-  | "task_completed" | "turn_completed" | "runtime_error"
+  | "no_active_work" | "active_run" | "work_item_waiting_approval" | "queued_delivery"
+  | "work_item_completed" | "turn_completed" | "runtime_error"
   | "session_rollover_scheduled" | "agent_cancelled"
   | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled";
 

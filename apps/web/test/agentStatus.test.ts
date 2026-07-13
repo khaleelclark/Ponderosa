@@ -9,23 +9,24 @@ const organizationAgent = (id: string, title: string, parent?: string): AgentDto
   ...(parent ? { managerAgentId: parent } : {}),
 });
 
-function detailWith(statuses: Array<"running" | "waiting_approval" | "done">): AgentDetailDto {
+function detailWith(runStatuses: Array<"running" | "completed" | "failed">, workItemStatuses: Array<"running" | "waiting_approval" | "done"> = []): AgentDetailDto {
   return {
-    tasks: statuses.map((status, index) => ({ id: `task-${index}`, status })),
+    runs: runStatuses.map((status, index) => ({ id: `run-${index}`, status, updatedAt: `2026-07-12T00:00:0${index}.000Z` })),
+    workItems: workItemStatuses.map((status, index) => ({ id: `item-${index}`, status })),
   } as AgentDetailDto;
 }
 
 describe("visible agent status", () => {
   it("prioritizes a live run over projected state", () => {
-    expect(deriveAgentStatus(detailWith(["done"]), { running: true })).toBe("running");
+    expect(deriveAgentStatus(detailWith(["completed"]), { running: true })).toBe("running");
   });
 
   it("keeps waiting work visible ahead of completed work", () => {
-    expect(deriveAgentStatus(detailWith(["done", "waiting_approval"]))).toBe("waiting");
+    expect(deriveAgentStatus(detailWith(["completed"], ["done", "waiting_approval"]))).toBe("waiting");
   });
 
-  it("returns to idle when all projected tasks are done", () => {
-    const status = deriveAgentStatus(detailWith(["done", "done"]));
+  it("returns to idle when the latest projected Run completed", () => {
+    const status = deriveAgentStatus(detailWith(["completed", "completed"]));
     expect(status).toBe("idle");
     expect(agentStatusLabel(status)).toBe("Idle");
   });

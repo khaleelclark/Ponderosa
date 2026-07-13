@@ -61,13 +61,13 @@ describe("agent health projection", () => {
   });
 
   it("projects waiting from task approval and durable delivery", () => {
-    expect(project({ active: new Map([["agent", { startedAt: t0 }]]), events: { agent: [event({ type: "task_update", taskId: "task", status: "waiting_approval" })] } }).agents[0]?.reason).toBe("task_waiting_approval");
+    expect(project({ active: new Map([["agent", { startedAt: t0 }]]), events: { agent: [event({ type: "work_item_update", workItemId: "item", status: "waiting_approval" })] } }).agents[0]?.reason).toBe("work_item_waiting_approval");
     expect(project({ queued: { agent: [{ createdAt: t1 }] } }).agents[0]?.reason).toBe("queued_delivery");
   });
 
   it("returns completed work to idle and preserves failures", () => {
     expect(project({ events: { agent: [event({ type: "turn_done" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
-    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
+    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
     expect(project({ events: { agent: [event({ type: "error", message: "boom" })] } }).agents[0]?.status).toBe("failed");
   });
 
@@ -84,7 +84,7 @@ describe("agent health projection", () => {
   });
 
   it("preserves ordinary cancellation from a durable lifecycle event", () => {
-    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled" })] } }).agents[0])
+    expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled", executionId: "run" })] } }).agents[0])
       .toMatchObject({ status: "cancelled", reason: "agent_cancelled" });
   });
 

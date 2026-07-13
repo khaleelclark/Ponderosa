@@ -99,8 +99,8 @@ function printEvent(ev: AgentEvent): void {
           ` ${ev.summary}\n`,
       );
       break;
-    case "task_update":
-      process.stdout.write(c.dim(`◔ task ${ev.taskId} → ${ev.status}\n`));
+    case "work_item_update":
+      process.stdout.write(c.dim(`◔ work item ${ev.workItemId} → ${ev.status}\n`));
       break;
     case "turn_done":
       process.stdout.write(

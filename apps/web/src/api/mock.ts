@@ -1,6 +1,5 @@
 import type {
   AgentPresetDto,
-  AgentEvent,
   ArtifactContentDto,
   ArtifactDto,
   EngineDto,
@@ -12,7 +11,8 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  TaskDto,
+  AgentRunDto,
+  WorkItemDto,
   AgentDetailDto,
   AgentDto,
 } from "@ponderosa/core";
@@ -100,7 +100,7 @@ const messages: Record<string, MessageDto[]> = {
       agentId: "agent-auth",
       seq: 2,
       role: "assistant",
-      text: "I have the shell structure mapped and will keep execution detail in Tasks and Artifacts.",
+      text: "I have the shell structure mapped and will keep execution detail in Runs and Files & results.",
       createdAt: now,
     },
   ],
@@ -126,38 +126,38 @@ const messages: Record<string, MessageDto[]> = {
   ],
 };
 
-const tasks: Record<string, TaskDto[]> = {
+const runs: Record<string, AgentRunDto[]> = {
   "agent-auth": [
     {
-      id: "task-ui",
+      id: "run-ui",
       agentId: "agent-auth",
       title: "Build responsive shell",
       status: "running",
+      reason: "active_run",
       engine: "codex",
-      createdAt: now,
-      updatedAt: now,
-    },
-    {
-      id: "task-pwa",
-      agentId: "agent-auth",
-      title: "Add manifest and shell caching",
-      status: "waiting_approval",
-      engine: "codex",
-      createdAt: now,
+      startedAt: now,
       updatedAt: now,
     },
   ],
   "agent-sse": [
     {
-      id: "task-stream",
+      id: "run-stream",
       agentId: "agent-sse",
       title: "Replay missed events from seq",
-      status: "done",
+      status: "completed",
+      reason: "turn_completed",
       engine: "codex",
-      createdAt: now,
+      startedAt: now,
       updatedAt: now,
+      completedAt: now,
     },
   ],
+  "agent-login": [],
+};
+
+const workItems: Record<string, WorkItemDto[]> = {
+  "agent-auth": [{ id: "agent-auth:work-item:pwa", agentId: "agent-auth", executionId: "run-ui", title: "Add manifest and shell caching", status: "waiting_approval", createdAt: now, updatedAt: now }],
+  "agent-sse": [],
   "agent-login": [],
 };
 
@@ -166,7 +166,7 @@ const artifacts: Record<string, ArtifactDto[]> = {
     {
       id: "artifact-diff-app",
       agentId: "agent-auth",
-      taskId: "task-ui",
+      executionId: "run-ui",
       kind: "diff",
       path: "apps/web/src/App.tsx.diff",
       summary: "Responsive workbench shell",
@@ -175,7 +175,7 @@ const artifacts: Record<string, ArtifactDto[]> = {
     {
       id: "artifact-report",
       agentId: "agent-auth",
-      taskId: "task-pwa",
+      executionId: "run-ui",
       kind: "test_report",
       path: "reports/web-build.md",
       summary: "Latest web build notes",
@@ -254,7 +254,7 @@ function nextSeq(agentId: string): number {
   return next;
 }
 
-function emit(agentId: string, event: AgentEvent): void {
+function emit(agentId: string, event: SseEventEnvelope["event"]): void {
   const envelope: SseEventEnvelope = {
     agentId,
     seq: nextSeq(agentId),
@@ -266,10 +266,12 @@ function emit(agentId: string, event: AgentEvent): void {
 }
 
 function replayRun(agentId: string, prompt: string): void {
-  const events: AgentEvent[] = [
+  const executionId = `mock-run-${Date.now()}`;
+  const events: SseEventEnvelope["event"][] = [
+    { type: "agent_lifecycle", status: "running", reason: "active_run", executionId },
     { type: "session", sessionId: `mock-${agentId}` },
-    { type: "task_update", taskId: "task-live", status: "running", title: "Run requested change" },
-    { type: "text", delta: "I am on it. I will keep the chat clean and put execution detail in the task panes." },
+    { type: "work_item_update", workItemId: "work-live", status: "running", title: "Apply requested change", executionId },
+    { type: "text", delta: "I am on it. I will keep chat explicit and put execution detail in the run views." },
     { type: "command", command: "pnpm --filter @ponderosa/web typecheck", cwd: "/Users/khaleel/Projects/Ponderosa" },
     {
       type: "file_change",
@@ -278,9 +280,10 @@ function replayRun(agentId: string, prompt: string): void {
       diff: `diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx\n+// ${prompt.slice(0, 54)}\n`,
     },
     { type: "test_result", passed: true, summary: "Mock typecheck passed for the web shell." },
-    { type: "task_update", taskId: "task-live", status: "done", title: "Run requested change" },
+    { type: "work_item_update", workItemId: "work-live", status: "done", title: "Apply requested change", executionId },
     { type: "text", delta: "The web shell update is complete in the mock run." },
     { type: "turn_done" },
+    { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId },
   ];
 
   events.forEach((event, index) => {
@@ -323,11 +326,12 @@ export const mockApi: PonderosaApi = {
       scope: { type: "project" as const, id: projectId },
       generatedAt,
       agents: agents.filter((agent) => agent.projectId === projectId).map((agent) => {
-        const agentTasks = tasks[agent.id] ?? [];
-        const status = agentTasks.some((task) => task.status === "running") ? "running" as const
-          : agentTasks.some((task) => task.status === "waiting_approval") ? "waiting" as const
-            : agentTasks.length && agentTasks.every((task) => task.status === "done") ? "completed" as const : "idle" as const;
-        return { agentId: agent.id, childAgentIds: [], status, statusTimestamp: agent.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "task_waiting_approval" as const : status === "completed" ? "task_completed" as const : "no_active_work" as const };
+        const agentRuns = runs[agent.id] ?? [];
+        const agentWorkItems = workItems[agent.id] ?? [];
+        const status = agentRuns.some((run) => run.status === "running") ? "running" as const
+          : agentWorkItems.some((item) => item.status === "waiting_approval") ? "waiting" as const
+            : agentRuns.length && agentRuns.every((run) => run.status === "completed") ? "completed" as const : "idle" as const;
+        return { agentId: agent.id, childAgentIds: [], status, statusTimestamp: agent.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "work_item_waiting_approval" as const : status === "completed" ? "turn_completed" as const : "no_active_work" as const };
       }),
     });
   },
@@ -461,7 +465,8 @@ export const mockApi: PonderosaApi = {
     };
     agents.push(agent);
     messages[agent.id] = [];
-    tasks[agent.id] = [];
+    runs[agent.id] = [];
+    workItems[agent.id] = [];
     artifacts[agent.id] = [];
     agentSeq.set(agent.id, 0);
     return delay(agent);
@@ -512,7 +517,8 @@ export const mockApi: PonderosaApi = {
     const index = agents.findIndex((candidate) => candidate.id === agentId);
     if (index !== -1) agents.splice(index, 1);
     delete messages[agentId];
-    delete tasks[agentId];
+    delete runs[agentId];
+    delete workItems[agentId];
     delete artifacts[agentId];
     agentSeq.delete(agentId);
     subscribers.delete(agentId);
@@ -531,7 +537,8 @@ export const mockApi: PonderosaApi = {
       runOutput: [],
       activity: [],
       changedFiles: [],
-      tasks: tasks[agentId] ?? [],
+      runs: runs[agentId] ?? [],
+      workItems: workItems[agentId] ?? [],
       artifacts: artifacts[agentId] ?? [],
       state: agent.state,
     });

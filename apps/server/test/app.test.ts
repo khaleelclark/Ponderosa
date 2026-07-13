@@ -547,7 +547,7 @@ describe("server chunk F", () => {
     const parent = store.createAgent(project.id, { title: "Lead", engine: "codex", presetId: preset.id });
     const child = store.createAgent(project.id, { title: "Reviewer", engine: "codex" });
     store.updateAgentOrganization(child.id, { managerAgentId: parent.id });
-    store.appendEvent(parent.id, { type: "task_update", taskId: "assignment", title: "Build directory", status: "running" });
+    store.appendEvent(parent.id, { type: "work_item_update", workItemId: "directory", title: "Build directory", status: "running" });
 
     await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Start" } });
     await waitForSeedCount(1);
@@ -782,7 +782,7 @@ describe("server chunk F", () => {
     expect(shared.statusCode, shared.body).toBe(200);
     await waitForRun(responsible.id);
 
-    const eventId = shared.json<{ communicationEventId: string }>().communicationEventId;
+    const { communicationEventId: eventId, runId } = shared.json<{ communicationEventId: string; runId: string }>();
     expect(store.getCommunicationEvent(project.id, eventId)).toMatchObject({
       intent: "broadcast",
       audience: { kind: "organization", organizationId: project.id },
@@ -794,6 +794,14 @@ describe("server chunk F", () => {
     const responsibleDetail = await app.inject({ method: "GET", url: `/api/agents/${responsible.id}` });
     expect(responsibleDetail.json<{ runTriggers: Array<{ communicationEventId: string }> }>().runTriggers)
       .toEqual([expect.objectContaining({ communicationEventId: eventId })]);
+    expect(responsibleDetail.json<{ runs: Array<{ id: string; communicationEventId?: string; status: string }> }>().runs)
+      .toEqual([expect.objectContaining({ id: runId, communicationEventId: eventId, status: "completed" })]);
+    expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/runs` }))
+      .json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: runId })]);
+    store.appendEvent(responsible.id, { type: "work_item_update", workItemId: "follow-up", executionId: runId, title: "Verify onboarding", status: "done" });
+    expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/work-items` }))
+      .json<Array<{ executionId?: string; title: string }>>())
+      .toEqual([expect.objectContaining({ executionId: runId, title: "Verify onboarding" })]);
     expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
       expect.objectContaining({
         role: "user",
@@ -3193,7 +3201,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("deletes a agent: removes projections + on-disk log, cancels active run", async () => {
+  it("deletes an agent: removes projections + on-disk log, cancels active run", async () => {
     const { app, project, agent } = await createProjectAndAgent();
 
     // Give the agent some history so there's a log + projections to remove.

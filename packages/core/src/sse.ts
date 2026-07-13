@@ -4,7 +4,7 @@
 // by seq (critical for phones locking/unlocking).
 
 import type { AgentEvent } from "./events.js";
-import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentLifecycleStatus, AgentOutputEvent, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
+import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentRunStatus, AgentOutputEvent, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
 
 /** Canonical agent events visible on the live wire, including server-owned records. */
 export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" }>
@@ -13,7 +13,7 @@ export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" 
   | { type: "user_message"; communicationEventId?: string; text: string; replyTo?: MessageReferenceDto; attachments?: ImageAttachmentDto[] }
   | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" }
   | { type: "communication_projection"; communicationEventId: string; text: string; role?: "user" | "assistant" | "system"; attachments?: ImageAttachmentDto[] }
-  | { type: "agent_lifecycle"; status: AgentLifecycleStatus; reason: AgentLifecycleReason; executionId?: string };
+  | { type: "agent_lifecycle"; status: AgentRunStatus; reason: AgentLifecycleReason; executionId: string };
 
 /**
  * The JSON payload of a `data:` line on the event stream. Wraps a StoredEvent's

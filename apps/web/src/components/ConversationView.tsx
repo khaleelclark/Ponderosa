@@ -989,7 +989,7 @@ export function ConversationView({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its event log, tasks, and artifacts. Any in-flight run is stopped. This cannot be undone.
+            its run history, work items, and artifacts. Any in-flight run is stopped. This cannot be undone.
           </Typography>
           {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
         </DialogContent>

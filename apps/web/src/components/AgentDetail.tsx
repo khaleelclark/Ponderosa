@@ -53,7 +53,7 @@ import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 
-type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "tasks" | "artifacts";
+type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts";
 
 export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
@@ -84,7 +84,7 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
   { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
-  { value: "tasks", label: "Runs", icon: <TaskAltOutlinedIcon /> },
+  { value: "runs", label: "Runs", icon: <TaskAltOutlinedIcon /> },
   { value: "artifacts", label: "Files & results", icon: <Inventory2OutlinedIcon /> },
 ];
 
@@ -362,7 +362,7 @@ export function AgentDetail({
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} />,
-    tasks: <RunsPane tasks={detail.tasks} runTriggers={detail.runTriggers} messages={detail.messages} timeline={stream.timeline} />,
+    runs: <RunsPane runs={detail.runs} workItems={detail.workItems} runTriggers={detail.runTriggers} messages={detail.messages} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} />,
   };
 
@@ -611,7 +611,7 @@ export function AgentDetail({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{detail.agent.title}</Box>, including its
-            event log, tasks, and artifacts.
+            run history, work items, and artifacts.
             {descendantCount ? ` Its ${descendantCount} direct and indirect report${descendantCount === 1 ? "" : "s"} will also be deleted unless promoted or reparented first.` : ""}
             {" "}This cannot be undone.
           </Typography>

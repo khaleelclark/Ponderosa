@@ -86,12 +86,25 @@ export const messages = sqliteTable("messages", {
   attachmentsJson: text("attachments_json"),
 });
 
-export const tasks = sqliteTable("tasks", {
+export const runs = sqliteTable("runs", {
   id: text("id").primaryKey(),
   agentId: text("agent_id").notNull(),
   title: text("title").notNull(),
-  status: text("status").notNull(), // TaskStatus
+  status: text("status").notNull(),
+  reason: text("reason").notNull(),
   engine: text("engine").notNull(),
+  communicationEventId: text("communication_event_id"),
+  startedAt: text("started_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+export const workItems = sqliteTable("work_items", {
+  id: text("id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  executionId: text("execution_id"),
+  title: text("title").notNull(),
+  status: text("status").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -99,7 +112,7 @@ export const tasks = sqliteTable("tasks", {
 export const artifacts = sqliteTable("artifacts", {
   id: text("id").primaryKey(),
   agentId: text("agent_id").notNull(),
-  taskId: text("task_id"),
+  executionId: text("execution_id"),
   kind: text("kind").notNull(), // ArtifactKind
   path: text("path").notNull(),
   summary: text("summary"),
@@ -123,6 +136,7 @@ export type ConversationRow = typeof conversations.$inferSelect;
 export type AgentConversationMembershipRow = typeof agentConversationMemberships.$inferSelect;
 export type ConversationMessageRow = typeof conversationMessages.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
-export type TaskRow = typeof tasks.$inferSelect;
+export type RunRow = typeof runs.$inferSelect;
+export type WorkItemRow = typeof workItems.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;

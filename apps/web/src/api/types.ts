@@ -38,7 +38,7 @@ import type {
   AgentDto,
 } from "@ponderosa/core";
 
-/** User-facing options when spawning an agent (a agent) from the UI. */
+/** User-facing options when spawning an agent from the UI. */
 export interface CreateAgentOptions {
   title: string;
   engine: string;

@@ -24,9 +24,9 @@ function eventObservation(events: StoredLogEvent[], after?: string): StatusObser
       statusTimestamp: item.ts,
       reason: item.event.reason,
     };
-    if (item.event.type === "task_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "task_waiting_approval" };
+    if (item.event.type === "work_item_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "work_item_waiting_approval" };
     if (item.event.type === "turn_done") return { status: "idle", statusTimestamp: item.ts, reason: "turn_completed" };
-    if (item.event.type === "task_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "task_completed" };
+    if (item.event.type === "work_item_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "work_item_completed" };
   }
   return undefined;
 }

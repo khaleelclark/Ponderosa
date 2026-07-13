@@ -9,9 +9,9 @@ import type { AgentEvent } from "./events.js";
 export type EngineId = string;
 
 /**
- * A single conversation turn in a agent's canonical chat history. This is the
- * human-facing intent layer only (SPEC §2) — execution detail lives in Tasks/
- * Artifacts, never here. Passed to `seed()` to start a fresh runtime session.
+ * A single conversation turn in an agent's canonical chat history. This is the
+ * human-facing intent layer only (SPEC §2) — execution detail lives in Runs,
+ * Activity, and Files & results, never here. Passed to `seed()` to start a fresh runtime session.
  */
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -54,13 +54,13 @@ export interface RunOptionsBase {
   signal: AbortSignal;
 }
 
-/** Options for continuing a agent's already-active runtime session. */
+/** Options for continuing an agent's already-active runtime session. */
 export interface ContinueOptions extends RunOptionsBase {
   /** The engine session id captured from a prior `session` event. */
   resumeSessionId: string;
 }
 
-/** Options for starting a fresh runtime session for a agent. */
+/** Options for starting a fresh runtime session for an agent. */
 export interface SeedOptions extends RunOptionsBase {
   /**
    * The agent's conversation so far (often just the first message in v1). The

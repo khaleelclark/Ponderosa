@@ -27,7 +27,8 @@ export type {
   ProjectRow,
   AgentRow,
   MessageRow,
-  TaskRow,
+  RunRow,
+  WorkItemRow,
   ArtifactRow,
   EventRow,
 } from "./schema.js";
