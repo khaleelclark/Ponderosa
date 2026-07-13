@@ -885,7 +885,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const requestedMaxIdleSessions = opts.runtimeSessionScheduling?.maxIdleSessions ?? configuredMaxIdleSessions;
   const runtimeMaxIdleSessions = Number.isInteger(requestedMaxIdleSessions) && requestedMaxIdleSessions >= 0
     ? requestedMaxIdleSessions
-    : 8;
+    : 0;
   const runtimeSessionNow = opts.runtimeSessionScheduling?.now ?? Date.now;
   const setRuntimeIdleTimer = opts.runtimeSessionScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearRuntimeIdleTimer = opts.runtimeSessionScheduling?.clearTimer ?? clearTimeout;
@@ -1337,8 +1337,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const recipients = new Set<string>();
     for (const project of store.listProjects()) {
       for (const master of store.listConversations(project.id)) {
-        for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getConversationDeliveryIntents(master.id)) {
-          if (message.createdAt < boundary) continue;
+        for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getConversationDeliveryIntents(master.id, boundary)) {
           const target = store.getAgent(intent.targetAgentId);
           if (!target || target.archived || !target.conversationIds.includes(master.id)) continue;
           if (messageReceiptKey) collaborationDeliveries.rememberMessageReceipt(messageReceiptKey, message.id);

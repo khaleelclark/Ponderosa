@@ -1158,7 +1158,7 @@ export class AgentStore {
     };
   }
 
-  getConversationDeliveryIntents(conversationId: string): Array<{
+  getConversationDeliveryIntents(conversationId: string, createdAtOrAfter?: string): Array<{
     message: ConversationMessageDto;
     intent: ConversationDeliveryIntent;
     messageReceiptKey?: string;
@@ -1167,14 +1167,27 @@ export class AgentStore {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return [];
     return this.messageDispatches(conversation.projectId)
-      .filter((dispatch) => dispatch.conversationId === conversationId)
+      .filter((dispatch) => dispatch.conversationId === conversationId &&
+        (!createdAtOrAfter || dispatch.createdAt >= createdAtOrAfter))
       .flatMap((dispatch) => (dispatch.deliveryIntents ?? []).map((intent) => ({
-      message: this.getConversationMessages(conversationId, dispatch.channel)
-        .find((message) => message.id === dispatch.messageId)!,
+      // Dispatch records are durable before projections and contain the complete
+      // immutable message snapshot. Reconstruct directly instead of repeatedly
+      // scanning the projected room timeline once per recipient intent.
+      message: {
+        id: dispatch.messageId,
+        communicationEventId: dispatch.eventId,
+        conversationId: dispatch.conversationId,
+        role: dispatch.role,
+        text: dispatch.renderedText,
+        createdAt: dispatch.createdAt,
+        authorAgentId: dispatch.authorAgentId,
+        replyTo: dispatch.replyTo,
+        attachments: dispatch.attachments,
+      },
       intent,
       messageReceiptKey: dispatch.messageReceiptKey,
       deliveryOrderKey: dispatch.orderKey,
-    }))).filter((item) => Boolean(item.message));
+    })));
   }
 
   getConversationMessageByReceiptKey(conversationId: string, receiptKey: string): ConversationMessageDto | undefined {
