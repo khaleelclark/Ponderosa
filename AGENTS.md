@@ -205,6 +205,10 @@ Ordinary runtime output → execution-scoped Work log
   delivery. It revokes runtime capabilities and must never requeue or respawn the
   same delivery; later queued work remains eligible to run. Genuine runtime
   failures may retain their separate bounded retry policy.
+- Collaboration loop protection uses bounded recent causal lineage and repeated
+  stable-ID routes. It must stop autonomous cycles without imposing a small total
+  handoff ceiling on healthy organizational work, and batched deliveries must
+  preserve every constituent lineage.
 - Activity and Changed Files are projections of canonical execution events.
   Review may layer read-only, current Git working-tree state over that provenance;
   it never rewrites the event log or attributes unscoped changes to an agent.

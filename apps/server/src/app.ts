@@ -106,6 +106,10 @@ export interface CreateServerOptions {
     stallAfterMs?: number;
     onOwnershipState?: (context: { agentId: string; runId: string; generation: number; state: RuntimeOwnershipState }) => void;
   };
+  /** Deterministic message-claim race seam; never enabled in production configuration. */
+  messageLifecycleFaults?: {
+    afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
+  };
 }
 
 interface ActiveRun {
@@ -238,6 +242,7 @@ type Subscriber = (stored: StoredLogEvent) => void;
 // collaboration-hop limit: a healthy organization may have a long-running
 // exchange, while exact repeated handoffs still need cycle protection.
 const MAX_AGENT_MENTION_REPLAY_WINDOW = 64;
+const MAX_REPEATED_AGENT_ROUTE_HANDOFFS = 16;
 const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
@@ -271,8 +276,38 @@ function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, t
     .digest("hex");
 }
 
-function advanceMentionTrail(mentionTrail: string[], fingerprint: string): string[] {
-  return [...mentionTrail, fingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+function mentionRouteFingerprint(authorAgentId: string, targetAgentId: string): string {
+  return createHash("sha256")
+    .update("route\0")
+    .update(authorAgentId)
+    .update("\0")
+    .update(targetAgentId)
+    .digest("hex");
+}
+
+function repeatedRouteCount(mentionTrail: string[], routeFingerprint: string): number {
+  return mentionTrail.reduce((count, fingerprint) => count + Number(fingerprint === routeFingerprint), 0);
+}
+
+function advanceMentionTrail(
+  mentionTrail: string[],
+  messageFingerprint: string,
+  routeFingerprint: string,
+): string[] {
+  return [...mentionTrail, messageFingerprint, routeFingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+}
+
+function mergeMentionTrails(deliveries: CollaborationDelivery[]): string[] {
+  const merged = new Map<string, true>();
+  for (const delivery of deliveries) {
+    for (const fingerprint of delivery.mentionTrail) {
+      // Reinsert duplicates so the retained window favors their most recent
+      // canonical batch occurrence.
+      merged.delete(fingerprint);
+      merged.set(fingerprint, true);
+    }
+  }
+  return [...merged.keys()].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
 }
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
@@ -874,6 +909,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const turnDispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
   const directReplyClaims = new Set<string>();
+  const deletingAgentIds = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent =>
@@ -1169,9 +1205,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function pendingTurnFromBatch(deliveries: CollaborationDelivery[]): PendingTurn {
     const first = deliveries[0]!;
+    const mentionTrail = mergeMentionTrails(deliveries);
     return {
       ...pendingTurnFromDelivery(first),
       text: formatDeliveryBatch({ deliveries }),
+      agentMentionDepth: mentionTrail.length,
+      agentMentionTrail: mentionTrail,
       communicationEventId: undefined,
       sourceAuthorAgentId: undefined,
       collaborationDeliveryId: undefined,
@@ -1518,13 +1557,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const blocked: Array<{ title: string; reason: string }> = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target.id, text);
+      const routeFingerprint = mentionRouteFingerprint(authorAgentId, target.id);
       const blockedReason = authorAgentId && mentionTrail.includes(fingerprint)
         ? "the same handoff already occurred in this collaboration chain"
+        : authorAgentId && repeatedRouteCount(mentionTrail, routeFingerprint) >= MAX_REPEATED_AGENT_ROUTE_HANDOFFS
+          ? "the same agent route repeated 16 times in the recent collaboration chain"
         : undefined;
       if (blockedReason) {
         blocked.push({ title: target.title, reason: blockedReason });
       } else {
-        const nextTrail = authorAgentId ? advanceMentionTrail(mentionTrail, fingerprint) : [];
+        const nextTrail = authorAgentId
+          ? advanceMentionTrail(mentionTrail, fingerprint, routeFingerprint)
+          : [];
         intents.push({
           targetAgentId: target.id,
           relayDepth: nextTrail.length,
@@ -1556,10 +1600,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const intents: ConversationDeliveryIntent[] = [];
     for (const target of targets) {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target!.id, renderedText);
+      const routeFingerprint = mentionRouteFingerprint(authorAgentId, target!.id);
       if (mentionTrail.includes(fingerprint)) {
         return { text, intents: [], error: "the same collaboration handoff already occurred in this delivery chain" };
       }
-      const nextTrail = advanceMentionTrail(mentionTrail, fingerprint);
+      if (repeatedRouteCount(mentionTrail, routeFingerprint) >= MAX_REPEATED_AGENT_ROUTE_HANDOFFS) {
+        return { text, intents: [], error: "the same agent route repeated 16 times in the recent collaboration chain" };
+      }
+      const nextTrail = advanceMentionTrail(mentionTrail, fingerprint, routeFingerprint);
       intents.push({
         targetAgentId: target!.id,
         relayDepth: nextTrail.length,
@@ -2136,6 +2184,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
     const agentIds = new Set(agents.map((agent) => agent.id));
+    for (const agentId of agentIds) deletingAgentIds.add(agentId);
     const conversationIds = new Set(store.listConversations(project.id).map((master) => master.id));
     for (const agentId of agentIds) {
       const active = activeRuns.get(agentId);
@@ -2159,6 +2208,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     contextCursors.deleteAgents(agentIds);
     runLedger.deleteAgents(agentIds);
     store.deleteProject(project.id);
+    for (const agentId of agentIds) deletingAgentIds.delete(agentId);
     engineCapabilityCache.clear();
     return { deleted: true };
   });
@@ -2920,6 +2970,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const { id } = request.params;
     const subtree = store.listAgentSubtree(id);
     if (subtree.length === 0) return reply.code(404).send({ error: "agent not found" });
+    for (const agent of subtree) deletingAgentIds.add(agent.id);
     for (const agent of subtree) {
       const run = activeRuns.get(agent.id);
       if (run) {
@@ -2931,11 +2982,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const runtime = runtimeSessions.get(agent.id);
       if (runtime) {
         removePersistentRuntime(agent.id, runtime);
-        await runtime.session.close();
+        await runtime.session.close().catch(() => undefined);
       }
     }
     const deleted = store.deleteAgent(id);
-    if (!deleted) return reply.code(404).send({ error: "agent not found" });
+    if (!deleted) {
+      for (const agent of subtree) deletingAgentIds.delete(agent.id);
+      return reply.code(404).send({ error: "agent not found" });
+    }
     const deletedAgentIds = new Set(subtree.map((agent) => agent.id));
     for (const agentId of deletedAgentIds) {
       subscribers.delete(agentId);
@@ -2945,6 +2999,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     collaborationDeliveries.deleteAgents(deletedAgentIds);
     contextCursors.deleteAgents(deletedAgentIds);
     runLedger.deleteAgents(deletedAgentIds);
+    for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
     return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
   });
 
@@ -3049,6 +3104,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>(
     "/api/agents/:id/messages",
     async (request, reply) => {
+      if (deletingAgentIds.has(request.params.id)) return reply.code(404).send({ error: "agent not found" });
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "agent not found" });
       const project = store.getProject(agent.projectId);
@@ -3439,6 +3495,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } catch {
         return reply.code(409).send({ error: "agent run ownership changed; retry safely", retryable: true });
       }
+      await opts.messageLifecycleFaults?.afterRunClaim?.({
+        agentId: agent.id,
+        runId,
+        generation: durableClaim.generation,
+      });
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "cancelled");
+        return reply.code(404).send({ error: "agent not found" });
+      }
 
       if (pendingTurn.communicationEventId) {
         try {
@@ -3458,6 +3523,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } catch (error) {
         runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
         throw error;
+      }
+      if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
+        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "cancelled");
+        return reply.code(404).send({ error: "agent not found" });
       }
       publish(agent.id, userStored);
 
