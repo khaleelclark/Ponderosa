@@ -30,7 +30,7 @@ describe("mapCodexEvent — per event type", () => {
         type: "turn.completed",
         usage: { input_tokens: 10, output_tokens: 5, cached_input_tokens: 8 },
       }),
-    ).toEqual([{ type: "turn_done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } }]);
+    ).toEqual([{ type: "turn_done", usage: { inputTokens: 10, cachedInputTokens: 8, outputTokens: 5, totalTokens: 15 } }]);
   });
 
   it("turn.failed → error", () => {

@@ -283,6 +283,7 @@ export function useAgentStream(agentId: string | undefined): StreamState {
         if (envelope.event.type === "turn_done") {
           void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
           void queryClient.invalidateQueries({ queryKey: ["agents"] });
+          void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
         }
         if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
           void queryClient.invalidateQueries({ queryKey: ["agent-health"] });

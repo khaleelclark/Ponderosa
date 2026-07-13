@@ -28,6 +28,8 @@ import type {
   SseEventEnvelope,
   AgentDetailDto,
   AgentDto,
+  TokenUsageScope,
+  TokenUsageSummaryDto,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription } from "./types";
 
@@ -90,6 +92,10 @@ export const realApi: PonderosaApi = {
   },
   getAgentHealth(projectId) {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
+  },
+  getTokenUsage(scope: TokenUsageScope, id?: string) {
+    const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
+    return requestJson<TokenUsageSummaryDto>(path);
   },
   listConversations(projectId) {
     return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");

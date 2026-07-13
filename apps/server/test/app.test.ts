@@ -73,6 +73,7 @@ class MockAdapter implements Adapter {
   beforeResponse?: (opts: SeedOptions) => Promise<void>;
   failuresRemaining = 0;
   failNextTurn = false;
+  turnUsage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
 
   listModels(): ModelOption[] {
     return [{ id: "mock-model", label: "Mock Model" }];
@@ -115,7 +116,7 @@ class MockAdapter implements Adapter {
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
     yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
     yield { type: "text", delta: this.responseText };
-    yield { type: "turn_done" };
+    yield { type: "turn_done", ...(this.turnUsage ? { usage: this.turnUsage } : {}) };
   }
 
   async *continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
@@ -278,6 +279,23 @@ describe("generated artifact endpoints", () => {
     expect(download.headers["content-disposition"]).toContain("attachment");
     const foreign = artifact.previewUrl!.replace(`/projects/${project.id}/`, "/projects/not-the-owner/");
     expect((await app.inject({ method: "GET", url: foreign })).statusCode).toBe(404);
+    await app.close();
+  });
+});
+
+describe("token usage API", () => {
+  it("reports provider usage at agent, project, and overall scopes after a real run", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    adapter.turnUsage = { inputTokens: 120, cachedInputTokens: 40, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 150 };
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Meter this run" } })).statusCode).toBe(200);
+    await waitForRun(agent.id);
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("completed");
+
+    const agentUsage = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}/usage` })).json();
+    expect(agentUsage).toMatchObject({ scope: "agent", scopeId: agent.id, inputTokens: 120, cachedInputTokens: 40, outputTokens: 30, totalTokens: 150, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/usage` })).json()).toMatchObject({ scope: "project", totalTokens: 150 });
+    expect((await app.inject({ method: "GET", url: "/api/usage" })).json()).toMatchObject({ scope: "overall", totalTokens: 150 });
+    expect((await app.inject({ method: "GET", url: "/api/agents/missing/usage" })).statusCode).toBe(404);
     await app.close();
   });
 });

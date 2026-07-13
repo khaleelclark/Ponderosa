@@ -3,12 +3,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
-import { CodexAppServerSession, mapCodexAppServerNotification } from "../src/codex-app-server.js";
+import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
 
 describe("Codex app-server persistent runtime", () => {
+  it("normalizes the per-turn usage breakdown without double-counting cached tokens", () => {
+    expect(mapCodexTokenUsage({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 }))
+      .toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });
+  });
   it("separates completed response blocks in Work log output", () => {
     const completed = (id: string, text: string) => mapCodexAppServerNotification({
       jsonrpc: "2.0",
@@ -53,7 +57,7 @@ describe("Codex app-server persistent runtime", () => {
       { type: "text", delta: "steered response\n\n" },
       { type: "command", command: "git status", cwd: "/repo" },
       { type: "tool_result", id: "c1", output: "clean" },
-      { type: "turn_done" },
+      { type: "turn_done", usage: { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 } },
     ]);
     await session.close();
   });

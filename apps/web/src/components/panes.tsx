@@ -759,6 +759,11 @@ export function RunsPane({
               <Typography variant="caption" color="text.secondary">
                 {run.engine} · {run.id.slice(0, 8)} · {new Date(run.startedAt).toLocaleString()}
               </Typography>
+              <Typography variant="caption" color={run.usage ? "text.secondary" : "warning.main"} sx={{ display: "block" }}>
+                {run.usage
+                  ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
+                  : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
+              </Typography>
             </Paper>
           ))}
         </Box>
