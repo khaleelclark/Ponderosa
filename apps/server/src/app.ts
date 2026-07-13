@@ -430,8 +430,12 @@ function agentDelegationPrompt(): string[] {
   ];
 }
 
-function delegatedOutcomePrompt(): string[] {
+function delegatedOutcomePrompt(assignment: Pick<AssignmentDto, "parentAgentId">): string[] {
   return [
+    `This is delegated work. Send questions and useful interim findings to your parent agent (${assignment.parentAgentId}) with a collaboration message addressed only to that stable agent id:`,
+    `curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data '{"intent":"collaboration","recipientAgentIds":["${assignment.parentAgentId}"],"text":"Concise interim finding or question","idempotencyKey":"stable-parent-report-key"}'`,
+    "Never broadcast delegated findings or results. The parent owns synthesis and decides what becomes durable organizational context; the server rejects broadcast attempts from delegated executions.",
+    "Put the complete final result in the explicit outcome call below. Ponderosa delivers that outcome to the parent automatically, so do not send a duplicate collaboration copy of the final result.",
     "Before ending a delegated objective, declare its truthful outcome directly (this replaces any extra summarization/model call):",
     'curl -sS -X POST "$PONDEROSA_DELEGATION_OUTCOME_URL" -H "Authorization: Bearer $PONDEROSA_DELEGATION_TOKEN" -H "Content-Type: application/json" --data \'{"outcome":"completed","message":"Concise result","idempotencyKey":"stable-outcome-key"}\'',
     'Use outcome "completed" only when the delegated objective is genuinely satisfied. Use "blocked" with the concrete blocker when it cannot proceed.',
@@ -1755,6 +1759,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
       return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
     }
+    if (intent === "broadcast" && active.delegatedRunId) {
+      const assignment = delegations.get(active.delegatedRunId);
+      return reply.code(409).send({
+        error: "delegated agents cannot broadcast; collaborate with the parent for interim findings or declare the final outcome",
+        ...(assignment ? { parentAgentId: assignment.parentAgentId } : {}),
+      });
+    }
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
     const requestedDocument = request.body?.document;
@@ -2027,7 +2038,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
             ...agentMessagingPrompt(),
             ...agentDelegationPrompt(),
-            ...delegatedOutcomePrompt(),
+            ...delegatedOutcomePrompt(run),
           ].join("\n"),
           history: context.history,
           model: context.model,
@@ -3624,7 +3635,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ? { ...agent, status: "running", currentAssignment: agent.currentAssignment ?? "Active assignment" }
           : agent),
       };
-      const prompt = `${runtimeIdentityPrompt(thread, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${guidedPrompt}${assignmentContext}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt().join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${runtimeIdentityPrompt(thread, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${guidedPrompt}${assignmentContext}${delegatedObjective && (delegatedObjective.status === "running" || delegatedObjective.status === "awaiting_disposition") ? `\n\n${delegatedOutcomePrompt(delegatedObjective).join("\n")}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       let durableClaim: ReturnType<RunLedger["claim"]>;

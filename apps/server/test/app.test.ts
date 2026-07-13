@@ -2488,8 +2488,34 @@ describe("server chunk F", () => {
     expect(delegated.statusCode).toBe(202);
     const run = delegated.json<{ assignment: { childAgentId: string } }>().assignment;
     await waitForSeedCount(2);
-    const childToken = adapter.seeds.find((seed) => seed.threadId === run.childAgentId)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const childSeed = adapter.seeds.find((seed) => seed.threadId === run.childAgentId);
+    const childToken = childSeed?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
+    expect(childSeed?.prompt).toContain(`Send questions and useful interim findings to your parent agent (${parent.id})`);
+    expect(childSeed?.prompt).toContain(`"recipientAgentIds":["${parent.id}"]`);
+    expect(childSeed?.prompt).toContain("Never broadcast delegated findings or results.");
+    expect(childSeed?.prompt).toContain("Ponderosa delivers that outcome to the parent automatically");
+
+    const eventsBeforeRejectedBroadcast = store.readCommunicationEvents(project.id);
+    const rejectedBroadcast = await app.inject({
+      method: "POST",
+      url: "/api/agent-messages",
+      headers: { authorization: `Bearer ${childToken}` },
+      payload: {
+        intent: "broadcast",
+        text: "This delegated result must not reach the organization.",
+        document: { title: "Private delegated result", content: "# Must remain private" },
+      },
+    });
+    expect(rejectedBroadcast.statusCode).toBe(409);
+    expect(rejectedBroadcast.json()).toEqual({
+      error: "delegated agents cannot broadcast; collaborate with the parent for interim findings or declare the final outcome",
+      parentAgentId: parent.id,
+    });
+    expect(store.readCommunicationEvents(project.id)).toEqual(eventsBeforeRejectedBroadcast);
+    expect(store.getMasterChatDetail(master.id)?.messages).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("must not reach the organization") })]),
+    );
 
     const result = await app.inject({
       method: "POST",
@@ -2498,6 +2524,10 @@ describe("server chunk F", () => {
       payload: { intent: "collaboration", recipientAgentIds: [parent.id], text: "Huntsville result is ready.", idempotencyKey: "huntsville-result" },
     });
     expect(result.statusCode).toBe(200);
+    expect(store.getCommunicationEvent(project.id, result.json<{ eventId: string }>().eventId)).toMatchObject({
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [parent.id] },
+    });
 
     await app.inject({ method: "POST", url: `/api/threads/${parent.id}/cancel` });
     await waitForRun(parent.id);
