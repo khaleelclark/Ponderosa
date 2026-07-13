@@ -1953,9 +1953,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           prompt: [
             runtimeIdentityPrompt(childThread, run.id),
             "",
+            ...(childThread.presetSnapshot ? [
+              `Agent preset guidance (${childThread.presetSnapshot.name}; runtime context, not part of the assignment brief):`,
+              childThread.presetSnapshot.guidance,
+              "--- End agent preset guidance ---",
+              "",
+            ] : []),
             assignmentBoundaryPrompt(run),
             "",
-            ...(childThread.presetSnapshot ? [`Agent preset snapshot (${childThread.presetSnapshot.name}):`, childThread.presetSnapshot.guidance, ""] : []),
             `You are a first-class delegated Ponderosa agent${parentThread ? ` created by #${agentMentionHandle(parentThread.title)}` : ""}.`,
             "Use the Collaboration chat to coordinate with your parent or other agents; use your individual chat for manager follow-ups.",
             ...agentMessagingPrompt(),

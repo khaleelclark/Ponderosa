@@ -3261,6 +3261,15 @@ describe("server chunk F", () => {
       logger: false,
     });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const presetGuidance = "Review trust boundaries and capability checks before reporting.";
+    const preset = store.createAgentPreset(project.id, {
+      name: "Security reviewer",
+      description: "Reviews delegated security work",
+      guidance: presetGuidance,
+      engine: "codex",
+      model: "mock-model",
+      effort: "high",
+    });
     const master = store.createMasterChat(project.id, { title: "Delegation room" });
     const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
@@ -3280,15 +3289,18 @@ describe("server chunk F", () => {
     expect(spoof.statusCode).toBe(403);
     expect(spoof.json()).toMatchObject({ error: { code: "unauthorized_parent" } });
 
+    const taskBriefMarkdown = "# Private security task\n\nPreserve  spacing and Markdown exactly.\n";
     const response = await app.inject({
       method: "POST",
       url: "/api/agent-delegations",
       headers: { authorization: `Bearer ${environment.PONDEROSA_DELEGATION_TOKEN}` },
-      payload: { displayLabel: "Safe review", delegationPrompt: "private secret task", runtime: "codex", idempotencyKey: "bridge-1" },
+      payload: { displayLabel: "Safe review", delegationPrompt: taskBriefMarkdown, presetId: preset.id, idempotencyKey: "bridge-1" },
     });
     expect(response.statusCode).toBe(202);
     const created = response.json<{ assignment: AssignmentDto; accepted: boolean }>();
-    expect(created).toMatchObject({ accepted: true, assignment: { runtime: "codex", status: "running", parentAgentId: thread.id, taskBriefMarkdown: "private secret task" } });
+    expect(created).toMatchObject({ accepted: true, assignment: { runtime: "codex", status: "running", parentAgentId: thread.id, taskBriefMarkdown } });
+    expect(created.assignment.taskBriefMarkdown).toBe(taskBriefMarkdown);
+    expect(created.assignment.taskBriefMarkdown).not.toContain(presetGuidance);
     expect(created.assignment.childAgentId).toBeTruthy();
     expect(created.assignment.parentExecutionId).toBeTruthy();
     expect(created.assignment.childExecutionId).toBe(created.assignment.id);
@@ -3299,12 +3311,15 @@ describe("server chunk F", () => {
     expect(childDetail).toMatchObject({
       thread: { id: childId, title: "Safe review", masterChatId: master.id, organizationalParentAgentId: thread.id },
       messages: [],
-      assignments: [expect.objectContaining({ id: created.assignment.id, taskBriefMarkdown: "private secret task" })],
+      assignments: [expect.objectContaining({ id: created.assignment.id, taskBriefMarkdown })],
     });
     store.updateAgentOrganization(childId, { parentAgentId: null });
     expect(new DelegationStore(dataDir).get(created.assignment.id)).toMatchObject({ parentAgentId: thread.id, childAgentId: childId });
-    expect(JSON.stringify(childDetail)).toContain("private secret task");
-    expect(adapter.seeds[1]?.prompt).toContain("Exact Markdown task brief:\nprivate secret task");
+    const delegatedSeed = adapter.seeds[1]?.prompt ?? "";
+    expect(delegatedSeed).toContain(presetGuidance);
+    expect(delegatedSeed).toContain(`Exact Markdown task brief:\n${taskBriefMarkdown}`);
+    expect(delegatedSeed.indexOf(presetGuidance)).toBeLessThan(delegatedSeed.indexOf(`Exact Markdown task brief:\n${taskBriefMarkdown}`));
+    expect(delegatedSeed.split(presetGuidance)).toHaveLength(2);
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).not.toBe(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN);
@@ -3342,7 +3357,8 @@ describe("server chunk F", () => {
       expect.objectContaining({ id: created.assignment.id, status: "cancelled", title: "Safe review" }),
     ]);
     const audit = readFileSync(path.join(dataDir, "assignments.jsonl"), "utf8");
-    expect(audit).toContain('"taskBriefMarkdown":"private secret task"');
+    expect(audit).toContain(`"taskBriefMarkdown":${JSON.stringify(taskBriefMarkdown)}`);
+    expect(audit).not.toContain(presetGuidance);
     await cancelAndWait(app, thread.id);
     await app.close();
   });
