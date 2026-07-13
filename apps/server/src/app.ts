@@ -298,16 +298,27 @@ function advanceMentionTrail(
 }
 
 function mergeMentionTrails(deliveries: CollaborationDelivery[]): string[] {
-  const merged = new Map<string, true>();
+  const maximumCounts = new Map<string, number>();
   for (const delivery of deliveries) {
+    const deliveryCounts = new Map<string, number>();
     for (const fingerprint of delivery.mentionTrail) {
-      // Reinsert duplicates so the retained window favors their most recent
-      // canonical batch occurrence.
-      merged.delete(fingerprint);
-      merged.set(fingerprint, true);
+      deliveryCounts.set(fingerprint, (deliveryCounts.get(fingerprint) ?? 0) + 1);
+    }
+    for (const [fingerprint, count] of deliveryCounts) {
+      maximumCounts.set(fingerprint, Math.max(maximumCounts.get(fingerprint) ?? 0, count));
     }
   }
-  return [...merged.keys()].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
+  const merged: string[] = [];
+  const emittedCounts = new Map<string, number>();
+  for (const delivery of deliveries) {
+    for (const fingerprint of delivery.mentionTrail) {
+      const emitted = emittedCounts.get(fingerprint) ?? 0;
+      if (emitted >= (maximumCounts.get(fingerprint) ?? 0)) continue;
+      merged.push(fingerprint);
+      emittedCounts.set(fingerprint, emitted + 1);
+    }
+  }
+  return merged.slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
 }
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {

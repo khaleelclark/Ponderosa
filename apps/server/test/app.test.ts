@@ -3366,6 +3366,9 @@ describe("server chunk F", () => {
     const repeatedFingerprint = createHash("sha256")
       .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
       .digest("hex");
+    const routeFingerprint = createHash("sha256")
+      .update("route\0").update(author.id).update("\0").update(reviewer.id)
+      .digest("hex");
     const ledger = new CollaborationDeliveryStore(dataDir);
     ledger.queue({
       conversationId: master.id, messageId: "batch-first", targetAgentId: author.id,
@@ -3374,28 +3377,32 @@ describe("server chunk F", () => {
     });
     ledger.queue({
       conversationId: master.id, messageId: "batch-second", targetAgentId: author.id,
-      text: "second delivery", relayDepth: 1, mentionTrail: [repeatedFingerprint], kind: "tag",
+      text: "second delivery", relayDepth: 17,
+      mentionTrail: [...Array.from({ length: 16 }, () => routeFingerprint), repeatedFingerprint], kind: "tag",
     });
-    let replayResponse: { statusCode: number; body: string } | undefined;
+    const replayResponses: Array<{ statusCode: number; body: string }> = [];
     const app = createServer({ dataDir, store, engines, logger: false });
     adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "replay from second lineage" },
-      });
-      replayResponse = { statusCode: response.statusCode, body: response.body };
+      for (const text of ["replay from second lineage", "new wording on the batched route"]) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/api/agent-messages",
+          headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+          payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text },
+        });
+        replayResponses.push({ statusCode: response.statusCode, body: response.body });
+      }
     };
 
     await app.ready();
     await waitForRun(author.id);
     expect(adapter.seeds.find((turn) => turn.agentId === author.id)?.prompt)
       .toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(replayResponse?.statusCode).toBe(400);
-    expect(JSON.parse(replayResponse!.body)).toEqual({
-      error: "the same collaboration handoff already occurred in this delivery chain",
-    });
+    expect(replayResponses.map((response) => response.statusCode)).toEqual([400, 400]);
+    expect(replayResponses.map((response) => JSON.parse(response.body))).toEqual([
+      { error: "the same collaboration handoff already occurred in this delivery chain" },
+      { error: "the same agent route repeated 16 times in the recent collaboration chain" },
+    ]);
     expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
     await app.close();
   });
