@@ -461,6 +461,72 @@ describe("persistent engine steering", () => {
     await app.close();
     expect(persistent.closed).toBe(1);
   });
+
+  it("bounds the global warm-idle runtime pool and resumes an evicted agent normally", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    let now = 0;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: {
+        idleTtlMs: 60_000,
+        maxIdleSessions: 2,
+        now: () => ++now,
+        setTimer: () => ({ unref() {} }) as unknown as NodeJS.Timeout,
+        clearTimer: () => undefined,
+      },
+    });
+    const project = store.createProject({ label: "Warm pool", hostPath: repoDir });
+    const agents = ["Oldest", "Middle", "Newest"].map((title) =>
+      store.createAgent(project.id, { title, engine: "codex" }));
+
+    for (const agent of agents) {
+      await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: `run ${agent.title}` } });
+      await waitForRun(agent.id);
+    }
+
+    expect(persistent.opened).toBe(3);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+
+    await app.inject({ method: "POST", url: `/api/agents/${agents[0]!.id}/messages`, payload: { text: "resume oldest" } });
+    await waitForRun(agents[0]!.id, 2);
+    expect(persistent.opened).toBe(4);
+    expect(persistent.openedOptions.at(-1)?.resumeSessionId).toBe("persistent-session");
+    await app.close();
+  });
+
+  it("never evicts an active runtime to satisfy the warm-idle limit", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: {
+        maxIdleSessions: 1,
+        setTimer: () => ({ unref() {} }) as unknown as NodeJS.Timeout,
+        clearTimer: () => undefined,
+      },
+    });
+    const project = store.createProject({ label: "Active runtime", hostPath: repoDir });
+    const active = store.createAgent(project.id, { title: "Active", engine: "codex" });
+    const firstIdle = store.createAgent(project.id, { title: "First idle", engine: "codex" });
+    const secondIdle = store.createAgent(project.id, { title: "Second idle", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${active.id}/messages`, payload: { text: "keep working" } });
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+    persistent.completeStartedTurns = true;
+    for (const agent of [firstIdle, secondIdle]) {
+      await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "finish" } });
+      await waitForRun(agent.id);
+    }
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+
+    const steered = await app.inject({ method: "POST", url: `/api/agents/${active.id}/messages`, payload: { text: "still alive" } });
+    expect(steered.json()).toMatchObject({ steered: true });
+    await waitForRun(active.id);
+    expect(persistent.opened).toBe(3);
+    await app.close();
+  });
 });
 
 async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: string): Promise<void> {

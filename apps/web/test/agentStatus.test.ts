@@ -1,6 +1,6 @@
 import type { AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentStatusLabel, deriveAgentStatus, mergeAgentStatuses, orderedAgentOrganization } from "../src/agents";
+import { agentRosterIndent, agentStatusLabel, deriveAgentStatus, mergeAgentStatuses, orderedAgentOrganization } from "../src/agents";
 import { eligibleOrganizationParents } from "../src/components/AgentDetail";
 
 const organizationAgent = (id: string, title: string, parent?: string): AgentDto => ({
@@ -38,6 +38,10 @@ describe("visible agent status", () => {
 });
 
 describe("agent organization roster", () => {
+  it("caps indentation so deep rows stay inside the fixed-width drawer", () => {
+    expect([0, 1, 2, 3, 8].map(agentRosterIndent)).toEqual([0, 2, 4, 6, 6]);
+  });
+
   it("orders parents before children and fails closed for cyclic legacy data", () => {
     const rows = orderedAgentOrganization([
       organizationAgent("child", "Child", "parent"), organizationAgent("parent", "Parent"),

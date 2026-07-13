@@ -38,9 +38,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
-import { agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
+import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
+import { resolveConversationEngine } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
@@ -284,13 +285,10 @@ export function ConversationView({
     if (!conversation || initializedFor.current === conversation.id) {
       return;
     }
+    const resolvedEngine = resolveConversationEngine(conversation.defaultEngine, engines);
+    if (!resolvedEngine) return;
     initializedFor.current = conversation.id;
-    setEngine(
-      conversation.defaultEngine ??
-        engines.find((candidate) => candidate.authenticated)?.id ??
-        engines[0]?.id ??
-        "",
-    );
+    setEngine(resolvedEngine);
     setModel(conversation.defaultModel ?? "");
     setEffort(conversation.defaultEffort ?? "");
   }, [conversation, engines]);
@@ -844,7 +842,13 @@ export function ConversationView({
                   <ListItem
                     key={agent.id}
                     disablePadding
-                    sx={{ mb: 0.5, ml: Math.min(depth, 3) * 2, borderLeft: depth ? 2 : 0, borderColor: "divider", pl: depth ? 0.75 : 0 }}
+                    sx={{
+                      mb: 0.5,
+                      width: "100%",
+                      minWidth: 0,
+                      boxSizing: "border-box",
+                      pl: agentRosterIndent(depth),
+                    }}
                     secondaryAction={
                       <Tooltip title="Delete agent">
                         <IconButton
@@ -866,11 +870,12 @@ export function ConversationView({
                         setAgentsOpen(false);
                         onOpenAgent(agent.id);
                       }}
-                      sx={{ borderRadius: 1, border: 1, borderColor: "divider", pr: 12 }}
+                      sx={{ minWidth: 0, borderRadius: 1, border: 1, borderLeftWidth: depth ? 3 : 1, borderColor: "divider", pr: 7 }}
                     >
                       <ListItemText
                         primary={agent.title}
                         secondary={`${manager ? `Reports to ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
+                        sx={{ minWidth: 0 }}
                         primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
                         secondaryTypographyProps={{ noWrap: true }}
                       />
@@ -878,7 +883,7 @@ export function ConversationView({
                         size="small"
                         label={agentStatusLabel(status)}
                         color={agentStatusColor(status)}
-                        sx={{ mr: 1 }}
+                        sx={{ mr: 0.5, flexShrink: 0 }}
                       />
                     </ListItemButton>
                   </ListItem>
