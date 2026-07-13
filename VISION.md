@@ -50,8 +50,9 @@ discard the manager's place.
 
 Agent Detail separates durable views of the same execution domain: Chat for
 explicit communication, Thinking for ordinary runtime output, Activity for the
-chronological command/test/tool/file feed, Changed Files for the accumulated
-file set, Tasks for structured work state, and Artifacts for durable outputs.
+chronological command/test/tool/file feed, Changed Files for the canonical
+agent-attributed file set, Review for the current Git working tree and safe
+diff/file inspection, Tasks for structured work state, and Artifacts for durable outputs.
 Sources remain attached to their message in a compact footer. Generated PDFs are
 previewable and downloadable as project-scoped artifacts.
 

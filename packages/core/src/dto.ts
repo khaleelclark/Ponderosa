@@ -62,6 +62,39 @@ export interface ProjectFolderOptionsDto {
   folders: ProjectFolderOptionDto[];
 }
 
+/** Current Git-backed workspace state. Execution events remain the provenance trail. */
+export interface WorkspaceChangeDto {
+  path: string;
+  previousPath?: string;
+  kind: "create" | "edit" | "delete" | "rename";
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}
+
+/** GET /api/projects/:id/workspace response. */
+export interface WorkspaceStatusDto {
+  projectId: string;
+  isGitRepository: boolean;
+  branch?: string;
+  head?: string;
+  generatedAt: string;
+  changes: WorkspaceChangeDto[];
+}
+
+/** GET /api/projects/:id/workspace/file response. */
+export interface WorkspaceFileReviewDto {
+  projectId: string;
+  path: string;
+  exists: boolean;
+  /** Current UTF-8 file body when it is small enough and safe to display. */
+  content?: string;
+  diff: string;
+  stagedDiff: string;
+  unstagedDiff: string;
+  truncated: boolean;
+}
+
 // ─── Master chats ────────────────────────────────────────────────────────────
 
 /** A model-agnostic project control room that can spawn many agent threads. */

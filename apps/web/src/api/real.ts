@@ -18,6 +18,8 @@ import type {
   ImageAttachmentDto,
   ProjectDto,
   ProjectFolderOptionsDto,
+  WorkspaceFileReviewDto,
+  WorkspaceStatusDto,
   UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
@@ -226,6 +228,14 @@ export const realApi: PonderosaApi = {
   },
   getFiles(projectId, path) {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
+  },
+  getWorkspaceStatus(projectId) {
+    return requestJson<WorkspaceStatusDto>(`/api/projects/${encodeURIComponent(projectId)}/workspace`);
+  },
+  getWorkspaceFile(projectId, path) {
+    return requestJson<WorkspaceFileReviewDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/workspace/file${toQuery({ path })}`,
+    );
   },
   getArtifact(threadId, artifactId) {
     return requestJson<ArtifactContentDto>(

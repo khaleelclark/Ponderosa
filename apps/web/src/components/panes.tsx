@@ -7,6 +7,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SendIcon from "@mui/icons-material/Send";
 import ReplyIcon from "@mui/icons-material/Reply";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
@@ -789,31 +790,160 @@ export function LiveLogPane({
 }
 
 /** Refresh-safe chronological projection of canonical execution events. */
-export function ActivityPane({ activity, connected, running }: {
+export function ActivityPane({ activity, connected, running, activeExecutionId }: {
   activity: AgentActivityDto[];
   connected: boolean;
   running: boolean;
+  activeExecutionId?: string;
 }): JSX.Element {
-  const ordered = [...activity].sort((a, b) => a.seq - b.seq);
+  const groups = groupActivityByExecution(activity);
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent activity">
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
       <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Activity</Typography>
       <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
       {running ? <Chip size="small" color="info" label="Working" /> : null}
     </Stack>
-    {ordered.length === 0 ? <Alert severity="info">Commands, tests, file changes, and tool output will appear here.</Alert> : ordered.map((item) =>
-      <Paper component="details" key={item.id} variant="outlined" sx={{ p: 1, "& > summary": { cursor: "pointer" } }}>
-        <Box component="summary">
-          <EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} />
-        </Box>
-        <Stack direction="row" spacing={1} sx={{ pl: 1.25, pt: 0.5 }}>
-          <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
-          {item.executionId ? <Typography variant="caption" color="text.secondary">Execution {item.executionId.slice(0, 8)}</Typography> : null}
+    {groups.length === 0 ? <Alert severity="info">Commands, tests, file changes, and tool output will appear here.</Alert> : groups.map((group) => {
+      const isActive = group.executionId !== undefined && group.executionId === activeExecutionId;
+      return <Paper key={group.key} variant="outlined" data-testid="activity-execution" data-execution-id={group.executionId} sx={{ overflow: "hidden" }}>
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.25, py: 0.75, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>
+          <Typography variant="subtitle2">{group.executionId ? `Execution ${group.executionId.slice(0, 8)}` : "Legacy activity"}</Typography>
+          {isActive ? <Chip size="small" color="info" label="Working" /> : null}
+          <Typography variant="caption" color="text.secondary">{group.items.length} event{group.items.length === 1 ? "" : "s"}</Typography>
+          <Typography variant="caption" color="text.secondary">{formatActivitySpan(group.firstAt, group.lastAt)}</Typography>
+          <Box sx={{ flex: 1 }} />
+          <Typography variant="caption" color="text.secondary">{new Date(group.firstAt).toLocaleString()}</Typography>
         </Stack>
-      </Paper>)}
+        <Stack spacing={0.5} sx={{ p: 0.75 }}>
+          {group.items.map((item) => <Paper component="details" key={item.id} variant="outlined" sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}>
+            <Box component="summary"><EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} /></Box>
+            <Typography variant="caption" color="text.secondary" sx={{ pl: 1.25 }}>{new Date(item.createdAt).toLocaleString()}</Typography>
+          </Paper>)}
+        </Stack>
+      </Paper>;
+    })}
   </Stack>;
 }
 
+export interface ActivityExecutionGroup {
+  key: string;
+  executionId?: string;
+  firstAt: string;
+  lastAt: string;
+  items: AgentActivityDto[];
+}
+
+export function groupActivityByExecution(activity: AgentActivityDto[]): ActivityExecutionGroup[] {
+  const groups = new Map<string, ActivityExecutionGroup>();
+  for (const item of [...activity].sort((a, b) => a.seq - b.seq)) {
+    const key = item.executionId ?? "legacy";
+    const group = groups.get(key);
+    if (group) {
+      group.items.push(item);
+      group.lastAt = item.createdAt;
+    } else {
+      groups.set(key, { key, ...(item.executionId ? { executionId: item.executionId } : {}), firstAt: item.createdAt, lastAt: item.createdAt, items: [item] });
+    }
+  }
+  return [...groups.values()];
+}
+
+export function formatActivitySpan(firstAt: string, lastAt: string): string {
+  const seconds = Math.max(0, Math.round((Date.parse(lastAt) - Date.parse(firstAt)) / 1_000));
+  if (seconds < 60) return seconds === 0 ? "single moment" : `${seconds}s activity span`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${seconds % 60}s activity span`;
+}
+
+export function WorkspaceReviewPane({ projectId, files, running }: { projectId: string; files: ChangedFileDto[]; running: boolean }): JSX.Element {
+  const workspace = useQuery({
+    queryKey: ["workspace", projectId],
+    queryFn: () => api.getWorkspaceStatus(projectId),
+    refetchInterval: running ? 1_500 : 10_000,
+  });
+  const provenance = new Map(files.map((file) => [file.path, file]));
+  const changes = workspace.data?.changes ?? [];
+  const [selectedPath, setSelectedPath] = useState<string>();
+  const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
+
+  useEffect(() => {
+    if (!selectedPath || !changes.some((change) => change.path === selectedPath)) setSelectedPath(changes[0]?.path);
+  }, [changes, selectedPath]);
+
+  const review = useQuery({
+    queryKey: ["workspace-file", projectId, selectedPath],
+    queryFn: () => api.getWorkspaceFile(projectId, selectedPath ?? ""),
+    enabled: Boolean(selectedPath),
+    refetchInterval: running ? 1_500 : false,
+  });
+  const selectedChange = changes.find((change) => change.path === selectedPath);
+  const selectedProvenance = selectedPath ? provenance.get(selectedPath) : undefined;
+
+  return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
+    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
+      <Typography variant="overline" color="text.secondary">Review</Typography>
+      {workspace.data?.branch ? <Chip size="small" label={workspace.data.branch} /> : null}
+      {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
+      <Chip size="small" label={`${changes.length} change${changes.length === 1 ? "" : "s"}`} color={changes.length ? "warning" : "default"} />
+      <Box sx={{ flex: 1 }} />
+      <Tooltip title="Refresh workspace changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
+    </Stack>
+    {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
+      : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
+        : workspace.data && !workspace.data.isGitRepository ? <Alert severity="info" sx={{ m: 1.5 }}>This working folder is not a Git repository. Execution-scoped file events remain available in Activity and Artifacts.</Alert>
+          : changes.length === 0 ? <Alert severity="success" sx={{ m: 1.5 }}>Working tree clean. Files previously touched by this agent remain recorded in Activity and Artifacts.</Alert>
+            : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>
+              <Stack sx={{ overflowY: "auto", borderRight: { md: 1 }, borderBottom: { xs: 1, md: 0 }, borderColor: "divider", maxHeight: { xs: 220, md: "none" } }}>
+                {changes.map((change) => {
+                  const touched = provenance.get(change.path);
+                  return <Button
+                    key={change.path}
+                    data-testid="workspace-change"
+                    data-workspace-path={change.path}
+                    onClick={() => setSelectedPath(change.path)}
+                    variant={change.path === selectedPath ? "contained" : "text"}
+                    color={change.path === selectedPath ? "primary" : "inherit"}
+                    sx={{ borderRadius: 0, justifyContent: "flex-start", textAlign: "left", px: 1.5, py: 1, minHeight: 48 }}
+                  >
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
+                      <Chip size="small" label={change.kind} color={change.kind === "delete" ? "error" : change.kind === "create" ? "success" : "default"} />
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="body2" noWrap>{change.path}</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {[change.staged && "staged", change.unstaged && "unstaged", change.untracked && "untracked", touched && "this agent"].filter(Boolean).join(" · ")}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Button>;
+                })}
+              </Stack>
+              <Box data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0, p: 1.5 }}>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
+                  <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{selectedPath}</Typography>
+                  {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
+                  {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
+                  {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
+                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionIds.length} agent execution${selectedProvenance.executionIds.length === 1 ? "" : "s"}`} /> : null}
+                </Stack>
+                <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
+                  <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
+                  <Button size="small" variant={reviewMode === "file" ? "contained" : "outlined"} onClick={() => setReviewMode("file")}>Current file</Button>
+                </Stack>
+                {review.isLoading ? <CircularProgress size={22} />
+                  : review.isError ? <Alert severity="error">Diff could not be loaded. {String(review.error)}</Alert>
+                    : reviewMode === "file" ? (review.data?.content !== undefined
+                      ? <Box data-testid="workspace-file"><SyntaxHighlighter language={languageForPath(review.data.path)} style={oneLight} PreTag="div" customStyle={{ margin: 0 }}>{review.data.content}</SyntaxHighlighter></Box>
+                      : <Alert severity="info">The current file cannot be displayed. It may be deleted, binary, or above the safe viewer limit.</Alert>)
+                    : review.data?.diff ? <>
+                      {review.data.truncated ? <Alert severity="warning" sx={{ mb: 1 }}>This review is truncated to the safe viewer limit.</Alert> : null}
+                      <SyntaxHighlighter language="diff" style={oneLight} PreTag="div" customStyle={{ margin: 0 }}>{review.data.diff}</SyntaxHighlighter>
+                    </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
+              </Box>
+            </Box>}
+  </Box>;
+}
+
+/** Durable execution provenance, distinct from the live Git working-tree Review surface. */
 export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.Element {
   const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
@@ -830,9 +960,14 @@ export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.El
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
           Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} execution{file.executionIds.length === 1 ? "" : "s"}
         </Typography>
-        {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this change.</Typography>}
+        {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>}
       </Paper>)}
   </Stack>;
+}
+
+export function languageForPath(filePath: string): string {
+  const extension = filePath.split(".").at(-1)?.toLocaleLowerCase();
+  return ({ ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", json: "json", css: "css", html: "html", md: "markdown", py: "python", rs: "rust", go: "go", sh: "bash", yml: "yaml", yaml: "yaml" } as Record<string, string>)[extension ?? ""] ?? "text";
 }
 
 function MarkdownViewer({ content }: { content: string }): JSX.Element {

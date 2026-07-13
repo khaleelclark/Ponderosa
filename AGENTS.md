@@ -171,6 +171,8 @@ Ordinary runtime output → execution-scoped Thinking
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
 - Activity and Changed Files are projections of canonical execution events.
+  Review may layer read-only, current Git working-tree state over that provenance;
+  it never rewrites the event log or attributes unscoped changes to an agent.
   Generated PDF preview/download routes remain project- and thread-scoped.
 - Project folders are optional at creation. Ponderosa may create a managed empty
   workspace, but deleting a project removes Ponderosa-owned canonical data—not
