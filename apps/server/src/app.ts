@@ -2861,6 +2861,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveryIds?: string[];
       sourceChannel?: "main";
       shareWithOrganization?: boolean;
+      activeRunDelivery?: "steer" | "queue";
       sourceMasterChatId?: string;
       sourceAuthorThreadId?: string;
       replyToMessageId?: string;
@@ -2880,6 +2881,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const engine = engines.get(thread.activeEngine);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim() ?? "";
+      const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+      if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
+        return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+      }
       const attachmentIds = request.body?.attachmentIds ?? [];
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
       const attached = (await Promise.all(attachmentIds.map((id) => assetMetadata(thread.id, id))));
@@ -3037,7 +3042,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const existingRun = activeRuns.get(thread.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
-        if (existingRun.runtimeSession) {
+        if (activeRunDelivery === "steer" && existingRun.runtimeSession) {
           const steered = await existingRun.runtimeSession.steer({
             prompt: `${text}${replyContext(pendingTurn.replyTo)}`,
             kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",

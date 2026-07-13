@@ -394,6 +394,11 @@ export interface SendMessageRequest {
   replyToMessageId?: string;
   /** Membership used for this main-chat turn; omitted by direct/legacy callers. */
   sourceMasterChatId?: string;
+  /**
+   * How a direct message should be delivered if this agent has an active turn.
+   * Steering is the interactive default; queueing is always an explicit user choice.
+   */
+  activeRunDelivery?: "steer" | "queue";
 }
 
 /** POST /api/threads/:id/messages response when a turn starts immediately. */
@@ -637,6 +642,12 @@ export interface AgentHealthDto {
   executionId?: string;
   leaseExpiresAt?: string;
   runtimeOwnership?: "running" | "stalled" | "cancelling" | "interrupted";
+  /** Present only while the server canonically owns an active execution. */
+  runtimeActivity?: {
+    state: "responding";
+    executionId: string;
+    startedAt: string;
+  };
 }
 
 export interface AgentHealthProjectionDto {

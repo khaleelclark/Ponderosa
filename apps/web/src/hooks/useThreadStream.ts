@@ -230,6 +230,9 @@ export function useThreadStream(threadId: string | undefined): StreamState {
           void queryClient.invalidateQueries({ queryKey: ["thread", threadId] });
           void queryClient.invalidateQueries({ queryKey: ["threads"] });
         }
+        if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
+          void queryClient.invalidateQueries({ queryKey: ["agent-health"] });
+        }
       },
     });
 

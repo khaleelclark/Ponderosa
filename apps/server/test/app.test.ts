@@ -248,6 +248,34 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
+  it("queues explicitly instead of steering an active agent", async () => {
+    const steerable = new SteerableMockAdapter();
+    engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Explicit queue", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Persistent", engine: "codex" });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Start working" },
+    })).statusCode).toBe(200);
+    await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
+      .toMatchObject({ agents: [expect.objectContaining({
+        agentId: thread.id,
+        runtimeActivity: { state: "responding", executionId: expect.any(String), startedAt: expect.any(String) },
+      })] });
+
+    const queued = await app.inject({
+      method: "POST", url: `/api/threads/${thread.id}/messages`,
+      payload: { text: "Do this after", activeRunDelivery: "queue" },
+    });
+    expect(queued.statusCode).toBe(202);
+    expect(queued.json()).toMatchObject({ queued: true, position: 1 });
+    expect(steerable.steers).toHaveLength(0);
+    expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(1);
+    await app.close();
+  });
+
   it("reuses session-scoped capabilities while authorizing only the current turn", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;

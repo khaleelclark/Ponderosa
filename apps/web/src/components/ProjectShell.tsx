@@ -2,7 +2,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
@@ -95,6 +95,10 @@ export function ProjectShell({
     agents.forEach((agent) => map.set(agent.id, healthById.get(agent.id) ?? deriveAgentStatus(detailByAgentId.get(agent.id))));
     return map;
   }, [agents, detailByAgentId, healthQuery.data]);
+  const healthByAgentId = useMemo(
+    () => new Map<string, AgentHealthDto>((healthQuery.data?.agents ?? []).map((agent) => [agent.agentId, agent])),
+    [healthQuery.data],
+  );
 
   const createMasterChat = useMutation({
     mutationFn: (input: CreateMasterChatInput) => api.createMasterChat(projectId, input),
@@ -202,6 +206,7 @@ export function ProjectShell({
         engines={engines}
         engineCapabilities={engineCapabilities}
         projectedStatus={statusByAgentId.get(route.agentId)}
+        projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}
         masterChats={masterChats}
         subagent={subagents.find((run) => run.childThreadId === route.agentId)}

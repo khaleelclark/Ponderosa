@@ -1,8 +1,13 @@
 import type { SseEventEnvelope, ThreadDetailDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { runningAfterAgentEvent, updateThreadDetail } from "../src/hooks/useThreadStream";
+import { formatExecutionElapsed } from "../src/components/AgentDetail";
 
 describe("updateThreadDetail", () => {
+  it("formats a stable stopwatch from the canonical execution start", () => {
+    expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T00:02:03.000Z"))).toBe("2:03");
+    expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T01:02:03.000Z"))).toBe("1:02:03");
+  });
   it("does not resurrect a finished run when its terminal lifecycle record arrives", () => {
     expect(runningAfterAgentEvent(true, { type: "turn_done" })).toBe(false);
     expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "completed", reason: "turn_completed" })).toBe(false);

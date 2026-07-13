@@ -36,7 +36,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -50,6 +50,29 @@ import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { ArtifactsPane, ChatPane, Composer, LiveLogPane, TasksPane, ThinkingPane } from "./panes";
 
 type AgentTab = "chat" | "thinking" | "log" | "tasks" | "artifacts";
+
+export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
+  const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
+  const hours = Math.floor(elapsedSeconds / 3600);
+  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
+  const seconds = elapsedSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function RespondingIndicator({ agentName, startedAt }: { agentName: string; startedAt: string }): JSX.Element {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return (
+    <Typography variant="body2" color="info.main" role="status" aria-live="polite">
+      {agentName} is responding · {formatExecutionElapsed(startedAt, now)}
+    </Typography>
+  );
+}
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
@@ -66,6 +89,7 @@ export function AgentDetail({
   engines,
   engineCapabilities,
   projectedStatus,
+  projectedHealth,
   agents,
   masterChats,
   subagent,
@@ -78,6 +102,7 @@ export function AgentDetail({
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   projectedStatus?: AgentStatus;
+  projectedHealth?: AgentHealthDto;
   agents: ThreadDto[];
   masterChats: MasterChatDto[];
   subagent?: SubagentRunDto;
@@ -138,13 +163,14 @@ export function AgentDetail({
     setEffort((current) => (current === "" || engine.efforts.some((o) => o.id === current) ? current : ""));
   }, [engine]);
 
-  const running = stream.running || sendMessage.isPending;
+  const runtimeActivity = projectedHealth?.runtimeActivity;
+  const running = Boolean(runtimeActivity) || sendMessage.isPending;
 
   const errorHint = useMemo(
     () => stream.timeline.at(-1)?.event.type === "error",
     [stream.timeline],
   );
-  const status = stream.running ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
+  const status = runtimeActivity ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
   const connectedMcps = engineCapability?.mcpServers.filter((server) => server.status === "connected") ?? [];
   const mcpSummary = engineCapability?.mcpServers.map((server) => `${server.name}: ${server.status}`).join("\n") || "No inherited MCP servers reported by this engine.";
 
@@ -241,6 +267,42 @@ export function AgentDetail({
     ? masterChats.find((candidate) => candidate.id === detail.thread.masterChatId)
     : undefined;
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
+
+  const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
+    (text: string, files: File[]) => {
+      const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
+        try {
+          return await sendMessage.mutateAsync(
+            {
+              text,
+              attachmentIds: attachments.map((item) => item.id),
+              model: model || undefined,
+              effort: effort || undefined,
+              replyToMessageId: replyTo?.id,
+              activeRunDelivery,
+            },
+            {
+              onSuccess: (response) => {
+                setReplyTo(undefined);
+                setQueuedMessageNotice(
+                  response.queued
+                    ? `Queued in position ${response.position}; it will start when the current response finishes.`
+                    : response.steered
+                      ? "Steered into the active turn."
+                      : undefined,
+                );
+                void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.thread.projectId] });
+              },
+            },
+          );
+        } catch (error) {
+          await Promise.allSettled(attachments.map((item) => api.deleteAttachment(agentId, item.id)));
+          throw error;
+        }
+      });
+      setTab("chat");
+      return sent;
+    };
 
   const panes: Record<AgentTab, JSX.Element> = {
     chat: <ChatPane messages={detail.messages} agentName={detail.thread.title} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onReact={(message, emoji) => api.sendUserReaction({
@@ -412,6 +474,7 @@ export function AgentDetail({
           </FormControl>
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
+        {runtimeActivity ? <RespondingIndicator agentName={detail.thread.title} startedAt={runtimeActivity.startedAt} /> : null}
       </Box>
 
       <Tabs
@@ -429,9 +492,9 @@ export function AgentDetail({
 
       <Box sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
-        {stream.running ? (
+        {runtimeActivity ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
-            This agent is working. New messages steer the active turn when supported and otherwise wait in its durable mailbox.
+            Send steers the active response. Choose Queue to deliver the draft after it finishes.
           </Alert>
         ) : null}
         {sendMessage.isError || cancelRun.isError ? (
@@ -446,7 +509,8 @@ export function AgentDetail({
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           disabled={sendMessage.isPending}
           running={false}
-          placeholder={stream.running ? "Steer this agent's active turn" : "Message this agent directly"}
+          placeholder={runtimeActivity ? "Steer this agent's active response" : "Message this agent directly"}
+          agentResponding={Boolean(runtimeActivity)}
           onSend={(text, files) => {
             if (files.length === 0 && text === "/cancel") {
               setQueuedMessageNotice("Cancelling the active turn…");
@@ -460,31 +524,9 @@ export function AgentDetail({
               setQueuedMessageNotice(`${detail.thread.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
               return Promise.resolve();
             }
-            const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
-              try {
-                return await sendMessage.mutateAsync(
-                  { text, attachmentIds: attachments.map((item) => item.id), model: model || undefined, effort: effort || undefined, replyToMessageId: replyTo?.id },
-                  {
-                    onSuccess: (response) => {
-                      setReplyTo(undefined);
-                      setQueuedMessageNotice(
-                        response.queued
-                          ? `Queued in position ${response.position}; it will start when the current response finishes.`
-                          : response.steered
-                            ? "Steered into the active turn."
-                            : undefined,
-                      );
-                    },
-                  },
-                );
-              } catch (error) {
-                await Promise.allSettled(attachments.map((item) => api.deleteAttachment(agentId, item.id)));
-                throw error;
-              }
-            });
-            setTab("chat");
-            return sent;
+            return submitAgentMessage("steer")(text, files);
           }}
+          onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
           onCancel={() => cancelRun.mutate()}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(undefined)}

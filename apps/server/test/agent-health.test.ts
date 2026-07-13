@@ -44,15 +44,22 @@ describe("agent health projection", () => {
   it("projects idle", () => expect(project().agents[0]).toMatchObject({ status: "idle", statusTimestamp: t0, reason: "no_active_work" }));
 
   it("projects running from an active server run", () => {
-    expect(project({ active: new Map([["agent", { startedAt: t1 }]]) }).agents[0])
-      .toMatchObject({ status: "running", statusTimestamp: t1, reason: "active_run" });
+    expect(project({ active: new Map([["agent", { startedAt: t1, executionId: "execution-1" }]]) }).agents[0])
+      .toMatchObject({
+        status: "running", statusTimestamp: t1, reason: "active_run",
+        runtimeActivity: { state: "responding", executionId: "execution-1", startedAt: t1 },
+      });
   });
 
   it("projects stalled and interrupted runtime ownership without calling either orphaned", () => {
     expect(project({ active: new Map([["agent", { startedAt: t1, ownershipState: "stalled" }]]) }).agents[0])
       .toMatchObject({ status: "stalled", reason: "runtime_event_consumer_stalled", runtimeOwnership: "stalled" });
+    expect(project({ active: new Map([["agent", { startedAt: t1, executionId: "stalled", ownershipState: "stalled" }]]) }).agents[0]?.runtimeActivity)
+      .toBeUndefined();
     expect(project({ active: new Map([["agent", { startedAt: t1, ownershipState: "interrupted" }]]) }).agents[0])
       .toMatchObject({ status: "interrupted", reason: "execution_interrupted", runtimeOwnership: "interrupted" });
+    expect(project({ active: new Map([["agent", { startedAt: t1, executionId: "old", ownershipState: "interrupted" }]]) }).agents[0]?.runtimeActivity)
+      .toBeUndefined();
   });
 
   it("surfaces execution identity and marks an expired lease blocked", () => {

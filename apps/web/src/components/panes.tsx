@@ -88,6 +88,14 @@ export function canSubmitComposerText(input: {
   );
 }
 
+export function shouldShowQueueControl(input: {
+  text: string;
+  agentResponding: boolean;
+  disabled: boolean;
+}): boolean {
+  return input.agentResponding && !input.disabled && input.text.trim().length > 0;
+}
+
 const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "image/png", "image/jpeg", "image/webp", "application/pdf",
   "text/plain", "application/json", "application/zip",
@@ -909,6 +917,8 @@ export function Composer({
   busyMentionHandles,
   allowUnmentionedSend = true,
   onSend,
+  onQueue,
+  agentResponding = false,
   onCancel,
   replyTo,
   onCancelReply,
@@ -929,6 +939,10 @@ export function Composer({
   /** Whether text without a valid mention may be submitted. */
   allowUnmentionedSend?: boolean;
   onSend(text: string, files: File[]): Promise<unknown> | unknown;
+  /** Explicitly enqueue this draft instead of steering the active agent turn. */
+  onQueue?(text: string, files: File[]): Promise<unknown> | unknown;
+  /** Canonical server-owned activity; used only to reveal the explicit Queue action. */
+  agentResponding?: boolean;
   onCancel?(): void;
   replyTo?: { text: string };
   onCancelReply?(): void;
@@ -1074,17 +1088,23 @@ export function Composer({
     });
   };
 
-  const send = () => {
+  const submit = (handler: (message: string, selectedFiles: File[]) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
     sendingRef.current = true;
     setSendError(undefined);
-    void Promise.resolve(onSend(text.trim(), files)).then(() => {
+    void Promise.resolve(handler(text.trim(), files)).then(() => {
       update("");
       dispatchAttachments({ type: "clear" });
       setCaret(0);
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
       .finally(() => { sendingRef.current = false; });
   };
+  const send = () => submit(onSend);
+  const queue = () => {
+    if (!onQueue || files.length > 0) return;
+    submit(onQueue);
+  };
+  const showQueue = Boolean(onQueue) && shouldShowQueueControl({ text, agentResponding, disabled });
 
   return (
     <Paper
@@ -1241,6 +1261,22 @@ export function Composer({
             </ClickAwayListener>
           </Popper>
         </Box>
+        {showQueue ? (
+          <Tooltip title={files.length > 0 ? "Attachments cannot be queued while the agent is responding" : "Send after the active response finishes"}>
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={!canSend || files.length > 0}
+                onClick={queue}
+                aria-label="Queue message"
+                sx={{ minHeight: 44 }}
+              >
+                Queue
+              </Button>
+            </span>
+          </Tooltip>
+        ) : null}
         {canCancel ? (
           <Tooltip title="Cancel run">
             <IconButton color="error" onClick={onCancel} aria-label="Cancel run" sx={{ minWidth: 44, minHeight: 44 }}>
