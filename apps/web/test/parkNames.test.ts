@@ -5,13 +5,12 @@ import { AGENT_NAMES, pickAgentName } from "../src/parkNames";
 describe("agent name configuration", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("contains 433 unique shortened National Park System names", () => {
-    expect(AGENT_NAMES).toHaveLength(433);
-    expect(new Set(AGENT_NAMES.map((name) => name.toLowerCase())).size).toBe(433);
+  it("contains 423 unique shortened National Park System names", () => {
+    expect(AGENT_NAMES).toHaveLength(423);
+    expect(new Set(AGENT_NAMES.map((name) => name.toLowerCase())).size).toBe(423);
     expect(AGENT_NAMES).toContain("Antietam");
     expect(AGENT_NAMES).toContain("Gates of the Arctic");
     expect(AGENT_NAMES).toContain("Wolf Trap");
-    expect(AGENT_NAMES).toContain("Gates of the Arctic Preserve");
   });
 
   it("selects a complete configured name", () => {
