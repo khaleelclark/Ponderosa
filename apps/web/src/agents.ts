@@ -17,18 +17,18 @@ export function orderedAgentOrganization(agents: ThreadDto[]): AgentOrganization
   const roots: ThreadDto[] = [];
   const hasSafeParentChain = (agent: ThreadDto): boolean => {
     const seen = new Set<string>([agent.id]);
-    let parentId = agent.organizationalParentAgentId;
+    let parentId = agent.managerAgentId;
     while (parentId) {
       if (seen.has(parentId)) return false;
       seen.add(parentId);
       const parent = byId.get(parentId);
       if (!parent) return false;
-      parentId = parent.organizationalParentAgentId;
+      parentId = parent.managerAgentId;
     }
-    return Boolean(agent.organizationalParentAgentId);
+    return Boolean(agent.managerAgentId);
   };
   for (const agent of active) {
-    const parentId = agent.organizationalParentAgentId;
+    const parentId = agent.managerAgentId;
     if (!parentId || !hasSafeParentChain(agent)) roots.push(agent);
     else children.set(parentId, [...(children.get(parentId) ?? []), agent]);
   }
@@ -44,6 +44,23 @@ export function orderedAgentOrganization(agents: ThreadDto[]): AgentOrganization
   for (const root of sort(roots)) visit(root, 0);
   for (const agent of sort(active.filter((candidate) => !visited.has(candidate.id)))) visit(agent, 0);
   return rows;
+}
+
+export function agentDescendants(agentId: string, agents: ThreadDto[]): ThreadDto[] {
+  const children = new Map<string, ThreadDto[]>();
+  for (const agent of agents) {
+    if (!agent.managerAgentId) continue;
+    children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
+  }
+  const descendants: ThreadDto[] = [];
+  const visit = (parentId: string) => {
+    for (const child of children.get(parentId) ?? []) {
+      descendants.push(child);
+      visit(child.id);
+    }
+  };
+  visit(agentId);
+  return descendants;
 }
 
 export function agentBelongsToMasterChat(agent: ThreadDto, masterChatId: string): boolean {

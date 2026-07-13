@@ -272,8 +272,13 @@ export interface ThreadDto {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
-  /** Mutable organizational reporting line; separate from immutable delegation provenance. */
-  organizationalParentAgentId?: string;
+  /** Direct manager in the mutable agent organization. Undefined means the agent reports to the user. */
+  managerAgentId?: string;
+  /** Stable creation provenance for an agent spawned by another agent. */
+  spawnedByAgentId?: string;
+  spawnedByExecutionId?: string;
+  /** Exact optional message supplied by the spawning agent. */
+  spawnPrompt?: string;
   /** Immutable-at-spawn preset provenance and guidance snapshot. */
   presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
 }
@@ -284,8 +289,8 @@ export interface TeamDirectoryAgentDto {
   role: string;
   description: string;
   status: AgentLifecycleStatus;
-  currentAssignment?: string;
-  parentAgentId?: string;
+  currentActivity?: string;
+  managerAgentId?: string;
   childAgentIds: string[];
   engine: EngineId;
   preset?: { id: string; name: string };
@@ -309,6 +314,25 @@ export interface CreateThreadRequest {
   /** Master-chat message referenced by the optional first turn. */
   replyToMessageId?: string;
   presetId?: string;
+  /** Optional existing agent this new agent reports to. User-authorized creation only. */
+  managerAgentId?: string;
+}
+
+/** Agent-facing creation request. Manager identity is always derived from the bearer capability. */
+export interface AgentSpawnRequest {
+  displayName: string;
+  initialMessage?: string;
+  runtime?: string;
+  model?: string;
+  effort?: string;
+  presetId?: string;
+  idempotencyKey: string;
+}
+
+export interface AgentSpawnResponse {
+  agent: ThreadDto;
+  accepted: boolean;
+  replayed: boolean;
 }
 
 /** PATCH /api/threads/:id body (rename / archive). */
@@ -317,18 +341,18 @@ export interface UpdateThreadRequest {
   archived?: boolean;
 }
 
-/** PUT /api/threads/:id/organizational-parent body. Null promotes to top level. */
+/** PUT /api/threads/:id/manager body. Null promotes to top level. */
 export interface UpdateAgentOrganizationRequest {
-  parentAgentId: string | null;
+  managerAgentId: string | null;
 }
 
 /** Canonical append-only record for mutable agent organization. */
 export interface AgentOrganizationEvent {
   eventId: string;
-  type: "organizational_parent_changed";
+  type: "manager_changed";
   projectId: string;
   agentId: string;
-  parentAgentId: string | null;
+  managerAgentId: string | null;
   createdAt: string;
 }
 
@@ -492,8 +516,6 @@ export interface ThinkingEntryDto {
  */
 export interface ThreadDetailDto {
   thread: ThreadDto;
-  /** Canonical delegated work owned by or assigned to this agent. */
-  assignments: AssignmentDto[];
   messages: MessageDto[];
   thinking: ThinkingEntryDto[];
   activity: AgentActivityDto[];
@@ -580,128 +602,6 @@ export interface CancelResponse {
   cancelled: boolean;
 }
 
-// ─── Assignments and delegation ─────────────────────────────────────────────
-
-export type AssignmentStatus = "queued" | "running" | "awaiting_disposition" | "completed" | "blocked" | "failed" | "cancelled";
-
-export interface AssignmentFailureDto {
-  code: string;
-  message: string;
-  retryable: boolean;
-  occurredAt: string;
-}
-
-/** Server-recorded internal parent wake state. It is never a chat communication. */
-export interface AssignmentWakeDeliveryDto {
-  status: "queued" | "delivered" | "acknowledged" | "failed";
-  createdAt: string;
-  deliveredAt?: string;
-  acknowledgedAt?: string;
-  failure?: string;
-}
-
-/** Canonical, durable delegated task. IDs and the Markdown brief never change. */
-export interface AssignmentDto {
-  /** Stable assignment identity. */
-  id: string;
-  projectId: string;
-  masterChatId: string;
-  parentAgentId: string;
-  childAgentId: string;
-  parentExecutionId: string;
-  childExecutionId: string;
-  parentAssignmentId?: string;
-  rootAssignmentId: string;
-  depth: number;
-  version: number;
-  title: string;
-  /** Exact authored Markdown task brief, byte-for-byte after JSON decoding. */
-  taskBriefMarkdown: string;
-  runtime: string;
-  status: AssignmentStatus;
-  canCancel: boolean;
-  createdAt: string;
-  startedAt?: string;
-  finishedAt?: string;
-  updatedAt: string;
-  failure?: AssignmentFailureDto;
-  /** Authenticated child declaration of the delegated objective's outcome. */
-  disposition?: {
-    outcome: "completed" | "blocked";
-    message?: string;
-    declaredAt: string;
-  };
-  /** Internal state proving the parent was woken without synthesizing chat. */
-  parentWake?: AssignmentWakeDeliveryDto;
-}
-
-/** Agent-facing delegation input. Ownership is always resolved from its bearer capability. */
-export interface AgentDelegationRequest {
-  displayLabel: string;
-  delegationPrompt: string;
-  runtime?: string;
-  model?: string;
-  effort?: string;
-  /** Safe project-scoped identifier; the server resolves all preset fields. */
-  presetId?: string;
-  idempotencyKey: string;
-}
-
-export interface AgentDelegationResponse {
-  assignment: AssignmentDto;
-  accepted: boolean;
-  replayed: boolean;
-}
-
-/** Authenticated, run-bound child declaration; engine turn completion is not an objective outcome. */
-export interface AgentDelegationDispositionRequest {
-  outcome: "completed" | "blocked";
-  message?: string;
-  idempotencyKey: string;
-}
-
-export interface CancelAssignmentRequest {
-  scope: "branch";
-  idempotencyKey: string;
-}
-
-export interface CancelAssignmentResponse {
-  requestedAssignmentId: string;
-  scope: "branch";
-  affected: Array<{
-    assignmentId: string;
-    status: AssignmentStatus;
-    version: number;
-    updatedAt: string;
-  }>;
-  completed: boolean;
-}
-
-export type DelegationErrorCode =
-  | "unauthorized_parent"
-  | "lifecycle_conflict"
-  | "lifecycle_integrity"
-  | "parent_not_running"
-  | "depth_limit_exceeded"
-  | "descendant_limit_exceeded"
-  | "concurrency_limit_exceeded"
-  | "idempotency_conflict"
-  | "assignment_not_found"
-  | "forbidden";
-
-export interface DelegationErrorDto {
-  error: { code: DelegationErrorCode; message: string; retryable: boolean };
-}
-
-export interface AssignmentEventEnvelope {
-  masterChatId: string;
-  seq: number;
-  ts: string;
-  event:
-    | { type: "assignment_created"; assignment: AssignmentDto }
-    | { type: "assignment_updated"; assignment: AssignmentDto };
-}
-
 // ─── Engines ─────────────────────────────────────────────────────────────────
 
 /** GET /api/engines entry — an engine, its options, and live auth status. */
@@ -755,8 +655,6 @@ export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted
 
 export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "task_waiting_approval" | "queued_delivery"
-  | "delegation_queued" | "delegation_awaiting_disposition" | "delegation_blocked"
-  | "delegation_cancelled" | "delegation_completed" | "delegation_failed"
   | "task_completed" | "turn_completed" | "runtime_error"
   | "session_rollover_scheduled" | "thread_cancelled"
   | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled";
@@ -764,7 +662,7 @@ export type AgentLifecycleReason =
 export interface AgentHealthDto {
   /** Stable thread identity; titles and mention handles are presentation only. */
   agentId: string;
-  parentAgentId?: string;
+  managerAgentId?: string;
   childAgentIds: string[];
   status: AgentLifecycleStatus;
   /** Timestamp of the authoritative observation that selected `status`. */

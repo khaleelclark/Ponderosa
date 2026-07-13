@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -125,7 +125,18 @@ interface ThreadJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  spawnedByAgentId?: string;
+  spawnedByExecutionId?: string;
+  spawnPrompt?: string;
+  spawnIdempotencyKey?: string;
   presetSnapshot?: ThreadDto["presetSnapshot"];
+}
+
+export interface AgentSpawnOrigin {
+  agentId: string;
+  executionId: string;
+  idempotencyKey: string;
+  prompt?: string;
 }
 
 type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
@@ -152,10 +163,9 @@ export interface MasterChatDeliveryIntent {
   targetThreadId: string;
   relayDepth: number;
   mentionTrail: string[];
-  kind: "direct" | "tag" | "delegation_completion";
+  kind: "direct" | "tag";
   /** The selector that authorized this recipient when the message was recorded. */
   audience?: "mention" | "everyone";
-  delegatedRunId?: string;
   /** Target-owned staged assets delivered with this recipient turn. */
   attachmentIds?: string[];
 }
@@ -1196,7 +1206,7 @@ export class ThreadStore {
 
   // ─── Threads ───────────────────────────────────────────────────────────────
 
-  createThread(projectId: string, input: CreateThreadRequest): ThreadDto {
+  createThread(projectId: string, input: CreateThreadRequest, origin?: AgentSpawnOrigin): ThreadDto {
     const id = randomUUID();
     const now = new Date().toISOString();
     const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
@@ -1212,6 +1222,10 @@ export class ThreadStore {
       createdAt: now,
       updatedAt: now,
       archived: false,
+      spawnedByAgentId: origin?.agentId,
+      spawnedByExecutionId: origin?.executionId,
+      spawnPrompt: origin?.prompt,
+      spawnIdempotencyKey: origin?.idempotencyKey,
       presetSnapshot,
     };
     mkdirSync(threadDir(this.dataDir, projectId, id), { recursive: true });
@@ -1229,13 +1243,27 @@ export class ThreadStore {
         createdAt: now,
         updatedAt: now,
         archived: 0,
+        spawnedByAgentId: origin?.agentId ?? null,
+        spawnedByExecutionId: origin?.executionId ?? null,
+        spawnPrompt: origin?.prompt ?? null,
+        spawnIdempotencyKey: origin?.idempotencyKey ?? null,
         presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
       })
       .run();
     if (input.masterChatId) {
       this.db.insert(threadMasterChatMemberships).values({ threadId: id, masterChatId: input.masterChatId, position: 0 }).run();
     }
+    if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
     return this.rowToThreadDto(id)!;
+  }
+
+  findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): ThreadDto | undefined {
+    const row = this.db.select().from(threads).where(and(
+      eq(threads.spawnedByAgentId, agentId),
+      eq(threads.spawnedByExecutionId, executionId),
+      eq(threads.spawnIdempotencyKey, idempotencyKey),
+    )).get();
+    return row ? this.threadRowToDto(row) : undefined;
   }
 
   listThreads(projectId: string): ThreadDto[] {
@@ -1251,6 +1279,24 @@ export class ThreadStore {
     return this.rowToThreadDto(id);
   }
 
+  listAgentSubtree(id: string): ThreadDto[] {
+    const root = this.getThread(id);
+    if (!root) return [];
+    const projectAgents = this.listThreads(root.projectId);
+    const children = new Map<string, ThreadDto[]>();
+    for (const agent of projectAgents) {
+      if (!agent.managerAgentId) continue;
+      children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
+    }
+    const ordered: ThreadDto[] = [];
+    const visit = (agent: ThreadDto) => {
+      ordered.push(agent);
+      for (const child of children.get(agent.id) ?? []) visit(child);
+    };
+    visit(root);
+    return ordered;
+  }
+
   updateThread(id: string, patch: UpdateThreadRequest): ThreadDto | undefined {
     const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
     if (!row) return undefined;
@@ -1258,10 +1304,10 @@ export class ThreadStore {
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
     if (archived && row.archived !== 1) {
-      for (const child of this.listThreads(row.projectId).filter((thread) => thread.organizationalParentAgentId === id)) {
-        this.updateAgentOrganization(child.id, { parentAgentId: null });
+      for (const child of this.listThreads(row.projectId).filter((thread) => thread.managerAgentId === id)) {
+        this.updateAgentOrganization(child.id, { managerAgentId: null });
       }
-      if (this.getThread(id)?.organizationalParentAgentId) this.updateAgentOrganization(id, { parentAgentId: null });
+      if (this.getThread(id)?.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: null });
     }
     this.db
       .update(threads)
@@ -1279,15 +1325,12 @@ export class ThreadStore {
     return this.rowToThreadDto(id);
   }
 
-  /**
-   * Change only the mutable organizational reporting line. Delegation records
-   * remain immutable historical provenance and are never rewritten here.
-   */
+  /** Change only the mutable organizational reporting line. */
   updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): ThreadDto | undefined {
     const agent = this.getThread(id);
     if (!agent) return undefined;
     if (agent.archived) throw new Error("archived agents cannot be reorganized");
-    const parentId = input.parentAgentId ?? undefined;
+    const parentId = input.managerAgentId ?? undefined;
     if (parentId === id) throw new Error("an agent cannot report to itself");
     if (parentId) {
       const parent = this.getThread(parentId);
@@ -1299,17 +1342,17 @@ export class ThreadStore {
         if (visited.has(cursor.id)) throw new Error("organizational parent would create a cycle");
         if (cursor.projectId !== agent.projectId || cursor.archived) throw new Error("organizational ancestry must contain active agents from the same project");
         visited.add(cursor.id);
-        cursor = cursor.organizationalParentAgentId ? this.getThread(cursor.organizationalParentAgentId) : undefined;
+        cursor = cursor.managerAgentId ? this.getThread(cursor.managerAgentId) : undefined;
       }
     }
-    if (agent.organizationalParentAgentId === parentId) return agent;
+    if (agent.managerAgentId === parentId) return agent;
     const event: AgentOrganizationEvent = {
-      eventId: randomUUID(), type: "organizational_parent_changed", projectId: agent.projectId,
-      agentId: id, parentAgentId: parentId ?? null, createdAt: new Date().toISOString(),
+      eventId: randomUUID(), type: "manager_changed", projectId: agent.projectId,
+      agentId: id, managerAgentId: parentId ?? null, createdAt: new Date().toISOString(),
     };
     appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, agent.projectId), [event]);
     this.db.update(threads).set({
-      organizationalParentAgentId: parentId ?? null,
+      managerAgentId: parentId ?? null,
       updatedAt: event.createdAt,
     }).where(eq(threads.id, id)).run();
     return this.getThread(id);
@@ -1337,7 +1380,7 @@ export class ThreadStore {
     for (const masterChatId of ids) {
       const master = this.getMasterChat(masterChatId);
       if (!master || master.projectId !== thread.projectId) throw new Error("master chat does not belong to project");
-      if (master.archived && !thread.masterChatIds.includes(masterChatId)) throw new Error("archived master chat cannot accept assignments");
+      if (master.archived && !thread.masterChatIds.includes(masterChatId)) throw new Error("archived master chat cannot accept agents");
     }
     this.persistThreadMemberships(id, ids, input.primaryMasterChatId);
     return this.getThread(id);
@@ -1354,10 +1397,8 @@ export class ThreadStore {
     const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
     if (!row) return false;
 
-    // Promote direct organizational children before their parent disappears so
-    // the canonical projection never retains a dangling reporting line.
-    for (const child of this.listThreads(row.projectId).filter((thread) => thread.organizationalParentAgentId === id)) {
-      this.updateAgentOrganization(child.id, { parentAgentId: null });
+    for (const child of this.listThreads(row.projectId).filter((thread) => thread.managerAgentId === id)) {
+      this.deleteThread(child.id);
     }
 
     this.db.transaction((tx) => {
@@ -1384,7 +1425,6 @@ export class ThreadStore {
     if (!thread) return undefined;
     return {
       thread,
-      assignments: [],
       messages: this.getMessages(id),
       thinking: this.getThinkingEntries(id),
       activity: this.getActivity(id),
@@ -1728,8 +1768,8 @@ export class ThreadStore {
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
       const organizationalParents = new Map<string, string | null>();
       for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {
-        if (event.projectId === projectId && event.type === "organizational_parent_changed") {
-          organizationalParents.set(event.agentId, event.parentAgentId);
+        if (event.projectId === projectId && event.type === "manager_changed") {
+          organizationalParents.set(event.agentId, event.managerAgentId);
         }
       }
 
@@ -1796,7 +1836,11 @@ export class ThreadStore {
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             archived: t.archived ? 1 : 0,
-            organizationalParentAgentId: organizationalParents.get(t.id) ?? null,
+            managerAgentId: organizationalParents.get(t.id) ?? null,
+            spawnedByAgentId: t.spawnedByAgentId ?? null,
+            spawnedByExecutionId: t.spawnedByExecutionId ?? null,
+            spawnPrompt: t.spawnPrompt ?? null,
+            spawnIdempotencyKey: t.spawnIdempotencyKey ?? null,
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
           })
           .run();
@@ -1898,9 +1942,9 @@ export class ThreadStore {
     const agents = this.listThreads(projectId);
     const byId = new Map(agents.map((agent) => [agent.id, agent]));
     for (const agent of agents) {
-      if (!agent.organizationalParentAgentId) continue;
+      if (!agent.managerAgentId) continue;
       const seen = new Set<string>([agent.id]);
-      let parentId: string | undefined = agent.organizationalParentAgentId;
+      let parentId: string | undefined = agent.managerAgentId;
       let valid = true;
       while (parentId) {
         const parent = byId.get(parentId);
@@ -1909,9 +1953,9 @@ export class ThreadStore {
           break;
         }
         seen.add(parentId);
-        parentId = parent.organizationalParentAgentId;
+        parentId = parent.managerAgentId;
       }
-      if (!valid) this.db.update(threads).set({ organizationalParentAgentId: null }).where(eq(threads.id, agent.id)).run();
+      if (!valid) this.db.update(threads).set({ managerAgentId: null }).where(eq(threads.id, agent.id)).run();
     }
   }
 
@@ -1980,7 +2024,10 @@ export class ThreadStore {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
-      organizationalParentAgentId: row.organizationalParentAgentId ?? undefined,
+      managerAgentId: row.managerAgentId ?? undefined,
+      spawnedByAgentId: row.spawnedByAgentId ?? undefined,
+      spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
+      spawnPrompt: row.spawnPrompt ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
     };
   }

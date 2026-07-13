@@ -34,10 +34,6 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  AssignmentEventEnvelope,
-  AssignmentDto,
-  CancelAssignmentRequest,
-  CancelAssignmentResponse,
   ThreadDetailDto,
   ThreadDto,
 } from "@ponderosa/core";
@@ -52,6 +48,7 @@ export interface CreateAgentOptions {
   initialMessage?: string;
   replyToMessageId?: string;
   presetId?: string;
+  managerAgentId?: string;
 }
 
 export interface StreamSubscription {
@@ -60,12 +57,6 @@ export interface StreamSubscription {
 
 export interface StreamHandlers {
   onEvent(envelope: SseEventEnvelope): void;
-  onOpen?(): void;
-  onError?(error: unknown): void;
-}
-
-export interface AssignmentStreamHandlers {
-  onEvent(envelope: AssignmentEventEnvelope): void;
   onOpen?(): void;
   onError?(error: unknown): void;
 }
@@ -94,9 +85,6 @@ export interface PonderosaApi {
   sendDirectReply(masterChatId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   sendMultiAgentDirectMessage(masterChatId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
   sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;
-  listAssignments(masterChatId: string): Promise<AssignmentDto[]>;
-  cancelAssignment(runId: string, request: CancelAssignmentRequest): Promise<CancelAssignmentResponse>;
-  subscribeAssignments(masterChatId: string, lastSeenSeq: number | undefined, handlers: AssignmentStreamHandlers): StreamSubscription;
   listThreads(projectId: string): Promise<ThreadDto[]>;
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]>;
   createAgentPreset(projectId: string, request: CreateAgentPresetRequest): Promise<AgentPresetDto>;

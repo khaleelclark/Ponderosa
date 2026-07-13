@@ -18,7 +18,6 @@ export interface CommunicationDocumentRecord {
   byteLength: number;
   authorAgentId: string;
   executionId: string;
-  assignmentId?: string;
   createdAt: string;
 }
 

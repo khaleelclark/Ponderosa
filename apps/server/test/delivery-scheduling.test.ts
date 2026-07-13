@@ -155,7 +155,7 @@ describe("bounded collaboration delivery scheduling", () => {
     }
     const started = performance.now();
     const result = projectAgentHealth({
-      scope: { type: "project", id: project.id }, threads, delegations: [], activeRuns: new Map(),
+      scope: { type: "project", id: project.id }, threads, activeRuns: new Map(),
       queuedDeliveries: (threadId) => ledger.pending(threadId), events: (threadId) => events.get(threadId) ?? [],
       now: "2026-07-12T00:00:00.000Z",
     });

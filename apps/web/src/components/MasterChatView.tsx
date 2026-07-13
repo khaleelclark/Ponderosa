@@ -44,12 +44,9 @@ import { useCollaborationChat, useMasterChat } from "../hooks/queries";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
-import { isAssignmentUiEnabled, type AssignmentUiBinding } from "../assignments";
 import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
-import { AssignmentTreePanel } from "./AssignmentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
-import { useAssignments } from "../hooks/useAssignments";
 import { formatExecutionElapsed } from "./AgentDetail";
 
 function MasterRespondingIndicator({ agents, healthByAgentId }: {
@@ -190,7 +187,6 @@ export function MasterChatView({
   onOpenAgent,
   onNewAgent,
   onDeleted,
-  assignments,
 }: {
   masterChatId: string;
   engines: EngineDto[];
@@ -200,8 +196,6 @@ export function MasterChatView({
   onOpenAgent(agentId: string): void;
   onNewAgent(master: MasterChatDto): void;
   onDeleted(): void;
-  /** Normalized UI binding; REST/SSE details stay in the future transport hook. */
-  assignments?: AssignmentUiBinding;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const detailQuery = useMasterChat(masterChatId);
@@ -245,10 +239,6 @@ export function MasterChatView({
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
-  const showAssignments = isAssignmentUiEnabled(env);
-  const liveAssignments = useAssignments(masterChatId, showAssignments);
-  const assignmentBinding = assignments ?? liveAssignments;
 
   useEffect(() => {
     setConversation(readChatState(chatStateKey("view", `master.${masterChatId}`)) === "collaboration" ? "collaboration" : "main");
@@ -782,14 +772,6 @@ export function MasterChatView({
           {conversation === "main" ? <MasterRespondingIndicator agents={threads} healthByAgentId={healthByAgentId} /> : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
-            {conversation === "collaboration" && showAssignments && assignmentBinding ? (
-              <AssignmentTreePanel
-                store={assignmentBinding.store}
-                cancelling={assignmentBinding.cancelling}
-                onCancel={assignmentBinding.cancel}
-                onOpenAgent={onOpenAgent}
-              />
-            ) : null}
             {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {conversation === "collaboration"

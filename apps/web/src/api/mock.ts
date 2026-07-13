@@ -442,16 +442,6 @@ export const mockApi: PonderosaApi = {
     ];
     return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
   },
-  listAssignments() {
-    return delay([]);
-  },
-  cancelAssignment(runId) {
-    return delay({ requestedAssignmentId: runId, scope: "branch" as const, affected: [], completed: true });
-  },
-  subscribeAssignments(_masterChatId, _lastSeenSeq, handlers) {
-    window.setTimeout(() => handlers.onOpen?.(), 0);
-    return { close() {} };
-  },
   listThreads(projectId) {
     return delay(threads.filter((thread) => thread.projectId === projectId && !thread.archived));
   },
@@ -467,6 +457,7 @@ export const mockApi: PonderosaApi = {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       archived: false,
+      managerAgentId: request.managerAgentId,
     };
     threads.push(thread);
     messages[thread.id] = [];
@@ -482,6 +473,7 @@ export const mockApi: PonderosaApi = {
       masterChatId,
       model: options.model,
       effort: options.effort,
+      managerAgentId: options.managerAgentId,
     });
     if (options.initialMessage) {
       if (masterChatId) await this.sendMasterChatMessage(masterChatId, { text: options.initialMessage });
@@ -512,7 +504,7 @@ export const mockApi: PonderosaApi = {
   updateAgentOrganization(threadId, organization) {
     const thread = threads.find((candidate) => candidate.id === threadId);
     if (!thread) return Promise.reject(new Error("Thread not found"));
-    thread.organizationalParentAgentId = organization.parentAgentId ?? undefined;
+    thread.managerAgentId = organization.managerAgentId ?? undefined;
     thread.updatedAt = new Date().toISOString();
     return delay(thread);
   },
@@ -534,7 +526,6 @@ export const mockApi: PonderosaApi = {
 
     return delay({
       thread,
-      assignments: [],
       messages: messages[threadId] ?? [],
       thinking: [],
       activity: [],

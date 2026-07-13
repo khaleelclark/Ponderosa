@@ -61,14 +61,14 @@ describe("ThreadStore — canonical communication events", () => {
       sender: { kind: "agent", agentId: author.id, executionId: "run-1" },
       intent: "collaboration", audience: { kind: "agents", agentIds: [recipient.id] },
       text: "Concise review summary", createdAt: "2026-07-12T00:00:00.000Z",
-      document: { id: "doc-1", title: "Architecture Review", mediaType: "text/markdown", content: "# Full review\n\nPrivate detail.", byteLength: 30, authorAgentId: author.id, executionId: "run-1", assignmentId: "assignment-1", createdAt: "2026-07-12T00:00:00.000Z" },
+      document: { id: "doc-1", title: "Architecture Review", mediaType: "text/markdown", content: "# Full review\n\nPrivate detail.", byteLength: 30, authorAgentId: author.id, executionId: "run-1", createdAt: "2026-07-12T00:00:00.000Z" },
     };
     event.document!.byteLength = Buffer.byteLength(event.document!.content, "utf8");
     store.appendCommunicationEvent(event);
     store.appendCommunicationProjection(project.id, { eventId: event.eventId, surface: "collaboration_chat", projectionKey: room.id, projectedAt: event.createdAt, message: { messageId: "m1", role: "assistant", createdAt: event.createdAt, authorAgentId: author.id } });
     const message = store.readProjectedCommunicationMessages(project.id, "collaboration_chat", room.id)[0]!;
     expect(message.text).toBe("Concise review summary");
-    expect(message.document).toMatchObject({ id: "doc-1", title: "Architecture Review", assignmentId: "assignment-1", previewUrl: expect.any(String) });
+    expect(message.document).toMatchObject({ id: "doc-1", title: "Architecture Review", previewUrl: expect.any(String) });
     expect(message.document).not.toHaveProperty("content");
     expect(store.getCommunicationDocument(project.id, "doc-1")?.document.content).toContain("Private detail");
     expect(store.readContextClassifications(project.id)).toEqual([expect.objectContaining({ eventId: "doc-event", policy: "local_only" })]);
@@ -790,38 +790,59 @@ describe("agent organizational hierarchy", () => {
     const archived = store.createThread(project.id, { title: "Archived", engine: "codex" });
     store.updateThread(archived.id, { archived: true });
 
-    expect(store.updateAgentOrganization(child.id, { parentAgentId: parent.id }))
-      .toMatchObject({ organizationalParentAgentId: parent.id });
-    expect(store.updateAgentOrganization(grandchild.id, { parentAgentId: child.id }))
-      .toMatchObject({ organizationalParentAgentId: child.id });
-    expect(() => store.updateAgentOrganization(parent.id, { parentAgentId: grandchild.id })).toThrow(/cycle/);
-    expect(() => store.updateAgentOrganization(parent.id, { parentAgentId: parent.id })).toThrow(/itself/);
-    expect(() => store.updateAgentOrganization(child.id, { parentAgentId: foreign.id })).toThrow(/same project/);
-    expect(() => store.updateAgentOrganization(child.id, { parentAgentId: archived.id })).toThrow(/active/);
+    expect(store.updateAgentOrganization(child.id, { managerAgentId: parent.id }))
+      .toMatchObject({ managerAgentId: parent.id });
+    expect(store.updateAgentOrganization(grandchild.id, { managerAgentId: child.id }))
+      .toMatchObject({ managerAgentId: child.id });
+    expect(() => store.updateAgentOrganization(parent.id, { managerAgentId: grandchild.id })).toThrow(/cycle/);
+    expect(() => store.updateAgentOrganization(parent.id, { managerAgentId: parent.id })).toThrow(/itself/);
+    expect(() => store.updateAgentOrganization(child.id, { managerAgentId: foreign.id })).toThrow(/same project/);
+    expect(() => store.updateAgentOrganization(child.id, { managerAgentId: archived.id })).toThrow(/active/);
     expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(2);
 
     store.rebuildProjections();
-    expect(store.getThread(child.id)?.organizationalParentAgentId).toBe(parent.id);
-    expect(store.getThread(grandchild.id)?.organizationalParentAgentId).toBe(child.id);
+    expect(store.getThread(child.id)?.managerAgentId).toBe(parent.id);
+    expect(store.getThread(grandchild.id)?.managerAgentId).toBe(child.id);
 
-    expect(store.updateAgentOrganization(child.id, { parentAgentId: null })?.organizationalParentAgentId).toBeUndefined();
-    expect(store.readAgentOrganizationEvents(project.id).at(-1)).toMatchObject({ agentId: child.id, parentAgentId: null });
+    expect(store.updateAgentOrganization(child.id, { managerAgentId: null })?.managerAgentId).toBeUndefined();
+    expect(store.readAgentOrganizationEvents(project.id).at(-1)).toMatchObject({ agentId: child.id, managerAgentId: null });
   });
 
-  it("promotes organizational children when a parent is archived or deleted", () => {
+  it("promotes children when archived and cascade-deletes descendants with a deleted manager", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const parent = store.createThread(project.id, { title: "Parent", engine: "codex" });
     const child = store.createThread(project.id, { title: "Child", engine: "codex" });
-    store.updateAgentOrganization(child.id, { parentAgentId: parent.id });
+    store.updateAgentOrganization(child.id, { managerAgentId: parent.id });
     store.updateThread(parent.id, { archived: true });
-    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+    expect(store.getThread(child.id)?.managerAgentId).toBeUndefined();
 
     const replacement = store.createThread(project.id, { title: "Replacement", engine: "codex" });
-    store.updateAgentOrganization(child.id, { parentAgentId: replacement.id });
+    store.updateAgentOrganization(child.id, { managerAgentId: replacement.id });
+    const grandchild = store.createThread(project.id, { title: "Grandchild", engine: "codex", managerAgentId: child.id });
     expect(store.deleteThread(replacement.id)).toBe(true);
-    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+    expect(store.getThread(child.id)).toBeUndefined();
+    expect(store.getThread(grandchild.id)).toBeUndefined();
     store.rebuildProjections();
-    expect(store.getThread(child.id)?.organizationalParentAgentId).toBeUndefined();
+    expect(store.getThread(child.id)).toBeUndefined();
+  });
+
+  it("persists agent spawn provenance and replays it by execution idempotency", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const manager = store.createThread(project.id, { title: "Manager", engine: "codex" });
+    const child = store.createThread(project.id, {
+      title: "Researcher", engine: "codex", managerAgentId: manager.id,
+    }, {
+      agentId: manager.id, executionId: "execution-1", idempotencyKey: "spawn-1", prompt: "Study the evidence.",
+    });
+    expect(child).toMatchObject({
+      managerAgentId: manager.id,
+      spawnedByAgentId: manager.id,
+      spawnedByExecutionId: "execution-1",
+      spawnPrompt: "Study the evidence.",
+    });
+    expect(store.findAgentSpawn(manager.id, "execution-1", "spawn-1")?.id).toBe(child.id);
+    store.rebuildProjections();
+    expect(store.getThread(child.id)).toMatchObject({ spawnedByAgentId: manager.id, spawnPrompt: "Study the evidence." });
   });
 });
 

@@ -59,7 +59,7 @@ previewable and downloadable as project-scoped artifacts.
 Long-form agent results use a concise chat summary with a titled Markdown
 document attached to the same communication. The document is previewable and
 downloadable, preserves its original Markdown, and records agent/execution/
-assignment provenance. Normal future context contains the summary and document
+creator provenance. Normal future context contains the summary and document
 reference, not the entire body; agents retrieve full content only when needed.
 Document scope is never independent: Broadcast documents are organizational,
 while Direct Message and Collaboration documents remain private to their
@@ -78,22 +78,30 @@ accept Ponderosa's managed default. Projects can be renamed or permanently
 deleted; deletion removes Ponderosa-owned chats, agents, executions, artifacts,
 and projections without deleting the selected source folder.
 
-Delegation history and organization are different facts. Delegation provenance
-records how work originated and never changes. Organizational parentage controls
-where an agent appears now and can be promoted, demoted, or re-parented without
-rewriting execution history.
+There is one kind of agent. A subagent is an ordinary agent with a direct manager,
+not a separate delegated runtime or rigid Assignment. It has the same Chat,
+Thinking, Activity, Changed Files, Review, Tasks, Artifacts, steering, queueing,
+and execution audit as a top-level agent.
 
-Every delegated task is a canonical Assignment. It preserves the exact Markdown
-brief plus stable parent/child agent and execution identities, and is inspectable
-from both the room and agent detail. Assignments are work state, not messages:
-creating, completing, blocking, or failing one never manufactures a chat card.
-The child runtime's ordinary output remains in Thinking, while terminal state
-wakes the parent internally so orchestration can continue without polluting chat.
+Users can create a top-level agent or choose any existing active agent as its
+manager. Agents use the same creation service through a capability-bound bridge;
+the server derives the manager from the spawning agent. A spawning agent may
+supply an exact opening message—a task, role, introduction, or anything else—or
+create an idle report with no initial work. Creator, execution, and the original
+message remain inspectable.
 
-Delegated work always settles. An explicit completed or blocked outcome is
-preferred. If a delegated runtime ends cleanly without declaring one, Ponderosa
-uses its durable completed response as the terminal result; if there is no
-result, it marks the objective blocked. The parent is notified in either case.
+A newly created agent receives the current Master Chat's Broadcast context, never
+its manager's private messages, Collaboration history, Thinking, or provider
+session. Managed agents report questions, findings, and results to their direct
+manager through ordinary Collaboration. They may Direct Message the user and
+reply to agents that contact them, but only top-level agents Broadcast durable
+organizational synthesis.
+
+The reporting chain may be recursive. Runtime crashes wake the direct manager
+without manufacturing a chat message. Deleting a manager recursively deletes its
+remaining descendants; a user promotes or re-parents any agent they want to keep
+before deletion. Changing the organization never rewrites creator, communication,
+or execution history.
 
 ## The communication model
 
@@ -119,7 +127,7 @@ Two message scopes appear in Master Chat:
 
 A plain user message in Master Chat is a Broadcast and starts a fresh agent to
 handle it. This is the familiar default chat workflow: the request remains part
-of the shared project story while Ponderosa handles assignment behind the
+of the shared project story while Ponderosa handles agent creation behind the
 scenes. It is rendered exactly as the user typed it, without an automatic scope
 prefix. Starting a message with `#broadcast` records shared informational
 context without starting an agent and retains that visible prefix. Starting with
@@ -169,7 +177,7 @@ The Chat tab can show:
 - Direct Messages;
 - Broadcasts;
 - collaboration messages;
-- assignments;
+- the exact agent-creation message and creator when another agent spawned it;
 - explicit communication to or from that agent.
 
 The adjacent Thinking tab shows ordinary response text and transient reasoning,
@@ -231,7 +239,7 @@ In short:
 ## One architecture, two levels of experience
 
 Casual users talk to Master Chats as if they were familiar AI conversation
-threads. Ponderosa handles fresh agent runs, delegation, responder changes, and
+threads. Ponderosa handles fresh agent runs, managed reports, responder changes, and
 context boundaries for them.
 
 Power users can inspect and shape organizations of agents and subagents. They can

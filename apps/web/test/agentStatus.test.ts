@@ -6,7 +6,7 @@ import { eligibleOrganizationParents } from "../src/components/AgentDetail";
 const organizationAgent = (id: string, title: string, parent?: string): ThreadDto => ({
   id, title, projectId: "project", masterChatIds: [], activeEngine: "codex", state: {},
   createdAt: "2026-07-12T00:00:00.000Z", updatedAt: "2026-07-12T00:00:00.000Z", archived: false,
-  ...(parent ? { organizationalParentAgentId: parent } : {}),
+  ...(parent ? { managerAgentId: parent } : {}),
 });
 
 function detailWith(statuses: Array<"running" | "waiting_approval" | "done">): ThreadDetailDto {

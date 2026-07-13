@@ -622,10 +622,10 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   let body = "";
 
   if (event.type === "command") {
-    const internalCommunication = /PONDEROSA_(?:AGENT_MESSAGE|DELEGATION)|\/api\/agent-(?:messages|delegations)/u.test(event.command);
+    const internalCommunication = /PONDEROSA_(?:AGENT_MESSAGE|AGENT_SPAWN)|\/api\/agent-(?:messages|spawns)/u.test(event.command);
     title = internalCommunication ? "Ponderosa communication" : "Command";
     body = internalCommunication
-      ? "Sent a structured Ponderosa communication or delegation event."
+      ? "Sent a structured Ponderosa communication or managed-agent event."
       : summarizeActivityText(event.command, 320);
   } else if (event.type === "file_change") {
     title = `File ${event.kind}`;
