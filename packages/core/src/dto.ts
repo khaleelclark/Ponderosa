@@ -319,7 +319,32 @@ export interface TaskDto {
 }
 
 /** Kind of artifact (SPEC §2/§12): the "what changed". */
-export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log";
+export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document";
+
+export type AgentActivityEvent = Extract<AgentEvent, {
+  type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error";
+}>;
+
+/** Canonical, refresh-safe execution activity projected from the agent event log. */
+export interface AgentActivityDto {
+  id: string;
+  threadId: string;
+  executionId?: string;
+  seq: number;
+  createdAt: string;
+  event: AgentActivityEvent;
+}
+
+/** Latest state of a path touched by this agent, rebuilt from canonical file-change events. */
+export interface ChangedFileDto {
+  path: string;
+  kind: "create" | "edit" | "delete";
+  lastSeq: number;
+  lastChangedAt: string;
+  executionIds: string[];
+  /** Most recent engine-provided unified diff, when available. */
+  diff?: string;
+}
 
 /** An Artifacts-pane entry (SPEC §7 `artifacts`). Metadata only; content via :aid. */
 export interface ArtifactDto {
@@ -331,6 +356,10 @@ export interface ArtifactDto {
   path: string;
   summary?: string;
   createdAt: string;
+  /** Generated files are served through opaque, project-scoped URLs. */
+  mediaType?: "application/pdf";
+  previewUrl?: string;
+  downloadUrl?: string;
 }
 
 /** GET /api/threads/:id/artifacts/:aid — the artifact plus its rendered content. */
@@ -374,6 +403,8 @@ export interface ThreadDetailDto {
   thread: ThreadDto;
   messages: MessageDto[];
   thinking: ThinkingEntryDto[];
+  activity: AgentActivityDto[];
+  changedFiles: ChangedFileDto[];
   tasks: TaskDto[];
   artifacts: ArtifactDto[];
   state: ThreadState;

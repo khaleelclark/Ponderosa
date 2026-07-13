@@ -17,6 +17,8 @@ import { dirname } from "node:path";
 import { asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
+  AgentActivityDto,
+  ChangedFileDto,
   CommunicationEvent,
   CommunicationContextClassification,
   CommunicationProjection,
@@ -48,7 +50,7 @@ import type {
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
-import { messageId as projectedMessageId } from "./ids.js";
+import { artifactId, messageId as projectedMessageId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
@@ -1255,6 +1257,8 @@ export class ThreadStore {
       thread,
       messages: this.getMessages(id),
       thinking: this.getThinkingEntries(id),
+      activity: this.getActivity(id),
+      changedFiles: this.getChangedFiles(id),
       tasks: this.getTasks(id),
       artifacts: this.getArtifacts(id),
       state: thread.state,
@@ -1361,6 +1365,51 @@ export class ThreadStore {
     return entries.sort((a, b) => a.seq - b.seq);
   }
 
+  /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
+  getActivity(threadId: string): AgentActivityDto[] {
+    const activityTypes = new Set(["command", "file_change", "test_result", "tool_call", "tool_result", "error"]);
+    let activeExecutionId: string | undefined;
+    const result: AgentActivityDto[] = [];
+    for (const stored of this.readEvents(threadId)) {
+      const event = stored.event;
+      if (event.type === "agent_lifecycle" && event.status === "running") activeExecutionId = event.executionId;
+      if (activityTypes.has(event.type)) {
+        result.push({
+          id: `${threadId}:activity:${stored.seq}`,
+          threadId,
+          ...(activeExecutionId ? { executionId: activeExecutionId } : {}),
+          seq: stored.seq,
+          createdAt: stored.ts,
+          event: event as AgentActivityDto["event"],
+        });
+      }
+      if (event.type === "turn_done" || (event.type === "agent_lifecycle" && event.status !== "running")) {
+        activeExecutionId = undefined;
+      }
+    }
+    return result;
+  }
+
+  /** One persistent row per touched path, retaining the latest canonical change and executions. */
+  getChangedFiles(threadId: string): ChangedFileDto[] {
+    const byPath = new Map<string, ChangedFileDto>();
+    for (const item of this.getActivity(threadId)) {
+      if (item.event.type !== "file_change") continue;
+      const previous = byPath.get(item.event.path);
+      const executionIds = [...(previous?.executionIds ?? [])];
+      if (item.executionId && !executionIds.includes(item.executionId)) executionIds.push(item.executionId);
+      byPath.set(item.event.path, {
+        path: item.event.path,
+        kind: item.event.kind,
+        lastSeq: item.seq,
+        lastChangedAt: item.createdAt,
+        executionIds,
+        ...(item.event.diff ? { diff: item.event.diff } : {}),
+      });
+    }
+    return [...byPath.values()].sort((a, b) => a.lastSeq - b.lastSeq);
+  }
+
   getProjectedThreadMessages(threadId: string): MessageDto[] {
     const thread = this.getThread(threadId);
     if (!thread) return [];
@@ -1400,21 +1449,46 @@ export class ThreadStore {
   }
 
   getArtifacts(threadId: string): ArtifactDto[] {
+    const generatedPdfs = new Map(this.readEvents(threadId).flatMap((stored) =>
+      stored.event.type === "file_change" && stored.event.path.toLowerCase().endsWith(".pdf")
+        ? [[artifactId(threadId, stored.seq, 0), stored.event.path] as const]
+        : [],
+    ));
+    const thread = this.getThread(threadId);
     return this.db
       .select()
       .from(artifacts)
       .where(eq(artifacts.threadId, threadId))
       .orderBy(asc(artifacts.createdAt))
       .all()
-      .map((r) => ({
-        id: r.id,
-        threadId: r.threadId,
-        taskId: r.taskId ?? undefined,
-        kind: r.kind as ArtifactKind,
-        path: r.path,
-        summary: r.summary ?? undefined,
-        createdAt: r.createdAt,
-      }));
+      .map((r) => {
+        const generatedPath = generatedPdfs.get(r.id);
+        if (generatedPath && thread) {
+          const root = `/api/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(threadId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
+          return {
+            id: r.id, threadId: r.threadId, taskId: r.taskId ?? undefined,
+            kind: "document" as const, path: generatedPath, summary: generatedPath,
+            createdAt: r.createdAt, mediaType: "application/pdf" as const,
+            previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+          };
+        }
+        return {
+          id: r.id, threadId: r.threadId, taskId: r.taskId ?? undefined,
+          kind: r.kind as ArtifactKind, path: r.path, summary: r.summary ?? undefined,
+          createdAt: r.createdAt,
+        };
+      });
+  }
+
+  getGeneratedPdfPath(threadId: string, artifactIdValue: string): string | undefined {
+    const stored = this.readEvents(threadId).find((candidate) =>
+      artifactId(threadId, candidate.seq, 0) === artifactIdValue &&
+      candidate.event.type === "file_change" &&
+      candidate.event.path.toLowerCase().endsWith(".pdf")
+    );
+    return stored?.event.type === "file_change"
+      ? stored.event.path
+      : undefined;
   }
 
   getArtifact(threadId: string, artifactId: string): ArtifactDto | undefined {

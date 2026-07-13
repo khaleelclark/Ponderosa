@@ -3594,6 +3594,49 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return store.getArtifacts(request.params.id);
   });
 
+  async function generatedPdf(
+    projectId: string,
+    threadId: string,
+    artifactId: string,
+  ): Promise<{ body: Buffer; name: string } | undefined> {
+    const project = store.getProject(projectId);
+    const thread = store.getThread(threadId);
+    if (!project || !thread || thread.projectId !== project.id) return undefined;
+    const generatedPath = store.getGeneratedPdfPath(thread.id, artifactId);
+    if (!generatedPath) return undefined;
+    try {
+      const root = await fs.realpath(project.hostPath);
+      const candidate = path.isAbsolute(generatedPath)
+        ? generatedPath
+        : path.resolve(root, generatedPath);
+      const resolved = await fs.realpath(candidate);
+      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
+      const info = await fs.stat(resolved);
+      if (!info.isFile() || info.size > 32 * 1024 * 1024) return undefined;
+      return { body: await fs.readFile(resolved), name: path.basename(resolved) };
+    } catch {
+      return undefined;
+    }
+  }
+
+  app.get<{ Params: { projectId: string; id: string; aid: string } }>(
+    "/api/projects/:projectId/threads/:id/generated-artifacts/:aid/preview",
+    async (request, reply) => {
+      const file = await generatedPdf(request.params.projectId, request.params.id, request.params.aid);
+      if (!file) return reply.code(404).send({ error: "generated PDF not found" });
+      return reply.type("application/pdf").header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline")).send(file.body);
+    },
+  );
+
+  app.get<{ Params: { projectId: string; id: string; aid: string } }>(
+    "/api/projects/:projectId/threads/:id/generated-artifacts/:aid/download",
+    async (request, reply) => {
+      const file = await generatedPdf(request.params.projectId, request.params.id, request.params.aid);
+      if (!file) return reply.code(404).send({ error: "generated PDF not found" });
+      return reply.type("application/pdf").header("Content-Disposition", contentDisposition(file.name)).send(file.body);
+    },
+  );
+
   app.get<{ Params: { id: string; aid: string } }>(
     "/api/threads/:id/artifacts/:aid",
     async (request, reply) => {

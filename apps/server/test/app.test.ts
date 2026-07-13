@@ -214,6 +214,31 @@ async function waitForSeedCount(expected: number): Promise<void> {
   throw new Error(`timed out waiting for ${expected} seeded runs`);
 }
 
+describe("generated artifact endpoints", () => {
+  it("previews and downloads a canonical PDF only inside its owning project", async () => {
+    const { app, project, thread } = await createProjectAndThread();
+    const pdf = Buffer.from("%PDF-1.4\n% test\n");
+    const pdfPath = path.join(repoDir, "report.pdf");
+    writeFileSync(pdfPath, pdf);
+    store.appendEvent(thread.id, { type: "file_change", path: pdfPath, kind: "create" });
+    const artifact = store.getArtifacts(thread.id).find((item) => item.kind === "document")!;
+
+    expect(artifact).toMatchObject({ mediaType: "application/pdf", previewUrl: expect.any(String), downloadUrl: expect.any(String) });
+    const preview = await app.inject({ method: "GET", url: artifact.previewUrl! });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["content-type"]).toContain("application/pdf");
+    expect(preview.headers["content-disposition"]).toContain("inline");
+    expect(preview.rawPayload).toEqual(pdf);
+
+    const download = await app.inject({ method: "GET", url: artifact.downloadUrl! });
+    expect(download.statusCode).toBe(200);
+    expect(download.headers["content-disposition"]).toContain("attachment");
+    const foreign = artifact.previewUrl!.replace(`/projects/${project.id}/`, "/projects/not-the-owner/");
+    expect((await app.inject({ method: "GET", url: foreign })).statusCode).toBe(404);
+    await app.close();
+  });
+});
+
 describe("persistent engine steering", () => {
   it("steers an active agent immediately instead of adding a FIFO delivery", async () => {
     const steerable = new SteerableMockAdapter();

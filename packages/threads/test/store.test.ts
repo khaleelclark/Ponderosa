@@ -477,6 +477,10 @@ describe("ThreadStore — append + projection", () => {
       sourceSeqStart: 3,
       sourceSeqEnd: 7,
     })]);
+    expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);
+    expect(detail.changedFiles).toEqual([expect.objectContaining({
+      path: "auth.ts", kind: "edit", lastSeq: 6, diff: "diff --git a/auth.ts b/auth.ts\n",
+    })]);
     // Tasks: one task, closed done by turn_done
     expect(detail.tasks).toHaveLength(1);
     expect(detail.tasks[0]!.status).toBe("done");
@@ -517,6 +521,27 @@ describe("ThreadStore — append + projection", () => {
       { executionId: "legacy-run-1", text: "first legacy response", completed: true },
       { executionId: "legacy-run-2", text: "second legacy response", completed: true },
     ]);
+  });
+
+  it("rebuilds chronological activity and per-file execution history after restart", () => {
+    const { threadId } = seedThread();
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-a" });
+    store.appendEvent(threadId, { type: "command", command: "pnpm test", cwd: "/repo" });
+    store.appendEvent(threadId, { type: "file_change", path: "src/a.ts", kind: "create", diff: "+first" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-a" });
+    store.appendEvent(threadId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-b" });
+    store.appendEvent(threadId, { type: "test_result", passed: true, summary: "unit tests" });
+    store.appendEvent(threadId, { type: "file_change", path: "src/a.ts", kind: "edit", diff: "+second" });
+
+    store.close();
+    store = new ThreadStore(dir);
+    const detail = store.getThreadDetail(threadId)!;
+    expect(detail.activity.map(({ executionId, event }) => [executionId, event.type])).toEqual([
+      ["run-a", "command"], ["run-a", "file_change"], ["run-b", "test_result"], ["run-b", "file_change"],
+    ]);
+    expect(detail.changedFiles).toEqual([expect.objectContaining({
+      path: "src/a.ts", kind: "edit", diff: "+second", executionIds: ["run-a", "run-b"],
+    })]);
   });
 
   it("assigns monotonic per-thread seq and is append-only (readSince works)", () => {

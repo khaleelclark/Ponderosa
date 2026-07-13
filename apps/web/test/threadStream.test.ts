@@ -18,6 +18,8 @@ describe("updateThreadDetail", () => {
     const detail = {
       messages: [],
       thinking: [],
+      activity: [],
+      changedFiles: [],
       tasks: [],
       artifacts: [],
       thread: { activeEngine: "codex" },
@@ -95,5 +97,20 @@ describe("updateThreadDetail", () => {
     expect(updateThreadDetail("thread-1", envelope, detail).artifacts).toEqual([
       expect.objectContaining({ id: "live-artifact-5", path: "src/app.ts" }),
     ]);
+  });
+
+  it("projects streamed execution activity and changed files without duplicating replay", () => {
+    const detail = {
+      messages: [], thinking: [], activity: [], changedFiles: [], tasks: [], artifacts: [],
+      thread: { activeEngine: "codex" },
+    } as unknown as ThreadDetailDto;
+    const envelope = {
+      seq: 9, ts: "2026-07-11T08:00:04.000Z",
+      event: { type: "file_change", path: "src/index.ts", kind: "edit", diff: "+export {}" },
+    } as SseEventEnvelope;
+    const once = updateThreadDetail("thread-1", envelope, detail);
+    const twice = updateThreadDetail("thread-1", { ...envelope, replayed: true }, once);
+    expect(twice.activity).toEqual([expect.objectContaining({ seq: 9, event: envelope.event })]);
+    expect(twice.changedFiles).toEqual([expect.objectContaining({ path: "src/index.ts", diff: "+export {}" })]);
   });
 });

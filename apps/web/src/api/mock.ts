@@ -515,6 +515,8 @@ export const mockApi: PonderosaApi = {
       thread,
       messages: messages[threadId] ?? [],
       thinking: [],
+      activity: [],
+      changedFiles: [],
       tasks: tasks[threadId] ?? [],
       artifacts: artifacts[threadId] ?? [],
       state: thread.state,

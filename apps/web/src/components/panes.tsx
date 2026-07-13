@@ -31,7 +31,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ArtifactContentDto, ArtifactDto, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
+import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -391,11 +391,31 @@ export function ChatMarkdown({
   );
 }
 
-export function ChatMessageBody({
-  text,
-  agentIdForHandle,
-  onOpenAgent,
-}: {
+export function splitMessageSources(text: string): { body: string; sources?: string } {
+  const matches = [...text.matchAll(/(?:^|\n)(#{1,6})\s+(Sources?|Citations?)\s*\n/gi)];
+  const match = matches.at(-1);
+  if (match?.index === undefined || match.index === 0) return { body: text };
+  return {
+    body: text.slice(0, match.index).trimEnd(),
+    sources: text.slice(match.index + (match[0].startsWith("\n") ? 1 : 0)).trim(),
+  };
+}
+
+export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent }: {
+  text: string;
+  agentIdForHandle?(handle: string): string | undefined;
+  onOpenAgent?(agentId: string): void;
+}): JSX.Element {
+  const { body, sources } = splitMessageSources(text);
+  return <>
+    <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{body}</ChatMarkdown>
+    {sources ? <Box component="aside" aria-label="Sources" sx={{ mt: 1.25, pt: 1, borderTop: 1, borderColor: "divider", color: "text.secondary", "& h1, & h2, & h3, & h4, & h5, & h6": { fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: ".06em" }, "& p, & li": { fontSize: "0.82rem" } }}>
+      <ChatMarkdown>{sources}</ChatMarkdown>
+    </Box> : null}
+  </>;
+}
+
+export function ChatMessageBody({ text, agentIdForHandle, onOpenAgent }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
@@ -411,7 +431,7 @@ export function ChatMessageBody({
           maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
         } : undefined}
       >
-        <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{text}</ChatMarkdown>
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
       </Box>
       {collapsible ? (
         <Button
@@ -760,6 +780,53 @@ export function LiveLogPane({
   );
 }
 
+/** Refresh-safe chronological projection of canonical execution events. */
+export function ActivityPane({ activity, connected, running }: {
+  activity: AgentActivityDto[];
+  connected: boolean;
+  running: boolean;
+}): JSX.Element {
+  const ordered = [...activity].sort((a, b) => a.seq - b.seq);
+  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent activity">
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Activity</Typography>
+      <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
+      {running ? <Chip size="small" color="info" label="Working" /> : null}
+    </Stack>
+    {ordered.length === 0 ? <Alert severity="info">Commands, tests, file changes, and tool output will appear here.</Alert> : ordered.map((item) =>
+      <Paper component="details" key={item.id} variant="outlined" sx={{ p: 1, "& > summary": { cursor: "pointer" } }}>
+        <Box component="summary">
+          <EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} />
+        </Box>
+        <Stack direction="row" spacing={1} sx={{ pl: 1.25, pt: 0.5 }}>
+          <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
+          {item.executionId ? <Typography variant="caption" color="text.secondary">Execution {item.executionId.slice(0, 8)}</Typography> : null}
+        </Stack>
+      </Paper>)}
+  </Stack>;
+}
+
+export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.Element {
+  const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
+  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
+    <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Changed Files</Typography>
+      <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
+    </Stack>
+    {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
+      <Paper component="details" key={file.path} variant="outlined" sx={{ p: 1.25, "& > summary": { cursor: "pointer" } }}>
+        <Stack component="summary" direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          <Chip size="small" label={file.kind} color={file.kind === "delete" ? "error" : file.kind === "create" ? "success" : "default"} />
+          <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{file.path}</Typography>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+          Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} execution{file.executionIds.length === 1 ? "" : "s"}
+        </Typography>
+        {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this change.</Typography>}
+      </Paper>)}
+  </Stack>;
+}
+
 function MarkdownViewer({ content }: { content: string }): JSX.Element {
   return (
     <Box
@@ -807,7 +874,7 @@ function ArtifactViewer({
   const contentQuery = useQuery({
     queryKey: ["artifact", threadId, artifact?.id],
     queryFn: () => api.getArtifact(threadId, artifact?.id ?? ""),
-    enabled: Boolean(artifact && !artifact.id.startsWith("live-artifact-")),
+    enabled: Boolean(artifact && artifact.kind !== "document" && !artifact.id.startsWith("live-artifact-")),
   });
 
   const content: ArtifactContentDto | undefined =
@@ -823,6 +890,17 @@ function ArtifactViewer({
         </Typography>
       </Box>
     );
+  }
+
+  if (artifact.kind === "document" && artifact.mediaType === "application/pdf") {
+    return <Box sx={{ p: 1.5, minWidth: 0 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifact.summary ?? artifact.path}</Typography>
+        {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open preview</Button> : null}
+        {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
+      </Stack>
+      {artifact.previewUrl ? <Box component="iframe" title={`Preview ${artifact.path}`} src={artifact.previewUrl} sx={{ width: "100%", height: { xs: "55vh", md: "66vh" }, border: 1, borderColor: "divider", borderRadius: 1, bgcolor: "background.paper" }} /> : <Alert severity="info">The PDF is still being indexed. Refresh to preview or download it.</Alert>}
+    </Box>;
   }
 
   if (contentQuery.isLoading && !content) {
