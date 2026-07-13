@@ -80,6 +80,28 @@ export interface RuntimeTurnInput {
   clientMessageId?: string;
 }
 
+/** A host-owned tool exposed inside an engine runtime. */
+export interface RuntimeDynamicToolSpec {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface RuntimeDynamicToolCall {
+  name: string;
+  arguments: unknown;
+}
+
+export interface RuntimeDynamicToolResult {
+  success: boolean;
+  /** Plain text returned to the engine after the host finishes the call. */
+  text: string;
+}
+
+export type RuntimeDynamicToolHandler = (
+  call: RuntimeDynamicToolCall,
+) => Promise<RuntimeDynamicToolResult>;
+
 export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
   | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
@@ -106,6 +128,9 @@ export interface OpenRuntimeSessionOptions {
   model?: string;
   effort?: string;
   environment?: Record<string, string>;
+  /** Host tools are transported by the adapter, never through the agent shell. */
+  dynamicTools?: RuntimeDynamicToolSpec[];
+  handleDynamicToolCall?: RuntimeDynamicToolHandler;
   signal: AbortSignal;
 }
 

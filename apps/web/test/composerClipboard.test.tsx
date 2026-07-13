@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { StrictMode } from "react";
 import { create, unstable_batchedUpdates } from "react-test-renderer";
-import { Composer, filesFromClipboard, selectComposerFiles } from "../src/components/panes";
+import { Composer, filesFromClipboard, replyPreviewText, selectComposerFiles } from "../src/components/panes";
 
 const file = (name: string, type: string, size = 4) => {
   const value = new File([new Uint8Array(Math.min(size, 16))], name, { type });
@@ -15,6 +15,13 @@ const clipboard = (files: File[]) => ({
 const pasteTarget = (view: ReturnType<typeof create>) => view.root.findAll((node) => typeof node.props.onPaste === "function")[0]!;
 
 describe("composer clipboard attachments", () => {
+  it("bounds long reply previews so the cancel action remains reachable", () => {
+    const preview = replyPreviewText(`  ${"long reply segment ".repeat(80)}  `);
+    expect(preview.length).toBeLessThanOrEqual(240);
+    expect(preview.endsWith("…")).toBe(true);
+    expect(replyPreviewText("short reply")).toBe("short reply");
+  });
+
   it("locks synchronously against duplicate sends", () => {
     let calls = 0;
     const pending = new Promise<void>(() => undefined);

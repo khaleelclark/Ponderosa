@@ -168,6 +168,7 @@ class TestEventQueue implements AsyncIterable<AgentEvent> {
 class SteerableMockAdapter extends MockAdapter {
   readonly starts: RuntimeTurnInput[] = [];
   readonly steers: RuntimeTurnInput[] = [];
+  readonly openedOptions: OpenRuntimeSessionOptions[] = [];
   opened = 0;
   closed = 0;
   completeStartedTurns = false;
@@ -175,6 +176,7 @@ class SteerableMockAdapter extends MockAdapter {
 
   async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
     this.opened += 1;
+    this.openedOptions.push(opts);
     const queue = new TestEventQueue();
     queue.push({ type: "session", sessionId: "persistent-session" });
     return {
@@ -1907,6 +1909,10 @@ describe("server chunk F", () => {
 
     const openingPrompt = adapter.seeds.find((turn) => turn.agentId === first.id)?.prompt ?? "";
     expect(openingPrompt).toContain("Send its actual completed answer with intent broadcast, never direct_to_user");
+    expect(openingPrompt).toContain("Required completion contract for this Project-chat request:");
+    expect(openingPrompt).toContain("The user cannot see your ordinary runtime response");
+    expect(openingPrompt).toContain("Ponderosa send-message tool");
+    expect(openingPrompt).toContain('"intent":"broadcast"');
     expect(store.getConversationMessages(master.id)).toContainEqual(
       expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorAgentId: first.id }),
     );
@@ -1920,6 +1926,10 @@ describe("server chunk F", () => {
     });
     expect(privateTurn.statusCode, privateTurn.body).toBe(200);
     await waitForRun(privateAgent.id);
+    const privatePrompt = adapter.seeds.find((turn) => turn.agentId === privateAgent.id)?.prompt ?? "";
+    expect(privatePrompt).toContain("Required completion contract for this private user-to-agent request:");
+    expect(privatePrompt).toContain('"intent":"direct_to_user"');
+    expect(privatePrompt).not.toContain("Required completion contract for this Project-chat request:");
 
     const next = store.createAgent(project.id, { title: "Next", engine: "codex", conversationId: master.id });
     adapter.responseText = "Let's continue";
@@ -1944,6 +1954,47 @@ describe("server chunk F", () => {
     expect(store.getAgentDetail(privateAgent.id)?.runOutput).toEqual([
       expect.objectContaining({ text: "Private implementation detail", completed: true }),
     ]);
+    await app.close();
+  });
+
+  it("routes a persistent engine's managed send-message tool through the canonical communication endpoint", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Managed messaging", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Sender", engine: "codex", conversationId: conversation.id });
+
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: "Answer the shared request",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+        shareWithOrganization: true,
+      },
+    });
+    expect(started.statusCode, started.body).toBe(200);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const opened = persistent.openedOptions[0]!;
+    expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_send_message" }));
+
+    const result = await opened.handleDynamicToolCall!({
+      name: "ponderosa_send_message",
+      arguments: { intent: "broadcast", text: "The managed answer" },
+    });
+    expect(result.success, result.text).toBe(true);
+    expect(store.getConversationMessages(conversation.id)).toContainEqual(expect.objectContaining({
+      role: "assistant",
+      text: "The managed answer",
+      authorAgentId: agent.id,
+    }));
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      intent: "broadcast",
+      text: "The managed answer",
+      sender: expect.objectContaining({ kind: "agent", agentId: agent.id }),
+    }));
     await app.close();
   });
 

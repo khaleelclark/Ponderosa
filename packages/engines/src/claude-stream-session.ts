@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
   OpenRuntimeSessionOptions,
@@ -29,6 +30,17 @@ export class ClaudeStreamSession implements RuntimeSession {
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
+    const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
+      ? JSON.stringify({
+          mcpServers: {
+            ponderosa: {
+              type: "stdio",
+              command: process.execPath,
+              args: [fileURLToPath(new URL("./ponderosa-mcp.js", import.meta.url))],
+            },
+          },
+        })
+      : undefined;
     const args = [
       "-p",
       "--input-format", "stream-json",
@@ -36,6 +48,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       "--verbose",
       "--replay-user-messages",
       "--permission-mode", opts.permissionMode,
+      ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.effort ? ["--effort", opts.effort] : []),
       ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
