@@ -655,7 +655,7 @@ export function MasterChatView({
             onClick={() => onNewAgent(masterChat)}
             sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New </Box>Agent
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New</Box>{" "}Agent
           </Button>
           <Button
             variant={runSetupOpen ? "contained" : "outlined"}
