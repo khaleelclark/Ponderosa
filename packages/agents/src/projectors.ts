@@ -35,6 +35,7 @@ export type ProjectionOp =
   | { kind: "insert_message"; row: MessageRow }
   | { kind: "insert_run"; row: RunRow }
   | { kind: "update_run"; id: string; status: AgentRunStatus; reason: AgentLifecycleReason; updatedAt: string; completedAt?: string }
+  | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number }
   | { kind: "insert_work_item"; row: WorkItemRow }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
@@ -161,6 +162,11 @@ export function projectEvent(
             reason: event.reason,
             engine: next.activeEngine,
             communicationEventId: next.pendingCommunicationEventId ?? null,
+            inputTokens: null,
+            cachedInputTokens: null,
+            outputTokens: null,
+            reasoningOutputTokens: null,
+            totalTokens: null,
             startedAt: ts,
             updatedAt: ts,
             completedAt: null,
@@ -258,6 +264,9 @@ export function projectEvent(
     }
 
     case "turn_done": {
+      if (event.usage && (event.executionId ?? next.activeExecutionId)) {
+        ops.push({ kind: "set_run_usage", id: event.executionId ?? next.activeExecutionId!, ...event.usage });
+      }
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }

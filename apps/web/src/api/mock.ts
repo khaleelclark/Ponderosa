@@ -15,6 +15,7 @@ import type {
   WorkItemDto,
   AgentDetailDto,
   AgentDto,
+  TokenUsageScope,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -333,6 +334,25 @@ export const mockApi: PonderosaApi = {
             : agentRuns.length && agentRuns.every((run) => run.status === "completed") ? "completed" as const : "idle" as const;
         return { agentId: agent.id, childAgentIds: [], status, statusTimestamp: agent.updatedAt, reason: status === "running" ? "active_run" as const : status === "waiting" ? "work_item_waiting_approval" as const : status === "completed" ? "turn_completed" as const : "no_active_work" as const };
       }),
+    });
+  },
+  getTokenUsage(scope: TokenUsageScope, id?: string) {
+    const scopedAgents = agents.filter((agent) => scope === "overall" ||
+      (scope === "project" && agent.projectId === id) ||
+      (scope === "agent" && agent.id === id));
+    const scopedRuns = scopedAgents.flatMap((agent) => runs[agent.id] ?? []);
+    const finalized = scopedRuns.filter((run) => run.status !== "running");
+    const reported = finalized.filter((run) => run.usage);
+    const sum = (key: "inputTokens" | "cachedInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens") =>
+      reported.reduce((total, run) => total + (run.usage?.[key] ?? 0), 0);
+    return delay({
+      scope,
+      ...(scope !== "overall" ? { scopeId: id } : {}),
+      inputTokens: sum("inputTokens"), cachedInputTokens: sum("cachedInputTokens"),
+      outputTokens: sum("outputTokens"), reasoningOutputTokens: sum("reasoningOutputTokens"), totalTokens: sum("totalTokens"),
+      finalizedRuns: finalized.length, reportedRuns: reported.length,
+      unreportedRuns: finalized.length - reported.length,
+      coverage: finalized.length ? reported.length / finalized.length : null,
     });
   },
   listAgentPresets(projectId) { return delay(agentPresets.filter((preset) => preset.projectId === projectId)); },

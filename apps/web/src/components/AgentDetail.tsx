@@ -52,6 +52,7 @@ import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
+import { TokenUsageButton } from "./TokenUsageButton";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts";
 
@@ -399,6 +400,7 @@ export function AgentDetail({
               )}
             </Typography>
           </Box>
+          <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
           <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} aria-label={`Agent status: ${agentStatusLabel(status)}`} />
           {engineCapability?.steering ? <Chip size="small" color="info" variant="outlined" label="Steerable" /> : null}
           <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}>

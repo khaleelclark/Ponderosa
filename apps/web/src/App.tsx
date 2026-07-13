@@ -31,6 +31,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
+import { TokenUsageButton } from "./components/TokenUsageButton";
 import { useEngines, useProjectFolders, useProjects } from "./hooks/queries";
 import {
   loadLastProjectId,
@@ -85,6 +86,7 @@ function ProjectTabs({
           />
         ))}
       </Tabs>
+      {selectedProjectId ? <TokenUsageButton scope="project" scopeId={selectedProjectId} label="Project" /> : null}
       <Tooltip title="New project">
         <IconButton onClick={onCreate} aria-label="New project" sx={{ mx: 1 }}>
           <AddIcon />
@@ -209,6 +211,12 @@ export default function App({
             variant="outlined"
             sx={{ maxWidth: { xs: 132, sm: "none" } }}
           />
+          <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
+            <TokenUsageButton scope="overall" label="Overall" />
+          </Box>
+          <Box sx={{ ml: 0.5, display: { xs: "block", sm: "none" } }}>
+            <TokenUsageButton scope="overall" label="Overall" compact />
+          </Box>
           <Tooltip title={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
             <IconButton
               aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}

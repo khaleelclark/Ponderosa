@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  TokenUsage,
   OpenRuntimeSessionOptions,
   RuntimeSession,
   RuntimeSteerResult,
@@ -27,6 +28,7 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
 
 export class CodexAppServerSession implements RuntimeSession {
   private activeTurnId?: string;
+  private readonly usageByTurnId = new Map<string, TokenUsage>();
   readonly events: AsyncIterable<AgentEvent>;
 
   private constructor(
@@ -146,17 +148,52 @@ export class CodexAppServerSession implements RuntimeSession {
   private async *eventStream(): AsyncIterable<AgentEvent> {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
+      if (notification.method === "thread/tokenUsage/updated") {
+        const params = notification.params as { turnId?: unknown; tokenUsage?: { last?: unknown } } | undefined;
+        if (typeof params?.turnId === "string") {
+          const usage = mapCodexTokenUsage(params.tokenUsage?.last);
+          if (usage) this.usageByTurnId.set(params.turnId, usage);
+        }
+        continue;
+      }
       if (notification.method === "turn/started") {
         const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;
         if (turn?.id) this.activeTurnId = turn.id;
       }
+      const completedTurnId = notification.method === "turn/completed"
+        ? ((notification.params as { turn?: { id?: unknown } } | undefined)?.turn?.id)
+        : undefined;
       if (notification.method === "turn/completed") this.activeTurnId = undefined;
-      yield* mapCodexAppServerNotification(notification, this.cwd);
+      yield* mapCodexAppServerNotification(
+        notification,
+        this.cwd,
+        typeof completedTurnId === "string" ? this.usageByTurnId.get(completedTurnId) : undefined,
+      );
+      if (typeof completedTurnId === "string") this.usageByTurnId.delete(completedTurnId);
     }
   }
 }
 
-export function mapCodexAppServerNotification(notification: JsonRpcNotification, cwd: string): AgentEvent[] {
+export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const number = (key: string) => typeof raw[key] === "number" && Number.isFinite(raw[key]) ? raw[key] as number : undefined;
+  const inputTokens = number("inputTokens");
+  const cachedInputTokens = number("cachedInputTokens");
+  const outputTokens = number("outputTokens");
+  const reasoningOutputTokens = number("reasoningOutputTokens");
+  const providerTotal = number("totalTokens");
+  if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, providerTotal].every((item) => item === undefined)) return undefined;
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens: providerTotal ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+  };
+}
+
+export function mapCodexAppServerNotification(notification: JsonRpcNotification, cwd: string, usage?: TokenUsage): AgentEvent[] {
   const params = notification.params as Record<string, unknown> | undefined;
   if (notification.method === "ponderosa/processError") {
     return [{ type: "error", message: String(params?.message ?? "Codex app-server stopped") }];
@@ -173,7 +210,7 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
   if (notification.method === "turn/completed") {
     const turn = params?.turn as { status?: string; error?: { message?: string } | null } | undefined;
     if (turn?.status === "failed") return [{ type: "error", message: turn.error?.message ?? "Codex turn failed" }];
-    return [{ type: "turn_done" }];
+    return [{ type: "turn_done", ...(usage ? { usage } : {}) }];
   }
   if (notification.method !== "item/started" && notification.method !== "item/completed") return [];
   const item = params?.item as Record<string, unknown> | undefined;

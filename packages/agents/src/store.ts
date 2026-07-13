@@ -50,6 +50,7 @@ import type {
   AgentDetailDto,
   AgentDto,
   AgentState,
+  TokenUsageSummaryDto,
   RunOutputDto,
   UpdateProjectRequest,
   UpdateAgentConversationMembershipsRequest,
@@ -1618,10 +1619,53 @@ export class AgentStore {
         reason: r.reason as AgentLifecycleReason,
         engine: r.engine,
         communicationEventId: r.communicationEventId ?? undefined,
+        ...([r.inputTokens, r.cachedInputTokens, r.outputTokens, r.reasoningOutputTokens, r.totalTokens].some((value) => value !== null)
+          ? { usage: {
+              ...(r.inputTokens !== null ? { inputTokens: r.inputTokens } : {}),
+              ...(r.cachedInputTokens !== null ? { cachedInputTokens: r.cachedInputTokens } : {}),
+              ...(r.outputTokens !== null ? { outputTokens: r.outputTokens } : {}),
+              ...(r.reasoningOutputTokens !== null ? { reasoningOutputTokens: r.reasoningOutputTokens } : {}),
+              ...(r.totalTokens !== null ? { totalTokens: r.totalTokens } : {}),
+            } }
+          : {}),
         startedAt: r.startedAt,
         updatedAt: r.updatedAt,
         completedAt: r.completedAt ?? undefined,
       }));
+  }
+
+  getTokenUsage(scope: { type: "overall" } | { type: "project" | "agent"; id: string }): TokenUsageSummaryDto {
+    const predicate = scope.type === "overall" ? "" : scope.type === "project" ? " AND agents.project_id = ?" : " AND runs.agent_id = ?";
+    const row = this.client.prepare(`
+      SELECT
+        COUNT(*) AS finalized_runs,
+        SUM(CASE WHEN input_tokens IS NOT NULL OR cached_input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR reasoning_output_tokens IS NOT NULL OR total_tokens IS NOT NULL THEN 1 ELSE 0 END) AS reported_runs,
+        SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+        SUM(COALESCE(cached_input_tokens, 0)) AS cached_input_tokens,
+        SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+        SUM(COALESCE(reasoning_output_tokens, 0)) AS reasoning_output_tokens,
+        SUM(COALESCE(total_tokens, 0)) AS total_tokens
+      FROM runs JOIN agents ON agents.id = runs.agent_id
+      WHERE runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')${predicate}
+    `).get(...(scope.type === "overall" ? [] : [scope.id])) as {
+      finalized_runs: number; reported_runs: number | null; input_tokens: number | null; cached_input_tokens: number | null;
+      output_tokens: number | null; reasoning_output_tokens: number | null; total_tokens: number | null;
+    };
+    const finalizedRuns = row.finalized_runs;
+    const reportedRuns = row.reported_runs ?? 0;
+    return {
+      scope: scope.type,
+      ...(scope.type !== "overall" ? { scopeId: scope.id } : {}),
+      inputTokens: row.input_tokens ?? 0,
+      cachedInputTokens: row.cached_input_tokens ?? 0,
+      outputTokens: row.output_tokens ?? 0,
+      reasoningOutputTokens: row.reasoning_output_tokens ?? 0,
+      totalTokens: row.total_tokens ?? 0,
+      finalizedRuns,
+      reportedRuns,
+      unreportedRuns: finalizedRuns - reportedRuns,
+      coverage: finalizedRuns ? reportedRuns / finalizedRuns : null,
+    };
   }
 
   getWorkItems(agentId: string): WorkItemDto[] {
@@ -1923,6 +1967,18 @@ export class AgentStore {
                   completedAt: op.row.completedAt,
                 },
               })
+              .run();
+            break;
+          case "set_run_usage":
+            tx.update(runs)
+              .set({
+                inputTokens: op.inputTokens ?? null,
+                cachedInputTokens: op.cachedInputTokens ?? null,
+                outputTokens: op.outputTokens ?? null,
+                reasoningOutputTokens: op.reasoningOutputTokens ?? null,
+                totalTokens: op.totalTokens ?? null,
+              })
+              .where(and(eq(runs.agentId, agentId), eq(runs.id, op.id)))
               .run();
             break;
           case "update_run":

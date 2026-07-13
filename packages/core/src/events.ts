@@ -13,7 +13,11 @@ export type FileChangeKind = "create" | "edit" | "delete";
 /** Optional token accounting reported at the end of a turn. */
 export interface TokenUsage {
   inputTokens?: number;
+  /** Input tokens served from a provider cache; included in inputTokens. */
+  cachedInputTokens?: number;
   outputTokens?: number;
+  /** Reasoning tokens reported by providers that expose them; included in outputTokens. */
+  reasoningOutputTokens?: number;
   totalTokens?: number;
 }
 

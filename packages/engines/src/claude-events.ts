@@ -33,7 +33,7 @@ interface RawMessage {
   model?: string;
   id?: string;
   content?: RawBlock[];
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 }
 
 interface RawClaudeEvent {
@@ -43,7 +43,7 @@ interface RawClaudeEvent {
   message?: RawMessage;
   result?: string;
   is_error?: boolean;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 }
 
 /** Claude Code's file-mutating tools → a normalized {@link FileChangeKind}. */
@@ -64,10 +64,14 @@ const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "Updat
 
 function mapUsage(u: RawClaudeEvent["usage"]): TokenUsage | undefined {
   if (!u) return undefined;
-  const inputTokens = u.input_tokens;
+  const cachedInputTokens = u.cache_read_input_tokens;
+  const inputTokens = u.input_tokens !== undefined || cachedInputTokens !== undefined || u.cache_creation_input_tokens !== undefined
+    ? (u.input_tokens ?? 0) + (cachedInputTokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+    : undefined;
   const outputTokens = u.output_tokens;
   const usage: TokenUsage = {};
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
+  if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
   if (outputTokens !== undefined) usage.outputTokens = outputTokens;
   if (inputTokens !== undefined || outputTokens !== undefined) {
     usage.totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);

@@ -2286,6 +2286,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
   });
 
+  app.get("/api/usage", async () => store.getTokenUsage({ type: "overall" }));
+
+  app.get<{ Params: { id: string } }>("/api/projects/:id/usage", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    return store.getTokenUsage({ type: "project", id: request.params.id });
+  });
+
   app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return teamDirectory(request.params.id);
@@ -2983,6 +2990,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.get<{ Params: { id: string } }>("/api/agents/:id", async (request, reply) => {
     const detail = agentDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "agent not found" });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agents/:id/usage", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    return store.getTokenUsage({ type: "agent", id: request.params.id });
   });
 
   app.patch<{ Params: { id: string }; Body: { title?: string; archived?: boolean } }>(
@@ -3792,7 +3804,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 persistRuntimeEvent(agent.id, activeRun, buffered);
               }
               if (event.type !== "error") sawMaterialRuntimeEvent = true;
-              const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update"
+              const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update" || event.type === "turn_done"
                 ? { ...event, executionId: runId }
                 : event;
               const stored = persistRuntimeEvent(agent.id, activeRun, logEvent);

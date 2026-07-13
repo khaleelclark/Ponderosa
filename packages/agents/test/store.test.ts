@@ -648,6 +648,7 @@ describe("AgentStore — append + projection", () => {
     })]);
     expect(detail.runs).toEqual([expect.objectContaining({
       id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication",
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
     })]);
     expect(detail.workItems).toEqual([]);
     // Artifacts: command log + diff from the file_change
@@ -666,6 +667,28 @@ describe("AgentStore — append + projection", () => {
     expect(readFileSync(commandFile, "utf8")).toContain("pnpm test");
     // session id captured for resume
     expect(store.resumeSessionId(agentId)).toBe("sess-abc");
+  });
+
+  it("rebuilds usage per run and aggregates agent, project, and overall with honest coverage", () => {
+    const { projectId, agentId } = seedAgent();
+    const unmetered = store.createAgent(projectId, { title: "Legacy", engine: "codex" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const other = store.createAgent(otherProject.id, { title: "Other", engine: "claude" });
+
+    for (const event of RUN) store.appendEvent(agentId, event);
+    store.appendEvent(unmetered.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run" });
+    store.appendEvent(unmetered.id, { type: "turn_done", executionId: "legacy-run" });
+    store.appendEvent(unmetered.id, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run" });
+    store.appendEvent(other.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "other-run" });
+    store.appendEvent(other.id, { type: "turn_done", executionId: "other-run", usage: { inputTokens: 20, cachedInputTokens: 8, outputTokens: 7, reasoningOutputTokens: 3, totalTokens: 27 } });
+    store.appendEvent(other.id, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "other-run" });
+
+    expect(store.getTokenUsage({ type: "agent", id: agentId })).toMatchObject({ totalTokens: 15, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
+    expect(store.getTokenUsage({ type: "project", id: projectId })).toMatchObject({ totalTokens: 15, finalizedRuns: 2, reportedRuns: 1, unreportedRuns: 1, coverage: 0.5 });
+    expect(store.getTokenUsage({ type: "overall" })).toMatchObject({ inputTokens: 30, cachedInputTokens: 8, outputTokens: 12, reasoningOutputTokens: 3, totalTokens: 42, finalizedRuns: 3, reportedRuns: 2 });
+
+    store.rebuildProjections();
+    expect(store.getTokenUsage({ type: "overall" })).toMatchObject({ totalTokens: 42, finalizedRuns: 3, reportedRuns: 2, unreportedRuns: 1 });
   });
 
   it("does not manufacture durable Work log responses from transient deltas", () => {

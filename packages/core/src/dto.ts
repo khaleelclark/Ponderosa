@@ -3,7 +3,7 @@
 // directly so the SSE/REST contract is typechecked end to end (SPEC §6, §1).
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
-import type { AgentEvent, WorkItemStatus } from "./events.js";
+import type { AgentEvent, TokenUsage, WorkItemStatus } from "./events.js";
 import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -433,9 +433,24 @@ export interface AgentRunDto {
   reason: AgentLifecycleReason;
   engine: EngineId;
   communicationEventId?: string;
+  /** Provider-reported usage. Missing means the run was not metered, never zero. */
+  usage?: TokenUsage;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
+}
+
+export type TokenUsageScope = "overall" | "project" | "agent";
+
+/** Rebuildable aggregate over finalized canonical runs. */
+export interface TokenUsageSummaryDto extends TokenUsage {
+  scope: TokenUsageScope;
+  scopeId?: string;
+  finalizedRuns: number;
+  reportedRuns: number;
+  unreportedRuns: number;
+  /** 0..1; null when the scope has no finalized runs. */
+  coverage: number | null;
 }
 
 /** Optional engine-reported progress inside a Run; never a Run itself. */

@@ -42,9 +42,12 @@ export interface AgentLifecycleEvent {
   executionId: string;
 }
 
+/** Runtime completion enriched by the server with its canonical execution id. */
+export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
+
 /** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent |
-  AgentOutputEvent | Exclude<AgentEvent, { type: "text" | "reasoning" }> | AgentExecutionDeltaEvent;
+  AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

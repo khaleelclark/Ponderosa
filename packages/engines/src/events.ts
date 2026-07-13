@@ -112,14 +112,18 @@ export function mapFileChangeKind(kind: string | undefined): FileChangeKind {
 function mapUsage(u: RawEvent["usage"]): TokenUsage | undefined {
   if (!u) return undefined;
   const inputTokens = u.input_tokens;
+  const cachedInputTokens = u.cached_input_tokens;
   const outputTokens = u.output_tokens;
+  const reasoningOutputTokens = u.reasoning_output_tokens;
   const totalTokens =
     inputTokens !== undefined || outputTokens !== undefined
       ? (inputTokens ?? 0) + (outputTokens ?? 0)
       : undefined;
   const usage: TokenUsage = {};
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
+  if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
   if (outputTokens !== undefined) usage.outputTokens = outputTokens;
+  if (reasoningOutputTokens !== undefined) usage.reasoningOutputTokens = reasoningOutputTokens;
   if (totalTokens !== undefined) usage.totalTokens = totalTokens;
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
