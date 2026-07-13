@@ -26,3 +26,22 @@ export const PONDEROSA_SEND_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
     },
   },
 };
+
+export const PONDEROSA_SPAWN_AGENT_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_spawn_agent",
+  description: "Create one tracked Ponderosa agent that reports directly to the calling agent. Manager identity and conversation ownership are derived from the active runtime capability.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["displayName", "idempotencyKey"],
+    properties: {
+      displayName: { type: "string", minLength: 1, maxLength: 100 },
+      initialMessage: { type: "string", maxLength: 65536 },
+      runtime: { type: "string", minLength: 1 },
+      model: { type: "string" },
+      effort: { type: "string" },
+      presetId: { type: "string" },
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+    },
+  },
+};

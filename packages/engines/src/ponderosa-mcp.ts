@@ -1,9 +1,10 @@
 import { createInterface } from "node:readline";
-import { PONDEROSA_SEND_MESSAGE_TOOL } from "@ponderosa/core";
+import { PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL } from "@ponderosa/core";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
+const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
 function send(value: unknown): void {
@@ -29,26 +30,38 @@ async function handle(request: RpcRequest): Promise<void> {
       jsonrpc: "2.0",
       id: request.id,
       result: {
-        tools: [{
-          name: "send_message",
-          description: PONDEROSA_SEND_MESSAGE_TOOL.description,
-          inputSchema: PONDEROSA_SEND_MESSAGE_TOOL.inputSchema,
-        }],
+        tools: [
+          {
+            name: "send_message",
+            description: PONDEROSA_SEND_MESSAGE_TOOL.description,
+            inputSchema: PONDEROSA_SEND_MESSAGE_TOOL.inputSchema,
+          },
+          {
+            name: "spawn_agent",
+            description: PONDEROSA_SPAWN_AGENT_TOOL.description,
+            inputSchema: PONDEROSA_SPAWN_AGENT_TOOL.inputSchema,
+          },
+        ],
       },
     });
     return;
   }
   if (request.method === "tools/call") {
     const params = request.params as { name?: unknown; arguments?: unknown } | undefined;
-    if (params?.name !== "send_message" || !messageUrl || !messageToken) {
-      send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "Ponderosa messaging is unavailable." }] } });
+    const targetUrl = params?.name === "send_message"
+      ? messageUrl
+      : params?.name === "spawn_agent"
+        ? spawnUrl
+        : undefined;
+    if (!targetUrl || !messageToken) {
+      send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable." }] } });
       return;
     }
     try {
-      const response = await fetch(messageUrl, {
+      const response = await fetch(targetUrl, {
         method: "POST",
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
-        body: JSON.stringify(params.arguments ?? {}),
+        body: JSON.stringify(params?.arguments ?? {}),
       });
       const text = await response.text();
       send({

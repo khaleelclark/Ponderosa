@@ -802,6 +802,48 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("routes a user-created managed agent opening message to the child as Collaboration", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "User-managed opening", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Organization" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+
+    const childResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: {
+        title: "Specialist",
+        engine: "codex",
+        managerAgentId: manager.id,
+        initialMessage: "Investigate the usability risk and report to your manager.",
+      },
+    });
+    expect(childResponse.statusCode, childResponse.body).toBe(200);
+    const child = childResponse.json<AgentDto>();
+    await waitForSeedCount(1);
+
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [child.id] },
+      text: "Investigate the usability risk and report to your manager.",
+    }));
+    expect(store.readCommunicationEvents(project.id)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ intent: "user_dm" })]),
+    );
+    expect(store.getConversationDetail(master.id)?.messages).toEqual([]);
+    expect(store.getCollaborationViewDetail(master.id)?.messages).toContainEqual(expect.objectContaining({
+      role: "user",
+      text: "#Specialist Investigate the usability risk and report to your manager.",
+    }));
+    const prompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
+    expect(prompt).toContain(`Your direct manager is the stable agent id ${manager.id}`);
+    expect(prompt).toContain(`recipientAgentIds ["${manager.id}"]`);
+    expect(prompt).toContain("Latest message for you:\n#Specialist Investigate the usability risk and report to your manager.");
+    expect(prompt).not.toContain("Required completion contract for this private user-to-agent request");
+    await app.close();
+  });
+
   it("shares Conversation context without copying broadcasts into unrelated agent histories", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Shared default", hostPath: repoDir });
@@ -1979,6 +2021,7 @@ describe("server chunk F", () => {
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
     const opened = persistent.openedOptions[0]!;
     expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_send_message" }));
+    expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_spawn_agent" }));
 
     const result = await opened.handleDynamicToolCall!({
       name: "ponderosa_send_message",
@@ -1995,6 +2038,25 @@ describe("server chunk F", () => {
       text: "The managed answer",
       sender: expect.objectContaining({ kind: "agent", agentId: agent.id }),
     }));
+
+    const spawned = await opened.handleDynamicToolCall!({
+      name: "ponderosa_spawn_agent",
+      arguments: {
+        displayName: "Research",
+        initialMessage: "Investigate and report back privately.",
+        idempotencyKey: "managed-research",
+      },
+    });
+    expect(spawned.success, spawned.text).toBe(true);
+    expect(JSON.parse(spawned.text)).toMatchObject({
+      accepted: true,
+      replayed: false,
+      agent: {
+        title: "Research",
+        managerAgentId: agent.id,
+        spawnedByAgentId: agent.id,
+      },
+    });
     await app.close();
   });
 
