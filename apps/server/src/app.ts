@@ -2013,6 +2013,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           prompt: [
             runtimeIdentityPrompt(childThread, run.id),
             "",
+            teamDirectoryPrompt(teamDirectory(project.id)),
+            "",
             ...(childThread.presetSnapshot ? [
               `Agent preset guidance (${childThread.presetSnapshot.name}; runtime context, not part of the assignment brief):`,
               childThread.presetSnapshot.guidance,
@@ -2033,6 +2035,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
+            PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,

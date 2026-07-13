@@ -3354,7 +3354,12 @@ describe("server chunk F", () => {
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).not.toBe(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN);
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_DIRECTORY_URL).toBe("http://127.0.0.1:8787/api/agent-directory");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_URL).toBe("http://127.0.0.1:8787/api/agent-delegations");
+    expect(adapter.seeds[1]!.prompt).toContain("Current Team Directory");
+    expect(adapter.seeds[1]!.prompt).toContain(`\"agentId\":\"${childId}\"`);
+    expect(adapter.seeds[1]!.prompt).toContain(`\"currentAssignment\":\"Safe review\"`);
+    expect(adapter.seeds[1]!.prompt).toContain(`\"status\":\"running\"`);
 
     const childCollaboration = await app.inject({
       method: "POST",
