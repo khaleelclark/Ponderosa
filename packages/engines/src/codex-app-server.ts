@@ -135,6 +135,10 @@ export class CodexAppServerSession implements RuntimeSession {
     await this.rpc.request("turn/interrupt", { threadId: this.engineAgentId, turnId: this.activeTurnId });
   }
 
+  isAlive(): boolean {
+    return this.rpc.isAlive();
+  }
+
   close(): Promise<void> {
     return this.rpc.close();
   }

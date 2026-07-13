@@ -32,9 +32,20 @@ export class RunLedger {
     mkdirSync(path.dirname(this.file), { recursive: true });
     if (!existsSync(this.file)) closeSync(openSync(this.file, "a", 0o600));
     chmodSync(this.file, 0o600);
-    for (const line of readFileSync(this.file, "utf8").split("\n")) {
+    const contents = readFileSync(this.file, "utf8");
+    const lines = contents.split("\n");
+    for (const [index, line] of lines.entries()) {
       if (!line) continue;
-      const record = JSON.parse(line) as RunRecord;
+      let record: RunRecord;
+      try {
+        record = JSON.parse(line) as RunRecord;
+      } catch (error) {
+        const isTornTail = index === lines.length - 1 && !contents.endsWith("\n");
+        if (!isTornTail) throw error;
+        const completeLength = contents.lastIndexOf("\n") + 1;
+        writeFileSync(this.file, contents.slice(0, completeLength), { encoding: "utf8", mode: 0o600 });
+        break;
+      }
       this.claims.set(record.claim.agentId, record.claim);
     }
     for (const claim of [...this.claims.values()]) {

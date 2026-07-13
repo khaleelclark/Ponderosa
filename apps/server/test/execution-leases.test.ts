@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Adapter, AgentEvent, ContinueOptions, ModelOption, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, ContinueOptions, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, SeedOptions } from "@ponderosa/core";
 import { AgentStore } from "@ponderosa/agents";
 import { createServer, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
@@ -46,6 +46,55 @@ class LeaseAdapter implements Adapter {
   continue(options: ContinueOptions): AsyncIterable<AgentEvent> {
     this.continues.push(options);
     return this.run(options);
+  }
+}
+
+class PersistentEventQueue implements AsyncIterable<AgentEvent> {
+  private values: AgentEvent[] = [];
+  private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
+
+  push(value: AgentEvent): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value, done: false }); else this.values.push(value);
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+    return { next: () => {
+      const value = this.values.shift();
+      return value ? Promise.resolve({ value, done: false }) : new Promise((resolve) => this.waiters.push(resolve));
+    } };
+  }
+}
+
+class PersistentLeaseAdapter implements Adapter {
+  id = "codex";
+  displayName = "Persistent lease adapter";
+  opened = 0;
+  alive = true;
+  private readonly queue = new PersistentEventQueue();
+
+  listModels(): ModelOption[] { return []; }
+  listEfforts() { return []; }
+  seed(_options: SeedOptions): AsyncIterable<AgentEvent> { throw new Error("persistent adapter must open a session"); }
+  continue(_options: ContinueOptions): AsyncIterable<AgentEvent> { throw new Error("persistent adapter must open a session"); }
+
+  async openSession(_options: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    this.opened += 1;
+    this.queue.push({ type: "session", sessionId: "persistent-session" });
+    return {
+      engineAgentId: "persistent-session",
+      events: this.queue,
+      isAlive: () => this.alive,
+      startTurn: async () => ({ turnId: "persistent-turn" }),
+      steer: async () => ({ status: "accepted", turnId: "persistent-turn" }),
+      interrupt: async () => undefined,
+      close: async () => { this.alive = false; },
+    };
+  }
+
+  finish(): void {
+    this.queue.push({ type: "text", delta: "persistent work completed" });
+    this.queue.push({ type: "turn_done" });
   }
 }
 
@@ -146,6 +195,27 @@ describe("enforced execution leases", () => {
     expect(events.some((item) => item.event.type === "text" && item.event.delta === "new generation completed")).toBe(true);
     expect(events.filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
     expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: false });
+    await app.close();
+  });
+
+  it("renews a quiet persistent turn while its engine process remains alive", async () => {
+    const persistent = new PersistentLeaseAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Lease", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
+    const app = server();
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "quiet tool call" } });
+    await eventually(() => persistent.opened === 1);
+    await clock.advance(1_500);
+
+    expect(store.readEvents(agent.id).some((item) =>
+      item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toBe(false);
+    persistent.finish();
+    await eventually(() => store.readEvents(agent.id).some((item) =>
+      item.event.type === "agent_lifecycle" && item.event.reason === "turn_completed"));
+    expect(store.readEvents(agent.id).some((item) =>
+      item.event.type === "agent_output" && item.event.text === "persistent work completed")).toBe(true);
     await app.close();
   });
 

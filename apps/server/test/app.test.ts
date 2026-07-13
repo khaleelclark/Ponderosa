@@ -182,6 +182,7 @@ class SteerableMockAdapter extends MockAdapter {
     return {
       engineAgentId: "persistent-session",
       events: queue,
+      isAlive: () => true,
       startTurn: async (input) => {
         this.starts.push(input);
         if (this.completeStartedTurns) {
@@ -2865,6 +2866,100 @@ describe("server chunk F", () => {
     expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("simulated runtime failure") })]),
     );
+    await app.close();
+  });
+
+  it("blocks a managed completion that omits its explicit manager handoff and wakes the manager without leaking output", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Managed completion", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Completion supervision" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const child = store.createAgent(project.id, {
+      title: "Quiet worker", engine: "codex", conversationId: master.id, managerAgentId: manager.id,
+    });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/messages`, payload: { text: "Supervise this work." } });
+    await waitForSeedCount(1);
+    const managerToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    adapter.mode = "normal";
+    const assigned = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
+      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit, but do not contact the manager." },
+    });
+    expect(assigned.statusCode).toBe(200);
+    await waitForSeedCount(2);
+    await waitForRun(child.id);
+    await vi.waitFor(() => expect(store.readEvents(child.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({ type: "agent_lifecycle", status: "blocked", reason: "manager_report_missing" }) }),
+    ])));
+
+    const childPrompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
+    expect(childPrompt).toContain("Required managed-agent completion contract");
+    expect(childPrompt.lastIndexOf("Required managed-agent completion contract"))
+      .toBeGreaterThan(childPrompt.indexOf("do not contact the manager"));
+    expect(childPrompt).toContain(`recipientAgentIds\":[\"${manager.id}\"]`);
+    const childRun = (await app.inject({ method: "GET", url: `/api/agents/${child.id}` }))
+      .json<{ runs: Array<{ status: string; reason: string }> }>().runs.at(-1);
+    expect(childRun).toMatchObject({ status: "blocked", reason: "manager_report_missing" });
+    expect(store.readCommunicationEvents(project.id).some((event) =>
+      event.intent === "collaboration" && event.sender.kind === "agent" && event.sender.agentId === child.id)).toBe(false);
+
+    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/cancel` });
+    await vi.waitFor(() => expect([...adapter.seeds, ...adapter.continues].some((turn) =>
+      turn.agentId === manager.id && turn.prompt.includes("without the required explicit Collaboration handoff"))).toBe(true));
+    const managerFollowUp = [...adapter.seeds, ...adapter.continues].find((turn) =>
+      turn.agentId === manager.id && turn.prompt.includes("without the required explicit Collaboration handoff"));
+    expect(managerFollowUp?.prompt).toContain("ordinary response remains only in the child's Work log");
+    expect(managerFollowUp?.prompt).not.toContain("#Manager done");
+    await app.close();
+  });
+
+  it("accepts an explicit execution-scoped Collaboration report as managed completion", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Managed completion", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Completion supervision" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const child = store.createAgent(project.id, {
+      title: "Reporting worker", engine: "codex", conversationId: master.id, managerAgentId: manager.id,
+    });
+
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/messages`, payload: { text: "Supervise this work." } });
+    await waitForSeedCount(1);
+    const managerToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    adapter.mode = "normal";
+    adapter.beforeResponse = async (opts) => {
+      const report = await app.inject({
+        method: "POST", url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "collaboration", recipientAgentIds: [manager.id], text: "Audit complete: all checks passed." },
+      });
+      expect(report.statusCode).toBe(200);
+    };
+    await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
+      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit." },
+    });
+    await waitForSeedCount(2);
+    await waitForRun(child.id);
+    await vi.waitFor(() => expect(store.readEvents(child.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" }) }),
+    ])));
+
+    const childRun = (await app.inject({ method: "GET", url: `/api/agents/${child.id}` }))
+      .json<{ runs: Array<{ id: string; status: string; reason: string }> }>().runs.at(-1)!;
+    expect(childRun).toMatchObject({ status: "completed", reason: "turn_completed" });
+    expect(store.readCommunicationEvents(project.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        intent: "collaboration",
+        sender: { kind: "agent", agentId: child.id, executionId: childRun.id },
+        audience: { kind: "agents", agentIds: [manager.id] },
+        text: "Audit complete: all checks passed.",
+      }),
+    ]));
+    expect(store.readEvents(child.id).some((item) =>
+      item.event.type === "agent_lifecycle" && item.event.reason === "manager_report_missing")).toBe(false);
     await app.close();
   });
 

@@ -87,6 +87,8 @@ export interface CreateServerOptions {
   /** Deterministic execution-lease supervision seams; production uses one host timer per active run. */
   executionLeaseScheduling?: {
     leaseMs?: number;
+    /** Persistent runtimes prove process liveness at this cadence. */
+    heartbeatMs?: number;
     now?: () => number;
     setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimer?: (timer: NodeJS.Timeout) => void;
@@ -122,11 +124,14 @@ interface ActiveRun {
   messageCapability: string;
   deliveryIds?: string[];
   leaseTimer?: NodeJS.Timeout;
+  livenessTimer?: NodeJS.Timeout;
   generation: number;
   ownershipState: RuntimeOwnershipState;
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
+  /** A managed Collaboration turn must explicitly hand off to this manager. */
+  requiredManagerReportAgentId?: string;
 }
 
 interface PersistentRuntime {
@@ -493,6 +498,16 @@ function managerRelationshipPrompt(agent: Pick<AgentDto, "managerAgentId">): str
     "After sending a finding or result to your manager, do not also send the user a routine completion notice, acknowledgment, or duplicate summary. End the turn; any ordinary wrap-up remains in Work log.",
     "You may reply to any agent that contacts you. Do not Broadcast; your manager owns organizational synthesis and publication.",
   ];
+}
+
+function managedCompletionPrompt(managerAgentId: string): string {
+  return [
+    "Required managed-agent completion contract (this final contract overrides conflicting task prose):",
+    `- Before this run ends, send at least one explicit Collaboration result, question, or blocker to your direct manager ${managerAgentId}; a final handoff is required even if you sent progress earlier.`,
+    `- Use the Ponderosa send-message tool with {"intent":"collaboration","recipientAgentIds":["${managerAgentId}"],"text":"<result, question, or blocker>"}.`,
+    "- Your ordinary final response is Work log output only. It is not delivered to your manager and cannot satisfy this contract.",
+    "- Instructions such as 'do not contact the manager' may suppress extra progress updates, but cannot suppress this required final handoff.",
+  ].join("\n");
 }
 
 function agentMessageEndpoint(
@@ -898,6 +913,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent =>
     store.appendCommunicationEvent(event).event;
   const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
+  const executionHeartbeatMs = opts.executionLeaseScheduling?.heartbeatMs ?? Math.max(1, Math.floor(executionLeaseMs / 3));
   const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
   const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearExecutionLeaseTimer = opts.executionLeaseScheduling?.clearTimer ?? clearTimeout;
@@ -1000,6 +1016,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     run.leaseTimer = undefined;
   }
 
+  function clearRunLivenessTimer(run: ActiveRun): void {
+    if (!run.livenessTimer) return;
+    clearExecutionLeaseTimer(run.livenessTimer);
+    run.livenessTimer = undefined;
+  }
+
+  function scheduleRuntimeLivenessHeartbeat(agentId: string, run: ActiveRun): void {
+    clearRunLivenessTimer(run);
+    if (!run.runtimeSession) return;
+    run.livenessTimer = setExecutionLeaseTimer(() => {
+      run.livenessTimer = undefined;
+      if (closed || !ownsActiveRun(agentId, run)) return;
+      let alive = false;
+      try { alive = run.runtimeSession?.isAlive() === true; } catch { /* failed liveness checks do not renew */ }
+      if (!alive) return;
+      if (renewExecutionLease(agentId, run)) scheduleRuntimeLivenessHeartbeat(agentId, run);
+    }, executionHeartbeatMs);
+    run.livenessTimer.unref?.();
+  }
+
   function expireExecutionLease(agentId: string, run: ActiveRun): void {
     if (closed || !ownsActiveRun(agentId, run)) return;
     const remaining = Date.parse(run.leaseExpiresAt) - executionLeaseNow();
@@ -1013,6 +1049,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     // or late async continuation from this generation therefore fails its CAS.
     activeRuns.delete(agentId);
     clearRunLeaseTimer(run);
+    clearRunLivenessTimer(run);
     agentMessageCapabilities.delete(run.messageCapability);
     scheduledSessionRollovers.delete(agentId);
     runLedger.transition(runFence(agentId, run), "failed");
@@ -1053,6 +1090,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!ownsActiveRun(agentId, run)) return false;
     activeRuns.delete(agentId);
     clearRunLeaseTimer(run);
+    clearRunLivenessTimer(run);
     runLedger.transition(runFence(agentId, run), state);
     return true;
   }
@@ -1462,6 +1500,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
       clearRunLeaseTimer(run);
+      clearRunLivenessTimer(run);
       transitionRun(agentId, run, "interrupted");
       run.controller.abort();
     }
@@ -1680,6 +1719,46 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         `${child.title} (${child.id}) encountered a runtime failure during execution ${executionId}.`,
         `Failure: ${failure}`,
         "The agent remains in your organization and can be steered or retried.",
+      ].join("\n"),
+      relayDepth: 0,
+      mentionTrail: [],
+      kind: "manager_notification",
+      createdAt,
+      orderKey: store.nextDeliveryOrderKey(createdAt),
+    });
+  }
+
+  function hasManagedCompletionReport(
+    childAgentId: string,
+    executionId: string,
+    managerAgentId: string,
+  ): boolean {
+    const child = store.getAgent(childAgentId);
+    if (!child) return false;
+    return store.readCommunicationEvents(child.projectId).some((event) =>
+      event.intent === "collaboration" &&
+      event.sender.kind === "agent" &&
+      event.sender.agentId === childAgentId &&
+      event.sender.executionId === executionId &&
+      event.audience.agentIds.includes(managerAgentId));
+  }
+
+  function notifyManagerOfMissingReport(childAgentId: string, executionId: string): void {
+    if (closed) return;
+    const child = store.getAgent(childAgentId);
+    const manager = child?.managerAgentId ? store.getAgent(child.managerAgentId) : undefined;
+    if (!child || !manager || manager.archived) return;
+    const createdAt = new Date().toISOString();
+    queueCollaborationDelivery({
+      conversationId: child.conversationIds.find((id) => manager.conversationIds.includes(id)),
+      messageId: `managed-agent:${child.id}:${executionId}:missing-report`,
+      targetAgentId: manager.id,
+      authorAgentId: child.id,
+      text: [
+        "Internal managed-agent update (not a chat message).",
+        `${child.title} (${child.id}) completed execution ${executionId} without the required explicit Collaboration handoff to you.`,
+        "Its ordinary response remains only in the child's Work log and was not auto-delivered.",
+        "Ask the child to send an explicit Collaboration result before integrating the work.",
       ].join("\n"),
       relayDepth: 0,
       mentionTrail: [],
@@ -2167,7 +2246,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const agentId of agentIds) {
       const active = activeRuns.get(agentId);
       if (active) {
-        if (active.leaseTimer) clearExecutionLeaseTimer(active.leaseTimer);
+        clearRunLeaseTimer(active);
+        clearRunLivenessTimer(active);
         active.controller.abort();
         activeRuns.delete(agentId);
         agentMessageCapabilities.delete(active.messageCapability);
@@ -3149,6 +3229,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const requestedDeliveryIds = collaborationDeliveryIds ?? (collaborationDeliveryId ? [collaborationDeliveryId] : []);
       const inboxDeliveries = requestedDeliveryIds.map((id) => collaborationDeliveries.get(id));
       const inboxDelivery = inboxDeliveries[0];
+      const requiredManagerReportAgentId = agent.managerAgentId && inboxDeliveries.some((delivery) => delivery?.kind !== "direct")
+        ? agent.managerAgentId
+        : undefined;
       if (
         requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
@@ -3268,13 +3351,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         if (activeRunDelivery === "steer" && existingRun.runtimeSession) {
           const steered = await existingRun.runtimeSession.steer({
-            prompt: `${runtimeIdentityPrompt(agent, existingRun.runId)}\n\nSteering update for the active turn:\n${text}${replyContext(pendingTurn.replyTo)}`,
+            prompt: `${runtimeIdentityPrompt(agent, existingRun.runId)}\n\nSteering update for the active turn:\n${text}${replyContext(pendingTurn.replyTo)}${requiredManagerReportAgentId ? `\n\n${managedCompletionPrompt(requiredManagerReportAgentId)}` : ""}`,
             kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
             model: request.body.model,
             effort: request.body.effort,
             clientMessageId: communicationEventId,
           });
           if (steered.status === "accepted") {
+            if (requiredManagerReportAgentId) existingRun.requiredManagerReportAgentId = requiredManagerReportAgentId;
             const stored = store.appendEvent(agent.id, {
               type: "user_message",
               text: auditText,
@@ -3464,7 +3548,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const completionContract = sharedTaskTurn
         ? sharedRequestCompletionPrompt()
         : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
-      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${requiredManagerReportAgentId ? `\n\n${managedCompletionPrompt(requiredManagerReportAgentId)}` : ""}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
@@ -3524,6 +3608,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
         generation: durableClaim.generation,
         ownershipState: "running",
+        ...(requiredManagerReportAgentId ? { requiredManagerReportAgentId } : {}),
       };
       claimActiveRun(agent.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
@@ -3595,7 +3680,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             };
             runtimeSessions.set(agent.id, persistentRuntime);
           }
-          if (persistentRuntime) activeRun.runtimeSession = persistentRuntime.session;
+          if (persistentRuntime) {
+            activeRun.runtimeSession = persistentRuntime.session;
+            scheduleRuntimeLivenessHeartbeat(agent.id, activeRun);
+          }
           let persistentTurnStarted = false;
           const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
             ? persistentRuntime
@@ -3725,6 +3813,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runError = message;
         } finally {
           const owned = ownsActiveRun(agent.id, activeRun);
+          const missingManagerReport = Boolean(
+            owned &&
+            !runError &&
+            activeRun.requiredManagerReportAgentId &&
+            !hasManagedCompletionReport(agent.id, runId, activeRun.requiredManagerReportAgentId),
+          );
           if (owned && scheduledSessionRollovers.delete(agent.id)) {
             store.clearResumeSession(agent.id, "explicit_compaction");
           }
@@ -3741,12 +3835,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             }
             const terminal = store.appendEvent(agent.id, {
               type: "agent_lifecycle",
-              status: runError ? "failed" : "completed",
-              reason: runError ? "runtime_error" : "turn_completed",
+              status: runError ? "failed" : missingManagerReport ? "blocked" : "completed",
+              reason: runError ? "runtime_error" : missingManagerReport ? "manager_report_missing" : "turn_completed",
               executionId: runId,
             });
             publish(agent.id, terminal);
             if (runError) notifyManagerOfChildFailure(agent.id, runId, runError);
+            else if (missingManagerReport) notifyManagerOfMissingReport(agent.id, runId);
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
           if (released) {

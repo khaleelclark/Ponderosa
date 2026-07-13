@@ -90,6 +90,10 @@ export class ClaudeStreamSession implements RuntimeSession {
     await this.close();
   }
 
+  isAlive(): boolean {
+    return !this.closed && this.child.exitCode === null;
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
