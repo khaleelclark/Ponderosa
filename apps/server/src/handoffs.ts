@@ -11,8 +11,8 @@ export interface CollaborationDelivery {
   messageId: string;
   /** Canonical communication identity shared by every resulting projection. */
   communicationEventId?: string;
-  targetThreadId: string;
-  authorThreadId?: string;
+  targetAgentId: string;
+  authorAgentId?: string;
   text: string;
   relayDepth: number;
   mentionTrail: string[];
@@ -54,7 +54,7 @@ type Record =
 
 /**
  * Durable delivery ledger for collaboration handoffs. Collaboration text remains
- * in the thread-store chat log; this file records whether every recipient was
+ * in the agent-store chat log; this file records whether every recipient was
  * queued, entered a turn, or completed the delivery turn. It is deliberately
  * separate from the public chat DTO because it contains routing internals.
  */
@@ -85,7 +85,7 @@ export class CollaborationDeliveryStore {
         continue;
       }
       this.replaceInMemory(record.delivery);
-      this.byMessageTarget.set(`${record.delivery.messageId}:${record.delivery.targetThreadId}`, record.delivery.id);
+      this.byMessageTarget.set(`${record.delivery.messageId}:${record.delivery.targetAgentId}`, record.delivery.id);
     }
     if (!this.boundary) {
       this.boundary = [...this.deliveries.values()]
@@ -102,7 +102,7 @@ export class CollaborationDeliveryStore {
   private persist(delivery: CollaborationDelivery, type: "delivery" | "replace"): CollaborationDelivery {
     appendFileSync(this.file, `${JSON.stringify({ type, delivery } satisfies Record)}\n`, "utf8");
     this.replaceInMemory(delivery);
-    this.byMessageTarget.set(`${delivery.messageId}:${delivery.targetThreadId}`, delivery.id);
+    this.byMessageTarget.set(`${delivery.messageId}:${delivery.targetAgentId}`, delivery.id);
     return delivery;
   }
 
@@ -110,22 +110,22 @@ export class CollaborationDeliveryStore {
     if (!this.insertionOrder.has(delivery.id)) this.insertionOrder.set(delivery.id, this.nextInsertionOrder++);
     const previous = this.deliveries.get(delivery.id);
     if (previous?.status === "queued") {
-      const pending = this.pendingByTarget.get(previous.targetThreadId);
+      const pending = this.pendingByTarget.get(previous.targetAgentId);
       pending?.delete(previous.id);
-      if (pending?.size === 0) this.pendingByTarget.delete(previous.targetThreadId);
+      if (pending?.size === 0) this.pendingByTarget.delete(previous.targetAgentId);
     }
     this.deliveries.set(delivery.id, delivery);
     if (delivery.status === "queued") {
-      const pending = this.pendingByTarget.get(delivery.targetThreadId) ?? new Set<string>();
+      const pending = this.pendingByTarget.get(delivery.targetAgentId) ?? new Set<string>();
       pending.add(delivery.id);
-      this.pendingByTarget.set(delivery.targetThreadId, pending);
+      this.pendingByTarget.set(delivery.targetAgentId, pending);
     }
   }
 
   queue(
     input: Omit<CollaborationDelivery, "id" | "status" | "createdAt"> & { createdAt?: string },
   ): { delivery: CollaborationDelivery; replayed: boolean } {
-    const previous = this.byMessageTarget.get(`${input.messageId}:${input.targetThreadId}`);
+    const previous = this.byMessageTarget.get(`${input.messageId}:${input.targetAgentId}`);
     if (previous) return { delivery: this.deliveries.get(previous)!, replayed: true };
     const delivery: CollaborationDelivery = {
       ...input,
@@ -136,8 +136,8 @@ export class CollaborationDeliveryStore {
     return { delivery: this.persist(delivery, "delivery"), replayed: false };
   }
 
-  pending(threadId: string): CollaborationDelivery[] {
-    return [...(this.pendingByTarget.get(threadId) ?? [])]
+  pending(agentId: string): CollaborationDelivery[] {
+    return [...(this.pendingByTarget.get(agentId) ?? [])]
       .flatMap((id) => {
         const delivery = this.deliveries.get(id);
         return delivery?.status === "queued" ? [delivery] : [];
@@ -147,8 +147,8 @@ export class CollaborationDeliveryStore {
         (this.insertionOrder.get(a.id) ?? 0) - (this.insertionOrder.get(b.id) ?? 0));
   }
 
-  pendingCount(threadId: string): number {
-    return this.pendingByTarget.get(threadId)?.size ?? 0;
+  pendingCount(agentId: string): number {
+    return this.pendingByTarget.get(agentId)?.size ?? 0;
   }
 
   /** Persist retry evidence before scheduling another dispatcher claim. */
@@ -186,7 +186,7 @@ export class CollaborationDeliveryStore {
     return [...new Set(
       [...this.deliveries.values()]
         .filter((delivery) => delivery.status === "queued")
-        .map((delivery) => delivery.targetThreadId),
+        .map((delivery) => delivery.targetAgentId),
     )];
   }
 
@@ -194,19 +194,19 @@ export class CollaborationDeliveryStore {
     return this.deliveries.get(id);
   }
 
-  getForMessageTarget(messageId: string, targetThreadId: string): CollaborationDelivery | undefined {
-    const id = this.byMessageTarget.get(`${messageId}:${targetThreadId}`);
+  getForMessageTarget(messageId: string, targetAgentId: string): CollaborationDelivery | undefined {
+    const id = this.byMessageTarget.get(`${messageId}:${targetAgentId}`);
     return id ? this.deliveries.get(id) : undefined;
   }
 
-  deleteThreads(threadIds: ReadonlySet<string>): void {
+  deleteAgents(agentIds: ReadonlySet<string>): void {
     const rawRecords = readFileSync(this.file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record);
     const removedMessageIds = new Set(rawRecords.flatMap((record) =>
       (record.type === "delivery" || record.type === "replace") &&
-      (threadIds.has(record.delivery.targetThreadId) || (record.delivery.authorThreadId ? threadIds.has(record.delivery.authorThreadId) : false))
+      (agentIds.has(record.delivery.targetAgentId) || (record.delivery.authorAgentId ? agentIds.has(record.delivery.authorAgentId) : false))
         ? [record.delivery.messageId] : []));
     for (const [id, delivery] of this.deliveries) {
-      if (threadIds.has(delivery.targetThreadId) || (delivery.authorThreadId ? threadIds.has(delivery.authorThreadId) : false)) {
+      if (agentIds.has(delivery.targetAgentId) || (delivery.authorAgentId ? agentIds.has(delivery.authorAgentId) : false)) {
         this.deliveries.delete(id);
       }
     }
@@ -216,13 +216,13 @@ export class CollaborationDeliveryStore {
     this.nextInsertionOrder = 0;
     for (const delivery of this.deliveries.values()) {
       this.replaceInMemory(delivery);
-      this.byMessageTarget.set(`${delivery.messageId}:${delivery.targetThreadId}`, delivery.id);
+      this.byMessageTarget.set(`${delivery.messageId}:${delivery.targetAgentId}`, delivery.id);
     }
     for (const [key, messageId] of this.messageReceipts) if (removedMessageIds.has(messageId)) this.messageReceipts.delete(key);
     const records = rawRecords.filter((record) => {
       if (record.type === "reconciliation_boundary") return true;
       if (record.type === "message_receipt") return !removedMessageIds.has(record.messageId);
-      return !threadIds.has(record.delivery.targetThreadId) && !(record.delivery.authorThreadId ? threadIds.has(record.delivery.authorThreadId) : false);
+      return !agentIds.has(record.delivery.targetAgentId) && !(record.delivery.authorAgentId ? agentIds.has(record.delivery.authorAgentId) : false);
     });
     writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
   }

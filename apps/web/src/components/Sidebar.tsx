@@ -14,7 +14,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ConversationDto, ThreadDto } from "@ponderosa/core";
+import type { ConversationDto, AgentDto } from "@ponderosa/core";
 import type { AgentStatus } from "../agents";
 
 export interface SidebarSelection {
@@ -37,7 +37,7 @@ export function Sidebar({
   onCreateConversation,
 }: {
   conversations: ConversationDto[];
-  agents: ThreadDto[];
+  agents: AgentDto[];
   statusByAgentId: Map<string, AgentStatus>;
   selection: SidebarSelection;
   onSelectConversation(conversationId: string): void;

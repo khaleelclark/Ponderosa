@@ -2,7 +2,7 @@ import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, 
 import path from "node:path";
 
 export interface ContextCursor {
-  threadId: string;
+  agentId: string;
   engine: string;
   model: string;
   sessionId: string;
@@ -31,16 +31,16 @@ export class ContextCursorStore {
   }
 
   private static key(cursor: Omit<ContextCursor, "lastMessageId" | "routingHash" | "updatedAt">): string {
-    return [cursor.threadId, cursor.engine, cursor.model, cursor.sessionId, cursor.conversationId, cursor.channel].join("\0");
+    return [cursor.agentId, cursor.engine, cursor.model, cursor.sessionId, cursor.conversationId, cursor.channel].join("\0");
   }
 
   get(scope: Omit<ContextCursor, "lastMessageId" | "routingHash" | "updatedAt">): ContextCursor | undefined {
     return this.cursors.get(ContextCursorStore.key(scope));
   }
 
-  latestForSession(threadId: string, sessionId: string): ContextCursor | undefined {
+  latestForSession(agentId: string, sessionId: string): ContextCursor | undefined {
     return [...this.cursors.values()]
-      .filter((cursor) => cursor.threadId === threadId && cursor.sessionId === sessionId)
+      .filter((cursor) => cursor.agentId === agentId && cursor.sessionId === sessionId)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   }
 
@@ -50,10 +50,10 @@ export class ContextCursorStore {
     this.cursors.set(ContextCursorStore.key(stored), stored);
   }
 
-  deleteThreads(threadIds: ReadonlySet<string>): void {
+  deleteAgents(agentIds: ReadonlySet<string>): void {
     const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
       .map((line) => JSON.parse(line) as { type: "cursor"; cursor: ContextCursor })
-      .filter((record) => !threadIds.has(record.cursor.threadId));
+      .filter((record) => !agentIds.has(record.cursor.agentId));
     this.cursors.clear();
     for (const { cursor } of records) this.cursors.set(ContextCursorStore.key(cursor), cursor);
     writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });

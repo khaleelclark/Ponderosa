@@ -99,8 +99,8 @@ function printEvent(ev: AgentEvent): void {
           ` ${ev.summary}\n`,
       );
       break;
-    case "task_update":
-      process.stdout.write(c.dim(`◔ task ${ev.taskId} → ${ev.status}\n`));
+    case "work_item_update":
+      process.stdout.write(c.dim(`◔ work item ${ev.workItemId} → ${ev.status}\n`));
       break;
     case "turn_done":
       process.stdout.write(
@@ -135,7 +135,7 @@ async function main(): Promise<void> {
   const history: ChatMessage[] = [];
   const stream = args.resume
     ? adapter.continue({
-        threadId: "harness",
+        agentId: "harness",
         cwd: args.cwd,
         prompt: args.prompt,
         resumeSessionId: args.resume,
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
         signal: controller.signal,
       })
     : adapter.seed({
-        threadId: "harness",
+        agentId: "harness",
         cwd: args.cwd,
         prompt: args.prompt,
         history,

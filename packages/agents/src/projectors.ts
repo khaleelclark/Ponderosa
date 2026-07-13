@@ -8,49 +8,49 @@
 //   text         → events index ONLY                 ← transient Work log detail
 //   agent_output → events index ONLY                 ← durable Work log response
 //   reasoning    → events index ONLY (NOT Chat)     ← transient Work log detail
-//   command      → Tasks (timeline) + task lifecycle
-//   file_change  → Tasks + Artifacts (a diff artifact)
-//   test_result  → Tasks + Artifacts (a test_report artifact)
-//   task_update  → Tasks (explicit status, if an engine emits it)
-//   session      → thread's active engine session id column
-//   turn_done    → close the current task (done)
+//   agent_lifecycle → Runs
+//   command      → Run activity + Artifact
+//   file_change  → Run activity + Artifact
+//   test_result  → Run activity + Artifact
+//   work_item_update → optional engine-reported Work item
+//   session      → agent's active engine session id column
+//   turn_done    → events index only; lifecycle owns Run terminal state
 //   * (all)      → events index row (searchable log)
 //
 // Only explicit communication events may create a Chat projection. Runtime text
 // and reasoning remain scoped to their originating execution.
 
-import type { TaskStatus } from "@ponderosa/core";
-import { artifactId, eventRowId, messageId, taskId } from "./ids.js";
+import type { AgentLifecycleReason, AgentRunStatus } from "@ponderosa/core";
+import { artifactId, eventRowId, messageId, workItemId } from "./ids.js";
 import type { StoredLogEvent } from "./log-event.js";
 import type {
   ArtifactRow,
   EventRow,
   MessageRow,
-  TaskRow,
+  RunRow,
+  WorkItemRow,
 } from "./schema.js";
 
 export type ProjectionOp =
   | { kind: "insert_message"; row: MessageRow }
-  | { kind: "insert_task"; row: TaskRow }
-  | { kind: "update_task"; id: string; status: TaskStatus; updatedAt: string }
+  | { kind: "insert_run"; row: RunRow }
+  | { kind: "update_run"; id: string; status: AgentRunStatus; reason: AgentLifecycleReason; updatedAt: string; completedAt?: string }
+  | { kind: "insert_work_item"; row: WorkItemRow }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
   | { kind: "set_session"; sessionId: string | null }
   | { kind: "set_state"; branch?: string; commit?: string }
-  | { kind: "touch_thread"; updatedAt: string };
+  | { kind: "touch_agent"; updatedAt: string };
 
 export interface ProjectionState {
   activeEngine: string;
-  /** seq of the user_message opening the current run (the task id key). */
-  currentRunSeq?: number;
-  /** Title for the current run's task (from the opening user message). */
-  currentRunTitle: string;
-  /** Whether a task row has been created for the current run yet. */
-  taskCreated: boolean;
+  activeExecutionId?: string;
+  pendingRunTitle: string;
+  pendingCommunicationEventId?: string;
 }
 
 export function initProjectionState(activeEngine: string): ProjectionState {
-  return { activeEngine, currentRunTitle: "Task", taskCreated: false };
+  return { activeEngine, pendingRunTitle: "Run" };
 }
 
 function truncate(s: string, n = 80): string {
@@ -67,7 +67,7 @@ function artifactPath(seq: number, suffix: string): string {
  * apply. Pure: no I/O, no clock, no randomness.
  */
 export function projectEvent(
-  threadId: string,
+  agentId: string,
   state: ProjectionState,
   stored: StoredLogEvent,
 ): { state: ProjectionState; ops: ProjectionOp[] } {
@@ -79,8 +79,8 @@ export function projectEvent(
   ops.push({
     kind: "insert_event",
     row: {
-      id: eventRowId(threadId, seq),
-      threadId,
+      id: eventRowId(agentId, seq),
+      agentId,
       seq,
       type: event.type,
       payloadJson: JSON.stringify(event),
@@ -88,39 +88,14 @@ export function projectEvent(
     },
   });
 
-  // Ensure a task exists for the current run; returns its id + appends create op.
-  const ensureTask = (): string => {
-    const runSeq = next.currentRunSeq ?? seq;
-    if (next.currentRunSeq === undefined) {
-      next = { ...next, currentRunSeq: runSeq };
-    }
-    const id = taskId(threadId, runSeq);
-    if (!next.taskCreated) {
-      ops.push({
-        kind: "insert_task",
-        row: {
-          id,
-          threadId,
-          title: next.currentRunTitle,
-          status: "running",
-          engine: next.activeEngine,
-          createdAt: ts,
-          updatedAt: ts,
-        },
-      });
-      next = { ...next, taskCreated: true };
-    }
-    return id;
-  };
-
   switch (event.type) {
     case "user_message": {
       ops.push({
         kind: "insert_message",
         row: {
-          id: messageId(threadId, seq),
+          id: messageId(agentId, seq),
           communicationEventId: event.communicationEventId ?? null,
-          threadId,
+          agentId,
           seq,
           role: "user",
           text: event.text,
@@ -129,14 +104,12 @@ export function projectEvent(
           attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
-      // A user message opens a new run.
       next = {
         ...next,
-        currentRunSeq: seq,
-        currentRunTitle: truncate(event.text) || "Task",
-        taskCreated: false,
+        pendingRunTitle: truncate(event.text) || "Run",
+        pendingCommunicationEventId: event.communicationEventId,
       };
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -149,9 +122,9 @@ export function projectEvent(
       ops.push({
         kind: "insert_message",
         row: {
-          id: messageId(threadId, seq),
+          id: messageId(agentId, seq),
           communicationEventId: event.communicationEventId,
-          threadId,
+          agentId,
           seq,
           role: event.role ?? "assistant",
           text: event.text,
@@ -160,7 +133,7 @@ export function projectEvent(
           attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -176,14 +149,48 @@ export function projectEvent(
       ops.push({ kind: "set_session", sessionId: null });
       break;
 
+    case "agent_lifecycle": {
+      if (event.status === "running") {
+        ops.push({
+          kind: "insert_run",
+          row: {
+            id: event.executionId,
+            agentId,
+            title: next.pendingRunTitle,
+            status: event.status,
+            reason: event.reason,
+            engine: next.activeEngine,
+            communicationEventId: next.pendingCommunicationEventId ?? null,
+            startedAt: ts,
+            updatedAt: ts,
+            completedAt: null,
+          },
+        });
+        next = { ...next, activeExecutionId: event.executionId, pendingCommunicationEventId: undefined };
+      } else {
+        ops.push({
+          kind: "update_run",
+          id: event.executionId,
+          status: event.status,
+          reason: event.reason,
+          updatedAt: ts,
+          ...(["cancelled", "completed", "failed", "interrupted"].includes(event.status) ? { completedAt: ts } : {}),
+        });
+        if (next.activeExecutionId === event.executionId && ["cancelled", "completed", "failed", "interrupted"].includes(event.status)) {
+          next = { ...next, activeExecutionId: undefined };
+        }
+      }
+      ops.push({ kind: "touch_agent", updatedAt: ts });
+      break;
+    }
+
     case "command": {
-      const tId = ensureTask();
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(threadId, seq, 0),
-          threadId,
-          taskId: tId,
+          id: artifactId(agentId, seq, 0),
+          agentId,
+          executionId: next.activeExecutionId ?? null,
           kind: "log",
           path: artifactPath(seq, "command.md"),
           summary: event.command,
@@ -191,18 +198,17 @@ export function projectEvent(
         },
         content: `# Command\n\n\`\`\`bash\n${event.command}\n\`\`\`\n\ncwd: \`${event.cwd}\`\n`,
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
     case "file_change": {
-      const tId = ensureTask();
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(threadId, seq, 0),
-          threadId,
-          taskId: tId,
+          id: artifactId(agentId, seq, 0),
+          agentId,
+          executionId: next.activeExecutionId ?? null,
           kind: "diff",
           path: artifactPath(seq, "diff.patch"),
           summary: `${event.kind} ${event.path}`,
@@ -212,18 +218,17 @@ export function projectEvent(
           event.diff ??
           `# ${event.kind} ${event.path}\n\nNo diff text was provided by the engine.\n`,
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
     case "test_result": {
-      const tId = ensureTask();
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(threadId, seq, 0),
-          threadId,
-          taskId: tId,
+          id: artifactId(agentId, seq, 0),
+          agentId,
+          executionId: next.activeExecutionId ?? null,
           kind: "test_report",
           path: artifactPath(seq, "test.md"),
           summary: `${event.passed ? "pass" : "fail"}: ${event.summary}`,
@@ -231,20 +236,20 @@ export function projectEvent(
         },
         content: `# Test Result\n\nStatus: ${event.passed ? "passed" : "failed"}\n\n${event.summary}\n`,
       });
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
-    case "task_update": {
-      // An engine that emits explicit task status (Codex doesn't in v1).
+    case "work_item_update": {
+      const id = workItemId(agentId, event.workItemId);
       ops.push({
-        kind: "insert_task",
+        kind: "insert_work_item",
         row: {
-          id: `${threadId}:t:${event.taskId}`,
-          threadId,
-          title: event.title ?? next.currentRunTitle,
+          id,
+          agentId,
+          executionId: event.executionId ?? next.activeExecutionId ?? null,
+          title: event.title ?? "Work item",
           status: event.status,
-          engine: next.activeEngine,
           createdAt: ts,
           updatedAt: ts,
         },
@@ -253,29 +258,12 @@ export function projectEvent(
     }
 
     case "turn_done": {
-      if (next.currentRunSeq !== undefined && next.taskCreated) {
-        ops.push({
-          kind: "update_task",
-          id: taskId(threadId, next.currentRunSeq),
-          status: "done",
-          updatedAt: ts,
-        });
-      }
-      next = { ...next, taskCreated: false, currentRunSeq: undefined };
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
     case "error": {
-      if (next.currentRunSeq !== undefined && next.taskCreated) {
-        ops.push({
-          kind: "update_task",
-          id: taskId(threadId, next.currentRunSeq),
-          status: "done",
-          updatedAt: ts,
-        });
-      }
-      ops.push({ kind: "touch_thread", updatedAt: ts });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
 
@@ -289,14 +277,14 @@ export function projectEvent(
 
 /** Fold a full log into ops (used by rebuild and tests). */
 export function projectAll(
-  threadId: string,
+  agentId: string,
   storedEvents: StoredLogEvent[],
   activeEngine: string,
 ): ProjectionOp[] {
   let state = initProjectionState(activeEngine);
   const ops: ProjectionOp[] = [];
   for (const stored of storedEvents) {
-    const res = projectEvent(threadId, state, stored);
+    const res = projectEvent(agentId, state, stored);
     state = res.state;
     ops.push(...res.ops);
   }

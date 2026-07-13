@@ -12,7 +12,7 @@ describe("message sources", () => {
       sources: "## Sources\n\n- [Primary docs](https://example.com/docs)\n- Original title",
     });
     const html = renderToStaticMarkup(<ChatPane agentName="Agent" messages={[{
-      id: "m1", threadId: "a1", seq: 1, role: "assistant", text, createdAt: "2026-07-12T01:00:00.000Z",
+      id: "m1", agentId: "a1", seq: 1, role: "assistant", text, createdAt: "2026-07-12T01:00:00.000Z",
     }]} />);
     expect(html).toContain('aria-label="Sources"');
     expect(html).toContain("<strong>formatting</strong>");

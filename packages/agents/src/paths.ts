@@ -9,15 +9,16 @@
 //         communication-events.jsonl   ← canonical cross-surface communication
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
+//         run-triggers.jsonl              ← accepted communication-to-agent dispatches
 //         agent-organization.jsonl    ← canonical mutable reporting relationships
 //         conversations/
 //           <conversation-id>/
 //             conversation.json         ← title, defaults, timestamps
 //             messages.jsonl           ← model-agnostic control chat
 //             collaboration.jsonl      ← opt-in agent team chat
-//         threads/
-//           <thread-id>/
-//             thread.json              ← title, active engine, sessionIds, state, ts
+//         agents/
+//           <agent-id>/
+//             agent.json              ← title, active engine, sessionIds, state, ts
 //             events.jsonl             ← ⭐ append-only canonical log
 //             artifacts/               ← diffs, reports, logs
 //             attachments/             ← optional uploads
@@ -57,6 +58,10 @@ export function communicationProjectionsPath(dataDir: string, projectId: string)
   return path.join(projectDir(dataDir, projectId), "communication-projections.jsonl");
 }
 
+export function runTriggersPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "run-triggers.jsonl");
+}
+
 export function agentPresetsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "agent-presets.jsonl");
 }
@@ -81,61 +86,49 @@ export function conversationJsonPath(
   return path.join(conversationDir(dataDir, projectId, conversationId), "conversation.json");
 }
 
-export function conversationMessagesPath(
+export function messageDispatchesPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "message-dispatches.jsonl");
+}
+
+export function agentsDir(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "agents");
+}
+
+export function agentDir(dataDir: string, projectId: string, agentId: string): string {
+  return path.join(agentsDir(dataDir, projectId), agentId);
+}
+
+export function agentJsonPath(
   dataDir: string,
   projectId: string,
-  conversationId: string,
+  agentId: string,
 ): string {
-  return path.join(conversationDir(dataDir, projectId, conversationId), "messages.jsonl");
-}
-
-export function collaborationMessagesPath(
-  dataDir: string,
-  projectId: string,
-  conversationId: string,
-): string {
-  return path.join(conversationDir(dataDir, projectId, conversationId), "collaboration.jsonl");
-}
-
-export function threadsDir(dataDir: string, projectId: string): string {
-  return path.join(projectDir(dataDir, projectId), "threads");
-}
-
-export function threadDir(dataDir: string, projectId: string, threadId: string): string {
-  return path.join(threadsDir(dataDir, projectId), threadId);
-}
-
-export function threadJsonPath(
-  dataDir: string,
-  projectId: string,
-  threadId: string,
-): string {
-  return path.join(threadDir(dataDir, projectId, threadId), "thread.json");
+  return path.join(agentDir(dataDir, projectId, agentId), "agent.json");
 }
 
 export function eventsPath(
   dataDir: string,
   projectId: string,
-  threadId: string,
+  agentId: string,
 ): string {
-  return path.join(threadDir(dataDir, projectId, threadId), "events.jsonl");
+  return path.join(agentDir(dataDir, projectId, agentId), "events.jsonl");
 }
 
 export function artifactsDir(
   dataDir: string,
   projectId: string,
-  threadId: string,
+  agentId: string,
 ): string {
-  return path.join(threadDir(dataDir, projectId, threadId), "artifacts");
+  return path.join(agentDir(dataDir, projectId, agentId), "artifacts");
 }
 
 export function artifactContentPath(
   dataDir: string,
   projectId: string,
-  threadId: string,
+  agentId: string,
   artifactPath: string,
 ): string {
-  const base = artifactsDir(dataDir, projectId, threadId);
+  const base = artifactsDir(dataDir, projectId, agentId);
   const target = path.resolve(base, artifactPath);
   if (target !== base && target.startsWith(base + path.sep)) {
     return target;
@@ -146,12 +139,12 @@ export function artifactContentPath(
 export function attachmentsDir(
   dataDir: string,
   projectId: string,
-  threadId: string,
+  agentId: string,
 ): string {
-  return path.join(threadDir(dataDir, projectId, threadId), "attachments");
+  return path.join(agentDir(dataDir, projectId, agentId), "attachments");
 }
 
-export function attachmentPath(dataDir: string, projectId: string, threadId: string, filename: string): string {
+export function attachmentPath(dataDir: string, projectId: string, agentId: string, filename: string): string {
   if (!/^[a-f0-9-]+\.(png|jpg|gif|webp)$/.test(filename)) throw new Error("invalid attachment filename");
-  return path.join(attachmentsDir(dataDir, projectId, threadId), filename);
+  return path.join(attachmentsDir(dataDir, projectId, agentId), filename);
 }

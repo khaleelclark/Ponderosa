@@ -33,7 +33,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -50,7 +50,7 @@ import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
 
 function MasterRespondingIndicator({ agents, healthByAgentId }: {
-  agents: ThreadDto[];
+  agents: AgentDto[];
   healthByAgentId: Map<string, AgentHealthDto>;
 }): JSX.Element | null {
   const [now, setNow] = useState(Date.now());
@@ -86,7 +86,7 @@ export function ConversationMessage({
 }: {
   message: ConversationMessageDto;
   conversation: "main" | "collaboration";
-  agentTitle(threadId: string | undefined): string;
+  agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
   compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
@@ -94,14 +94,14 @@ export function ConversationMessage({
   onDirectReply(message: ConversationMessageDto): void;
   onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
 }): JSX.Element {
-  const fromManager = !message.authorThreadId;
+  const fromManager = !message.authorAgentId;
   const showUserLabel = fromManager && message.role === "user";
 
   return (
     <Box
       id={`master-message-${message.id}`}
       component="article"
-      aria-label={`${fromManager ? "You" : agentTitle(message.authorThreadId)} message`}
+      aria-label={`${fromManager ? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
       sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
     >
@@ -109,7 +109,7 @@ export function ConversationMessage({
       <MessageContextMenu
         text={message.text}
         onReply={() => onReply(message)}
-        onOpenAgent={message.authorThreadId ? () => onOpenAgent(message.authorThreadId!) : undefined}
+        onOpenAgent={message.authorAgentId ? () => onOpenAgent(message.authorAgentId!) : undefined}
       >
       <Box
         data-message-bubble="true"
@@ -125,13 +125,13 @@ export function ConversationMessage({
       >
         <Stack direction="row" spacing={0.5} sx={{ alignItems: "flex-start", minWidth: 0 }}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorThreadId)} />
+            <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorAgentId)} />
           </Box>
-          {message.authorThreadId ? (
+          {message.authorAgentId ? (
             <IconButton
               size="small"
-              aria-label={`Open agent ${agentTitle(message.authorThreadId)}`}
-              onClick={() => onOpenAgent(message.authorThreadId!)}
+              aria-label={`Open agent ${agentTitle(message.authorAgentId)}`}
+              onClick={() => onOpenAgent(message.authorAgentId!)}
               sx={{ color: "inherit", minWidth: 44, minHeight: 44, mt: -1, mr: -1 }}
             >
               <OpenInNewIcon fontSize="inherit" />
@@ -158,13 +158,13 @@ export function ConversationMessage({
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
         <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
-          {message.authorThreadId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorThreadId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
+          {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
           <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
-          {conversation === "main" && message.authorThreadId ? (
+          {conversation === "main" && message.authorAgentId ? (
             <Button
               size="small"
               color="inherit"
-              aria-label={`Reply directly to ${agentTitle(message.authorThreadId)}`}
+              aria-label={`Reply directly to ${agentTitle(message.authorAgentId)}`}
               onClick={() => onDirectReply(message)}
               sx={{ minHeight: compactViewport ? 44 : undefined }}
             >
@@ -207,7 +207,7 @@ export function ConversationView({
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
+  const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
@@ -252,7 +252,7 @@ export function ConversationView({
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
   const messages = compactDefined(detailQuery.data?.messages ?? []);
-  const threads = compactDefined(detailQuery.data?.threads ?? []);
+  const agents = compactDefined(detailQuery.data?.agents ?? []);
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
   useLayoutEffect(() => {
     if (
@@ -295,7 +295,7 @@ export function ConversationView({
     void queryClient.invalidateQueries({ queryKey: ["conversations"] });
     void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
     if (conversation) {
-      void queryClient.invalidateQueries({ queryKey: ["threads", conversation.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents", conversation.projectId] });
     }
   };
 
@@ -321,7 +321,7 @@ export function ConversationView({
       // Record the message in the shared pool, spawn a park-named agent on the
       // selected engine, and hand it the message as its first turn.
       const agent = await api.createAgent(conversation.projectId, conversationId, {
-        title: pickAgentName((detailQuery.data?.threads ?? []).map((thread) => thread.title)),
+        title: pickAgentName((detailQuery.data?.agents ?? []).map((agent) => agent.title)),
         engine,
         model: model || undefined,
         effort: effort || undefined,
@@ -337,7 +337,7 @@ export function ConversationView({
           replyToMessageId: replyTo?.id,
         });
       } catch (error) {
-        await api.deleteThread(agent.id).catch(() => undefined);
+        await api.deleteAgent(agent.id).catch(() => undefined);
         throw error;
       }
       return agent;
@@ -368,14 +368,14 @@ export function ConversationView({
       invalidate();
       const queuedTitles = response.recipients
         .filter((recipient) => recipient.queued)
-        .map((recipient) => detailQuery.data?.threads.find((thread) => thread.id === recipient.agentId)?.title ?? "Agent");
+        .map((recipient) => detailQuery.data?.agents.find((agent) => agent.id === recipient.agentId)?.title ?? "Agent");
       setQueuedReplyNotice(
         queuedTitles.length > 0
           ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
           : undefined,
       );
       for (const agentId of variables.agentIds) {
-        void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
       }
     },
   });
@@ -403,7 +403,7 @@ export function ConversationView({
       return api.sendDirectReply(conversationId, {
         text,
         replyToMessageId,
-        targetAuthorThreadId: targetId,
+        targetAuthorAgentId: targetId,
         attachmentIds: attachments.map((item) => item.id),
         idempotencyKey: requestId,
       });
@@ -412,8 +412,8 @@ export function ConversationView({
       directReplyUploads.current.delete(variables.requestId);
       clearReply();
       invalidate();
-      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
-      void queryClient.invalidateQueries({ queryKey: ["thread", response.targetAuthorThreadId] });
+      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.` : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
 
@@ -422,8 +422,8 @@ export function ConversationView({
       api.sendUserReaction({ projectId: conversation!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
     onSuccess: (response) => {
       invalidate();
-      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
-      void queryClient.invalidateQueries({ queryKey: ["thread", response.targetAuthorThreadId] });
+      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.` : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
 
@@ -433,7 +433,7 @@ export function ConversationView({
     onSuccess: () => {
       clearReply();
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
-      if (conversation) void queryClient.invalidateQueries({ queryKey: ["threads", conversation.projectId] });
+      if (conversation) void queryClient.invalidateQueries({ queryKey: ["agents", conversation.projectId] });
     },
   });
 
@@ -450,16 +450,16 @@ export function ConversationView({
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: ["conversation", conversationId] });
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      void queryClient.invalidateQueries({ queryKey: ["threads", conversation?.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents", conversation?.projectId] });
       setDeleteOpen(false);
       onDeleted();
     },
   });
 
   const deleteAgent = useMutation({
-    mutationFn: (agentId: string) => api.deleteThread(agentId),
+    mutationFn: (agentId: string) => api.deleteAgent(agentId),
     onSuccess: (_data, agentId) => {
-      queryClient.removeQueries({ queryKey: ["thread", agentId] });
+      queryClient.removeQueries({ queryKey: ["agent", agentId] });
       invalidate();
       setPendingDelete(undefined);
     },
@@ -506,25 +506,25 @@ export function ConversationView({
   const efforts = activeEngine?.efforts ?? [];
   const engineReady = Boolean(activeEngine?.authenticated);
 
-  const agentTitle = (threadId: string | undefined): string =>
-    threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
-  const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(threads, handle);
+  const agentTitle = (agentId: string | undefined): string =>
+    agents.find((agent) => agent.id === agentId)?.title ?? "Agent";
+  const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
   const mentionHandles = activeView === "collaboration"
     ? [
         "everyone",
-        ...threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title)),
+        ...agents.filter((agent) => !agent.archived).map((agent) => agentMentionHandle(agent.title)),
       ]
     : [
         "broadcast",
         "everyone",
-        ...threads
-          .filter((thread) => !thread.archived)
-          .map((thread) => agentMentionHandle(thread.title))
+        ...agents
+          .filter((agent) => !agent.archived)
+          .map((agent) => agentMentionHandle(agent.title))
           .filter((handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase())),
       ];
-  const findMentioned = (text: string): ThreadDto[] => findMentionedAgents(text, threads);
+  const findMentioned = (text: string): AgentDto[] => findMentionedAgents(text, agents);
 
-  const busyMentionHandles = threads
+  const busyMentionHandles = agents
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
     .map((agent) => agentMentionHandle(agent.title));
   const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
@@ -532,14 +532,14 @@ export function ConversationView({
   const submit = async (text: string, files: File[]) => {
     if (activeView === "collaboration") {
       if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
-      const activeThreads = threads.filter((thread) => !thread.archived);
-      let targets = hasEveryoneMention(text) ? activeThreads : findMentionedAgentsStrict(text, activeThreads);
-      if (targets.length === 0 && replyTo?.authorThreadId) {
-        const author = activeThreads.find((thread) => thread.id === replyTo.authorThreadId);
+      const activeAgents = agents.filter((agent) => !agent.archived);
+      let targets = hasEveryoneMention(text) ? activeAgents : findMentionedAgentsStrict(text, activeAgents);
+      if (targets.length === 0 && replyTo?.authorAgentId) {
+        const author = activeAgents.find((agent) => agent.id === replyTo.authorAgentId);
         if (author) targets = [author];
       }
       if (targets.length === 0) throw new Error("Tag one unambiguous agent with #name, use #everyone, or reply to an agent message.");
-      const messageText = stripCollaborationRoutingTags(text, activeThreads);
+      const messageText = stripCollaborationRoutingTags(text, activeAgents);
       if (!messageText) throw new Error("Add a message after the routing tag.");
       await collaborate.mutateAsync({ text: messageText, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id });
       return;
@@ -552,7 +552,7 @@ export function ConversationView({
       return;
     }
     const targets = hasEveryoneMention(text)
-      ? threads.filter((thread) => !thread.archived)
+      ? agents.filter((agent) => !agent.archived)
       : findMentioned(text);
     if (hasEveryoneMention(text) && targets.length === 0) throw new Error("There are no active agents to notify.");
     const route = resolveConversationSendRoute(directReplyTargetId, targets.map((target) => target.id));
@@ -622,10 +622,10 @@ export function ConversationView({
             onClick={() => setAgentsOpen(true)}
             aria-haspopup="dialog"
             aria-expanded={agentsOpen}
-            aria-label={`View ${threads.length} agents`}
+            aria-label={`View ${agents.length} agents`}
             sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({threads.length})
+            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({agents.length})
           </Button>
           <Button
             variant={activeView === "collaboration" ? "contained" : "outlined"}
@@ -769,7 +769,7 @@ export function ConversationView({
               host, or pick a signed-in engine, before spawning agents.
             </Alert>
           ) : null}
-          {activeView === "main" ? <MasterRespondingIndicator agents={threads} healthByAgentId={healthByAgentId} /> : null}
+          {activeView === "main" ? <MasterRespondingIndicator agents={agents} healthByAgentId={healthByAgentId} /> : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
             {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
@@ -795,7 +795,7 @@ export function ConversationView({
                 onDirectReply={(selected) => {
                   clearReply();
                   setReplyTo(selected);
-                  setDirectReplyTargetId(selected.authorThreadId);
+                  setDirectReplyTargetId(selected.authorAgentId);
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
                 }}
                 onReact={(selected, emoji) => sendReaction.mutateAsync({
@@ -824,13 +824,13 @@ export function ConversationView({
         <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this conversation">
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
             <Typography variant="h6" sx={{ flex: 1 }}>Agents in this conversation</Typography>
-            <Chip size="small" label={threads.length} />
+            <Chip size="small" label={agents.length} />
           </Stack>
-          {threads.length === 0 ? (
+          {agents.length === 0 ? (
             <Alert severity="info">No agents yet. Send a message to spawn one.</Alert>
           ) : (
             <List dense disablePadding>
-              {threads.map((agent) => {
+              {agents.map((agent) => {
                 const status = statusByAgentId.get(agent.id) ?? "idle";
                 return (
                   <ListItem
@@ -888,7 +888,7 @@ export function ConversationView({
             Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
-        {threads.length > 0 ? (
+        {agents.length > 0 ? (
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {activeView === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
@@ -908,10 +908,10 @@ export function ConversationView({
           mentionHandles={mentionHandles}
           commands={commands}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={activeView === "collaboration" ? Boolean(replyTo?.authorThreadId) : engineReady}
+          allowUnmentionedSend={activeView === "collaboration" ? Boolean(replyTo?.authorAgentId) : engineReady}
           placeholder={
             activeView === "collaboration"
-              ? replyTo?.authorThreadId ? `Reply to ${agentTitle(replyTo.authorThreadId)}` : "Tag #agent or #everyone"
+              ? replyTo?.authorAgentId ? `Reply to ${agentTitle(replyTo.authorAgentId)}` : "Tag #agent or #everyone"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
                 : "#tag an agent or use #broadcast for shared context"
@@ -989,7 +989,7 @@ export function ConversationView({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its event log, tasks, and artifacts. Any in-flight run is stopped. This cannot be undone.
+            its run history, work items, and artifacts. Any in-flight run is stopped. This cannot be undone.
           </Typography>
           {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
         </DialogContent>

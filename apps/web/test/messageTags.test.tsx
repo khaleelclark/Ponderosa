@@ -41,7 +41,7 @@ describe("Conversation #tags", () => {
         role: "assistant",
         text: "Ask #Cabrillo",
         createdAt: "2026-07-12T00:00:00.000Z",
-        authorThreadId: "agent-olympic",
+        authorAgentId: "agent-olympic",
       }}
       conversation="main"
       agentTitle={() => "Olympic"}
@@ -63,7 +63,7 @@ describe("Conversation #tags", () => {
     const view = create(<ChatPane
       messages={[{
         id: "direct-tagged",
-        threadId: "agent-olympic",
+        agentId: "agent-olympic",
         role: "assistant",
         text: "Coordinate with #Cabrillo and tell #user",
         createdAt: "2026-07-12T00:00:00.000Z",

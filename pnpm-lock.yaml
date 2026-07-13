@@ -16,9 +16,9 @@ importers:
       '@ponderosa/engines':
         specifier: workspace:*
         version: link:../../packages/engines
-      '@ponderosa/threads':
+      '@ponderosa/agents':
         specifier: workspace:*
-        version: link:../../packages/threads
+        version: link:../../packages/agents
       better-sqlite3:
         specifier: ^11.10.0
         version: 11.10.0
@@ -134,7 +134,7 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)(terser@5.49.0)
 
-  packages/threads:
+  packages/agents:
     dependencies:
       '@ponderosa/core':
         specifier: workspace:*

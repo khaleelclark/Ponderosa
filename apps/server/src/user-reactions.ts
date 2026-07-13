@@ -8,7 +8,7 @@ export interface UserReactionEvent {
   idempotencyKey: string;
   projectId: string;
   communicationEventId: string;
-  targetAuthorThreadId: string;
+  targetAuthorAgentId: string;
   emoji: string;
   replyTo: MessageReferenceDto;
   createdAt: string;
@@ -38,7 +38,7 @@ export class UserReactionStore {
     if (previous) {
       const same = previous.projectId === input.projectId &&
         previous.communicationEventId === input.communicationEventId &&
-        previous.targetAuthorThreadId === input.targetAuthorThreadId &&
+        previous.targetAuthorAgentId === input.targetAuthorAgentId &&
         previous.emoji === input.emoji;
       if (!same) throw new Error("idempotency key was used for another reaction");
       return { event: previous, replayed: true };

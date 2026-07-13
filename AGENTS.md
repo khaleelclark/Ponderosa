@@ -1,8 +1,9 @@
 # AGENTS.md — Ponderosa
 
 Rules for any AI agent (or human) working on **this repository**. Read this
-before editing. [VISION.md](./VISION.md) defines the current product direction and
-[VOCABULARY.md](./VOCABULARY.md) defines canonical UI and domain names;
+before editing. [VISION.md](./VISION.md) defines the current product direction,
+[VOCABULARY.md](./VOCABULARY.md) defines canonical UI and domain names, and
+[COMMUNICATION.md](./COMMUNICATION.md) defines the executable routing matrix;
 this file translates that vision into working invariants and repository rules.
 
 ---
@@ -41,6 +42,12 @@ pay-per-token provider API keys.
    log is the source of truth and SQLite is rebuildable from it. Project chat,
    Team chat, Agent chat, and output views must project canonical
    events rather than create duplicate conversations or competing state.
+   A canonical Communication owns authored text, identity, scope, and audience.
+   A `MessageDispatch` owns only durable placement/routing evidence such as the
+   stable message ID, rendered label, reply snapshot, attachments, recipients,
+   receipt, and FIFO key. There is no separate Project/Team chat-message log or
+   SQLite room-message table. Every public chat API reads the same communication
+   projection ledger.
 
 4. **Communication scope is explicit and immutable.** A communication is created
    as exactly one of:
@@ -63,6 +70,11 @@ pay-per-token provider API keys.
    rendered mentions, or the room that initiated a turn. Ambiguity fails closed
    into execution data, never communication. To share a private finding more
    broadly, create a new communication with the intended scope.
+
+   Every accepted communication-to-agent dispatch has one durable `RunTrigger`
+   linking the canonical message to that agent. A plain Project request is an
+   organizational Broadcast plus a separate trigger for its responsible agent;
+   the Broadcast itself still does not deliver or wake agents.
 
 5. **Only Broadcasts are shared knowledge.** Plain Project-chat requests are
    intentionally created as Broadcasts. Visibility does not otherwise imply context
@@ -97,6 +109,14 @@ pay-per-token provider API keys.
    Reasoning deltas may remain transient stream detail. Neither may create a
    delivery, enter a future agent's context, or escape its originating agent and
    execution.
+
+   A `RunTrigger` explains why activation was accepted; an `AgentRun` is the
+   resulting execution and is keyed by its real execution ID. Create and finish
+   Runs only from explicit lifecycle events—never infer them from a user message,
+   rendered text, `turn_done`, or provider session continuity. `WorkItem` is
+   optional provider-reported progress inside or across Runs, not a synonym for
+   either the prompt or execution. Artifacts, output, and activity retain their
+   originating execution ID.
 
    Broadcasts inherited as context are shown through the originating execution's
    inspectable context manifest, not manufactured as Agent-chat messages.
@@ -206,7 +226,7 @@ Ordinary runtime output → execution-scoped Work log
 apps/web/        Rspack + React + TS + MUI SPA (the PWA; thin client)
 apps/server/     Fastify daemon: API, SSE, session manager, auth (SOURCE OF TRUTH)
 packages/engines Adapter interface + codex/claude adapters + event mappers
-packages/threads event log + SQLite projections (Drizzle schema)
+packages/agents event log + SQLite projections (Drizzle schema)
 packages/core    shared types (AgentEvent, DTOs), config, logging
 deploy/          systemd unit
 
@@ -225,7 +245,7 @@ that way; don't duplicate these types per app.
 
 - **TypeScript everywhere.** Shared types come from `packages/core`; don't redefine
   equivalent shapes in an app.
-- **Build order matters:** `packages/engines` → `packages/threads` →
+- **Build order matters:** `packages/engines` → `packages/agents` →
   `apps/server` (SSE) → `apps/web`. The event contract and projections are the
   foundation; UI comes last.
 - **Normalize at the edge.** Runtime-specific event shapes (Codex JSONL, Claude SDK
@@ -236,7 +256,7 @@ that way; don't duplicate these types per app.
 - **Keep secrets out of the repo and images:** engine auth token files
   (`~/.codex`, Claude profile), OAuth secrets, `.env`. Never commit them.
 - **Persist execution events.** Commands, tool calls, file changes, failures, and
-  lifecycle events belong in the audit trail even when no dedicated task UI
+  lifecycle events belong in the audit trail even when no dedicated Work-item UI
   presents them.
 
 ---

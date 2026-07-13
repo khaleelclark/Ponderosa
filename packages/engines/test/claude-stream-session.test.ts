@@ -17,7 +17,7 @@ describe("Claude persistent stream-json runtime", () => {
       return spawn(process.execPath, [fake], opts);
     }) as unknown as typeof spawn;
     const session = new ClaudeStreamSession({
-      threadId: "ponderosa-thread",
+      agentId: "ponderosa-thread",
       cwd: here,
       history: [],
       signal: controller.signal,
@@ -43,6 +43,40 @@ describe("Claude persistent stream-json runtime", () => {
       { type: "text", delta: "steered claude response" },
       { type: "turn_done", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
     ]);
+    await session.close();
+  });
+
+  it("exposes Ponderosa messaging through a host-side stdio MCP server", async () => {
+    const controller = new AbortController();
+    let capturedArgs: readonly string[] = [];
+    const spawnFn = ((_bin: string, args: readonly string[], opts: object) => {
+      capturedArgs = args;
+      return spawn(process.execPath, [fake], opts);
+    }) as unknown as typeof spawn;
+    const session = new ClaudeStreamSession({
+      agentId: "ponderosa-thread",
+      cwd: here,
+      history: [],
+      signal: controller.signal,
+      bin: "claude",
+      spawnFn,
+      permissionMode: "bypassPermissions",
+      killGraceMs: 50,
+      environment: {
+        PONDEROSA_AGENT_MESSAGE_URL: "http://127.0.0.1:8787/api/agent-messages",
+        PONDEROSA_AGENT_MESSAGE_TOKEN: "run-token",
+      },
+      dynamicTools: [{ name: "ponderosa_send_message", description: "Send", inputSchema: {} }],
+    });
+    const flagIndex = capturedArgs.indexOf("--mcp-config");
+    expect(flagIndex).toBeGreaterThan(-1);
+    const config = JSON.parse(capturedArgs[flagIndex + 1]!) as {
+      mcpServers: { ponderosa: { command: string; args: string[]; env?: Record<string, string> } };
+    };
+    expect(config.mcpServers.ponderosa.command).toBe(process.execPath);
+    expect(config.mcpServers.ponderosa.args[0]).toMatch(/ponderosa-mcp\.js$/);
+    expect(config.mcpServers.ponderosa.env).toBeUndefined();
+    expect(capturedArgs.join(" ")).not.toContain("run-token");
     await session.close();
   });
 });

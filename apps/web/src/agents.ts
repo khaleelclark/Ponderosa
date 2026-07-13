@@ -1,21 +1,21 @@
-// Agent = a Thread, presented to the user. This module centralizes the
+// Agent is the stable identity presented to the user. This module centralizes the
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
-// stay consistent. The underlying data model remains ThreadDto/ThreadDetailDto.
+// stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentLifecycleStatus, TaskDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentLifecycleStatus, AgentRunDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
-  agent: ThreadDto;
+  agent: AgentDto;
   depth: number;
 }
 
 /** Stable parent-first roster order. Missing/cyclic parentage fails closed to top level. */
-export function orderedAgentOrganization(agents: ThreadDto[]): AgentOrganizationRow[] {
+export function orderedAgentOrganization(agents: AgentDto[]): AgentOrganizationRow[] {
   const active = agents.filter((agent) => !agent.archived);
   const byId = new Map(active.map((agent) => [agent.id, agent]));
-  const children = new Map<string, ThreadDto[]>();
-  const roots: ThreadDto[] = [];
-  const hasSafeParentChain = (agent: ThreadDto): boolean => {
+  const children = new Map<string, AgentDto[]>();
+  const roots: AgentDto[] = [];
+  const hasSafeParentChain = (agent: AgentDto): boolean => {
     const seen = new Set<string>([agent.id]);
     let parentId = agent.managerAgentId;
     while (parentId) {
@@ -32,10 +32,10 @@ export function orderedAgentOrganization(agents: ThreadDto[]): AgentOrganization
     if (!parentId || !hasSafeParentChain(agent)) roots.push(agent);
     else children.set(parentId, [...(children.get(parentId) ?? []), agent]);
   }
-  const sort = (items: ThreadDto[]) => items.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+  const sort = (items: AgentDto[]) => items.sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
   const rows: AgentOrganizationRow[] = [];
   const visited = new Set<string>();
-  const visit = (agent: ThreadDto, depth: number) => {
+  const visit = (agent: AgentDto, depth: number) => {
     if (visited.has(agent.id)) return;
     visited.add(agent.id);
     rows.push({ agent, depth });
@@ -46,13 +46,13 @@ export function orderedAgentOrganization(agents: ThreadDto[]): AgentOrganization
   return rows;
 }
 
-export function agentDescendants(agentId: string, agents: ThreadDto[]): ThreadDto[] {
-  const children = new Map<string, ThreadDto[]>();
+export function agentDescendants(agentId: string, agents: AgentDto[]): AgentDto[] {
+  const children = new Map<string, AgentDto[]>();
   for (const agent of agents) {
     if (!agent.managerAgentId) continue;
     children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
   }
-  const descendants: ThreadDto[] = [];
+  const descendants: AgentDto[] = [];
   const visit = (parentId: string) => {
     for (const child of children.get(parentId) ?? []) {
       descendants.push(child);
@@ -63,7 +63,7 @@ export function agentDescendants(agentId: string, agents: ThreadDto[]): ThreadDt
   return descendants;
 }
 
-export function agentBelongsToConversation(agent: ThreadDto, conversationId: string): boolean {
+export function agentBelongsToConversation(agent: AgentDto, conversationId: string): boolean {
   return agent.conversationIds.includes(conversationId);
 }
 
@@ -77,30 +77,29 @@ export interface AgentLiveHints {
 }
 
 /**
- * Derive the coarse agent status shown in lists and filters from the thread's
- * tasks plus any live-stream hints. Live hints win over projected task state so
+ * Derive the coarse agent status shown in lists and filters from the agent's
+ * canonical runs plus any live-stream hints. Live hints win over projected state so
  * a running agent reads as running the instant the stream reports it.
  */
 export function deriveAgentStatus(
-  detail: ThreadDetailDto | undefined,
+  detail: AgentDetailDto | undefined,
   hints: AgentLiveHints = {},
 ): AgentStatus {
   if (hints.running) {
     return "running";
   }
-  const tasks = detail?.tasks ?? [];
-  if (tasks.some((task) => task.status === "running")) {
+  const runs = detail?.runs ?? [];
+  if (runs.some((run) => run.status === "running")) {
     return "running";
   }
-  if (tasks.some((task) => task.status === "waiting_approval")) {
+  if ((detail?.workItems ?? []).some((item) => item.status === "waiting_approval")) {
     return "waiting";
   }
   if (hints.error) {
     return "failed";
   }
-  if (tasks.length > 0 && tasks.every((task) => task.status === "done")) {
-    return "idle";
-  }
+  const latest = [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  if (latest && ["failed", "cancelled", "interrupted", "blocked", "stalled"].includes(latest.status)) return latest.status;
   return "idle";
 }
 
@@ -150,20 +149,20 @@ export function agentStatusColor(
   }
 }
 
-/** Short "current task or latest activity" line for an agent row. */
-export function agentActivity(detail: ThreadDetailDto | undefined): string | undefined {
+/** Short current-run or latest-activity line for an agent row. */
+export function agentActivity(detail: AgentDetailDto | undefined): string | undefined {
   if (!detail) {
     return undefined;
   }
-  const activeTask = [...detail.tasks]
+  const activeRun = [...detail.runs]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .find((task: TaskDto) => task.status !== "done");
-  if (activeTask) {
-    return activeTask.title;
+    .find((run: AgentRunDto) => run.status === "running");
+  if (activeRun) {
+    return activeRun.title;
   }
-  const lastTask = [...detail.tasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  if (lastTask) {
-    return lastTask.title;
+  const lastRun = [...detail.runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  if (lastRun) {
+    return lastRun.title;
   }
   const lastMessage = detail.messages.at(-1);
   return lastMessage?.text.slice(0, 80);

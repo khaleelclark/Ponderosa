@@ -12,6 +12,11 @@ import type { SpawnFn } from "./process.js";
 interface ThreadResponse { thread: { id: string } }
 interface TurnResponse { turn: { id: string } }
 interface SteerResponse { turnId: string }
+interface DynamicToolCallParams {
+  tool: string;
+  namespace?: string | null;
+  arguments: unknown;
+}
 
 interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
@@ -25,7 +30,7 @@ export class CodexAppServerSession implements RuntimeSession {
   readonly events: AsyncIterable<AgentEvent>;
 
   private constructor(
-    readonly engineThreadId: string,
+    readonly engineAgentId: string,
     private readonly rpc: JsonRpcProcess,
     private readonly cwd: string,
   ) {
@@ -46,6 +51,20 @@ export class CodexAppServerSession implements RuntimeSession {
       signal: opts.signal,
       spawnFn: opts.spawnFn,
       killGraceMs: opts.killGraceMs,
+      handleServerRequest: async (method, params) => {
+        if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
+          throw new Error(`unsupported server request: ${method}`);
+        }
+        const call = params as DynamicToolCallParams;
+        const result = await opts.handleDynamicToolCall({
+          name: call.namespace ? `${call.namespace}.${call.tool}` : call.tool,
+          arguments: call.arguments,
+        });
+        return {
+          success: result.success,
+          contentItems: [{ type: "inputText", text: result.text }],
+        };
+      },
     });
     await rpc.initialize();
     const response = opts.resumeSessionId
@@ -64,13 +83,19 @@ export class CodexAppServerSession implements RuntimeSession {
           sandbox: opts.sandboxMode,
           ephemeral: false,
           experimentalRawEvents: false,
+          dynamicTools: opts.dynamicTools?.map((tool) => ({
+            type: "function",
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          })) ?? null,
         });
     return new CodexAppServerSession(response.thread.id, rpc, opts.cwd);
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
     const response = await this.rpc.request<TurnResponse>("turn/start", {
-      threadId: this.engineThreadId,
+      threadId: this.engineAgentId,
       input: [{ type: "text", text: input.prompt, text_elements: [] }],
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
@@ -84,7 +109,7 @@ export class CodexAppServerSession implements RuntimeSession {
     if (!this.activeTurnId) return { status: "not_active" };
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
-        threadId: this.engineThreadId,
+        threadId: this.engineAgentId,
         expectedTurnId: this.activeTurnId,
         input: [{ type: "text", text: input.prompt, text_elements: [] }],
         ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
@@ -107,7 +132,7 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async interrupt(): Promise<void> {
     if (!this.activeTurnId) return;
-    await this.rpc.request("turn/interrupt", { threadId: this.engineThreadId, turnId: this.activeTurnId });
+    await this.rpc.request("turn/interrupt", { threadId: this.engineAgentId, turnId: this.activeTurnId });
   }
 
   close(): Promise<void> {
@@ -115,7 +140,7 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private async *eventStream(): AsyncIterable<AgentEvent> {
-    yield { type: "session", sessionId: this.engineThreadId };
+    yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
       if (notification.method === "turn/started") {
         const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;
@@ -191,6 +216,23 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
       id: typeof item.id === "string" ? item.id : "mcp",
       output: JSON.stringify(item.result ?? item.error ?? ""),
       ...(item.error ? { isError: true } : {}),
+    }];
+  }
+  if (notification.method === "item/started" && item.type === "dynamicToolCall") {
+    const namespace = typeof item.namespace === "string" && item.namespace ? `${item.namespace}.` : "";
+    return [{
+      type: "tool_call",
+      id: typeof item.id === "string" ? item.id : "dynamic-tool",
+      name: `${namespace}${String(item.tool ?? "tool")}`,
+      input: item.arguments,
+    }];
+  }
+  if (notification.method === "item/completed" && item.type === "dynamicToolCall") {
+    return [{
+      type: "tool_result",
+      id: typeof item.id === "string" ? item.id : "dynamic-tool",
+      output: JSON.stringify(item.contentItems ?? []),
+      ...(item.success === false ? { isError: true } : {}),
     }];
   }
   return [];

@@ -78,6 +78,137 @@ export type CommunicationProjectionSurface =
   | "agent_inbox"
   | "user_inbox";
 
+export type CommunicationRecipient =
+  | { kind: "agent"; agentId: string }
+  | { kind: "user"; userId: string };
+
+/**
+ * The complete, deterministic routing result for one canonical communication.
+ *
+ * This is deliberately independent of HTTP routes, rendered tags, and chat
+ * rooms. Every adapter and projection writer must consume this policy instead
+ * of re-interpreting intent locally.
+ */
+export interface CommunicationBehavior {
+  contextPolicy: CommunicationContextPolicy;
+  projectionTargets: Array<{
+    surface: CommunicationProjectionSurface;
+    projectionKey: string;
+  }>;
+  deliveryRecipients: CommunicationRecipient[];
+  /** Agent deliveries that are allowed to start or steer a run. */
+  runTriggerAgentIds: string[];
+}
+
+export type RunTriggerSource = "project_request" | "direct_message" | "collaboration";
+
+/** Durable proof that one accepted communication was dispatched to one agent. */
+export interface RunTriggerRecord {
+  triggerId: string;
+  projectId: string;
+  agentId: string;
+  communicationEventId: string;
+  source: RunTriggerSource;
+  createdAt: string;
+}
+
+function uniqueSorted(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function eventAgentIds(event: CommunicationEvent): string[] {
+  if (event.intent === "collaboration") return uniqueSorted(event.audience.agentIds);
+  if (event.schemaVersion === 2 && event.intent === "user_dm") {
+    return uniqueSorted(event.audience.kind === "user_agent"
+      ? [event.audience.agentId]
+      : event.audience.agentIds);
+  }
+  return [];
+}
+
+function eventUserId(event: CommunicationEvent): string | undefined {
+  if (event.schemaVersion === 2 && event.intent === "user_dm") return event.audience.userId;
+  if (event.schemaVersion === 1 && event.intent === "direct_to_user") return event.audience.userId;
+  return undefined;
+}
+
+/**
+ * Executable communication behavior matrix. The returned ordering is stable so
+ * it can be snapshot-tested and used to materialize projections idempotently.
+ */
+export function deriveCommunicationBehavior(event: CommunicationEvent): CommunicationBehavior {
+  const projectionTargets: CommunicationBehavior["projectionTargets"] = [];
+  const agentIds = eventAgentIds(event);
+  const userId = eventUserId(event);
+  const addProjection = (surface: CommunicationProjectionSurface, projectionKey?: string) => {
+    if (projectionKey && !projectionTargets.some((item) => item.surface === surface && item.projectionKey === projectionKey)) {
+      projectionTargets.push({ surface, projectionKey });
+    }
+  };
+
+  if (event.intent === "broadcast") {
+    addProjection("conversation", event.conversationId);
+    if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
+  } else if (event.schemaVersion === 2 && event.intent === "user_dm") {
+    addProjection("conversation", event.conversationId);
+    for (const agentId of agentIds) {
+      addProjection("direct_agent_audit", agentId);
+      if (event.sender.kind === "user") addProjection("agent_inbox", agentId);
+    }
+    addProjection("user_inbox", userId);
+  } else if (event.intent === "collaboration") {
+    addProjection("collaboration_view", event.conversationId);
+    if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
+    for (const agentId of agentIds) {
+      addProjection("direct_agent_audit", agentId);
+      addProjection("agent_inbox", agentId);
+    }
+  } else {
+    // V1 direct_to_user is replay-only. Preserve its historical placements,
+    // while all new bidirectional user communication uses V2 user_dm.
+    addProjection("conversation", event.conversationId);
+    addProjection("collaboration_view", event.conversationId);
+    if (event.sender.kind === "agent") addProjection("direct_agent_audit", event.sender.agentId);
+    addProjection("user_inbox", userId);
+  }
+
+  const deliveryRecipients: CommunicationRecipient[] = [];
+  const runTriggerAgentIds: string[] = [];
+  if (event.intent === "collaboration") {
+    for (const agentId of agentIds) {
+      deliveryRecipients.push({ kind: "agent", agentId });
+      runTriggerAgentIds.push(agentId);
+    }
+  } else if (event.schemaVersion === 2 && event.intent === "user_dm") {
+    if (event.sender.kind === "user") {
+      for (const agentId of agentIds) {
+        deliveryRecipients.push({ kind: "agent", agentId });
+        runTriggerAgentIds.push(agentId);
+      }
+    } else if (userId) {
+      deliveryRecipients.push({ kind: "user", userId });
+    }
+  } else if (event.schemaVersion === 1 && event.intent === "direct_to_user" && userId) {
+    deliveryRecipients.push({ kind: "user", userId });
+  }
+
+  return {
+    contextPolicy: event.intent === "broadcast" ? "organizational" : "local_only",
+    projectionTargets,
+    deliveryRecipients,
+    runTriggerAgentIds: uniqueSorted(runTriggerAgentIds),
+  };
+}
+
+export function communicationHasProjectionTarget(
+  event: CommunicationEvent,
+  surface: CommunicationProjectionSurface,
+  projectionKey: string,
+): boolean {
+  return deriveCommunicationBehavior(event).projectionTargets.some((target) =>
+    target.surface === surface && target.projectionKey === projectionKey);
+}
+
 /** Rebuildable placement; unique by (eventId, surface, projectionKey). */
 export interface CommunicationProjection {
   eventId: string;
@@ -93,12 +224,13 @@ export interface CommunicationProjection {
     /** Server-rendered text may add display handles without changing event text. */
     renderedText?: string;
     createdAt: string;
-    /** Direct-audit ordering key from the canonical thread log. */
+    /** Stable per-project materialization order for identical timestamps. */
+    orderKey?: string;
+    /** Direct-audit ordering key from the canonical agent log. */
     sequence?: number;
     authorAgentId?: string;
-    replyToLegacyMessageId?: string;
     attachmentIds?: string[];
-    /** Immutable snapshots required to retire legacy chat storage reads. */
+    /** Immutable presentation snapshots owned by the canonical projection. */
     replyTo?: MessageReferenceDto;
     attachments?: ImageAttachmentDto[];
   };
@@ -112,9 +244,9 @@ export interface ProjectedCommunicationMessage {
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
+  orderKey?: string;
   sequence?: number;
   authorAgentId?: string;
-  replyToLegacyMessageId?: string;
   attachmentIds?: string[];
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
@@ -150,7 +282,7 @@ export interface CommunicationContextClassification {
   classifiedBy: CommunicationActor;
 }
 
-/** Shadow-migration parity report computed from canonical disk records. */
+/** Integrity report computed entirely from canonical communication records. */
 export interface CommunicationReconciliationReport {
   projectId: string;
   canonicalEvents: number;
@@ -160,9 +292,5 @@ export interface CommunicationReconciliationReport {
   orphanProjectionEventIds: string[];
   missingClassificationEventIds: string[];
   missingProjectionMetadataEventIds: string[];
-  /** Legacy room rows that cannot yet be served from a canonical event. */
-  unlinkedLegacyMessageIds: string[];
-  /** Linked room rows whose authoritative materialization is not DTO-equivalent. */
-  projectionReadMismatchMessageIds: string[];
   ok: boolean;
 }

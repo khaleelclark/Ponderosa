@@ -1,4 +1,4 @@
-// ThreadStore — the library that apps/server consumes. Ties together the on-disk
+// AgentStore — the library that apps/server consumes. Ties together the on-disk
 // event logs (source of truth), the SQLite projections, and the pure projectors.
 // Exposes NO HTTP (SPEC §7). SQLite is never a source of truth: everything here is
 // derivable from the logs + the *.json files, and `rebuildProjections()` proves it.
@@ -13,7 +13,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import Database from "better-sqlite3";
 import { and, asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
@@ -26,6 +27,7 @@ import type {
   CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
+  RunTriggerRecord,
   ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
@@ -33,25 +35,29 @@ import type {
   CreateConversationMessageRequest,
   CreateConversationRequest,
   CreateProjectRequest,
-  CreateThreadRequest,
+  CreateAgentRequest,
   ConversationDetailDto,
   ConversationChannel,
   ConversationDto,
   ConversationMessageDto,
   MessageDto,
   ProjectDto,
-  TaskDto,
-  TaskStatus,
-  ThreadDetailDto,
-  ThreadDto,
-  ThreadState,
+  AgentRunDto,
+  WorkItemDto,
+  WorkItemStatus,
+  AgentLifecycleReason,
+  AgentRunStatus,
+  AgentDetailDto,
+  AgentDto,
+  AgentState,
   RunOutputDto,
   UpdateProjectRequest,
-  UpdateThreadConversationMembershipsRequest,
+  UpdateAgentConversationMembershipsRequest,
   UpdateConversationRequest,
-  UpdateThreadRequest,
+  UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
+import { communicationHasProjectionTarget, deriveCommunicationBehavior } from "@ponderosa/core";
 
 function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
   const { content: _content, ...metadata } = document;
@@ -59,7 +65,6 @@ function communicationDocumentReference(projectId: string, document: Communicati
   return { ...metadata, previewUrl: root, downloadUrl: `${root}/download` };
 }
 import { openDb, type Db } from "./db.js";
-import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
 import { artifactId, messageId as projectedMessageId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
@@ -75,13 +80,13 @@ import {
   artifacts,
   agentPresets,
   events,
-  conversationMessages,
   conversations,
   messages,
   projects,
-  tasks,
-  threads,
-  threadConversationMemberships,
+  runs,
+  workItems,
+  agents,
+  agentConversationMemberships,
 } from "./schema.js";
 import {
   artifactsDir,
@@ -90,21 +95,21 @@ import {
   dbPath,
   eventsPath,
   conversationDir,
-  collaborationMessagesPath,
   communicationEventsPath,
   communicationContextPath,
   communicationProjectionsPath,
+  messageDispatchesPath,
+  runTriggersPath,
   conversationJsonPath,
-  conversationMessagesPath,
   conversationsDir,
   projectJsonPath,
   agentPresetsPath,
   agentOrganizationEventsPath,
   projectsDir,
   projectDir,
-  threadDir,
-  threadJsonPath,
-  threadsDir,
+  agentDir,
+  agentJsonPath,
+  agentsDir,
 } from "./paths.js";
 
 interface ProjectJson {
@@ -115,7 +120,7 @@ interface ProjectJson {
   lastUsedAt?: string;
 }
 
-interface ThreadJson {
+interface AgentJson {
   id: string;
   projectId: string;
   conversationId?: string;
@@ -129,7 +134,7 @@ interface ThreadJson {
   spawnedByExecutionId?: string;
   spawnPrompt?: string;
   spawnIdempotencyKey?: string;
-  presetSnapshot?: ThreadDto["presetSnapshot"];
+  presetSnapshot?: AgentDto["presetSnapshot"];
 }
 
 export interface AgentSpawnOrigin {
@@ -160,7 +165,7 @@ interface ConversationJson {
 }
 
 export interface ConversationDeliveryIntent {
-  targetThreadId: string;
+  targetAgentId: string;
   relayDepth: number;
   mentionTrail: string[];
   kind: "direct" | "tag";
@@ -170,20 +175,20 @@ export interface ConversationDeliveryIntent {
   attachmentIds?: string[];
 }
 
-interface ConversationMessageJson {
-  id: string;
-  communicationEventId?: string;
+interface MessageDispatchRecord {
+  schemaVersion: 1;
+  eventId: string;
+  messageId: string;
   conversationId: string;
+  channel: ConversationChannel;
   role: "user" | "assistant" | "system";
-  text: string;
+  renderedText: string;
   createdAt: string;
-  authorThreadId?: string | null;
-  channel?: ConversationChannel;
+  authorAgentId?: string;
   deliveryIntents?: ConversationDeliveryIntent[];
   messageReceiptKey?: string;
-  deliveryOrderKey?: string;
+  orderKey: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
-  directReplyToAuthorThreadId?: string;
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
@@ -204,17 +209,28 @@ function readJsonLines<T>(file: string): T[] {
     .map((line) => JSON.parse(line) as T);
 }
 
-function communicationMessageProjection(threadId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
+/** V1 is a destructive test-data cutover; managed source workspaces are external. */
+function ensureV1Layout(dataDir: string): void {
+  const marker = join(dataDir, ".ponderosa-layout-version");
+  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === "1") return;
+  mkdirSync(dataDir, { recursive: true });
+  for (const entry of readdirSync(dataDir)) {
+    if (entry === "workspaces" || entry === ".ponderosa-layout-version") continue;
+    rmSync(join(dataDir, entry), { recursive: true, force: true });
+  }
+  writeFileSync(marker, "1\n", "utf8");
+}
+
+function communicationMessageProjection(agentId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
   const event = stored.event;
   if (event.type === "user_message") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.replyTo ? { replyToLegacyMessageId: event.replyTo.messageId } : {}),
+    messageId: projectedMessageId(agentId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
     ...(event.replyTo ? { replyTo: event.replyTo } : {}),
     ...(event.attachments?.length ? { attachments: event.attachments } : {}),
   };
   if (event.type === "communication_projection") return {
-    messageId: projectedMessageId(threadId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
+    messageId: projectedMessageId(agentId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id), attachments: event.attachments } : {}),
   };
   return undefined;
@@ -231,7 +247,7 @@ function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
   return normalized as [string, ...string[]];
 }
 
-export class ThreadStore {
+export class AgentStore {
   private readonly db: Db;
   private readonly client: Database.Database;
   private readonly logs = new Map<string, EventLog>();
@@ -248,8 +264,15 @@ export class ThreadStore {
     projections: CommunicationProjection[];
     byTuple: Map<string, CommunicationProjection>;
   }>();
+  private readonly runTriggerCache = new Map<string, {
+    records: RunTriggerRecord[];
+    byId: Map<string, RunTriggerRecord>;
+    byEventAgent: Map<string, RunTriggerRecord>;
+  }>();
+  private readonly messageDispatchCache = new Map<string, MessageDispatchRecord[]>();
 
   constructor(private readonly dataDir: string) {
+    ensureV1Layout(dataDir);
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(projectsDir(dataDir), { recursive: true });
     this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
@@ -262,7 +285,7 @@ export class ThreadStore {
     // on startup closes the crash window where a durable append succeeded but
     // the projection write did not, and keeps every read path deterministic.
     this.rebuildProjections();
-    for (const project of this.listProjects()) this.repairCommunicationProjectionLedger(project.id);
+    for (const project of this.listProjects()) this.ensureCommunicationProjectionLedger(project.id);
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -285,6 +308,32 @@ export class ThreadStore {
     return cached;
   }
 
+  private messageDispatches(projectId: string): MessageDispatchRecord[] {
+    let cached = this.messageDispatchCache.get(projectId);
+    if (cached) return cached;
+    cached = readRepairableJsonl<MessageDispatchRecord>(
+      messageDispatchesPath(this.dataDir, projectId),
+      "message dispatch log",
+      true,
+    );
+    this.messageDispatchCache.set(projectId, cached);
+    return cached;
+  }
+
+  private appendMessageDispatch(projectId: string, record: MessageDispatchRecord): void {
+    const records = this.messageDispatches(projectId);
+    const existing = records.find((candidate) => candidate.messageId === record.messageId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error("message dispatch collision");
+      return;
+    }
+    if (record.messageReceiptKey && records.some((candidate) => candidate.messageReceiptKey === record.messageReceiptKey)) {
+      throw new Error("message dispatch receipt collision");
+    }
+    appendFsyncedJsonl(messageDispatchesPath(this.dataDir, projectId), [record]);
+    records.push(record);
+  }
+
   private contextIndex(projectId: string): Map<string, CommunicationContextClassification> {
     let cached = this.contextClassificationCache.get(projectId);
     if (cached) return cached;
@@ -303,6 +352,19 @@ export class ThreadStore {
     ]));
     cached = { projections: [...byTuple.values()], byTuple };
     this.communicationProjectionCache.set(projectId, cached);
+    return cached;
+  }
+
+  private runTriggerIndex(projectId: string) {
+    let cached = this.runTriggerCache.get(projectId);
+    if (cached) return cached;
+    const records = readRepairableJsonl<RunTriggerRecord>(runTriggersPath(this.dataDir, projectId), "run trigger log", true);
+    cached = {
+      records,
+      byId: new Map(records.map((record) => [record.triggerId, record])),
+      byEventAgent: new Map(records.map((record) => [`${record.communicationEventId}\u0000${record.agentId}`, record])),
+    };
+    this.runTriggerCache.set(projectId, cached);
     return cached;
   }
 
@@ -350,13 +412,13 @@ export class ThreadStore {
     const audienceIds = event.schemaVersion === 2 && event.intent === "collaboration" ? event.audience.agentIds
       : userDmAgentIds(event);
     for (const agentId of audienceIds) {
-      const agent = this.getThread(agentId);
+      const agent = this.getAgent(agentId);
       if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
       if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) throw new Error("communication recipient must belong to its conversation");
     }
     if (event.schemaVersion === 2 && event.intent === "collaboration") {
       if (event.sender.kind === "agent") {
-        const sender = this.getThread(event.sender.agentId);
+        const sender = this.getAgent(event.sender.agentId);
         if (!sender || sender.projectId !== event.projectId || sender.archived) {
           throw new Error("collaboration sender must be an active agent in its project");
         }
@@ -373,9 +435,10 @@ export class ThreadStore {
       if (!master || master.projectId !== event.projectId || master.archived) throw new Error("communication conversation must be active in its project");
     }
     const file = communicationEventsPath(this.dataDir, event.projectId);
+    const behavior = deriveCommunicationBehavior(event);
     const classification: CommunicationContextClassification = {
       eventId: event.eventId,
-      policy: event.intent === "broadcast" ? "organizational" : "local_only",
+      policy: behavior.contextPolicy,
       classifiedAt: event.createdAt,
       classifiedBy: { kind: "system", component: "communication-router" },
     };
@@ -389,16 +452,18 @@ export class ThreadStore {
       if (!equivalent) throw new Error("communication idempotency collision");
       this.appendContextClassification(event.projectId, {
         eventId: idempotent.eventId,
-        policy: idempotent.intent === "broadcast" ? "organizational" : "local_only",
+        policy: deriveCommunicationBehavior(idempotent).contextPolicy,
         classifiedAt: idempotent.createdAt,
         classifiedBy: { kind: "system", component: "communication-router" },
       });
+      this.ensureCommunicationBehaviorProjections(idempotent);
       return { event: idempotent, replayed: true };
     }
     const existing = index.byId.get(event.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
       this.appendContextClassification(event.projectId, classification);
+      this.ensureCommunicationBehaviorProjections(existing);
       return { event: existing, replayed: true };
     }
     appendFsyncedJsonl(file, [event]);
@@ -406,7 +471,29 @@ export class ThreadStore {
     index.byId.set(event.eventId, event);
     if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
     this.appendContextClassification(event.projectId, classification);
+    this.ensureCommunicationBehaviorProjections(event);
     return { event, replayed: false };
+  }
+
+  /**
+   * Materialize every placement declared by the behavior matrix immediately
+   * after the canonical append. Message metadata can enrich these records later;
+   * missing route-specific writes can no longer erase a surface from the ledger.
+   */
+  private ensureCommunicationBehaviorProjections(event: CommunicationEvent): void {
+    for (const target of deriveCommunicationBehavior(event).projectionTargets) {
+      const projection: CommunicationProjection = {
+        eventId: event.eventId,
+        surface: target.surface,
+        projectionKey: target.projectionKey,
+        projectedAt: event.createdAt,
+      };
+      // Replayable V1 records can reference agents or rooms that predate the
+      // current store. Ambiguous historical placement fails closed.
+      if (this.communicationProjectionAllowed(event.projectId, projection)) {
+        this.appendCommunicationProjection(event.projectId, projection);
+      }
+    }
   }
 
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
@@ -417,6 +504,63 @@ export class ThreadStore {
   getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return this.communicationIndex(projectId).byId.get(eventId);
+  }
+
+  /**
+   * Persist the explicit communication-to-agent edge before a run is started,
+   * steered, or queued. Text and room placement are never consulted.
+   */
+  recordRunTrigger(
+    projectId: string,
+    communicationEventId: string,
+    agentId: string,
+    createdAt = new Date().toISOString(),
+  ): { trigger: RunTriggerRecord; replayed: boolean } {
+    const event = this.getCommunicationEvent(projectId, communicationEventId);
+    if (!event) throw new Error("run trigger communication was not found");
+    const agent = this.getAgent(agentId);
+    if (!agent || agent.projectId !== projectId || agent.archived) throw new Error("run trigger agent must be active in its project");
+    if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) {
+      throw new Error("run trigger agent must belong to the communication conversation");
+    }
+    const behavior = deriveCommunicationBehavior(event);
+    const source = event.intent === "broadcast" && event.sender.kind === "user"
+      ? "project_request" as const
+      : behavior.runTriggerAgentIds.includes(agentId)
+        ? event.intent === "collaboration" ? "collaboration" as const : "direct_message" as const
+        : undefined;
+    if (!source) throw new Error("communication is not eligible to trigger this agent");
+    const trigger: RunTriggerRecord = {
+      triggerId: `${communicationEventId}:agent:${agentId}`,
+      projectId,
+      agentId,
+      communicationEventId,
+      source,
+      createdAt,
+    };
+    const index = this.runTriggerIndex(projectId);
+    const existing = index.byId.get(trigger.triggerId);
+    if (existing) {
+      if (existing.projectId !== trigger.projectId || existing.agentId !== trigger.agentId ||
+          existing.communicationEventId !== trigger.communicationEventId || existing.source !== trigger.source) {
+        throw new Error("run trigger identity collision");
+      }
+      return { trigger: existing, replayed: true };
+    }
+    appendFsyncedJsonl(runTriggersPath(this.dataDir, projectId), [trigger]);
+    index.records.push(trigger);
+    index.byId.set(trigger.triggerId, trigger);
+    index.byEventAgent.set(`${communicationEventId}\u0000${agentId}`, trigger);
+    return { trigger, replayed: false };
+  }
+
+  readRunTriggers(projectId: string, agentId?: string): RunTriggerRecord[] {
+    if (!this.getProject(projectId)) throw new Error("run trigger project not found");
+    return this.runTriggerIndex(projectId).records.filter((record) => !agentId || record.agentId === agentId);
+  }
+
+  hasRunTrigger(projectId: string, communicationEventId: string, agentId: string): boolean {
+    return this.runTriggerIndex(projectId).byEventAgent.has(`${communicationEventId}\u0000${agentId}`);
   }
 
   getCommunicationDocument(projectId: string, documentId: string) {
@@ -454,36 +598,21 @@ export class ThreadStore {
       const room = this.getConversation(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
     })();
-    if (projection.surface === "conversation") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
-      (event.schemaVersion === 2 && event.intent === "user_dm"));
-    if (projection.surface === "collaboration_view") return roomKeyAllowed && (event.intent === "collaboration" ||
-      (event.schemaVersion === 1 && event.intent === "direct_to_user"));
-    if (projection.surface === "direct_agent_audit") {
-      if (event.intent === "broadcast") {
-        const thread = this.getThread(projection.projectionKey);
-        return Boolean(
-          thread && thread.projectId === projectId && !thread.archived &&
-          (
-            (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey) ||
-            // The responsible agent's original user turn is local input, not a
-            // passive room backfill. Passive copies are rendered with #broadcast.
-            (event.sender.kind === "user" && projection.message?.role === "user" &&
-              projection.message.renderedText === event.text)
-          ),
-        );
+    const targetAllowed = communicationHasProjectionTarget(event, projection.surface, projection.projectionKey);
+    if (targetAllowed) {
+      if (projection.surface === "conversation" || projection.surface === "collaboration_view") return roomKeyAllowed;
+      if (projection.surface === "direct_agent_audit" || projection.surface === "agent_inbox") {
+        const agent = this.getAgent(projection.projectionKey);
+        return Boolean(agent && agent.projectId === projectId && !agent.archived);
       }
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
-      if (event.intent === "collaboration") return event.audience.agentIds.includes(projection.projectionKey) ||
-        (event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey);
-      return event.schemaVersion === 1 && event.intent === "direct_to_user" && event.sender.kind === "agent" && event.sender.agentId === projection.projectionKey;
+      return true;
     }
-    if (projection.surface === "agent_inbox") {
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return userDmAgentIds(event).includes(projection.projectionKey);
-      return event.intent === "collaboration" && event.audience.agentIds.includes(projection.projectionKey);
-    }
-    if (projection.surface === "user_inbox") {
-      if (event.schemaVersion === 2 && event.intent === "user_dm") return projection.projectionKey === event.audience.userId;
-      return event.intent === "direct_to_user" && projection.projectionKey === event.audience.userId;
+    // A Project request is a Broadcast plus a separate, explicit RunTrigger.
+    // That edge authorizes only the responsible agent's local audit.
+    if (projection.surface === "direct_agent_audit" && event.intent === "broadcast" && event.sender.kind === "user") {
+      const agent = this.getAgent(projection.projectionKey);
+      return Boolean(agent && agent.projectId === projectId && !agent.archived &&
+        this.hasRunTrigger(projectId, event.eventId, projection.projectionKey));
     }
     return false;
   }
@@ -513,9 +642,6 @@ export class ThreadStore {
             : {}),
           ...(!existing.message.authorAgentId && projection.message.authorAgentId
             ? { authorAgentId: projection.message.authorAgentId }
-            : {}),
-          ...(!existing.message.replyToLegacyMessageId && projection.message.replyToLegacyMessageId
-            ? { replyToLegacyMessageId: projection.message.replyToLegacyMessageId }
             : {}),
           ...(!existing.message.attachmentIds?.length && projection.message.attachmentIds?.length
             ? { attachmentIds: projection.message.attachmentIds }
@@ -578,51 +704,54 @@ export class ThreadStore {
         return [{
           eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
           role: canonicalRole, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          ...(message.orderKey ? { orderKey: message.orderKey } : {}),
           ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
           ...(canonicalAuthorAgentId ? { authorAgentId: canonicalAuthorAgentId } : {}),
-          ...(message.replyToLegacyMessageId ? { replyToLegacyMessageId: message.replyToLegacyMessageId } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
         }];
       })
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
+      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
   }
 
-  private repairCommunicationProjectionLedger(projectId: string): void {
-    const canonicalIds = new Set(this.readCommunicationEvents(projectId).map((event) => event.eventId));
+  private ensureCommunicationProjectionLedger(projectId: string): void {
+    const canonicalEvents = this.readCommunicationEvents(projectId);
+    for (const event of canonicalEvents) this.ensureCommunicationBehaviorProjections(event);
+    const canonicalIds = new Set(canonicalEvents.map((event) => event.eventId));
     if (canonicalIds.size === 0) return;
-    for (const master of this.listConversations(projectId)) {
-      for (const [surface, file] of [
-        ["conversation", conversationMessagesPath(this.dataDir, projectId, master.id)],
-        ["collaboration_view", collaborationMessagesPath(this.dataDir, projectId, master.id)],
-      ] as const) {
-        for (const message of readJsonLines<ConversationMessageJson>(file)) {
-          if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
-            this.appendCommunicationProjection(projectId, {
-              eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
-              message: {
-                messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
-                ...(message.authorThreadId ? { authorAgentId: message.authorThreadId } : {}),
-                ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
-                ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
-                ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-                ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-              },
-            });
-          }
-        }
+    for (const dispatch of this.messageDispatches(projectId)) {
+      if (!canonicalIds.has(dispatch.eventId)) continue;
+      const projection: CommunicationProjection = {
+        eventId: dispatch.eventId,
+        surface: dispatch.channel === "collaboration" ? "collaboration_view" : "conversation",
+        projectionKey: dispatch.conversationId,
+        projectedAt: dispatch.createdAt,
+        message: {
+          messageId: dispatch.messageId,
+          role: dispatch.role,
+          renderedText: dispatch.renderedText,
+          createdAt: dispatch.createdAt,
+          orderKey: dispatch.orderKey,
+          ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
+          ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
+          ...(dispatch.replyTo ? { replyTo: dispatch.replyTo } : {}),
+          ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+        },
+      };
+      if (this.communicationProjectionAllowed(projectId, projection)) {
+        this.appendCommunicationProjection(projectId, projection);
       }
     }
-    for (const thread of this.listThreads(projectId)) {
-      for (const stored of this.readEvents(thread.id)) {
+    for (const agent of this.listAgents(projectId)) {
+      for (const stored of this.readEvents(agent.id)) {
         const eventId = stored.event.type === "communication_projection" || stored.event.type === "user_message"
           ? stored.event.communicationEventId : undefined;
-        const message = communicationMessageProjection(thread.id, stored);
+        const message = communicationMessageProjection(agent.id, stored);
         if (eventId && message && canonicalIds.has(eventId)) {
           const projection: CommunicationProjection = {
-            eventId, surface: "direct_agent_audit", projectionKey: thread.id, projectedAt: stored.ts,
+            eventId, surface: "direct_agent_audit", projectionKey: agent.id, projectedAt: stored.ts,
             message,
           };
           if (this.communicationProjectionAllowed(projectId, projection)) {
@@ -633,7 +762,7 @@ export class ThreadStore {
     }
   }
 
-  /** Compare canonical events with legacy disk projections during shadow mode. */
+  /** Verify that canonical events, classifications, and projections agree. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
     const canonical = this.readCommunicationEvents(projectId).filter((event) =>
       !event.conversationId || Boolean(this.getConversation(event.conversationId)));
@@ -658,45 +787,6 @@ export class ThreadStore {
     const missingProjectionMetadataEventIds = [...new Set(projections
       .filter((projection) => (projection.surface === "conversation" || projection.surface === "collaboration_view" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
-    const unlinkedLegacyMessageIds: string[] = [];
-    const projectionReadMismatchMessageIds: string[] = [];
-    for (const master of this.listConversations(projectId)) {
-      for (const channel of ["main", "collaboration"] as const) {
-        const legacy = this.getConversationMessages(master.id, channel);
-        const projected = new Map(this.getProjectedConversationMessages(master.id, channel).map((message) => [message.id, message]));
-        for (const message of legacy) {
-          if (!message.communicationEventId) {
-            unlinkedLegacyMessageIds.push(message.id);
-            continue;
-          }
-          const candidate = projected.get(message.id);
-          const parityKey = (item: ConversationMessageDto) => JSON.stringify([
-            item.id, item.communicationEventId, item.conversationId, item.role, item.text, item.createdAt,
-            item.authorThreadId, item.replyTo, item.attachments ?? [],
-          ]);
-          if (!candidate || parityKey(candidate) !== parityKey(message)) {
-            projectionReadMismatchMessageIds.push(message.id);
-          }
-        }
-      }
-    }
-    for (const thread of this.listThreads(projectId)) {
-      const projected = new Map(this.getProjectedThreadMessages(thread.id).map((message) => [message.id, message]));
-      for (const message of this.getMessages(thread.id)) {
-        if (!message.communicationEventId) {
-          unlinkedLegacyMessageIds.push(message.id);
-          continue;
-        }
-        const candidate = projected.get(message.id);
-        const parityKey = (item: MessageDto) => JSON.stringify([
-          item.id, item.communicationEventId, item.threadId, item.seq, item.role, item.text,
-          item.createdAt, item.authorThreadId, item.replyTo, item.attachments ?? [],
-        ]);
-        if (!candidate || parityKey(candidate) !== parityKey(message)) {
-          projectionReadMismatchMessageIds.push(message.id);
-        }
-      }
-    }
     return {
       projectId,
       canonicalEvents: canonical.length,
@@ -706,12 +796,9 @@ export class ThreadStore {
       orphanProjectionEventIds,
       missingClassificationEventIds,
       missingProjectionMetadataEventIds,
-      unlinkedLegacyMessageIds,
-      projectionReadMismatchMessageIds,
       ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
         orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
-        missingProjectionMetadataEventIds.length === 0 && unlinkedLegacyMessageIds.length === 0 &&
-        projectionReadMismatchMessageIds.length === 0,
+        missingProjectionMetadataEventIds.length === 0,
     };
   }
 
@@ -719,8 +806,8 @@ export class ThreadStore {
   recoverInterruptedExecutions(): string[] {
     const recovered: string[] = [];
     for (const project of this.listProjects()) {
-      for (const thread of this.listThreads(project.id)) {
-        const events = this.readEvents(thread.id);
+      for (const agent of this.listAgents(project.id)) {
+        const events = this.readEvents(agent.id);
         let startedIndex = -1;
         for (let index = events.length - 1; index >= 0; index -= 1) {
           const event = events[index]!.event;
@@ -732,15 +819,14 @@ export class ThreadStore {
         if (startedIndex < 0) continue;
         const start = events[startedIndex]!;
         const terminal = events.slice(startedIndex + 1).some((stored) =>
-          stored.event.type === "turn_done" || stored.event.type === "error" ||
-          (stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed"].includes(stored.event.status)));
+          stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed", "interrupted"].includes(stored.event.status));
         if (terminal) continue;
-        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : undefined;
-        this.appendEvent(thread.id, {
+        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : `recovered:${agent.id}`;
+        this.appendEvent(agent.id, {
           type: "agent_lifecycle", status: "failed", reason: "execution_interrupted",
-          ...(executionId ? { executionId } : {}),
+          executionId,
         });
-        recovered.push(thread.id);
+        recovered.push(agent.id);
       }
     }
     return recovered;
@@ -764,7 +850,7 @@ export class ThreadStore {
     };
     writeJson(projectJsonPath(this.dataDir, id), record);
     mkdirSync(conversationsDir(this.dataDir, id), { recursive: true });
-    mkdirSync(threadsDir(this.dataDir, id), { recursive: true });
+    mkdirSync(agentsDir(this.dataDir, id), { recursive: true });
     this.db
       .insert(projects)
       .values({ id, label: input.label, hostPath: input.hostPath, createdAt: now })
@@ -788,14 +874,16 @@ export class ThreadStore {
   deleteProject(id: string): boolean {
     const current = this.getProject(id);
     if (!current) return false;
-    const threadIds = this.listThreads(id).map((thread) => thread.id);
+    const agentIds = this.listAgents(id).map((agent) => agent.id);
     rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
     this.communicationEventCache.delete(id);
     this.contextClassificationCache.delete(id);
     this.communicationProjectionCache.delete(id);
-    for (const threadId of threadIds) {
-      this.logs.delete(threadId);
-      this.states.delete(threadId);
+    this.runTriggerCache.delete(id);
+    this.messageDispatchCache.delete(id);
+    for (const agentId of agentIds) {
+      this.logs.delete(agentId);
+      this.states.delete(agentId);
     }
     this.rebuildProjections();
     return true;
@@ -912,7 +1000,7 @@ export class ThreadStore {
     return {
       conversation,
       messages: this.getConversationMessages(id, "main"),
-      threads: this.listThreads(conversation.projectId).filter((thread) => thread.conversationIds.includes(id)),
+      agents: this.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(id)),
     };
   }
 
@@ -921,7 +1009,7 @@ export class ThreadStore {
     if (!conversation) return undefined;
     return {
       messages: this.getConversationMessages(id, "collaboration"),
-      threads: this.listThreads(conversation.projectId).filter((thread) => thread.conversationIds.includes(id)),
+      agents: this.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(id)),
     };
   }
 
@@ -960,20 +1048,19 @@ export class ThreadStore {
     return this.getConversation(id);
   }
 
-  /** Permanently remove a conversation while preserving its agents as unassigned threads. */
+  /** Permanently remove a conversation while preserving its agents as unassigned agents. */
   deleteConversation(id: string): boolean {
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return false;
-    const linkedThreads = this.listThreads(row.projectId).filter((thread) => thread.conversationIds.includes(id));
+    const linkedAgents = this.listAgents(row.projectId).filter((agent) => agent.conversationIds.includes(id));
     this.db.transaction((tx) => {
-      tx.delete(threadConversationMemberships).where(eq(threadConversationMemberships.conversationId, id)).run();
-      tx.delete(conversationMessages).where(eq(conversationMessages.conversationId, id)).run();
+      tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.conversationId, id)).run();
       tx.delete(conversations).where(eq(conversations.id, id)).run();
     });
-    for (const thread of linkedThreads) {
-      const remaining = thread.conversationIds.filter((memberId) => memberId !== id);
-      const primary = thread.conversationId === id ? remaining[0] : thread.conversationId;
-      this.persistThreadMemberships(thread.id, remaining, primary);
+    for (const agent of linkedAgents) {
+      const remaining = agent.conversationIds.filter((memberId) => memberId !== id);
+      const primary = agent.conversationId === id ? remaining[0] : agent.conversationId;
+      this.persistAgentMemberships(agent.id, remaining, primary);
     }
     rmSync(conversationDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
     return true;
@@ -981,8 +1068,8 @@ export class ThreadStore {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest & { directReplyToAuthorThreadId?: string },
-    authorThreadId?: string,
+    input: CreateConversationMessageRequest & { directReplyToAuthorAgentId?: string },
+    authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],
     messageReceiptKey?: string,
@@ -990,68 +1077,66 @@ export class ThreadStore {
   ): ConversationMessageDto | undefined {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return undefined;
-    if (communicationEventId && !this.communicationProjectionAllowed(conversation.projectId, {
+    if (!communicationEventId) {
+      throw new Error("conversation projections require a canonical communication event");
+    }
+    if (!this.communicationProjectionAllowed(conversation.projectId, {
       eventId: communicationEventId,
       surface: channel === "collaboration" ? "collaboration_view" : "conversation",
       projectionKey: conversationId,
     })) {
-      // Validate the canonical communication before writing a legacy placement.
-      // A failed projection must never leave a chat row that startup repair will
-      // later reinterpret or reject.
       throw new Error("communication scope cannot project to requested surface");
     }
     const now = new Date().toISOString();
-    const messagePath = channel === "collaboration"
-      ? collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId)
-      : conversationMessagesPath(this.dataDir, conversation.projectId, conversationId);
     const replyTo = input.replyToMessageId
       ? this.conversationReference(conversationId, channel, input.replyToMessageId)
       : undefined;
-    if (input.directReplyToAuthorThreadId) {
-      if (channel !== "main" || !replyTo || replyTo.authorThreadId !== input.directReplyToAuthorThreadId) {
+    if (input.directReplyToAuthorAgentId) {
+      if (channel !== "main" || !replyTo || replyTo.authorAgentId !== input.directReplyToAuthorAgentId) {
         throw new Error("direct reply target must be the author of the referenced main-chat message");
       }
-      const target = this.getThread(input.directReplyToAuthorThreadId);
+      const target = this.getAgent(input.directReplyToAuthorAgentId);
       if (!target || target.archived || !target.conversationIds.includes(conversationId)) {
         throw new Error("direct reply target is not an active agent in this conversation");
       }
     }
-    const message: ConversationMessageJson = {
-      id: randomUUID(),
-      ...(communicationEventId ? { communicationEventId } : {}),
+    const dispatch: MessageDispatchRecord = {
+      schemaVersion: 1,
+      eventId: communicationEventId,
+      // One authored communication has one stable identity across every view.
+      messageId: communicationEventId,
       conversationId,
-      role: input.role ?? "user",
-      text: input.text,
-      createdAt: now,
-      authorThreadId: authorThreadId ?? null,
       channel,
+      role: input.role ?? "user",
+      renderedText: input.text,
+      createdAt: now,
+      ...(authorAgentId ? { authorAgentId } : {}),
       ...(replyTo ? { replyTo } : {}),
-      ...(input.directReplyToAuthorThreadId ? { directReplyToAuthorThreadId: input.directReplyToAuthorThreadId } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
-      ...(channel === "collaboration"
-        ? { deliveryOrderKey: this.nextDeliveryOrderKey(now) }
-        : {}),
+      orderKey: this.nextDeliveryOrderKey(now),
     };
-    mkdirSync(conversationDir(this.dataDir, conversation.projectId, conversationId), { recursive: true });
-    appendFileSync(
-      messagePath,
-      JSON.stringify(message) + "\n",
-      "utf8",
-    );
-    this.db.insert(conversationMessages).values({
-      id: message.id,
-      communicationEventId: message.communicationEventId ?? null,
-      conversationId: message.conversationId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
-      authorThreadId: message.authorThreadId,
-      channel: message.channel,
-      replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
-      attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
-    }).run();
+    // The dispatch record is durable first and contains enough immutable
+    // presentation metadata to reconstruct a projection after a crash.
+    this.appendMessageDispatch(conversation.projectId, dispatch);
+    this.appendCommunicationProjection(conversation.projectId, {
+      eventId: dispatch.eventId,
+      surface: channel === "collaboration" ? "collaboration_view" : "conversation",
+      projectionKey: conversationId,
+      projectedAt: now,
+      message: {
+        messageId: dispatch.messageId,
+        role: dispatch.role,
+        renderedText: dispatch.renderedText,
+        createdAt: dispatch.createdAt,
+        orderKey: dispatch.orderKey,
+        ...(authorAgentId ? { authorAgentId } : {}),
+        ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
+        ...(dispatch.replyTo ? { replyTo: dispatch.replyTo } : {}),
+        ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
+      },
+    });
     this.db
       .update(conversations)
       .set({ updatedAt: now })
@@ -1060,32 +1145,16 @@ export class ThreadStore {
     const jsonPath = conversationJsonPath(this.dataDir, conversation.projectId, conversationId);
     const json = readJson<ConversationJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
-    if (message.communicationEventId) {
-      this.appendCommunicationProjection(conversation.projectId, {
-        eventId: message.communicationEventId,
-        surface: channel === "collaboration" ? "collaboration_view" : "conversation",
-        projectionKey: conversationId,
-        projectedAt: now,
-        message: {
-          messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
-          ...(authorThreadId ? { authorAgentId: authorThreadId } : {}),
-          ...(message.replyTo ? { replyToLegacyMessageId: message.replyTo.messageId } : {}),
-          ...(message.attachments?.length ? { attachmentIds: message.attachments.map((item) => item.id) } : {}),
-          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-        },
-      });
-    }
     return {
-      id: message.id,
-      communicationEventId: message.communicationEventId,
-      conversationId: message.conversationId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
-      authorThreadId: authorThreadId ?? undefined,
-      replyTo: message.replyTo,
-      attachments: message.attachments,
+      id: dispatch.messageId,
+      communicationEventId: dispatch.eventId,
+      conversationId: dispatch.conversationId,
+      role: dispatch.role,
+      text: dispatch.renderedText,
+      createdAt: dispatch.createdAt,
+      authorAgentId: authorAgentId ?? undefined,
+      replyTo: dispatch.replyTo,
+      attachments: dispatch.attachments,
     };
   }
 
@@ -1097,98 +1166,41 @@ export class ThreadStore {
   }> {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return [];
-    const messages = [
-      ...readJsonLines<ConversationMessageJson>(conversationMessagesPath(this.dataDir, conversation.projectId, conversationId)),
-      ...readJsonLines<ConversationMessageJson>(collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId)),
-    ];
-    return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
-      message: {
-        id: message.id,
-        communicationEventId: message.communicationEventId,
-        conversationId: message.conversationId,
-        role: message.role,
-        text: message.text,
-        createdAt: message.createdAt,
-        authorThreadId: message.authorThreadId ?? undefined,
-        replyTo: message.replyTo,
-        attachments: message.attachments,
-      },
+    return this.messageDispatches(conversation.projectId)
+      .filter((dispatch) => dispatch.conversationId === conversationId)
+      .flatMap((dispatch) => (dispatch.deliveryIntents ?? []).map((intent) => ({
+      message: this.getConversationMessages(conversationId, dispatch.channel)
+        .find((message) => message.id === dispatch.messageId)!,
       intent,
-      messageReceiptKey: message.messageReceiptKey,
-      deliveryOrderKey: message.deliveryOrderKey ?? `${message.createdAt}:${String(0).padStart(12, "0")}`,
-    })));
+      messageReceiptKey: dispatch.messageReceiptKey,
+      deliveryOrderKey: dispatch.orderKey,
+    }))).filter((item) => Boolean(item.message));
   }
 
   getConversationMessageByReceiptKey(conversationId: string, receiptKey: string): ConversationMessageDto | undefined {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return undefined;
-    const message = readJsonLines<ConversationMessageJson>(
-      conversationMessagesPath(this.dataDir, conversation.projectId, conversationId),
-    ).find((candidate) => candidate.messageReceiptKey === receiptKey);
-    return message ? {
-      id: message.id,
-      communicationEventId: message.communicationEventId,
-      conversationId: message.conversationId,
-      role: message.role,
-      text: message.text,
-      createdAt: message.createdAt,
-      authorThreadId: message.authorThreadId ?? undefined,
-      replyTo: message.replyTo,
-      attachments: message.attachments,
-    } : undefined;
+    const dispatch = this.messageDispatches(conversation.projectId)
+      .find((candidate) => candidate.conversationId === conversationId && candidate.messageReceiptKey === receiptKey);
+    return dispatch
+      ? this.getConversationMessages(conversationId, dispatch.channel).find((message) => message.id === dispatch.messageId)
+      : undefined;
   }
 
   getConversationMessageDeliveryOrderKey(conversationId: string, messageId: string): string | undefined {
     const conversation = this.getConversation(conversationId);
     if (!conversation) return undefined;
-    return readJsonLines<ConversationMessageJson>(
-      collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId),
-    ).find((message) => message.id === messageId)?.deliveryOrderKey;
+    return this.messageDispatches(conversation.projectId)
+      .find((dispatch) => dispatch.conversationId === conversationId && dispatch.messageId === messageId)?.orderKey;
   }
 
   getConversationMessages(conversationId: string, channel: ConversationChannel = "main"): ConversationMessageDto[] {
-    const master = this.getConversation(conversationId);
-    if (!master) return [];
-    return this.db
-      .select()
-      .from(conversationMessages)
-      .where(eq(conversationMessages.conversationId, conversationId))
-      .orderBy(asc(conversationMessages.createdAt))
-      .all()
-      .filter((row) => row.channel === channel)
-      .map((row) => {
-        const communication = row.communicationEventId
-          ? this.getCommunicationEvent(master.projectId, row.communicationEventId)
-          : undefined;
-        const authorThreadId = communication?.sender.kind === "agent"
-          ? communication.sender.agentId
-          : row.authorThreadId ?? undefined;
-        const role = communication?.sender.kind === "agent"
-          ? "assistant"
-          : communication?.sender.kind === "user"
-            ? "user"
-            : row.role === "assistant" || row.role === "system"
-              ? row.role
-              : "user";
-        return {
-          id: row.id,
-          communicationEventId: row.communicationEventId ?? undefined,
-          conversationId: row.conversationId,
-          role,
-          text: row.text,
-          createdAt: row.createdAt,
-          authorThreadId,
-          replyTo: row.replyToJson ? JSON.parse(row.replyToJson) : undefined,
-          attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
-        };
-      });
+    return this.getProjectedConversationMessages(conversationId, channel);
   }
 
   /**
-   * Materialize a room timeline from canonical communication events and their
-   * projection ledger. Legacy rows are consulted only for ancillary snapshots
-   * (attachments and quoted replies) until those immutable payloads move into
-   * the canonical envelope; they do not select membership, ordering, or text.
+   * Materialize a project-chat timeline from canonical communication events
+   * and their projection ledger.
    */
   getProjectedConversationMessages(
     conversationId: string,
@@ -1205,7 +1217,7 @@ export class ThreadStore {
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
-        ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
+        ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.document ? { document: message.document } : {}),
@@ -1220,19 +1232,19 @@ export class ThreadStore {
       messageId: target.id,
       text: target.text,
       role: target.role,
-      authorThreadId: target.authorThreadId,
+      authorAgentId: target.authorAgentId,
     };
   }
 
-  // ─── Threads ───────────────────────────────────────────────────────────────
+  // ─── Agents ───────────────────────────────────────────────────────────────
 
-  createThread(projectId: string, input: CreateThreadRequest, origin?: AgentSpawnOrigin): ThreadDto {
+  createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
     const id = randomUUID();
     const now = new Date().toISOString();
     const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
     if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
-    const record: ThreadJson = {
+    const record: AgentJson = {
       id,
       projectId,
       conversationId: input.conversationId,
@@ -1248,12 +1260,12 @@ export class ThreadStore {
       spawnIdempotencyKey: origin?.idempotencyKey,
       presetSnapshot,
     };
-    mkdirSync(threadDir(this.dataDir, projectId, id), { recursive: true });
+    mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
     mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
     mkdirSync(attachmentsDir(this.dataDir, projectId, id), { recursive: true });
-    writeJson(threadJsonPath(this.dataDir, projectId, id), record);
+    writeJson(agentJsonPath(this.dataDir, projectId, id), record);
     this.db
-      .insert(threads)
+      .insert(agents)
       .values({
         id,
         projectId,
@@ -1271,45 +1283,45 @@ export class ThreadStore {
       })
       .run();
     if (input.conversationId) {
-      this.db.insert(threadConversationMemberships).values({ threadId: id, conversationId: input.conversationId, position: 0 }).run();
+      this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
     }
     if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
-    return this.rowToThreadDto(id)!;
+    return this.rowToAgentDto(id)!;
   }
 
-  findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): ThreadDto | undefined {
-    const row = this.db.select().from(threads).where(and(
-      eq(threads.spawnedByAgentId, agentId),
-      eq(threads.spawnedByExecutionId, executionId),
-      eq(threads.spawnIdempotencyKey, idempotencyKey),
+  findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.spawnedByAgentId, agentId),
+      eq(agents.spawnedByExecutionId, executionId),
+      eq(agents.spawnIdempotencyKey, idempotencyKey),
     )).get();
-    return row ? this.threadRowToDto(row) : undefined;
+    return row ? this.agentRowToDto(row) : undefined;
   }
 
-  listThreads(projectId: string): ThreadDto[] {
+  listAgents(projectId: string): AgentDto[] {
     return this.db
       .select()
-      .from(threads)
-      .where(eq(threads.projectId, projectId))
+      .from(agents)
+      .where(eq(agents.projectId, projectId))
       .all()
-      .map((r) => this.threadRowToDto(r));
+      .map((r) => this.agentRowToDto(r));
   }
 
-  getThread(id: string): ThreadDto | undefined {
-    return this.rowToThreadDto(id);
+  getAgent(id: string): AgentDto | undefined {
+    return this.rowToAgentDto(id);
   }
 
-  listAgentSubtree(id: string): ThreadDto[] {
-    const root = this.getThread(id);
+  listAgentSubtree(id: string): AgentDto[] {
+    const root = this.getAgent(id);
     if (!root) return [];
-    const projectAgents = this.listThreads(root.projectId);
-    const children = new Map<string, ThreadDto[]>();
+    const projectAgents = this.listAgents(root.projectId);
+    const children = new Map<string, AgentDto[]>();
     for (const agent of projectAgents) {
       if (!agent.managerAgentId) continue;
       children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
     }
-    const ordered: ThreadDto[] = [];
-    const visit = (agent: ThreadDto) => {
+    const ordered: AgentDto[] = [];
+    const visit = (agent: AgentDto) => {
       ordered.push(agent);
       for (const child of children.get(agent.id) ?? []) visit(child);
     };
@@ -1317,52 +1329,52 @@ export class ThreadStore {
     return ordered;
   }
 
-  updateThread(id: string, patch: UpdateThreadRequest): ThreadDto | undefined {
-    const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
+  updateAgent(id: string, patch: UpdateAgentRequest): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
     if (!row) return undefined;
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
     if (archived && row.archived !== 1) {
-      for (const child of this.listThreads(row.projectId).filter((thread) => thread.managerAgentId === id)) {
+      for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
         this.updateAgentOrganization(child.id, { managerAgentId: null });
       }
-      if (this.getThread(id)?.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: null });
+      if (this.getAgent(id)?.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: null });
     }
     this.db
-      .update(threads)
+      .update(agents)
       .set({ title, archived: archived ? 1 : 0, updatedAt: now })
-      .where(eq(threads.id, id))
+      .where(eq(agents.id, id))
       .run();
     // Keep the on-disk metadata (source of truth for these fields) in sync.
-    const json = readJson<ThreadJson>(threadJsonPath(this.dataDir, row.projectId, id));
-    writeJson(threadJsonPath(this.dataDir, row.projectId, id), {
+    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
       ...json,
       title,
       archived,
       updatedAt: now,
     });
-    return this.rowToThreadDto(id);
+    return this.rowToAgentDto(id);
   }
 
   /** Change only the mutable organizational reporting line. */
-  updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): ThreadDto | undefined {
-    const agent = this.getThread(id);
+  updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): AgentDto | undefined {
+    const agent = this.getAgent(id);
     if (!agent) return undefined;
     if (agent.archived) throw new Error("archived agents cannot be reorganized");
     const parentId = input.managerAgentId ?? undefined;
     if (parentId === id) throw new Error("an agent cannot report to itself");
     if (parentId) {
-      const parent = this.getThread(parentId);
+      const parent = this.getAgent(parentId);
       if (!parent || parent.projectId !== agent.projectId) throw new Error("organizational parent must belong to the same project");
       if (parent.archived) throw new Error("organizational parent must be active");
       const visited = new Set<string>([id]);
-      let cursor: ThreadDto | undefined = parent;
+      let cursor: AgentDto | undefined = parent;
       while (cursor) {
         if (visited.has(cursor.id)) throw new Error("organizational parent would create a cycle");
         if (cursor.projectId !== agent.projectId || cursor.archived) throw new Error("organizational ancestry must contain active agents from the same project");
         visited.add(cursor.id);
-        cursor = cursor.managerAgentId ? this.getThread(cursor.managerAgentId) : undefined;
+        cursor = cursor.managerAgentId ? this.getAgent(cursor.managerAgentId) : undefined;
       }
     }
     if (agent.managerAgentId === parentId) return agent;
@@ -1371,11 +1383,11 @@ export class ThreadStore {
       agentId: id, managerAgentId: parentId ?? null, createdAt: new Date().toISOString(),
     };
     appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, agent.projectId), [event]);
-    this.db.update(threads).set({
+    this.db.update(agents).set({
       managerAgentId: parentId ?? null,
       updatedAt: event.createdAt,
-    }).where(eq(threads.id, id)).run();
-    return this.getThread(id);
+    }).where(eq(agents.id, id)).run();
+    return this.getAgent(id);
   }
 
   readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
@@ -1385,12 +1397,12 @@ export class ThreadStore {
     );
   }
 
-  updateThreadConversationMemberships(
+  updateAgentConversationMemberships(
     id: string,
-    input: UpdateThreadConversationMembershipsRequest,
-  ): ThreadDto | undefined {
-    const thread = this.getThread(id);
-    if (!thread) return undefined;
+    input: UpdateAgentConversationMembershipsRequest,
+  ): AgentDto | undefined {
+    const agent = this.getAgent(id);
+    if (!agent) return undefined;
     const ids = [...new Set(input.conversationIds)];
     if (ids.length !== input.conversationIds.length) throw new Error("duplicate conversation membership");
     if (ids.length > 0 && !input.primaryConversationId) throw new Error("primary conversation is required");
@@ -1399,39 +1411,40 @@ export class ThreadStore {
     }
     for (const conversationId of ids) {
       const master = this.getConversation(conversationId);
-      if (!master || master.projectId !== thread.projectId) throw new Error("conversation does not belong to project");
-      if (master.archived && !thread.conversationIds.includes(conversationId)) throw new Error("archived conversation cannot accept agents");
+      if (!master || master.projectId !== agent.projectId) throw new Error("conversation does not belong to project");
+      if (master.archived && !agent.conversationIds.includes(conversationId)) throw new Error("archived conversation cannot accept agents");
     }
-    this.persistThreadMemberships(id, ids, input.primaryConversationId);
-    return this.getThread(id);
+    this.persistAgentMemberships(id, ids, input.primaryConversationId);
+    return this.getAgent(id);
   }
 
   /**
-   * Permanently delete a thread: its projection rows AND its on-disk canonical
-   * log directory (`thread.json`, `events.jsonl`, artifacts, attachments). This is
-   * a whole-thread removal — a deliberate user action, distinct from the
-   * append-only rule (which forbids mutating events *within* a live thread, not
-   * discarding an entire thread). Returns false if the thread didn't exist.
+   * Permanently delete an agent: its projection rows AND its on-disk canonical
+   * log directory (`agent.json`, `events.jsonl`, artifacts, attachments). This is
+   * a whole-agent removal — a deliberate user action, distinct from the
+   * append-only rule (which forbids mutating events *within* a live agent, not
+   * discarding an entire agent). Returns false if the agent didn't exist.
    */
-  deleteThread(id: string): boolean {
-    const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
+  deleteAgent(id: string): boolean {
+    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
     if (!row) return false;
 
-    for (const child of this.listThreads(row.projectId).filter((thread) => thread.managerAgentId === id)) {
-      this.deleteThread(child.id);
+    for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
+      this.deleteAgent(child.id);
     }
 
     this.db.transaction((tx) => {
-      tx.delete(events).where(eq(events.threadId, id)).run();
-      tx.delete(artifacts).where(eq(artifacts.threadId, id)).run();
-      tx.delete(tasks).where(eq(tasks.threadId, id)).run();
-      tx.delete(messages).where(eq(messages.threadId, id)).run();
-      tx.delete(threadConversationMemberships).where(eq(threadConversationMemberships.threadId, id)).run();
-      tx.delete(threads).where(eq(threads.id, id)).run();
+      tx.delete(events).where(eq(events.agentId, id)).run();
+      tx.delete(artifacts).where(eq(artifacts.agentId, id)).run();
+      tx.delete(workItems).where(eq(workItems.agentId, id)).run();
+      tx.delete(runs).where(eq(runs.agentId, id)).run();
+      tx.delete(messages).where(eq(messages.agentId, id)).run();
+      tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
+      tx.delete(agents).where(eq(agents.id, id)).run();
     });
 
-    // Remove the on-disk thread directory (the canonical log lives here).
-    rmSync(threadDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+    // Remove the on-disk agent directory (the canonical log lives here).
+    rmSync(agentDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
 
     // Drop any cached log writer / projection state.
     this.logs.delete(id);
@@ -1439,102 +1452,63 @@ export class ThreadStore {
     return true;
   }
 
-  /** Full agent-detail hydration for GET /api/threads/:id (SPEC §8). */
-  getThreadDetail(id: string): ThreadDetailDto | undefined {
-    const thread = this.rowToThreadDto(id);
-    if (!thread) return undefined;
+  /** Full agent-detail hydration for GET /api/agents/:id (SPEC §8). */
+  getAgentDetail(id: string): AgentDetailDto | undefined {
+    const agent = this.rowToAgentDto(id);
+    if (!agent) return undefined;
     return {
-      thread,
+      agent,
       messages: this.getMessages(id),
+      runTriggers: this.readRunTriggers(agent.projectId, id),
       runOutput: this.getRunOutputs(id),
       activity: this.getActivity(id),
       changedFiles: this.getChangedFiles(id),
-      tasks: this.getTasks(id),
+      runs: this.getRuns(id),
+      workItems: this.getWorkItems(id),
       artifacts: this.getArtifacts(id),
-      state: thread.state,
+      state: agent.state,
     };
   }
 
-  getMessages(threadId: string): MessageDto[] {
-    const projectId = this.projectIdOf(threadId);
+  getMessages(agentId: string): MessageDto[] {
+    const projectId = this.projectIdOf(agentId);
     return this.db
       .select()
       .from(messages)
-      .where(eq(messages.threadId, threadId))
+      .where(eq(messages.agentId, agentId))
       .orderBy(asc(messages.seq))
       .all()
       .map((r) => {
         const communication = r.communicationEventId
           ? this.getCommunicationEvent(projectId, r.communicationEventId)
           : undefined;
-        const authorThreadId = communication?.sender.kind === "agent"
+        const authorAgentId = communication?.sender.kind === "agent"
           ? communication.sender.agentId
           : undefined;
         return {
           id: r.id,
           communicationEventId: r.communicationEventId ?? undefined,
-          threadId: r.threadId,
+          agentId: r.agentId,
           seq: r.seq,
-          role: authorThreadId ? "assistant" : r.role === "user" ? "user" : "assistant",
+          role: authorAgentId ? "assistant" : r.role === "user" ? "user" : "assistant",
           text: r.text,
           createdAt: r.createdAt,
-          ...(authorThreadId ? { authorThreadId } : {}),
+          ...(authorAgentId ? { authorAgentId } : {}),
           replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
           attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
         } satisfies MessageDto;
       });
   }
 
-  /**
-   * Completed ordinary responses are read from the canonical thread log. Legacy
-   * text events are grouped by their surrounding execution and fail closed into
-   * Work log rather than being inferred as communication.
-   */
-  getRunOutputs(threadId: string): RunOutputDto[] {
-    const storedEvents = this.readEvents(threadId);
-    const completedExecutionIds = new Set(storedEvents.flatMap(({ event }) =>
-      event.type === "agent_output" ? [event.executionId] : [],
-    ));
+  /** Completed ordinary responses are read only from canonical agent_output records. */
+  getRunOutputs(agentId: string): RunOutputDto[] {
     const entries: RunOutputDto[] = [];
-    const legacy = new Map<string, { text: string; firstSeq: number; lastSeq: number; createdAt: string }>();
-    let activeExecutionId: string | undefined;
-    let fallbackExecutionId: string | undefined;
-
-    for (const stored of storedEvents) {
+    for (const stored of this.readEvents(agentId)) {
       const { event } = stored;
-      if (event.type === "agent_lifecycle" && event.status === "running") {
-        activeExecutionId = event.executionId;
-        fallbackExecutionId = undefined;
-      } else if (event.type === "user_message") {
-        fallbackExecutionId = undefined;
-      } else if (event.type === "text" && !event.executionId) {
-        const executionId = activeExecutionId ?? fallbackExecutionId ?? `legacy:${stored.seq}`;
-        fallbackExecutionId = executionId;
-        if (!completedExecutionIds.has(executionId)) {
-          const current = legacy.get(executionId);
-          legacy.set(executionId, current ? {
-            ...current,
-            text: `${current.text}${event.delta}`,
-            lastSeq: stored.seq,
-            createdAt: stored.ts,
-          } : {
-            text: event.delta,
-            firstSeq: stored.seq,
-            lastSeq: stored.seq,
-            createdAt: stored.ts,
-          });
-        }
-      } else if (event.type === "turn_done") {
-        fallbackExecutionId = undefined;
-      } else if (event.type === "agent_lifecycle" && event.status !== "running" && event.executionId === activeExecutionId) {
-        activeExecutionId = undefined;
-        fallbackExecutionId = undefined;
-      }
-
       if (event.type === "agent_output" && event.text.trim()) {
         entries.push({
-          id: `${threadId}:runOutput:${stored.seq}`,
-          threadId,
+          id: `${agentId}:runOutput:${stored.seq}`,
+          agentId,
           executionId: event.executionId,
           kind: "response",
           text: event.text,
@@ -1546,37 +1520,21 @@ export class ThreadStore {
         });
       }
     }
-
-    for (const [executionId, item] of legacy) {
-      if (!item.text.trim()) continue;
-      entries.push({
-        id: `${threadId}:runOutput:legacy:${item.lastSeq}`,
-        threadId,
-        executionId,
-        kind: "response",
-        text: item.text,
-        completed: true,
-        seq: item.lastSeq,
-        sourceSeqStart: item.firstSeq,
-        sourceSeqEnd: item.lastSeq,
-        createdAt: item.createdAt,
-      });
-    }
     return entries.sort((a, b) => a.seq - b.seq);
   }
 
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
-  getActivity(threadId: string): AgentActivityDto[] {
+  getActivity(agentId: string): AgentActivityDto[] {
     const activityTypes = new Set(["command", "file_change", "test_result", "tool_call", "tool_result", "error"]);
     let activeExecutionId: string | undefined;
     const result: AgentActivityDto[] = [];
-    for (const stored of this.readEvents(threadId)) {
+    for (const stored of this.readEvents(agentId)) {
       const event = stored.event;
       if (event.type === "agent_lifecycle" && event.status === "running") activeExecutionId = event.executionId;
       if (activityTypes.has(event.type)) {
         result.push({
-          id: `${threadId}:activity:${stored.seq}`,
-          threadId,
+          id: `${agentId}:activity:${stored.seq}`,
+          agentId,
           ...(activeExecutionId ? { executionId: activeExecutionId } : {}),
           seq: stored.seq,
           createdAt: stored.ts,
@@ -1591,9 +1549,9 @@ export class ThreadStore {
   }
 
   /** One persistent row per touched path, retaining the latest canonical change and executions. */
-  getChangedFiles(threadId: string): ChangedFileDto[] {
+  getChangedFiles(agentId: string): ChangedFileDto[] {
     const byPath = new Map<string, ChangedFileDto>();
-    for (const item of this.getActivity(threadId)) {
+    for (const item of this.getActivity(agentId)) {
       if (item.event.type !== "file_change") continue;
       const previous = byPath.get(item.event.path);
       const executionIds = [...(previous?.executionIds ?? [])];
@@ -1610,21 +1568,21 @@ export class ThreadStore {
     return [...byPath.values()].sort((a, b) => a.lastSeq - b.lastSeq);
   }
 
-  getProjectedThreadMessages(threadId: string): MessageDto[] {
-    const thread = this.getThread(threadId);
-    if (!thread) return [];
-    return this.readProjectedCommunicationMessages(thread.projectId, "direct_agent_audit", threadId)
+  getProjectedAgentMessages(agentId: string): MessageDto[] {
+    const agent = this.getAgent(agentId);
+    if (!agent) return [];
+    return this.readProjectedCommunicationMessages(agent.projectId, "direct_agent_audit", agentId)
       .flatMap((message) => {
         if (message.sequence === undefined || message.role === "system") return [];
         return [{
           id: message.messageId,
           communicationEventId: message.eventId,
-          threadId,
+          agentId,
           seq: message.sequence,
           role: message.role,
           text: message.text,
           createdAt: message.createdAt,
-          ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
+          ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(message.document ? { document: message.document } : {}),
@@ -1632,59 +1590,80 @@ export class ThreadStore {
       });
   }
 
-  getTasks(threadId: string): TaskDto[] {
+  getRuns(agentId: string): AgentRunDto[] {
     return this.db
       .select()
-      .from(tasks)
-      .where(eq(tasks.threadId, threadId))
-      .orderBy(asc(tasks.createdAt))
+      .from(runs)
+      .where(eq(runs.agentId, agentId))
+      .orderBy(asc(runs.startedAt))
       .all()
       .map((r) => ({
         id: r.id,
-        threadId: r.threadId,
+        agentId: r.agentId,
         title: r.title,
-        status: r.status as TaskStatus,
+        status: r.status as AgentRunStatus,
+        reason: r.reason as AgentLifecycleReason,
         engine: r.engine,
+        communicationEventId: r.communicationEventId ?? undefined,
+        startedAt: r.startedAt,
+        updatedAt: r.updatedAt,
+        completedAt: r.completedAt ?? undefined,
+      }));
+  }
+
+  getWorkItems(agentId: string): WorkItemDto[] {
+    return this.db
+      .select()
+      .from(workItems)
+      .where(eq(workItems.agentId, agentId))
+      .orderBy(asc(workItems.createdAt))
+      .all()
+      .map((r) => ({
+        id: r.id,
+        agentId: r.agentId,
+        executionId: r.executionId ?? undefined,
+        title: r.title,
+        status: r.status as WorkItemStatus,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
       }));
   }
 
-  getArtifacts(threadId: string): ArtifactDto[] {
-    const generatedPdfs = new Map(this.readEvents(threadId).flatMap((stored) =>
+  getArtifacts(agentId: string): ArtifactDto[] {
+    const generatedPdfs = new Map(this.readEvents(agentId).flatMap((stored) =>
       stored.event.type === "file_change" && stored.event.path.toLowerCase().endsWith(".pdf")
-        ? [[artifactId(threadId, stored.seq, 0), stored.event.path] as const]
+        ? [[artifactId(agentId, stored.seq, 0), stored.event.path] as const]
         : [],
     ));
-    const thread = this.getThread(threadId);
+    const agent = this.getAgent(agentId);
     return this.db
       .select()
       .from(artifacts)
-      .where(eq(artifacts.threadId, threadId))
+      .where(eq(artifacts.agentId, agentId))
       .orderBy(asc(artifacts.createdAt))
       .all()
       .map((r) => {
         const generatedPath = generatedPdfs.get(r.id);
-        if (generatedPath && thread) {
-          const root = `/api/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(threadId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
+        if (generatedPath && agent) {
+          const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
           return {
-            id: r.id, threadId: r.threadId, taskId: r.taskId ?? undefined,
+            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
             kind: "document" as const, path: generatedPath, summary: generatedPath,
             createdAt: r.createdAt, mediaType: "application/pdf" as const,
             previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
           };
         }
         return {
-          id: r.id, threadId: r.threadId, taskId: r.taskId ?? undefined,
+          id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
           kind: r.kind as ArtifactKind, path: r.path, summary: r.summary ?? undefined,
           createdAt: r.createdAt,
         };
       });
   }
 
-  getGeneratedPdfPath(threadId: string, artifactIdValue: string): string | undefined {
-    const stored = this.readEvents(threadId).find((candidate) =>
-      artifactId(threadId, candidate.seq, 0) === artifactIdValue &&
+  getGeneratedPdfPath(agentId: string, artifactIdValue: string): string | undefined {
+    const stored = this.readEvents(agentId).find((candidate) =>
+      artifactId(agentId, candidate.seq, 0) === artifactIdValue &&
       candidate.event.type === "file_change" &&
       candidate.event.path.toLowerCase().endsWith(".pdf")
     );
@@ -1693,17 +1672,17 @@ export class ThreadStore {
       : undefined;
   }
 
-  getArtifact(threadId: string, artifactId: string): ArtifactDto | undefined {
+  getArtifact(agentId: string, artifactId: string): ArtifactDto | undefined {
     const r = this.db
       .select()
       .from(artifacts)
       .where(eq(artifacts.id, artifactId))
       .get();
-    if (!r || r.threadId !== threadId) return undefined;
+    if (!r || r.agentId !== agentId) return undefined;
     return {
       id: r.id,
-      threadId: r.threadId,
-      taskId: r.taskId ?? undefined,
+      agentId: r.agentId,
+      executionId: r.executionId ?? undefined,
       kind: r.kind as ArtifactKind,
       path: r.path,
       summary: r.summary ?? undefined,
@@ -1714,28 +1693,37 @@ export class ThreadStore {
   // ─── Event log (append-only) + projection ──────────────────────────────────
 
   /**
-   * Append one event to a thread's canonical log AND update its projections.
+   * Append one event to an agent's canonical log AND update its projections.
    * The log write happens (and fsyncs) BEFORE the projection, so the log is always
    * complete for replay (SPEC §8: log write before broadcast). Returns the stored
    * event (seq + ts) so the caller can broadcast it over SSE.
    */
-  appendEvent(threadId: string, event: LogEvent): StoredLogEvent {
-    const projectId = this.projectIdOf(threadId);
-    const log = this.logFor(threadId, projectId);
-    const stored = log.append(event);
-
-    const state = this.stateFor(threadId, projectId);
-    const { state: nextState, ops } = projectEvent(threadId, state, stored);
-    this.states.set(threadId, nextState);
-    this.applyOps(threadId, projectId, ops);
+  appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
+    const projectId = this.projectIdOf(agentId);
     const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
       ? event.communicationEventId : undefined;
-    const message = communicationMessageProjection(threadId, stored);
+    if (communicationEventId && !this.communicationProjectionAllowed(projectId, {
+      eventId: communicationEventId,
+      surface: "direct_agent_audit",
+      projectionKey: agentId,
+    })) {
+      // Scope validation must precede the canonical agent append. A rejected
+      // projection may not leave an unprojectable user_message in events.jsonl.
+      throw new Error("communication scope cannot project to requested surface");
+    }
+    const log = this.logFor(agentId, projectId);
+    const stored = log.append(event);
+
+    const state = this.stateFor(agentId, projectId);
+    const { state: nextState, ops } = projectEvent(agentId, state, stored);
+    this.states.set(agentId, nextState);
+    this.applyOps(agentId, projectId, ops);
+    const message = communicationMessageProjection(agentId, stored);
     if (communicationEventId && message) {
       this.appendCommunicationProjection(projectId, {
         eventId: communicationEventId,
         surface: "direct_agent_audit",
-        projectionKey: threadId,
+        projectionKey: agentId,
         projectedAt: stored.ts,
         message,
       });
@@ -1743,16 +1731,16 @@ export class ThreadStore {
     return stored;
   }
 
-  readEvents(threadId: string): StoredLogEvent[] {
-    return this.logFor(threadId, this.projectIdOf(threadId)).readAll();
+  readEvents(agentId: string): StoredLogEvent[] {
+    return this.logFor(agentId, this.projectIdOf(agentId)).readAll();
   }
 
-  readEventsSince(threadId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.logFor(threadId, this.projectIdOf(threadId)).readSince(sinceSeq);
+  readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
+    return this.logFor(agentId, this.projectIdOf(agentId)).readSince(sinceSeq);
   }
 
-  lastSeqOf(threadId: string): number {
-    const evs = this.readEvents(threadId);
+  lastSeqOf(agentId: string): number {
+    const evs = this.readEvents(agentId);
     return evs.length === 0 ? 0 : (evs[evs.length - 1]?.seq ?? 0);
   }
 
@@ -1766,11 +1754,11 @@ export class ThreadStore {
   rebuildProjections(): void {
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
-    this.db.delete(tasks).run();
+    this.db.delete(workItems).run();
+    this.db.delete(runs).run();
     this.db.delete(messages).run();
-    this.db.delete(threads).run();
-    this.db.delete(threadConversationMemberships).run();
-    this.db.delete(conversationMessages).run();
+    this.db.delete(agents).run();
+    this.db.delete(agentConversationMemberships).run();
     this.db.delete(conversations).run();
     this.db.delete(projects).run();
     this.db.delete(agentPresets).run();
@@ -1824,40 +1812,21 @@ export class ThreadStore {
               archived: m.archived ? 1 : 0,
             })
             .run();
-          for (const [channel, messagePath] of [
-            ["main", conversationMessagesPath(this.dataDir, projectId, conversationId)],
-            ["collaboration", collaborationMessagesPath(this.dataDir, projectId, conversationId)],
-          ] as const) {
-            for (const message of readJsonLines<ConversationMessageJson>(messagePath)) {
-              this.db.insert(conversationMessages).values({
-                id: message.id,
-                communicationEventId: message.communicationEventId ?? null,
-                conversationId: message.conversationId,
-                role: message.role,
-                text: message.text,
-                createdAt: message.createdAt,
-                authorThreadId: message.authorThreadId,
-                channel: message.channel ?? channel,
-                replyToJson: message.replyTo ? JSON.stringify(message.replyTo) : null,
-                attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
-              }).run();
-            }
-          }
         }
       }
 
-      const tDir = threadsDir(this.dataDir, projectId);
+      const tDir = agentsDir(this.dataDir, projectId);
       if (!existsSync(tDir)) continue;
-      for (const threadId of readdirSync(tDir)) {
-        const tj = threadJsonPath(this.dataDir, projectId, threadId);
+      for (const agentId of readdirSync(tDir)) {
+        const tj = agentJsonPath(this.dataDir, projectId, agentId);
         if (!existsSync(tj)) continue;
-        const t = readJson<ThreadJson>(tj);
+        const t = readJson<AgentJson>(tj);
         const membershipIds = [...new Set(t.conversationIds ?? (t.conversationId ? [t.conversationId] : []))];
         const primaryConversationId = t.conversationId && membershipIds.includes(t.conversationId)
           ? t.conversationId
           : membershipIds[0];
         this.db
-          .insert(threads)
+          .insert(agents)
           .values({
             id: t.id,
             projectId: t.projectId,
@@ -1876,22 +1845,22 @@ export class ThreadStore {
           })
           .run();
         membershipIds.forEach((conversationId, position) => {
-          this.db.insert(threadConversationMemberships).values({ threadId: t.id, conversationId, position }).run();
+          this.db.insert(agentConversationMemberships).values({ agentId: t.id, conversationId, position }).run();
         });
         if (t.conversationIds === undefined || t.conversationId !== primaryConversationId) {
           writeJson(tj, { ...t, conversationId: primaryConversationId, conversationIds: membershipIds });
         }
 
-        const logFile = eventsPath(this.dataDir, projectId, threadId);
-        rmSync(artifactsDir(this.dataDir, projectId, threadId), {
+        const logFile = eventsPath(this.dataDir, projectId, agentId);
+        rmSync(artifactsDir(this.dataDir, projectId, agentId), {
           recursive: true,
           force: true,
         });
-        mkdirSync(artifactsDir(this.dataDir, projectId, threadId), { recursive: true });
+        mkdirSync(artifactsDir(this.dataDir, projectId, agentId), { recursive: true });
         if (!existsSync(logFile)) continue;
         const stored = new EventLog(logFile).readAll();
-        const ops = projectAll(threadId, stored, t.activeEngine);
-        this.applyOps(threadId, projectId, ops);
+        const ops = projectAll(agentId, stored, t.activeEngine);
+        this.applyOps(agentId, projectId, ops);
       }
       this.sanitizeOrganizationProjection(projectId);
     }
@@ -1903,10 +1872,10 @@ export class ThreadStore {
 
   // ─── internals ─────────────────────────────────────────────────────────────
 
-  private applyOps(threadId: string, projectId: string, ops: ProjectionOp[]): void {
+  private applyOps(agentId: string, projectId: string, ops: ProjectionOp[]): void {
     for (const op of ops) {
       if (op.kind === "insert_artifact" && op.content !== undefined) {
-        const target = artifactContentPath(this.dataDir, projectId, threadId, op.row.path);
+        const target = artifactContentPath(this.dataDir, projectId, agentId, op.row.path);
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, op.content, "utf8");
       }
@@ -1926,42 +1895,59 @@ export class ThreadStore {
           case "insert_artifact":
             tx.insert(artifacts).values(op.row).onConflictDoNothing().run();
             break;
-          case "insert_task":
-            tx.insert(tasks)
+          case "insert_run":
+            tx.insert(runs)
               .values(op.row)
               .onConflictDoUpdate({
-                target: tasks.id,
+                target: [runs.agentId, runs.id],
                 set: {
                   title: op.row.title,
                   status: op.row.status,
+                  reason: op.row.reason,
                   engine: op.row.engine,
+                  communicationEventId: op.row.communicationEventId,
+                  updatedAt: op.row.updatedAt,
+                  completedAt: op.row.completedAt,
+                },
+              })
+              .run();
+            break;
+          case "update_run":
+            tx.update(runs)
+              .set({ status: op.status, reason: op.reason, updatedAt: op.updatedAt, completedAt: op.completedAt })
+              .where(and(eq(runs.agentId, agentId), eq(runs.id, op.id)))
+              .run();
+            break;
+          case "insert_work_item":
+            tx.insert(workItems)
+              .values(op.row)
+              .onConflictDoUpdate({
+                target: workItems.id,
+                set: {
+                  executionId: op.row.executionId,
+                  title: op.row.title,
+                  status: op.row.status,
                   updatedAt: op.row.updatedAt,
                 },
               })
               .run();
             break;
-          case "update_task":
-            tx.update(tasks)
-              .set({ status: op.status, updatedAt: op.updatedAt })
-              .where(eq(tasks.id, op.id))
-              .run();
-            break;
           case "set_session":
-            tx.update(threads)
+            tx.update(agents)
               .set({ activeSessionId: op.sessionId })
-              .where(eq(threads.id, threadId))
+              .where(eq(agents.id, agentId))
               .run();
             break;
           case "set_state":
-            tx.update(threads)
+            tx.update(agents)
               .set({ stateBranch: op.branch ?? null, stateCommit: op.commit ?? null })
-              .where(eq(threads.id, threadId))
+              .where(eq(agents.id, agentId))
               .run();
             break;
-          case "touch_thread":
-            tx.update(threads)
+          case "touch_agent":
+            tx.update(agents)
               .set({ updatedAt: op.updatedAt })
-              .where(eq(threads.id, threadId))
+              .where(eq(agents.id, agentId))
               .run();
             break;
         }
@@ -1970,9 +1956,9 @@ export class ThreadStore {
   }
 
   private sanitizeOrganizationProjection(projectId: string): void {
-    const agents = this.listThreads(projectId);
-    const byId = new Map(agents.map((agent) => [agent.id, agent]));
-    for (const agent of agents) {
+    const projectAgents = this.listAgents(projectId);
+    const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
+    for (const agent of projectAgents) {
       if (!agent.managerAgentId) continue;
       const seen = new Set<string>([agent.id]);
       let parentId: string | undefined = agent.managerAgentId;
@@ -1986,69 +1972,69 @@ export class ThreadStore {
         seen.add(parentId);
         parentId = parent.managerAgentId;
       }
-      if (!valid) this.db.update(threads).set({ managerAgentId: null }).where(eq(threads.id, agent.id)).run();
+      if (!valid) this.db.update(agents).set({ managerAgentId: null }).where(eq(agents.id, agent.id)).run();
     }
   }
 
-  private projectIdOf(threadId: string): string {
+  private projectIdOf(agentId: string): string {
     const row = this.db
-      .select({ projectId: threads.projectId })
-      .from(threads)
-      .where(eq(threads.id, threadId))
+      .select({ projectId: agents.projectId })
+      .from(agents)
+      .where(eq(agents.id, agentId))
       .get();
-    if (!row) throw new Error(`unknown thread: ${threadId}`);
+    if (!row) throw new Error(`unknown agent: ${agentId}`);
     return row.projectId;
   }
 
-  private logFor(threadId: string, projectId: string): EventLog {
-    let log = this.logs.get(threadId);
+  private logFor(agentId: string, projectId: string): EventLog {
+    let log = this.logs.get(agentId);
     if (!log) {
-      log = new EventLog(eventsPath(this.dataDir, projectId, threadId));
-      this.logs.set(threadId, log);
+      log = new EventLog(eventsPath(this.dataDir, projectId, agentId));
+      this.logs.set(agentId, log);
     }
     return log;
   }
 
-  private stateFor(threadId: string, projectId: string): ProjectionState {
-    let state = this.states.get(threadId);
+  private stateFor(agentId: string, projectId: string): ProjectionState {
+    let state = this.states.get(agentId);
     if (!state) {
       // Rebuild the in-memory reducer state by folding the existing log.
-      const engine = this.activeEngineOf(threadId);
+      const engine = this.activeEngineOf(agentId);
       state = initProjectionState(engine);
-      const existing = new EventLog(eventsPath(this.dataDir, projectId, threadId)).readAll();
+      const existing = new EventLog(eventsPath(this.dataDir, projectId, agentId)).readAll();
       for (const stored of existing) {
-        state = projectEvent(threadId, state, stored).state;
+        state = projectEvent(agentId, state, stored).state;
       }
-      this.states.set(threadId, state);
+      this.states.set(agentId, state);
     }
     return state;
   }
 
-  private activeEngineOf(threadId: string): string {
+  private activeEngineOf(agentId: string): string {
     const row = this.db
-      .select({ engine: threads.activeEngine })
-      .from(threads)
-      .where(eq(threads.id, threadId))
+      .select({ engine: agents.activeEngine })
+      .from(agents)
+      .where(eq(agents.id, agentId))
       .get();
     return row?.engine ?? "codex";
   }
 
-  private rowToThreadDto(id: string): ThreadDto | undefined {
-    const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
-    return row ? this.threadRowToDto(row) : undefined;
+  private rowToAgentDto(id: string): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
+    return row ? this.agentRowToDto(row) : undefined;
   }
 
-  private threadRowToDto(row: typeof threads.$inferSelect): ThreadDto {
-    const state: ThreadState = {};
+  private agentRowToDto(row: typeof agents.$inferSelect): AgentDto {
+    const state: AgentState = {};
     if (row.stateBranch) state.branch = row.stateBranch;
     if (row.stateCommit) state.commit = row.stateCommit;
     return {
       id: row.id,
       projectId: row.projectId,
       conversationId: row.conversationId ?? undefined,
-      conversationIds: this.db.select().from(threadConversationMemberships)
-        .where(eq(threadConversationMemberships.threadId, row.id))
-        .orderBy(asc(threadConversationMemberships.position)).all().map((membership) => membership.conversationId),
+      conversationIds: this.db.select().from(agentConversationMemberships)
+        .where(eq(agentConversationMemberships.agentId, row.id))
+        .orderBy(asc(agentConversationMemberships.position)).all().map((membership) => membership.conversationId),
       title: row.title,
       activeEngine: row.activeEngine,
       state,
@@ -2059,25 +2045,25 @@ export class ThreadStore {
       spawnedByAgentId: row.spawnedByAgentId ?? undefined,
       spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
       spawnPrompt: row.spawnPrompt ?? undefined,
-      presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as ThreadDto["presetSnapshot"] : undefined,
+      presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as AgentDto["presetSnapshot"] : undefined,
     };
   }
 
 
-  private persistThreadMemberships(id: string, conversationIds: string[], primaryConversationId?: string): void {
-    const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
-    if (!row) throw new Error(`unknown thread: ${id}`);
+  private persistAgentMemberships(id: string, conversationIds: string[], primaryConversationId?: string): void {
+    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
+    if (!row) throw new Error(`unknown agent: ${id}`);
     const now = new Date().toISOString();
-    const jsonPath = threadJsonPath(this.dataDir, row.projectId, id);
-    const json = readJson<ThreadJson>(jsonPath);
+    const jsonPath = agentJsonPath(this.dataDir, row.projectId, id);
+    const json = readJson<AgentJson>(jsonPath);
     // Canonical metadata is committed first; SQLite remains a rebuildable projection.
     writeJson(jsonPath, { ...json, conversationId: primaryConversationId, conversationIds, updatedAt: now });
     this.db.transaction((tx) => {
-      tx.delete(threadConversationMemberships).where(eq(threadConversationMemberships.threadId, id)).run();
+      tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
       conversationIds.forEach((conversationId, position) => {
-        tx.insert(threadConversationMemberships).values({ threadId: id, conversationId, position }).run();
+        tx.insert(agentConversationMemberships).values({ agentId: id, conversationId, position }).run();
       });
-      tx.update(threads).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(threads.id, id)).run();
+      tx.update(agents).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(agents.id, id)).run();
     });
   }
 
@@ -2095,14 +2081,14 @@ export class ThreadStore {
     };
   }
 
-  /** The engine session id to resume for a thread (undefined if none yet). */
-  resumeSessionId(threadId: string): string | undefined {
+  /** The engine session id to resume for an agent (undefined if none yet). */
+  resumeSessionId(agentId: string): string | undefined {
     const row = this.db
       .select({
-        sessionId: threads.activeSessionId,
+        sessionId: agents.activeSessionId,
       })
-      .from(threads)
-      .where(eq(threads.id, threadId))
+      .from(agents)
+      .where(eq(agents.id, agentId))
       .get();
     if (!row) return undefined;
     return row.sessionId ?? undefined;
@@ -2110,21 +2096,21 @@ export class ThreadStore {
 
   /**
    * Forget only the provider runtime session so the next turn seeds a fresh
-   * session from canonical history. Thread identity, memberships, event logs,
+   * session from canonical history. Agent identity, memberships, event logs,
    * and queued collaboration deliveries are intentionally untouched.
    */
   clearResumeSession(
-    threadId: string,
+    agentId: string,
     reason: "explicit_compaction" | "resume_compaction_failed",
   ): boolean {
     const row = this.db
-      .select({ id: threads.id, activeSessionId: threads.activeSessionId })
-      .from(threads)
-      .where(eq(threads.id, threadId))
+      .select({ id: agents.id, activeSessionId: agents.activeSessionId })
+      .from(agents)
+      .where(eq(agents.id, agentId))
       .get();
     if (!row?.activeSessionId) return false;
 
-    this.appendEvent(threadId, { type: "session_reset", reason });
+    this.appendEvent(agentId, { type: "session_reset", reason });
     return true;
   }
 }

@@ -57,10 +57,10 @@ export function useCollaborationView(conversationId: string | undefined) {
   });
 }
 
-export function useThreads(projectId: string | undefined) {
+export function useAgents(projectId: string | undefined) {
   return useQuery({
-    queryKey: ["threads", projectId],
-    queryFn: () => api.listThreads(projectId ?? ""),
+    queryKey: ["agents", projectId],
+    queryFn: () => api.listAgents(projectId ?? ""),
     enabled: Boolean(projectId),
   });
 }
@@ -68,11 +68,11 @@ export function useAgentPresets(projectId: string | undefined) {
   return useQuery({ queryKey: ["agent-presets", projectId], queryFn: () => api.listAgentPresets(projectId ?? ""), enabled: Boolean(projectId) });
 }
 
-export function useThread(threadId: string | undefined) {
+export function useAgent(agentId: string | undefined) {
   return useQuery({
-    queryKey: ["thread", threadId],
-    queryFn: () => api.getThread(threadId ?? ""),
-    enabled: Boolean(threadId),
+    queryKey: ["agent", agentId],
+    queryFn: () => api.getAgent(agentId ?? ""),
+    enabled: Boolean(agentId),
   });
 }
 

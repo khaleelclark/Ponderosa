@@ -15,9 +15,9 @@ describe("UserReactionStore", () => {
       idempotencyKey: "reaction-1",
       projectId: "project-1",
       communicationEventId: "communication-1",
-      targetAuthorThreadId: "agent-1",
+      targetAuthorAgentId: "agent-1",
       emoji: "🧑🏽‍🚀",
-      replyTo: { messageId: "message-1", text: "Original answer", role: "assistant" as const, authorThreadId: "agent-1" },
+      replyTo: { messageId: "message-1", text: "Original answer", role: "assistant" as const, authorAgentId: "agent-1" },
     };
     const first = new UserReactionStore(dir).set(input);
     expect(first.replayed).toBe(false);

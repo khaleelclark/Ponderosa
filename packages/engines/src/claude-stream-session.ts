@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
   OpenRuntimeSessionOptions,
@@ -19,7 +20,7 @@ interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
 }
 
 export class ClaudeStreamSession implements RuntimeSession {
-  readonly engineThreadId: string;
+  readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   private readonly child: ChildProcess;
   private active = false;
@@ -28,7 +29,18 @@ export class ClaudeStreamSession implements RuntimeSession {
   private killTimer?: NodeJS.Timeout;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
-    this.engineThreadId = opts.resumeSessionId ?? randomUUID();
+    this.engineAgentId = opts.resumeSessionId ?? randomUUID();
+    const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
+      ? JSON.stringify({
+          mcpServers: {
+            ponderosa: {
+              type: "stdio",
+              command: process.execPath,
+              args: [fileURLToPath(new URL("./ponderosa-mcp.js", import.meta.url))],
+            },
+          },
+        })
+      : undefined;
     const args = [
       "-p",
       "--input-format", "stream-json",
@@ -36,9 +48,10 @@ export class ClaudeStreamSession implements RuntimeSession {
       "--verbose",
       "--replay-user-messages",
       "--permission-mode", opts.permissionMode,
+      ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.effort ? ["--effort", opts.effort] : []),
-      ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineThreadId]),
+      ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
     ];
     this.child = (opts.spawnFn ?? nodeSpawn)(opts.bin, args, {
       cwd: opts.cwd,
@@ -91,7 +104,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     const frame = {
       type: "user",
       uuid: id,
-      session_id: this.engineThreadId,
+      session_id: this.engineAgentId,
       message: { role: "user", content: [{ type: "text", text: prompt }] },
     };
     await new Promise<void>((resolve, reject) => {

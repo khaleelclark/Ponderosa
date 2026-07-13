@@ -4,7 +4,7 @@ import path from "node:path";
 export type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface RunClaim {
-  threadId: string;
+  agentId: string;
   runId: string;
   generation: number;
   state: RuntimeOwnershipState;
@@ -20,7 +20,7 @@ export interface RunClaim {
 }
 
 type RunRecord = { type: "claim" | "transition"; claim: RunClaim };
-export type RunFence = Pick<RunClaim, "threadId" | "runId" | "generation">;
+export type RunFence = Pick<RunClaim, "agentId" | "runId" | "generation">;
 
 /** Append-only evidence backing the server's authoritative ActiveRun CAS. */
 export class RunLedger {
@@ -35,7 +35,7 @@ export class RunLedger {
     for (const line of readFileSync(this.file, "utf8").split("\n")) {
       if (!line) continue;
       const record = JSON.parse(line) as RunRecord;
-      this.claims.set(record.claim.threadId, record.claim);
+      this.claims.set(record.claim.agentId, record.claim);
     }
     for (const claim of [...this.claims.values()]) {
       if (["running", "stalled", "cancelling"].includes(claim.state)) {
@@ -44,42 +44,42 @@ export class RunLedger {
     }
   }
 
-  current(threadId: string): RunClaim | undefined { return this.claims.get(threadId); }
+  current(agentId: string): RunClaim | undefined { return this.claims.get(agentId); }
   all(): RunClaim[] { return [...this.claims.values()]; }
 
-  claim(threadId: string, runId: string, deliveryIds?: string[], now = new Date().toISOString()): RunClaim {
-    const current = this.claims.get(threadId);
-    if (current && ["running", "stalled", "cancelling"].includes(current.state)) throw new Error("thread already has durable runtime ownership");
+  claim(agentId: string, runId: string, deliveryIds?: string[], now = new Date().toISOString()): RunClaim {
+    const current = this.claims.get(agentId);
+    if (current && ["running", "stalled", "cancelling"].includes(current.state)) throw new Error("agent already has durable runtime ownership");
     return this.persist({
-      threadId, runId, generation: (current?.generation ?? 0) + 1,
+      agentId, runId, generation: (current?.generation ?? 0) + 1,
       state: "running", createdAt: now, updatedAt: now,
       ...(deliveryIds?.length ? { deliveryIds: [...deliveryIds] } : {}),
     }, "claim");
   }
 
   owns(fence: RunFence): boolean {
-    const current = this.claims.get(fence.threadId);
+    const current = this.claims.get(fence.agentId);
     return current?.runId === fence.runId && current.generation === fence.generation &&
       ["running", "stalled", "cancelling"].includes(current.state);
   }
 
   transition(fence: RunFence, state: RuntimeOwnershipState, patch: Partial<RunClaim> = {}): RunClaim | undefined {
     if (!this.owns(fence)) return undefined;
-    const current = this.claims.get(fence.threadId)!;
+    const current = this.claims.get(fence.agentId)!;
     return this.persist({ ...current, ...patch, ...fence, state, updatedAt: patch.updatedAt ?? new Date().toISOString() }, "transition");
   }
 
-  deleteThreads(threadIds: ReadonlySet<string>): void {
-    for (const threadId of threadIds) this.claims.delete(threadId);
+  deleteAgents(agentIds: ReadonlySet<string>): void {
+    for (const agentId of agentIds) this.claims.delete(agentId);
     const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
       .map((line) => JSON.parse(line) as RunRecord)
-      .filter((record) => !threadIds.has(record.claim.threadId));
+      .filter((record) => !agentIds.has(record.claim.agentId));
     writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 
   private persist(claim: RunClaim, type: RunRecord["type"]): RunClaim {
     appendFileSync(this.file, `${JSON.stringify({ type, claim } satisfies RunRecord)}\n`, "utf8");
-    this.claims.set(claim.threadId, claim);
+    this.claims.set(claim.agentId, claim);
     return claim;
   }
 }

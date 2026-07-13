@@ -1,4 +1,4 @@
-// The append-only event log for one thread (SPEC §4/§7). This is the canonical
+// The append-only event log for one agent (SPEC §4/§7). This is the canonical
 // source of truth; SQLite is a rebuildable projection over it. The public surface
 // is append-only by construction — there is NO update or delete of events
 // (AGENTS.md invariant 3).
@@ -47,10 +47,10 @@ export function lastSeq(file: string): number {
 }
 
 /**
- * An append-only writer bound to one thread's `events.jsonl`. Tracks the next seq
+ * An append-only writer bound to one agent's `events.jsonl`. Tracks the next seq
  * in memory (seeded from disk on open) and fsyncs each append so a crash can't lose
  * an acknowledged event. Not safe for concurrent writers to the same file — the
- * session manager guarantees one active run per thread (SPEC §8).
+ * session manager guarantees one active run per agent (SPEC §8).
  */
 export class EventLog {
   private nextSeq: number;

@@ -54,6 +54,7 @@ export interface JsonRpcProcessOptions {
   signal: AbortSignal;
   spawnFn?: SpawnFn;
   killGraceMs?: number;
+  handleServerRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 
 /** Minimal JSONL JSON-RPC client for subscription-authenticated engine daemons. */
@@ -137,10 +138,29 @@ export class JsonRpcProcess {
       return;
     }
     if (message.id !== undefined && message.method) {
-      this.write({ id: message.id, error: { code: -32601, message: `unsupported server request: ${message.method}` } });
+      void this.respondToServerRequest(message.id, message.method, message.params);
       return;
     }
     if (message.method) this.queue.push({ method: message.method, params: message.params });
+  }
+
+  private async respondToServerRequest(id: RpcId, method: string, params: unknown): Promise<void> {
+    if (!this.opts.handleServerRequest) {
+      this.write({ id, error: { code: -32601, message: `unsupported server request: ${method}` } });
+      return;
+    }
+    try {
+      const result = await this.opts.handleServerRequest(method, params);
+      this.write({ id, result });
+    } catch (error) {
+      this.write({
+        id,
+        error: {
+          code: -32000,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   private finish(error?: Error): void {

@@ -7,12 +7,12 @@ import type {
   CreateConversationMessageRequest,
   CreateConversationRequest,
   CreateProjectRequest,
-  CreateThreadRequest,
+  CreateAgentRequest,
   ConversationDetailDto,
   ConversationDto,
   UpdateConversationRequest,
-  UpdateThreadRequest,
-  UpdateThreadConversationMembershipsRequest,
+  UpdateAgentRequest,
+  UpdateAgentConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   EngineDto,
   ImageAttachmentDto,
@@ -26,8 +26,8 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  ThreadDetailDto,
-  ThreadDto,
+  AgentDetailDto,
+  AgentDto,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription } from "./types";
 
@@ -147,19 +147,19 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
   },
-  listThreads(projectId) {
-    return requestJson<ThreadDto[]>(`/api/projects/${encodeURIComponent(projectId)}/threads`);
+  listAgents(projectId) {
+    return requestJson<AgentDto[]>(`/api/projects/${encodeURIComponent(projectId)}/agents`);
   },
-  createThread(projectId, request) {
-    return requestJson<ThreadDto>(`/api/projects/${encodeURIComponent(projectId)}/threads`, {
+  createAgentRecord(projectId, request) {
+    return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
       method: "POST",
-      body: JSON.stringify(request satisfies CreateThreadRequest),
+      body: JSON.stringify(request satisfies CreateAgentRequest),
     });
   },
   createAgent(projectId, conversationId, options) {
-    return this.createThread(projectId, {
+    return this.createAgentRecord(projectId, {
       title: options.title,
-      engine: options.engine as CreateThreadRequest["engine"],
+      engine: options.engine as CreateAgentRequest["engine"],
       conversationId,
       model: options.model,
       effort: options.effort,
@@ -173,29 +173,29 @@ export const realApi: PonderosaApi = {
   createAgentPreset(projectId, request) { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", body: JSON.stringify(request) }); },
   updateAgentPreset(id, patch) { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async deleteAgentPreset(id) { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
-  updateThread(threadId, patch) {
-    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}`, {
+  updateAgent(agentId, patch) {
+    return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
-      body: JSON.stringify(patch satisfies UpdateThreadRequest),
+      body: JSON.stringify(patch satisfies UpdateAgentRequest),
     });
   },
-  updateThreadConversationMemberships(threadId, membership) {
-    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/conversation-memberships`, {
+  updateAgentConversationMemberships(agentId, membership) {
+    return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}/conversation-memberships`, {
       method: "PUT",
-      body: JSON.stringify(membership satisfies UpdateThreadConversationMembershipsRequest),
+      body: JSON.stringify(membership satisfies UpdateAgentConversationMembershipsRequest),
     });
   },
-  updateAgentOrganization(threadId, organization) {
-    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/manager`, {
+  updateAgentOrganization(agentId, organization) {
+    return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}/manager`, {
       method: "PUT",
       body: JSON.stringify(organization satisfies UpdateAgentOrganizationRequest),
     });
   },
-  async deleteThread(threadId) {
-    await requestJson(`/api/threads/${encodeURIComponent(threadId)}`, { method: "DELETE" });
+  async deleteAgent(agentId) {
+    await requestJson(`/api/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
   },
-  getThread(threadId) {
-    return requestJson<ThreadDetailDto>(`/api/threads/${encodeURIComponent(threadId)}`);
+  getAgent(agentId) {
+    return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}`);
   },
   listEngines() {
     return requestJson<EngineDto[]>("/api/engines");
@@ -214,22 +214,22 @@ export const realApi: PonderosaApi = {
       `/api/projects/${encodeURIComponent(projectId)}/workspace/file${toQuery({ path })}`,
     );
   },
-  getArtifact(threadId, artifactId) {
+  getArtifact(agentId, artifactId) {
     return requestJson<ArtifactContentDto>(
-      `/api/threads/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      `/api/agents/${encodeURIComponent(agentId)}/artifacts/${encodeURIComponent(artifactId)}`,
     );
   },
   getCommunicationDocument(previewUrl) {
     return requestJson(previewUrl);
   },
-  sendMessage(threadId, request) {
-    return requestJson<SendMessageResponse>(`/api/threads/${encodeURIComponent(threadId)}/messages`, {
+  sendMessage(agentId, request) {
+    return requestJson<SendMessageResponse>(`/api/agents/${encodeURIComponent(agentId)}/messages`, {
       method: "POST",
       body: JSON.stringify(request satisfies SendMessageRequest),
     });
   },
-  uploadAttachment(threadId, file) {
-    return requestJson<ImageAttachmentDto>(`/api/threads/${encodeURIComponent(threadId)}/attachments`, {
+  uploadAttachment(agentId, file) {
+    return requestJson<ImageAttachmentDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",
@@ -239,18 +239,18 @@ export const realApi: PonderosaApi = {
       body: file,
     });
   },
-  async deleteAttachment(threadId, attachmentId) {
-    const response = await fetch(`/api/threads/${encodeURIComponent(threadId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
+  async deleteAttachment(agentId, attachmentId) {
+    const response = await fetch(`/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
-  async cancelRun(threadId) {
-    await requestJson(`/api/threads/${encodeURIComponent(threadId)}/cancel`, { method: "POST" });
+  async cancelRun(agentId) {
+    await requestJson(`/api/agents/${encodeURIComponent(agentId)}/cancel`, { method: "POST" });
   },
-  compactSession(threadId) {
-    return requestJson<{ compacted: boolean }>(`/api/threads/${encodeURIComponent(threadId)}/compact`, { method: "POST" });
+  compactSession(agentId) {
+    return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
-  subscribeThread(threadId, lastSeenSeq, handlers): StreamSubscription {
-    const url = `/api/threads/${encodeURIComponent(threadId)}/stream${toQuery({
+  subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {
+    const url = `/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
       lastEventId: lastSeenSeq,
     })}`;
     const source = new EventSource(url);

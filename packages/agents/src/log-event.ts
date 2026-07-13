@@ -1,4 +1,4 @@
-// The canonical thread log stores a SUPERSET of AgentEvent.
+// The canonical agent log stores a SUPERSET of AgentEvent.
 //
 // SPEC §4's event log includes user turns ("user.message") as well as the engine's
 // normalized stream. core's `AgentEvent` is deliberately the *engine* stream only,
@@ -8,7 +8,7 @@
 // redefinition of a core type).
 
 import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, ImageAttachmentDto } from "@ponderosa/core";
-import type { AgentLifecycleReason, AgentLifecycleStatus } from "@ponderosa/core";
+import type { AgentLifecycleReason, AgentRunStatus } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
 export interface UserMessageEvent {
@@ -19,7 +19,7 @@ export interface UserMessageEvent {
   attachments?: ImageAttachmentDto[];
 }
 
-/** Clear a provider session while retaining the canonical thread history. */
+/** Clear a provider session while retaining the canonical agent history. */
 export interface SessionResetEvent {
   type: "session_reset";
   reason: "explicit_compaction" | "resume_compaction_failed";
@@ -37,18 +37,18 @@ export interface CommunicationProjectionEvent {
 /** Durable manager-facing lifecycle transition for ordinary agents. */
 export interface AgentLifecycleEvent {
   type: "agent_lifecycle";
-  status: AgentLifecycleStatus;
+  status: AgentRunStatus;
   reason: AgentLifecycleReason;
-  executionId?: string;
+  executionId: string;
 }
 
-/** Anything that can be appended to a thread's `events.jsonl`. */
+/** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent |
   AgentOutputEvent | Exclude<AgentEvent, { type: "text" | "reasoning" }> | AgentExecutionDeltaEvent;
 
-/** One line of `events.jsonl`: a LogEvent stamped with a per-thread seq + ts. */
+/** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {
-  /** Monotonic per-thread sequence number, starting at 1. */
+  /** Monotonic per-agent sequence number, starting at 1. */
   seq: number;
   /** ISO-8601 timestamp when appended. Used as the row timestamp on projection so
    *  a rebuild reproduces byte-identical rows (never Date.now() in a projector). */

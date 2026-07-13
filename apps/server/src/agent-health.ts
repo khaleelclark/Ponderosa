@@ -1,15 +1,15 @@
-import type { AgentHealthDto, AgentHealthProjectionDto, AgentLifecycleReason, AgentLifecycleStatus, ThreadDto } from "@ponderosa/core";
-import type { StoredLogEvent } from "@ponderosa/threads";
+import type { AgentHealthDto, AgentHealthProjectionDto, AgentLifecycleReason, AgentLifecycleStatus, AgentDto } from "@ponderosa/core";
+import type { StoredLogEvent } from "@ponderosa/agents";
 
 export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface QueuedDeliveryObservation { createdAt: string }
 export interface AgentHealthProjectionInput {
   scope: AgentHealthProjectionDto["scope"];
-  threads: ThreadDto[];
+  agents: AgentDto[];
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
   compactingAgents?: ReadonlyMap<string, string>;
-  queuedDeliveries: (threadId: string) => QueuedDeliveryObservation[];
-  events: (threadId: string) => StoredLogEvent[];
+  queuedDeliveries: (agentId: string) => QueuedDeliveryObservation[];
+  events: (agentId: string) => StoredLogEvent[];
   now?: string;
 }
 interface StatusObservation { status: AgentLifecycleStatus; statusTimestamp: string; reason: AgentLifecycleReason }
@@ -24,30 +24,30 @@ function eventObservation(events: StoredLogEvent[], after?: string): StatusObser
       statusTimestamp: item.ts,
       reason: item.event.reason,
     };
-    if (item.event.type === "task_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "task_waiting_approval" };
+    if (item.event.type === "work_item_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "work_item_waiting_approval" };
     if (item.event.type === "turn_done") return { status: "idle", statusTimestamp: item.ts, reason: "turn_completed" };
-    if (item.event.type === "task_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "task_completed" };
+    if (item.event.type === "work_item_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "work_item_completed" };
   }
   return undefined;
 }
 
 export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHealthProjectionDto {
-  const threadIds = new Set(input.threads.map((thread) => thread.id));
+  const agentIds = new Set(input.agents.map((agent) => agent.id));
   const childIdsByParent = new Map<string, Set<string>>();
-  for (const thread of input.threads) {
-    if (!thread.managerAgentId || !threadIds.has(thread.managerAgentId)) continue;
-    const children = childIdsByParent.get(thread.managerAgentId) ?? new Set<string>();
-    children.add(thread.id);
-    childIdsByParent.set(thread.managerAgentId, children);
+  for (const agent of input.agents) {
+    if (!agent.managerAgentId || !agentIds.has(agent.managerAgentId)) continue;
+    const children = childIdsByParent.get(agent.managerAgentId) ?? new Set<string>();
+    children.add(agent.id);
+    childIdsByParent.set(agent.managerAgentId, children);
   }
 
-  const agents: AgentHealthDto[] = input.threads.map((thread) => {
-    const active = input.activeRuns.get(thread.id);
-    const compactingAt = input.compactingAgents?.get(thread.id);
-    const queued = input.queuedDeliveries(thread.id)[0];
-    const events = input.events(thread.id);
+  const agents: AgentHealthDto[] = input.agents.map((agent) => {
+    const active = input.activeRuns.get(agent.id);
+    const compactingAt = input.compactingAgents?.get(agent.id);
+    const queued = input.queuedDeliveries(agent.id)[0];
+    const events = input.events(agent.id);
     const activeEvent = active ? eventObservation(events, active.startedAt) : undefined;
-    const managerAgentId = thread.managerAgentId && threadIds.has(thread.managerAgentId) ? thread.managerAgentId : undefined;
+    const managerAgentId = agent.managerAgentId && agentIds.has(agent.managerAgentId) ? agent.managerAgentId : undefined;
     let observation: StatusObservation;
     if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
     else if (active?.ownershipState === "stalled") observation = { status: "stalled", statusTimestamp: active.startedAt, reason: "runtime_event_consumer_stalled" };
@@ -58,11 +58,11 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
     else if (queued) observation = { status: "waiting", statusTimestamp: queued.createdAt, reason: "queued_delivery" };
-    else observation = eventObservation(events) ?? { status: "idle", statusTimestamp: thread.updatedAt, reason: "no_active_work" };
+    else observation = eventObservation(events) ?? { status: "idle", statusTimestamp: agent.updatedAt, reason: "no_active_work" };
     return {
-      agentId: thread.id,
+      agentId: agent.id,
       ...(managerAgentId ? { managerAgentId } : {}),
-      childAgentIds: [...(childIdsByParent.get(thread.id) ?? [])].sort(),
+      childAgentIds: [...(childIdsByParent.get(agent.id) ?? [])].sort(),
       ...observation,
       ...(active?.executionId ? { executionId: active.executionId } : {}),
       ...(active?.leaseExpiresAt ? { leaseExpiresAt: active.leaseExpiresAt } : {}),

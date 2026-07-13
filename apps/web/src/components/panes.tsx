@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, TaskDto, RunOutputDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -41,14 +41,14 @@ import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { readChatState, readScrollPosition, writeChatState } from "../chatState";
-import type { ExecutionItem } from "../hooks/useThreadStream";
+import type { ExecutionItem } from "../hooks/useAgentStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { MessageContextMenu } from "./MessageContextMenu";
 
-export function taskStatusLabel(status: TaskDto["status"]): string {
+export function workItemStatusLabel(status: WorkItemDto["status"]): string {
   if (status === "waiting_approval") {
     return "Waiting";
   }
@@ -176,7 +176,7 @@ function ComposerAttachment({ file, onRemove }: { file: File; onRemove(): void }
   );
 }
 
-export function taskStatusColor(status: TaskDto["status"]): "success" | "warning" | "info" {
+export function workItemStatusColor(status: WorkItemDto["status"]): "success" | "warning" | "info" {
   if (status === "done") {
     return "success";
   }
@@ -184,6 +184,18 @@ export function taskStatusColor(status: TaskDto["status"]): "success" | "warning
     return "warning";
   }
   return "info";
+}
+
+function runStatusColor(status: AgentRunDto["status"]): "success" | "warning" | "info" | "error" | "default" {
+  if (status === "completed") return "success";
+  if (status === "running" || status === "compacting") return "info";
+  if (status === "waiting") return "warning";
+  if (["failed", "interrupted", "blocked", "stalled"].includes(status)) return "error";
+  return "default";
+}
+
+function runStatusLabel(status: AgentRunDto["status"]): string {
+  return status[0] ? `${status[0].toUpperCase()}${status.slice(1)}` : status;
 }
 
 function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
@@ -545,8 +557,8 @@ export function ChatPane({
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
       {chatMessages.map((message) => {
-        const visibleAgentName = message.authorThreadId
-          ? agentNameForId?.(message.authorThreadId) ?? "Agent"
+        const visibleAgentName = message.authorAgentId
+          ? agentNameForId?.(message.authorAgentId) ?? "Agent"
           : agentName;
         const senderLabel = individualChatSenderLabel(message.role, visibleAgentName);
         return (
@@ -693,25 +705,33 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
 }
 
 export function RunsPane({
-  tasks,
+  runs,
+  workItems,
+  runTriggers,
+  messages,
   timeline,
 }: {
-  tasks: TaskDto[];
+  runs: AgentRunDto[];
+  workItems: WorkItemDto[];
+  runTriggers: RunTriggerRecord[];
+  messages: MessageDto[];
   timeline: ExecutionItem[];
 }): JSX.Element {
+  const messageByCommunication = new Map(messages.flatMap((message) =>
+    message.communicationEventId ? [[message.communicationEventId, message] as const] : []));
   return (
     <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
           Runs
         </Typography>
-        {tasks.length > 0 ? (
+        {runs.length > 0 ? (
           <Typography variant="caption" color="text.secondary">
-            {tasks.length}
+            {runs.length}
           </Typography>
         ) : null}
       </Stack>
-      {tasks.length === 0 ? (
+      {runs.length === 0 ? (
         <Alert severity="info">No runs yet.</Alert>
       ) : (
         <Box
@@ -724,25 +744,73 @@ export function RunsPane({
             pr: 0.5,
           }}
         >
-          {tasks.map((task) => (
-            <Paper key={task.id} variant="outlined" sx={{ p: 1.25 }}>
+          {runs.map((run) => (
+            <Paper key={run.id} variant="outlined" sx={{ p: 1.25 }} data-execution-id={run.id}>
               <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
                 <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0 }} noWrap>
-                  {task.title}
+                  {run.title}
                 </Typography>
                 <Chip
                   size="small"
-                  label={taskStatusLabel(task.status)}
-                  color={taskStatusColor(task.status)}
+                  label={runStatusLabel(run.status)}
+                  color={runStatusColor(run.status)}
                 />
               </Stack>
               <Typography variant="caption" color="text.secondary">
-                {task.engine} · {new Date(task.updatedAt).toLocaleTimeString()}
+                {run.engine} · {run.id.slice(0, 8)} · {new Date(run.startedAt).toLocaleString()}
               </Typography>
             </Paper>
           ))}
         </Box>
       )}
+      {workItems.length > 0 ? <>
+        <Divider />
+        <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+          <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Work items</Typography>
+          <Typography variant="caption" color="text.secondary">{workItems.length}</Typography>
+        </Stack>
+        {workItems.map((item) => (
+          <Paper key={item.id} variant="outlined" sx={{ p: 1.25 }}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
+              <Chip size="small" label={workItemStatusLabel(item.status)} color={workItemStatusColor(item.status)} />
+            </Stack>
+            {item.executionId ? <Typography variant="caption" color="text.secondary">Run {item.executionId.slice(0, 8)}</Typography> : null}
+          </Paper>
+        ))}
+      </> : null}
+      <Divider />
+      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
+          Run triggers
+        </Typography>
+        <Typography variant="caption" color="text.secondary">{runTriggers.length}</Typography>
+      </Stack>
+      {runTriggers.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">No accepted run triggers yet.</Typography>
+      ) : runTriggers.map((trigger) => {
+        const sourceMessage = messageByCommunication.get(trigger.communicationEventId);
+        const sourceLabel = trigger.source === "project_request"
+          ? "Project request"
+          : trigger.source === "collaboration"
+            ? "Collaboration"
+            : "Direct message";
+        return (
+          <Paper key={trigger.triggerId} variant="outlined" sx={{ p: 1.25 }}>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: sourceMessage ? 0.75 : 0 }}>
+              <Chip size="small" variant="outlined" label={sourceLabel} />
+              <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                {new Date(trigger.createdAt).toLocaleString()}
+              </Typography>
+            </Stack>
+            {sourceMessage ? (
+              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                {sourceMessage.text}
+              </Typography>
+            ) : null}
+          </Paper>
+        );
+      })}
       <Divider />
       <Typography variant="overline" color="text.secondary">
         Timeline
@@ -836,7 +904,7 @@ export function ActivityPane({ activity, connected, running, activeExecutionId }
       const isActive = group.executionId !== undefined && group.executionId === activeExecutionId;
       return <Paper key={group.key} variant="outlined" data-testid="activity-execution" data-execution-id={group.executionId} sx={{ overflow: "hidden" }}>
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.25, py: 0.75, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>
-          <Typography variant="subtitle2">{group.executionId ? `Execution ${group.executionId.slice(0, 8)}` : "Legacy activity"}</Typography>
+          <Typography variant="subtitle2">{group.executionId ? `Run ${group.executionId.slice(0, 8)}` : "Unscoped activity"}</Typography>
           {isActive ? <Chip size="small" color="info" label="Working" /> : null}
           <Typography variant="caption" color="text.secondary">{group.items.length} event{group.items.length === 1 ? "" : "s"}</Typography>
           <Typography variant="caption" color="text.secondary">{formatActivitySpan(group.firstAt, group.lastAt)}</Typography>
@@ -865,7 +933,7 @@ export interface ActivityExecutionGroup {
 export function groupActivityByExecution(activity: AgentActivityDto[]): ActivityExecutionGroup[] {
   const groups = new Map<string, ActivityExecutionGroup>();
   for (const item of [...activity].sort((a, b) => a.seq - b.seq)) {
-    const key = item.executionId ?? "legacy";
+    const key = item.executionId ?? "unscoped";
     const group = groups.get(key);
     if (group) {
       group.items.push(item);
@@ -1036,16 +1104,16 @@ function MarkdownViewer({ content }: { content: string }): JSX.Element {
 
 function ArtifactViewer({
   artifact,
-  threadId,
+  agentId,
   liveContent,
 }: {
   artifact: ArtifactDto | undefined;
-  threadId: string;
+  agentId: string;
   liveContent: string | undefined;
 }): JSX.Element {
   const contentQuery = useQuery({
-    queryKey: ["artifact", threadId, artifact?.id],
-    queryFn: () => api.getArtifact(threadId, artifact?.id ?? ""),
+    queryKey: ["artifact", agentId, artifact?.id],
+    queryFn: () => api.getArtifact(agentId, artifact?.id ?? ""),
     enabled: Boolean(artifact && artifact.kind !== "document" && !artifact.id.startsWith("live-artifact-")),
   });
 
@@ -1111,11 +1179,11 @@ function ArtifactViewer({
 
 export function ArtifactsPane({
   artifacts,
-  threadId,
+  agentId,
   timeline,
 }: {
   artifacts: ArtifactDto[];
-  threadId: string;
+  agentId: string;
   timeline: ExecutionItem[];
 }): JSX.Element {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(artifacts[0]?.id);
@@ -1166,7 +1234,7 @@ export function ArtifactsPane({
           />
         ))}
       </Tabs>
-      <ArtifactViewer artifact={selectedArtifact} threadId={threadId} liveContent={liveContent} />
+      <ArtifactViewer artifact={selectedArtifact} agentId={agentId} liveContent={liveContent} />
     </Box>
   );
 }
@@ -1380,18 +1448,23 @@ export function Composer({
         zIndex: 3,
         borderTop: 1,
         borderColor: "divider",
+        minWidth: 0,
+        maxWidth: "100%",
+        overflow: "hidden",
         px: { xs: 0.75, sm: 1 },
         pt: { xs: 0.75, sm: 1 },
         pb: "max(8px, env(safe-area-inset-bottom))",
       }}
     >
       {replyTo ? (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5 }}>
-          <Box sx={{ minWidth: 0, flex: 1, borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5, minWidth: 0, width: "100%", overflow: "hidden" }}>
+          <Box sx={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
             <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
-            <Typography variant="body2" noWrap>{replyTo.text}</Typography>
+            <Typography variant="body2" noWrap title={replyTo.text} sx={{ display: "block", maxWidth: "100%" }}>
+              {replyPreviewText(replyTo.text)}
+            </Typography>
           </Box>
-          <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply}><CloseIcon fontSize="small" /></IconButton>
+          <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply} sx={{ flex: "0 0 auto" }}><CloseIcon fontSize="small" /></IconButton>
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
@@ -1559,4 +1632,9 @@ export function Composer({
       </Stack>
     </Paper>
   );
+}
+
+export function replyPreviewText(text: string, maxLength = 240): string {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }
