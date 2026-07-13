@@ -14,7 +14,7 @@ import {
   TextField,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentPresetDto, EngineDto, MasterChatDto } from "@ponderosa/core";
+import type { AgentPresetDto, EngineDto, MasterChatDto, ThreadDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 
 const UNSET = "";
@@ -138,11 +138,39 @@ export interface CreateAgentInput {
   effort?: string;
   masterChatId?: string;
   presetId?: string;
+  managerAgentId?: string;
+  initialMessage?: string;
+}
+
+export function activeManagerOptions(agents: ThreadDto[]): ThreadDto[] {
+  return agents.filter((agent) => !agent.archived);
+}
+
+export function createAgentInputFromForm(input: {
+  title: string;
+  engine: string;
+  model: string;
+  effort: string;
+  masterChatId: string;
+  presetId: string;
+  managerAgentId: string;
+  initialMessage: string;
+}): CreateAgentInput {
+  return {
+    title: input.title.trim(),
+    engine: input.engine,
+    model: input.model || undefined,
+    effort: input.effort || undefined,
+    masterChatId: input.masterChatId || undefined,
+    presetId: input.presetId || undefined,
+    managerAgentId: input.managerAgentId || undefined,
+    initialMessage: input.initialMessage.trim() || undefined,
+  };
 }
 
 /**
  * Spawns an agent (thread). From a master chat, `fixedMasterChatId` locks the
- * assignment and prefills defaults; from the Agents tab, the user may optionally
+ * manager and prefills defaults; from the Agents tab, the user may optionally
  * assign it to a master chat.
  */
 export function CreateAgentDialog({
@@ -150,11 +178,13 @@ export function CreateAgentDialog({
   engines,
   masterChats,
   presets,
+  agents,
   fixedMasterChatId,
   defaultEngine,
   defaultModel,
   defaultEffort,
   defaultName,
+  defaultManagerAgentId,
   pending,
   error,
   onClose,
@@ -164,12 +194,14 @@ export function CreateAgentDialog({
   engines: EngineDto[];
   masterChats: MasterChatDto[];
   presets: AgentPresetDto[];
+  agents: ThreadDto[];
   fixedMasterChatId?: string;
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
   /** Suggested single-word (park) name, prefilled and editable. */
   defaultName?: string;
+  defaultManagerAgentId?: string;
   pending: boolean;
   error?: string;
   onClose(): void;
@@ -181,6 +213,8 @@ export function CreateAgentDialog({
   const [effort, setEffort] = useState(UNSET);
   const [masterChatId, setMasterChatId] = useState(UNSET);
   const [presetId, setPresetId] = useState(UNSET);
+  const [managerAgentId, setManagerAgentId] = useState(UNSET);
+  const [initialMessage, setInitialMessage] = useState("");
 
   useEffect(() => {
     if (open) {
@@ -190,8 +224,10 @@ export function CreateAgentDialog({
       setEffort(defaultEffort ?? UNSET);
       setMasterChatId(fixedMasterChatId ?? UNSET);
       setPresetId(UNSET);
+      setManagerAgentId(defaultManagerAgentId ?? UNSET);
+      setInitialMessage("");
     }
-  }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, fixedMasterChatId, engines]);
+  }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, defaultManagerAgentId, fixedMasterChatId, engines]);
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
   const models = activeEngine?.models ?? [];
@@ -293,6 +329,29 @@ export function CreateAgentDialog({
               </Select>
             </FormControl>
           ) : null}
+          <FormControl fullWidth size="small">
+            <InputLabel id="agent-manager-label">Reports to</InputLabel>
+            <Select
+              labelId="agent-manager-label"
+              label="Reports to"
+              value={managerAgentId}
+              onChange={(event: SelectChangeEvent) => setManagerAgentId(event.target.value)}
+            >
+              <MenuItem value={UNSET}>User / Top level</MenuItem>
+              {activeManagerOptions(agents).map((agent) => (
+                <MenuItem key={agent.id} value={agent.id}>{agent.title}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            label="Initial message (optional)"
+            helperText="Give the agent a task, role, or introduction—or leave it idle."
+            value={initialMessage}
+            onChange={(event) => setInitialMessage(event.target.value)}
+            multiline
+            minRows={3}
+            inputProps={{ maxLength: 4000 }}
+          />
           {error ? <Alert severity="error">{error}</Alert> : null}
         </Stack>
       </DialogContent>
@@ -302,14 +361,16 @@ export function CreateAgentDialog({
           variant="contained"
           disabled={!title.trim() || !engine || pending}
           onClick={() =>
-            onCreate({
-              title: title.trim(),
+            onCreate(createAgentInputFromForm({
+              title,
               engine,
-              model: model || undefined,
-              effort: effort || undefined,
-              masterChatId: (fixedMasterChatId ?? masterChatId) || undefined,
-              presetId: presetId || undefined,
-            })
+              model,
+              effort,
+              masterChatId: fixedMasterChatId ?? masterChatId,
+              presetId,
+              managerAgentId,
+              initialMessage,
+            }))
           }
         >
           Create

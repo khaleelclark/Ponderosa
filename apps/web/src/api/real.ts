@@ -26,10 +26,6 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  AssignmentEventEnvelope,
-  AssignmentDto,
-  CancelAssignmentRequest,
-  CancelAssignmentResponse,
   ThreadDetailDto,
   ThreadDto,
 } from "@ponderosa/core";
@@ -151,26 +147,6 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
   },
-  listAssignments(masterChatId) {
-    return requestJson<AssignmentDto[]>(`/api/master-chats/${encodeURIComponent(masterChatId)}/assignments`);
-  },
-  cancelAssignment(runId, request) {
-    return requestJson<CancelAssignmentResponse>(`/api/assignments/${encodeURIComponent(runId)}/cancel`, {
-      method: "POST",
-      body: JSON.stringify(request satisfies CancelAssignmentRequest),
-    });
-  },
-  subscribeAssignments(masterChatId, lastSeenSeq, handlers): StreamSubscription {
-    const source = new EventSource(
-      `/api/master-chats/${encodeURIComponent(masterChatId)}/assignments/stream${toQuery({ lastEventId: lastSeenSeq })}`,
-    );
-    source.onopen = () => handlers.onOpen?.();
-    source.onerror = (event) => handlers.onError?.(event);
-    source.addEventListener("message", (event) => {
-      handlers.onEvent(JSON.parse(event.data as string) as AssignmentEventEnvelope);
-    });
-    return { close: () => source.close() };
-  },
   listThreads(projectId) {
     return requestJson<ThreadDto[]>(`/api/projects/${encodeURIComponent(projectId)}/threads`);
   },
@@ -190,6 +166,7 @@ export const realApi: PonderosaApi = {
       initialMessage: options.initialMessage,
       replyToMessageId: options.replyToMessageId,
       presetId: options.presetId,
+      managerAgentId: options.managerAgentId,
     });
   },
   listAgentPresets(projectId) { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
@@ -209,7 +186,7 @@ export const realApi: PonderosaApi = {
     });
   },
   updateAgentOrganization(threadId, organization) {
-    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/organizational-parent`, {
+    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/manager`, {
       method: "PUT",
       body: JSON.stringify(organization satisfies UpdateAgentOrganizationRequest),
     });

@@ -16,11 +16,10 @@ export interface CollaborationDelivery {
   text: string;
   relayDepth: number;
   mentionTrail: string[];
-  /** A delegated result is delivered by the server; ordinary messages are tags. */
-  kind: "direct" | "tag" | "delegation_completion";
+  /** Internal manager notifications are deliveries, never manufactured chat messages. */
+  kind: "direct" | "tag" | "manager_notification";
   /** Auditable selector resolved to this recipient at message creation time. */
   audience?: "mention" | "everyone";
-  delegatedRunId?: string;
   model?: string;
   effort?: string;
   sourceChannel?: "main";

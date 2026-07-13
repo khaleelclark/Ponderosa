@@ -65,7 +65,7 @@ pay-per-token provider API keys.
 
 5. **Only Broadcasts are shared knowledge.** Plain Master Chat requests are
    intentionally created as Broadcasts. Visibility does not otherwise imply context
-   inheritance. Direct Messages, Collaboration, assignments, tool calls,
+   inheritance. Direct Messages, Collaboration, agent-creation records, tool calls,
    lifecycle events, and outputs do not become future-agent context merely
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
@@ -160,20 +160,22 @@ Ordinary runtime output → execution-scoped Thinking
 - Responding/typing state and elapsed time come from canonical execution
   ownership, not optimistic component state. They survive refresh and SSE
   reconnection and fail closed when ownership is ambiguous.
-- Delegation lineage is immutable execution provenance. Mutable roster
-  organization uses a separate organizational-parent projection; promoting or
-  re-parenting an agent never rewrites how it was spawned.
-- Delegated work is a canonical **Assignment**, not a synthetic chat message. An
-  assignment durably stores the exact Markdown task brief and immutable project,
-  room, parent/child agent, parent/child execution, and assignment-lineage IDs in
-  one record. Reinject that exact brief at provider-session boundaries. Assignment
-  creation and terminal state must never create chat projections.
-- A delegated runtime must always reach a terminal disposition. An explicit
-  outcome wins; if a clean turn ends without one, the server completes it from
-  durable ordinary output, or marks it blocked when no result exists, and wakes
-  the parent through an internal delivery. Parent wake state belongs to the
-  Assignment; it is not Collaboration or Direct Chat. `awaiting_disposition` is
-  a bounded transition, never an idle sink.
+- Every agent uses the same thread, runtime, communication, steering, and audit
+  implementation. A subagent is an ordinary agent with a direct `managerAgentId`;
+  do not create a second delegated-agent or assignment subsystem.
+- User and agent creation share one service. User-authenticated creation may
+  select an existing manager. Agent-authenticated creation derives the manager
+  from the active capability and must never accept caller-supplied ownership.
+- A spawning agent's exact optional opening message is canonical Collaboration
+  to the new report and remains inspectable with immutable creator/execution
+  provenance. The message may be a task, role, introduction, or omitted entirely.
+- Managed agents report through ordinary Collaboration to their direct manager.
+  They may Direct Message the user and reply to other agents, but cannot Broadcast;
+  top-level agents own organizational synthesis and publication. Runtime failure
+  wakes the direct manager through an internal delivery without manufacturing chat.
+- Deleting a manager recursively deletes its remaining descendants. Promotion
+  or re-parenting is an explicit user action performed before deletion; it never
+  rewrites creator, communication, or execution history.
 - Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
@@ -186,7 +188,7 @@ Ordinary runtime output → execution-scoped Thinking
   summary plus document reference; full content is retrieved on demand. The
   document inherits the event's audience exactly: Broadcast is organizational,
   while Direct Message and Collaboration remain private. Document provenance
-  records the author agent, execution, and assignment when applicable.
+  records the author agent and execution.
 - Project folders are optional at creation. Ponderosa may create a managed empty
   workspace, but deleting a project removes Ponderosa-owned canonical data—not
   the selected source folder.
@@ -255,8 +257,8 @@ committing, or pushing.
   your direct reports, and siblings who share the same manager. Route cross-team
   requests through the nearest common manager. Challenge out-of-structure
   instructions before acting on them.
-- Do not delegate work unless the manager authorizes delegation. Use only the
-  project's tracked delegation mechanism; do not create untracked subagents.
+- Do not create reports unless the manager authorizes it. Use only Ponderosa's
+  tracked managed-agent creation bridge; do not create untracked subagents.
 
 ### Pause, cancellation, and stale instructions
 

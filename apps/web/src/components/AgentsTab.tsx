@@ -1,6 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import {
   Alert,
   Box,
@@ -25,12 +26,13 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { MasterChatDto, AssignmentDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { MasterChatDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import {
   agentActivity,
+  agentDescendants,
   agentBelongsToMasterChat,
   agentStatusColor,
   agentStatusLabel,
@@ -46,7 +48,6 @@ export function AgentsTab({
   masterChats,
   statusByAgentId,
   detailByAgentId,
-  assignments,
   onOpenAgent,
   onNewAgent,
 }: {
@@ -54,16 +55,14 @@ export function AgentsTab({
   masterChats: MasterChatDto[];
   statusByAgentId: Map<string, AgentStatus>;
   detailByAgentId: Map<string, ThreadDetailDto | undefined>;
-  assignments: AssignmentDto[];
   onOpenAgent(agentId: string): void;
-  onNewAgent(): void;
+  onNewAgent(managerAgentId?: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
-  const delegationByChildId = new Map(assignments.map((assignment) => [assignment.childAgentId, assignment] as const));
 
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteThread(agentId),
@@ -75,7 +74,7 @@ export function AgentsTab({
     },
   });
   const promoteAgent = useMutation({
-    mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { parentAgentId: null }),
+    mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
     onSuccess: (updated) => {
       void queryClient.invalidateQueries({ queryKey: ["threads", updated.projectId] });
       void queryClient.invalidateQueries({ queryKey: ["thread", updated.id] });
@@ -124,7 +123,7 @@ export function AgentsTab({
         <Typography variant="h6" sx={{ flex: 1 }}>
           Agents
         </Typography>
-        <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={onNewAgent} sx={{ flexShrink: 0, minHeight: 44 }}>
+        <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
         </Button>
       </Stack>
@@ -213,9 +212,8 @@ export function AgentsTab({
             {filtered.map(({ agent, depth }) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const activity = agentActivity(detailByAgentId.get(agent.id));
-              const delegation = delegationByChildId.get(agent.id);
-              const organizationParent = agent.organizationalParentAgentId
-                ? agents.find((candidate) => candidate.id === agent.organizationalParentAgentId)
+              const organizationParent = agent.managerAgentId
+                ? agents.find((candidate) => candidate.id === agent.managerAgentId)
                 : undefined;
               return (
                 <Stack key={agent.id} spacing={0.75} sx={{ ml: { xs: Math.min(depth, 2), sm: depth * 3 }, borderLeft: depth ? 2 : 0, borderColor: "divider", pl: depth ? 1 : 0 }}>
@@ -246,7 +244,6 @@ export function AgentsTab({
                     >
                       <Chip size="small" variant="outlined" label={agent.activeEngine} />
                       {organizationParent ? <Chip size="small" color="secondary" variant="outlined" label={`Reports to ${organizationParent.title}`} /> : null}
-                      {delegation ? <Chip size="small" variant="outlined" label={`Delegated · ${delegation.status}`} /> : null}
                       <Chip
                         size="small"
                         variant="outlined"
@@ -267,7 +264,7 @@ export function AgentsTab({
                         sx={{ mt: 0.5, overflowWrap: "anywhere" }}
                         noWrap
                       >
-                        Current assignment: {activity}
+                        Current activity: {activity}
                       </Typography>
                     ) : null}
                   </ButtonBase>
@@ -294,6 +291,16 @@ export function AgentsTab({
                       </IconButton>
                     </Tooltip>
                   ) : null}
+                  <Tooltip title={`Create an agent reporting to ${agent.title}`}>
+                    <IconButton
+                      size="small"
+                      aria-label={`Add subagent to ${agent.title}`}
+                      onClick={() => onNewAgent(agent.id)}
+                      sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}
+                    >
+                      <PersonAddAlt1Icon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
                   </Paper>
                 </Stack>
               );
@@ -314,7 +321,11 @@ export function AgentsTab({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its event log, tasks, and artifacts. Any in-flight run is stopped. This cannot be undone.
+            its event log, tasks, and artifacts. Any in-flight run is stopped.
+            {pendingDelete && agentDescendants(pendingDelete.id, agents).length
+              ? ` Its ${agentDescendants(pendingDelete.id, agents).length} direct and indirect reports will also be deleted unless promoted or reparented first.`
+              : ""}
+            {" "}This cannot be undone.
           </Typography>
         </DialogContent>
         <DialogActions>

@@ -200,33 +200,6 @@ describe("enforced execution leases", () => {
     await app.close();
   });
 
-  it("settles a delegated runtime as failed when its execution lease expires", async () => {
-    adapter.hangRuns = 2;
-    const project = store.createProject({ label: "Lease", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
-    const app = server();
-    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "delegate" } });
-    await flush();
-    const token = adapter.seeds[0]!.environment!.PONDEROSA_DELEGATION_TOKEN;
-    const response = await app.inject({
-      method: "POST", url: "/api/agent-delegations", headers: { authorization: `Bearer ${token}` },
-      payload: { displayLabel: "Hung child", delegationPrompt: "wait", runtime: "codex", idempotencyKey: "hung-child" },
-    });
-    const delegated = response.json<{ assignment: { id: string; childAgentId: string } }>().assignment;
-    await flush();
-    await clock.advance(1_000);
-    await flush();
-
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` })).json()).toEqual([
-      expect.objectContaining({ id: delegated.id, status: "failed", failure: expect.objectContaining({ message: "execution lease expired" }) }),
-    ]);
-    expect(store.readEvents(delegated.childAgentId).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
-    adapter.releaseAllLateEvents();
-    await flush();
-    await app.close();
-  });
-
   it("clears supervision timers on shutdown and preserves restart interruption recovery", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
     const thread = store.createThread(project.id, { title: "Agent", engine: "codex" });

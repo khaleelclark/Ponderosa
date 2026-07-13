@@ -10,6 +10,7 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
+import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import {
   Alert,
   Box,
@@ -39,11 +40,11 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, AssignmentDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
+import { agentDescendants, agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
 import { useThread } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useThreadStream } from "../hooks/useThreadStream";
@@ -93,11 +94,11 @@ export function eligibleOrganizationParents(agent: ThreadDto, agents: ThreadDto[
   const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
   const isDescendant = (candidate: ThreadDto): boolean => {
     const seen = new Set<string>();
-    let parentId = candidate.organizationalParentAgentId;
+    let parentId = candidate.managerAgentId;
     while (parentId && !seen.has(parentId)) {
       if (parentId === agent.id) return true;
       seen.add(parentId);
-      parentId = byId.get(parentId)?.organizationalParentAgentId;
+      parentId = byId.get(parentId)?.managerAgentId;
     }
     return false;
   };
@@ -114,10 +115,10 @@ export function AgentDetail({
   projectedHealth,
   agents,
   masterChats,
-  assignment,
   onBack,
   onOpenAgent,
   onOpenMaster,
+  onNewSubagent,
   onDeleted,
 }: {
   agentId: string;
@@ -127,10 +128,10 @@ export function AgentDetail({
   projectedHealth?: AgentHealthDto;
   agents: ThreadDto[];
   masterChats: MasterChatDto[];
-  assignment?: AssignmentDto;
   onBack(): void;
   onOpenAgent(agentId: string): void;
   onOpenMaster(masterChatId: string): void;
+  onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -253,7 +254,7 @@ export function AgentDetail({
   });
 
   const updateOrganization = useMutation({
-    mutationFn: () => api.updateAgentOrganization(agentId, { parentAgentId: organizationParentId || null }),
+    mutationFn: () => api.updateAgentOrganization(agentId, { managerAgentId: organizationParentId || null }),
     onSuccess: (updated) => {
       queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
         current ? { ...current, thread: updated } : current,
@@ -302,9 +303,13 @@ export function AgentDetail({
     ? masterChats.find((candidate) => candidate.id === detail.thread.masterChatId)
     : undefined;
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
-  const organizationalParent = detail.thread.organizationalParentAgentId
-    ? agents.find((candidate) => candidate.id === detail.thread.organizationalParentAgentId)
+  const organizationalParent = detail.thread.managerAgentId
+    ? agents.find((candidate) => candidate.id === detail.thread.managerAgentId)
     : undefined;
+  const spawningAgent = detail.thread.spawnedByAgentId
+    ? agents.find((candidate) => candidate.id === detail.thread.spawnedByAgentId)
+    : undefined;
+  const descendantCount = agentDescendants(detail.thread.id, agents).length;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
     (text: string, files: File[]) => {
@@ -403,16 +408,6 @@ export function AgentDetail({
               aria-label={`${connectedMcps.length} of ${engineCapability?.mcpServers.length ?? 0} inherited MCP servers connected`}
             />
           </Tooltip>
-          {assignment ? (
-            <Chip
-              size="small"
-              color="secondary"
-              label={`Assignment · ${assignment.status}`}
-              onClick={() => onOpenAgent(assignment.parentAgentId)}
-              clickable
-              sx={{ minHeight: compactViewport ? 44 : undefined }}
-            />
-          ) : null}
           {organizationalParent ? (
             <Chip
               size="small"
@@ -466,10 +461,19 @@ export function AgentDetail({
             Assign chats
           </Button>
           <Button size="small" variant="outlined" startIcon={<AccountTreeOutlinedIcon />} sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
-            setOrganizationParentId(detail.thread.organizationalParentAgentId ?? "");
+            setOrganizationParentId(detail.thread.managerAgentId ?? "");
             setOrganizationOpen(true);
           }}>
             Organize
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<PersonAddAlt1Icon />}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
+            onClick={() => onNewSubagent(agentId)}
+          >
+            Add report
           </Button>
           {compactViewport ? (
             <Button
@@ -531,10 +535,16 @@ export function AgentDetail({
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
         {runtimeActivity ? <RespondingIndicator agentName={detail.thread.title} startedAt={runtimeActivity.startedAt} /> : null}
-        {assignment ? <Box component="section" aria-label="Canonical assignment" sx={{ mt: 1.5, p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}><Typography fontWeight={700} sx={{ flex: 1 }}>{assignment.title}</Typography><Chip size="small" label={assignment.status} /></Stack>
-          <Typography component="pre" variant="body2" sx={{ whiteSpace: "pre-wrap", m: 0 }}>{assignment.taskBriefMarkdown}</Typography>
-          <Typography variant="caption" color="text.secondary">Assignment {assignment.id} · execution {assignment.childExecutionId}</Typography>
+        {detail.thread.spawnedByAgentId ? <Box component="section" aria-label="Agent creation" sx={{ mt: 1.5, p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+            <Typography fontWeight={700} sx={{ flex: 1 }}>Created by {spawningAgent?.title ?? detail.thread.spawnedByAgentId}</Typography>
+            {spawningAgent ? <Button size="small" onClick={() => onOpenAgent(spawningAgent.id)}>Open manager</Button> : null}
+          </Stack>
+          <Typography variant="overline" color="text.secondary">Original message</Typography>
+          <Typography component="pre" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", m: 0 }}>
+            {detail.thread.spawnPrompt ?? "No initial message — this agent was created idle."}
+          </Typography>
+          {detail.thread.spawnedByExecutionId ? <Typography variant="caption" color="text.secondary">Created during execution {detail.thread.spawnedByExecutionId}</Typography> : null}
         </Box> : null}
       </Box>
 
@@ -599,7 +609,9 @@ export function AgentDetail({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{detail.thread.title}</Box>, including its
-            event log, tasks, and artifacts. This cannot be undone.
+            event log, tasks, and artifacts.
+            {descendantCount ? ` Its ${descendantCount} direct and indirect report${descendantCount === 1 ? "" : "s"} will also be deleted unless promoted or reparented first.` : ""}
+            {" "}This cannot be undone.
           </Typography>
           {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
         </DialogContent>
@@ -673,7 +685,7 @@ export function AgentDetail({
               </Select>
             </FormControl>
             <Typography variant="body2" color="text.secondary">
-              The home chat controls default routing and delegation lineage. Every membership shares this agent's single session and event log.
+              The home chat controls default routing and shared Broadcast context. Every membership shares this agent's single session and event log.
             </Typography>
             {updateMemberships.isError ? <Alert severity="error">{String(updateMemberships.error)}</Alert> : null}
           </Stack>
@@ -703,7 +715,7 @@ export function AgentDetail({
             </Select>
           </FormControl>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            This changes only the organizational view. Delegation and execution history remain attached to their original runs.
+            This changes the agent's direct manager. Its execution and communication history remain attached to the same agent.
           </Typography>
           {updateOrganization.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateOrganization.error)}</Alert> : null}
         </DialogContent>

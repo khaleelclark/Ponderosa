@@ -70,7 +70,7 @@ export interface SeedOptions extends RunOptionsBase {
   history: ChatMessage[];
 }
 
-export type RuntimeDeliveryKind = "user_message" | "collaboration" | "delegation" | "system";
+export type RuntimeDeliveryKind = "user_message" | "collaboration" | "system";
 
 export interface RuntimeTurnInput {
   prompt: string;

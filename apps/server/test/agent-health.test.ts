@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AssignmentDto, ThreadDto } from "@ponderosa/core";
+import type { ThreadDto } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/threads";
 import { projectAgentHealth } from "../src/agent-health.js";
 
@@ -9,20 +9,10 @@ const thread = (id: string): ThreadDto => ({
   id, projectId: "project", masterChatId: "master", masterChatIds: ["master"],
   title: id, activeEngine: "codex", state: {}, createdAt: t0, updatedAt: t0, archived: false,
 });
-const delegation = (childAgentId: string, status: AssignmentDto["status"], parentAgentId = "parent"): AssignmentDto => ({
-  id: `assignment-${childAgentId}`, projectId: "project", masterChatId: "master", parentAgentId, childAgentId,
-  parentExecutionId: "parent-execution", childExecutionId: `execution-${childAgentId}`, rootAssignmentId: `assignment-${childAgentId}`,
-  depth: 1, version: 1, title: childAgentId, taskBriefMarkdown: `# ${childAgentId}`,
-  runtime: "codex", status, canCancel: status === "queued" || status === "running",
-  createdAt: t0, updatedAt: t1, ...(status === "running" ? { startedAt: t1 } : {}),
-  ...(["blocked", "cancelled", "completed", "failed"].includes(status) ? { finishedAt: t1 } : {}),
-  ...(status === "failed" ? { failure: { code: "runtime_error", message: "boom", retryable: false, occurredAt: t1 } } : {}),
-});
 const event = (value: StoredLogEvent["event"], ts = t1): StoredLogEvent => ({ seq: 1, ts, event: value });
 
 function project(options: {
   threads?: ThreadDto[];
-  runs?: AssignmentDto[];
   active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "interrupted" }>;
   compacting?: Map<string, string>;
   queued?: Record<string, Array<{ createdAt: string }>>;
@@ -31,7 +21,6 @@ function project(options: {
   return projectAgentHealth({
     scope: { type: "master_chat", id: "master" },
     threads: options.threads ?? [thread("agent")],
-    delegations: options.runs ?? [],
     activeRuns: options.active ?? new Map(),
     compactingAgents: options.compacting ?? new Map(),
     queuedDeliveries: (id) => options.queued?.[id] ?? [],
@@ -71,32 +60,21 @@ describe("agent health projection", () => {
     });
   });
 
-  it("projects waiting from task approval, durable delivery, and delegation states", () => {
+  it("projects waiting from task approval and durable delivery", () => {
     expect(project({ active: new Map([["agent", { startedAt: t0 }]]), events: { agent: [event({ type: "task_update", taskId: "task", status: "waiting_approval" })] } }).agents[0]?.reason).toBe("task_waiting_approval");
     expect(project({ queued: { agent: [{ createdAt: t1 }] } }).agents[0]?.reason).toBe("queued_delivery");
-    expect(project({ runs: [delegation("agent", "queued")] }).agents[0]?.reason).toBe("delegation_queued");
-    expect(project({ runs: [delegation("agent", "awaiting_disposition")] }).agents[0]?.reason).toBe("delegation_awaiting_disposition");
-  });
-
-  it.each([
-    ["blocked", "delegation_blocked"],
-    ["cancelled", "delegation_cancelled"],
-    ["failed", "delegation_failed"],
-  ] as const)("projects %s from the delegation ledger", (status, reason) => {
-    expect(project({ runs: [delegation("agent", status)] }).agents[0]).toMatchObject({ status, reason, statusTimestamp: t1 });
   });
 
   it("returns completed work to idle and preserves failures", () => {
-    expect(project({ runs: [delegation("agent", "completed")] }).agents[0]).toMatchObject({ status: "idle", reason: "delegation_completed" });
     expect(project({ events: { agent: [event({ type: "turn_done" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
     expect(project({ events: { agent: [event({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" })] } }).agents[0]).toMatchObject({ status: "idle", reason: "turn_completed" });
     expect(project({ events: { agent: [event({ type: "error", message: "boom" })] } }).agents[0]?.status).toBe("failed");
   });
 
   it("reports stable direct parent and child IDs within scope", () => {
-    const result = project({ threads: [thread("parent"), thread("child")], runs: [delegation("child", "completed")] });
+    const result = project({ threads: [thread("parent"), { ...thread("child"), managerAgentId: "parent" }] });
     expect(result.agents.find((agent) => agent.agentId === "parent")?.childAgentIds).toEqual(["child"]);
-    expect(result.agents.find((agent) => agent.agentId === "child")?.parentAgentId).toBe("parent");
+    expect(result.agents.find((agent) => agent.agentId === "child")?.managerAgentId).toBe("parent");
   });
 
   it("projects compacting only during an observed scheduled rollover", () => {
