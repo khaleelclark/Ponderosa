@@ -83,6 +83,13 @@ records how work originated and never changes. Organizational parentage controls
 where an agent appears now and can be promoted, demoted, or re-parented without
 rewriting execution history.
 
+Every delegated task is a canonical Assignment. It preserves the exact Markdown
+brief plus stable parent/child agent and execution identities, and is inspectable
+from both the room and agent detail. Assignments are work state, not messages:
+creating, completing, blocking, or failing one never manufactures a chat card.
+The child runtime's ordinary output remains in Thinking, while terminal state
+wakes the parent internally so orchestration can continue without polluting chat.
+
 Delegated work always settles. An explicit completed or blocked outcome is
 preferred. If a delegated runtime ends cleanly without declaring one, Ponderosa
 uses its durable completed response as the terminal result; if there is no

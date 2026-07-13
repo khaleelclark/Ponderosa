@@ -26,10 +26,10 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  SubagentEventEnvelope,
-  SubagentRunDto,
-  CancelSubagentRequest,
-  CancelSubagentResponse,
+  AssignmentEventEnvelope,
+  AssignmentDto,
+  CancelAssignmentRequest,
+  CancelAssignmentResponse,
   ThreadDetailDto,
   ThreadDto,
 } from "@ponderosa/core";
@@ -151,23 +151,23 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
   },
-  listSubagents(masterChatId) {
-    return requestJson<SubagentRunDto[]>(`/api/master-chats/${encodeURIComponent(masterChatId)}/subagents`);
+  listAssignments(masterChatId) {
+    return requestJson<AssignmentDto[]>(`/api/master-chats/${encodeURIComponent(masterChatId)}/assignments`);
   },
-  cancelSubagent(runId, request) {
-    return requestJson<CancelSubagentResponse>(`/api/subagents/${encodeURIComponent(runId)}/cancel`, {
+  cancelAssignment(runId, request) {
+    return requestJson<CancelAssignmentResponse>(`/api/assignments/${encodeURIComponent(runId)}/cancel`, {
       method: "POST",
-      body: JSON.stringify(request satisfies CancelSubagentRequest),
+      body: JSON.stringify(request satisfies CancelAssignmentRequest),
     });
   },
-  subscribeSubagents(masterChatId, lastSeenSeq, handlers): StreamSubscription {
+  subscribeAssignments(masterChatId, lastSeenSeq, handlers): StreamSubscription {
     const source = new EventSource(
-      `/api/master-chats/${encodeURIComponent(masterChatId)}/subagents/stream${toQuery({ lastEventId: lastSeenSeq })}`,
+      `/api/master-chats/${encodeURIComponent(masterChatId)}/assignments/stream${toQuery({ lastEventId: lastSeenSeq })}`,
     );
     source.onopen = () => handlers.onOpen?.();
     source.onerror = (event) => handlers.onError?.(event);
     source.addEventListener("message", (event) => {
-      handlers.onEvent(JSON.parse(event.data as string) as SubagentEventEnvelope);
+      handlers.onEvent(JSON.parse(event.data as string) as AssignmentEventEnvelope);
     });
     return { close: () => source.close() };
   },

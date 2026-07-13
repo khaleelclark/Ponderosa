@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, AssignmentDto, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
 import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
@@ -2393,22 +2393,23 @@ describe("server chunk F", () => {
       payload: { displayLabel: "Research", delegationPrompt: "Return the result.", runtime: "codex", idempotencyKey: "completion-1" },
     });
     expect(delegated.statusCode).toBe(202);
-    const run = delegated.json<{ run: { id: string; childThreadId: string } }>().run;
-    await waitForRun(run.childThreadId);
+    const run = delegated.json<{ assignment: { id: string; childAgentId: string } }>().assignment;
+    await waitForRun(run.childAgentId);
     for (let attempt = 0; attempt < 80; attempt += 1) {
-      const state = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` }))
+      const state = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` }))
         .json<Array<{ id: string; status: string }>>()
         .find((item) => item.id === run.id)?.status;
       if (state === "completed") break;
       await sleep(10);
     }
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
-      expect.objectContaining({ id: run.id, status: "completed", canCancel: false, disposition: expect.objectContaining({ message: "done" }) }),
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` })).json()).toEqual([
+      expect.objectContaining({ id: run.id, status: "completed", canCancel: false, taskBriefMarkdown: "Return the result.", disposition: expect.objectContaining({ message: "done" }), parentWake: expect.objectContaining({ status: "queued" }) }),
     ]);
-    const completionMessage = store.getCollaborationChatDetail(master.id)?.messages.find(
-      (message) => message.text.includes("Delegated task “Research” completed"),
-    );
-    expect(completionMessage).toBeDefined();
+    expect((await app.inject({ method: "GET", url: `/api/threads/${run.childAgentId}` })).json()).toMatchObject({
+      assignments: [expect.objectContaining({ id: run.id })],
+      thinking: [expect.objectContaining({ text: "done" })],
+    });
+    expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual([]);
     expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(0);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
@@ -2424,19 +2425,16 @@ describe("server chunk F", () => {
     await waitForSeedCount(1);
     const parentToken = adapter.seeds[0]!.environment!.PONDEROSA_DELEGATION_TOKEN;
     const delegated = await app.inject({ method: "POST", url: "/api/agent-delegations", headers: { authorization: `Bearer ${parentToken}` }, payload: { displayLabel: "Research", delegationPrompt: "Finish.", runtime: "codex", idempotencyKey: "explicit-1" } });
-    const run = delegated.json<{ run: { id: string; childThreadId: string } }>().run;
+    const run = delegated.json<{ assignment: { id: string; childAgentId: string } }>().assignment;
     await waitForSeedCount(2);
-    const outcomeToken = adapter.seeds.find((seed) => seed.threadId === run.childThreadId)!.environment!.PONDEROSA_DELEGATION_TOKEN;
+    const outcomeToken = adapter.seeds.find((seed) => seed.threadId === run.childAgentId)!.environment!.PONDEROSA_DELEGATION_TOKEN;
     const payload = { outcome: "completed", message: "Verified result.", idempotencyKey: "outcome-1" };
     const first = await app.inject({ method: "POST", url: "/api/agent-delegation-outcomes", headers: { authorization: `Bearer ${outcomeToken}` }, payload });
     const duplicate = await app.inject({ method: "POST", url: "/api/agent-delegation-outcomes", headers: { authorization: `Bearer ${outcomeToken}` }, payload });
     expect(first.statusCode).toBe(200);
     expect(duplicate.statusCode).toBe(200);
-    expect(first.json().run).toEqual(expect.objectContaining({ status: "completed", disposition: expect.objectContaining({ outcome: "completed" }) }));
-    const completionMessages = store.getCollaborationChatDetail(master.id)?.messages
-      .filter((message) => message.text.includes("Delegated task “Research” completed")) ?? [];
-    expect(completionMessages).toHaveLength(1);
-    expect(completionMessages[0]?.communicationEventId).toEqual(expect.any(String));
+    expect(first.json().assignment).toEqual(expect.objectContaining({ status: "completed", disposition: expect.objectContaining({ outcome: "completed" }) }));
+    expect(store.getCollaborationChatDetail(master.id)?.messages).toEqual([]);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
@@ -2458,9 +2456,9 @@ describe("server chunk F", () => {
       payload: { displayLabel: "Research", delegationPrompt: "Research and report back.", runtime: "codex", idempotencyKey: "child-result" },
     });
     expect(delegated.statusCode).toBe(202);
-    const run = delegated.json<{ run: { childThreadId: string } }>().run;
+    const run = delegated.json<{ assignment: { childAgentId: string } }>().assignment;
     await waitForSeedCount(2);
-    const childToken = adapter.seeds.find((seed) => seed.threadId === run.childThreadId)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const childToken = adapter.seeds.find((seed) => seed.threadId === run.childAgentId)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
 
     const result = await app.inject({
@@ -2480,7 +2478,7 @@ describe("server chunk F", () => {
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("delivery dispatch rejected (400)") })]),
     );
 
-    await cancelAndWait(app, run.childThreadId);
+    await cancelAndWait(app, run.childAgentId);
     await app.close();
   });
 
@@ -2818,31 +2816,16 @@ describe("server chunk F", () => {
       delegationPrompt: "finish",
       runtime: "codex",
       idempotencyKey: "completion-gap",
-    }, true, [], parent.id);
-    delegations.bindChildThread(spawned.run.id, child.id);
+    }, true, [], { projectId: project.id, parentAgentId: parent.id, childAgentId: child.id });
     delegations.claim(spawned.run.id);
     delegations.declareDisposition(spawned.run.id, { outcome: "completed", idempotencyKey: "crash-outcome" });
-    store.appendMasterChatMessage(
-      master.id,
-      { role: "system", text: "✅ Delegated task “Crash completion” completed. #Parent, the result is ready." },
-      child.id,
-      "collaboration",
-      [{
-        targetThreadId: parent.id,
-        relayDepth: 0,
-        mentionTrail: [],
-        kind: "delegation_completion",
-        delegatedRunId: spawned.run.id,
-      }],
-    );
-
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
     await waitForRun(parent.id);
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` })).json()).toEqual([
       expect.objectContaining({
         id: spawned.run.id,
-        completionDelivery: expect.objectContaining({ status: "acknowledged" }),
+        parentWake: expect.objectContaining({ status: "acknowledged" }),
       }),
     ]);
     await app.close();
@@ -2902,20 +2885,18 @@ describe("server chunk F", () => {
       delegationPrompt: `Do ${label}`,
       runtime: "codex",
       idempotencyKey: label,
-    }, true, [], parent.id);
+    }, true, [], { projectId: project.id, parentAgentId: parent.id, childAgentId: store.createThread(project.id, { title: label, engine: "codex", masterChatId: master.id }).id });
 
     const queued = make("parent-queued", "Queued child");
-    const queuedThread = store.createThread(project.id, { title: "Queued child", engine: "codex", masterChatId: master.id });
-    delegations.bindChildThread(queued.run.id, queuedThread.id);
+    const queuedThread = store.getThread(queued.run.childAgentId)!;
     const interrupted = make("parent-running", "Interrupted child");
-    const interruptedThread = store.createThread(project.id, { title: "Interrupted child", engine: "codex", masterChatId: master.id });
-    delegations.bindChildThread(interrupted.run.id, interruptedThread.id);
+    const interruptedThread = store.getThread(interrupted.run.childAgentId)!;
     delegations.claim(interrupted.run.id);
 
     const app = createServer({ dataDir, store, engines, agentBaseUrl: "http://127.0.0.1:8787", logger: false });
     await app.ready();
     await waitForRun(queuedThread.id);
-    const runs = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ id: string; status: string; failure?: { retryable: boolean } }>>();
+    const runs = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` })).json<Array<{ id: string; status: string; failure?: { retryable: boolean } }>>();
     expect(runs).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: queued.run.id, status: "completed" }),
       expect.objectContaining({ id: interrupted.run.id, status: "failed", failure: expect.objectContaining({ retryable: true }) }),
@@ -3260,11 +3241,11 @@ describe("server chunk F", () => {
 
     expect((await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/subagents`,
+      url: `/api/master-chats/${master.id}/assignments`,
       payload: { parentRunId, displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "legacy" },
     })).statusCode).toBe(404);
-    expect((await app.inject({ method: "POST", url: "/api/internal/subagents/missing/launch", payload: {} })).statusCode).toBe(404);
-    expect((await app.inject({ method: "POST", url: "/api/internal/subagents/missing/output", payload: { text: "forged" } })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/api/internal/assignments/missing/launch", payload: {} })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/api/internal/assignments/missing/output", payload: { text: "forged" } })).statusCode).toBe(404);
 
     await cancelAndWait(app, thread.id);
     await app.close();
@@ -3294,7 +3275,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-delegations",
       headers: { authorization: `Bearer ${environment.PONDEROSA_DELEGATION_TOKEN}` },
-      payload: { parentThreadId: "another-thread", displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "spoof-1" },
+      payload: { parentAgentId: "another-thread", displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "spoof-1" },
     });
     expect(spoof.statusCode).toBe(403);
     expect(spoof.json()).toMatchObject({ error: { code: "unauthorized_parent" } });
@@ -3306,23 +3287,24 @@ describe("server chunk F", () => {
       payload: { displayLabel: "Safe review", delegationPrompt: "private secret task", runtime: "codex", idempotencyKey: "bridge-1" },
     });
     expect(response.statusCode).toBe(202);
-    const created = response.json<{ run: { id: string; parentThreadId?: string; childThreadId?: string; parentRunId: string; rootRunId: string; runtime: string; status: string }; accepted: boolean }>();
-    expect(created).toMatchObject({ accepted: true, run: { runtime: "codex", status: "running" } });
-    expect(created.run.parentThreadId).toBe(thread.id);
-    expect(created.run.childThreadId).toBeTruthy();
-    expect(created.run.parentRunId).toBe(created.run.rootRunId);
-    expect(JSON.stringify(response.json())).not.toContain("private secret task");
-    expect(JSON.stringify(response.json())).not.toContain("credential");
+    const created = response.json<{ assignment: AssignmentDto; accepted: boolean }>();
+    expect(created).toMatchObject({ accepted: true, assignment: { runtime: "codex", status: "running", parentAgentId: thread.id, taskBriefMarkdown: "private secret task" } });
+    expect(created.assignment.childAgentId).toBeTruthy();
+    expect(created.assignment.parentExecutionId).toBeTruthy();
+    expect(created.assignment.childExecutionId).toBe(created.assignment.id);
+    expect(created.assignment.rootAssignmentId).toBe(created.assignment.id);
     await waitForSeedCount(2);
-    const childId = created.run.childThreadId!;
+    const childId = created.assignment.childAgentId;
     const childDetail = (await app.inject({ method: "GET", url: `/api/threads/${childId}` })).json();
     expect(childDetail).toMatchObject({
       thread: { id: childId, title: "Safe review", masterChatId: master.id, organizationalParentAgentId: thread.id },
-      messages: [{ role: "user", text: "Delegated task: Safe review" }],
+      messages: [],
+      assignments: [expect.objectContaining({ id: created.assignment.id, taskBriefMarkdown: "private secret task" })],
     });
     store.updateAgentOrganization(childId, { parentAgentId: null });
-    expect(new DelegationStore(dataDir).get(created.run.id)).toMatchObject({ parentThreadId: thread.id, childThreadId: childId });
-    expect(JSON.stringify(childDetail)).not.toContain("private secret task");
+    expect(new DelegationStore(dataDir).get(created.assignment.id)).toMatchObject({ parentAgentId: thread.id, childAgentId: childId });
+    expect(JSON.stringify(childDetail)).toContain("private secret task");
+    expect(adapter.seeds[1]?.prompt).toContain("Exact Markdown task brief:\nprivate secret task");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).not.toBe(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN);
@@ -3356,17 +3338,17 @@ describe("server chunk F", () => {
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.continues[0]?.threadId).toBe(childId);
     await waitForRun(childId);
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
-      expect.objectContaining({ id: created.run.id, status: "cancelled", delegationSummary: "Safe review" }),
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` })).json()).toEqual([
+      expect.objectContaining({ id: created.assignment.id, status: "cancelled", title: "Safe review" }),
     ]);
-    const audit = readFileSync(path.join(dataDir, "delegations.jsonl"), "utf8");
-    expect(audit.split("private secret task")).toHaveLength(2);
+    const audit = readFileSync(path.join(dataDir, "assignments.jsonl"), "utf8");
+    expect(audit).toContain('"taskBriefMarkdown":"private secret task"');
     await cancelAndWait(app, thread.id);
     await app.close();
   });
 
   it("repairs delegation persistence permissions on startup", async () => {
-    const file = path.join(dataDir, "delegations.jsonl");
+    const file = path.join(dataDir, "assignments.jsonl");
     writeFileSync(file, "", { mode: 0o644 });
     const app = createServer({ dataDir, store, engines, logger: false });
     expect(statSync(file).mode & 0o777).toBe(0o600);

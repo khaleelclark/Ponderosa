@@ -163,10 +163,17 @@ Ordinary runtime output → execution-scoped Thinking
 - Delegation lineage is immutable execution provenance. Mutable roster
   organization uses a separate organizational-parent projection; promoting or
   re-parenting an agent never rewrites how it was spawned.
+- Delegated work is a canonical **Assignment**, not a synthetic chat message. An
+  assignment durably stores the exact Markdown task brief and immutable project,
+  room, parent/child agent, parent/child execution, and assignment-lineage IDs in
+  one record. Reinject that exact brief at provider-session boundaries. Assignment
+  creation and terminal state must never create chat projections.
 - A delegated runtime must always reach a terminal disposition. An explicit
   outcome wins; if a clean turn ends without one, the server completes it from
   durable ordinary output, or marks it blocked when no result exists, and wakes
-  the parent. `awaiting_disposition` is a bounded transition, never an idle sink.
+  the parent through an internal delivery. Parent wake state belongs to the
+  Assignment; it is not Collaboration or Direct Chat. `awaiting_disposition` is
+  a bounded transition, never an idle sink.
 - Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
