@@ -15,7 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ConversationDto, AgentDto } from "@ponderosa/core";
-import type { AgentStatus } from "../agents";
+import { agentBelongsToConversation, type AgentStatus } from "../agents";
 
 export interface SidebarSelection {
   conversationId?: string;
@@ -23,8 +23,8 @@ export interface SidebarSelection {
 }
 
 /**
- * Project navigation: a "Conversations" section plus a single "Agents" item.
- * Conversations show a running dot when any of their agents is live; the Agents
+ * Project navigation: a "Project chats" section plus a single "Agents" item.
+ * Project chats show a running dot when any of their agents is live; the Agents
  * item shows the total agent count and a running count.
  */
 export function Sidebar({
@@ -53,16 +53,16 @@ export function Sidebar({
   const runningCount = runningAgentIds.size;
 
   const masterHasRunning = (conversationId: string): boolean =>
-    agents.some((agent) => agent.conversationId === conversationId && runningAgentIds.has(agent.id));
+    agents.some((agent) => agentBelongsToConversation(agent, conversationId) && runningAgentIds.has(agent.id));
 
   return (
     <Box component="nav" aria-label="Project navigation" sx={{ minWidth: 0, py: 0.5, pb: "max(4px, env(safe-area-inset-bottom))" }}>
       <Stack direction="row" sx={{ alignItems: "center", px: 1, py: 0.5 }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1, px: 1 }}>
-          Conversations
+          Project chats
         </Typography>
-        <Tooltip title="New conversation">
-          <IconButton size="small" onClick={onCreateConversation} aria-label="New conversation">
+        <Tooltip title="New Project chat">
+          <IconButton size="small" onClick={onCreateConversation} aria-label="New Project chat">
             <AddIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -70,11 +70,11 @@ export function Sidebar({
       <List dense disablePadding>
         {conversations.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ px: 2, py: 0.5 }}>
-            No conversations yet.
+            No Project chats yet.
           </Typography>
         ) : null}
         {conversations.map((master) => {
-          const count = agents.filter((agent) => agent.conversationId === master.id).length;
+          const count = agents.filter((agent) => agentBelongsToConversation(agent, master.id)).length;
           return (
             <ListItem key={master.id} disablePadding sx={{ mb: 0.5 }}>
               <ListItemButton

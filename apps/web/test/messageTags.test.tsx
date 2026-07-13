@@ -78,4 +78,27 @@ describe("Conversation #tags", () => {
     expect(view.root.findAllByProps({ "aria-label": "Open agent user" })).toHaveLength(0);
     view.unmount();
   });
+
+  it("does not render a legacy broadcast routing prefix as agent prose", () => {
+    const html = renderToStaticMarkup(<ConversationMessage
+      message={{
+        id: "legacy-broadcast",
+        conversationId: "room",
+        role: "assistant",
+        text: "#broadcast Completed answer",
+        createdAt: "2026-07-12T00:00:00.000Z",
+        authorAgentId: "agent-olympic",
+      }}
+      conversation="main"
+      agentTitle={() => "Olympic"}
+      agentIdForHandle={() => undefined}
+      onOpenAgent={vi.fn()}
+      onReply={vi.fn()}
+      onDirectReply={vi.fn()}
+      onReact={vi.fn()}
+    />);
+
+    expect(html).toContain("Completed answer");
+    expect(html).not.toContain("#broadcast");
+  });
 });

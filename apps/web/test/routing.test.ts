@@ -15,4 +15,11 @@ describe("mobile-critical durable navigation", () => {
     expect(parseRoute("/projects")).toEqual({ kind: "home" });
     expect(parseRoute("/unrelated/path")).toEqual({ kind: "home" });
   });
+
+  it("uses the Project-chat URL vocabulary and rejects the retired route", () => {
+    expect(routeToPath({ kind: "conversation", projectId: "project", conversationId: "planning" }))
+      .toBe("/projects/project/chats/planning");
+    expect(parseRoute("/projects/project/conversations/planning"))
+      .toEqual({ kind: "project", projectId: "project" });
+  });
 });

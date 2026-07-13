@@ -692,7 +692,7 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.75 }}>
             <Chip size="small" variant="outlined" label={entry.kind === "reasoning" ? "Reasoning" : entry.completed ? "Response" : "Response · live"} />
             <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-              Execution {entry.executionId.slice(0, 8)} · {new Date(entry.createdAt).toLocaleString()}
+              Run {entry.executionId.slice(0, 8)} · {new Date(entry.createdAt).toLocaleString()}
             </Typography>
           </Stack>
           <Typography component="div" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
@@ -987,7 +987,7 @@ export function WorkspaceReviewPane({ projectId, files, running }: { projectId: 
     </Stack>
     {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
       : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
-        : workspace.data && !workspace.data.isGitRepository ? <Alert severity="info" sx={{ m: 1.5 }}>This working folder is not a Git repository. Execution-scoped file events remain available in Activity and Artifacts.</Alert>
+        : workspace.data && !workspace.data.isGitRepository ? <Alert severity="info" sx={{ m: 1.5 }}>This working folder is not a Git repository. Run-related file events remain available in Activity and Changed Files.</Alert>
           : changes.length === 0 ? <Alert severity="success" sx={{ m: 1.5 }}>Working tree clean. Files previously touched by this agent remain recorded in Activity and Artifacts.</Alert>
             : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>
               <Stack sx={{ overflowY: "auto", borderRight: { md: 1 }, borderBottom: { xs: 1, md: 0 }, borderColor: "divider", maxHeight: { xs: 220, md: "none" } }}>
@@ -1020,7 +1020,7 @@ export function WorkspaceReviewPane({ projectId, files, running }: { projectId: 
                   {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
-                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionIds.length} agent execution${selectedProvenance.executionIds.length === 1 ? "" : "s"}`} /> : null}
+                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionIds.length} agent run${selectedProvenance.executionIds.length === 1 ? "" : "s"}`} /> : null}
                 </Stack>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
@@ -1055,7 +1055,7 @@ export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.El
           <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{file.path}</Typography>
         </Stack>
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-          Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} execution{file.executionIds.length === 1 ? "" : "s"}
+          Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} run{file.executionIds.length === 1 ? "" : "s"}
         </Typography>
         {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>}
       </Paper>)}
@@ -1126,7 +1126,7 @@ function ArtifactViewer({
     return (
       <Box sx={{ p: 2 }}>
         <Typography variant="body2" color="text.secondary">
-          Select an artifact to inspect its contents.
+          Select a file or result to inspect its contents.
         </Typography>
       </Box>
     );

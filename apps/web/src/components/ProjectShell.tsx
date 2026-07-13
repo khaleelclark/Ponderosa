@@ -6,7 +6,7 @@ import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilit
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { deriveAgentStatus, type AgentStatus } from "../agents";
+import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import type { Route } from "../routing";
@@ -74,10 +74,7 @@ export function ProjectShell({
   }, [agents, agentDetailQueries]);
 
   const statusByAgentId = useMemo(() => {
-    const map = new Map<string, AgentStatus>();
-    const healthById = new Map((healthQuery.data?.agents ?? []).map((agent) => [agent.agentId, agent.status]));
-    agents.forEach((agent) => map.set(agent.id, healthById.get(agent.id) ?? deriveAgentStatus(detailByAgentId.get(agent.id))));
-    return map;
+    return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], detailByAgentId);
   }, [agents, detailByAgentId, healthQuery.data]);
   const healthByAgentId = useMemo(
     () => new Map<string, AgentHealthDto>((healthQuery.data?.agents ?? []).map((agent) => [agent.agentId, agent])),
@@ -247,7 +244,7 @@ export function ProjectShell({
     main = (
       <Box sx={{ p: 3 }}>
         <Alert severity="info">
-          Select a conversation or open the Agents view to get started.
+          Select a Project chat or open the Agents view to get started.
         </Alert>
       </Box>
     );

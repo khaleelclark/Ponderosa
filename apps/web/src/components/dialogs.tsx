@@ -54,7 +54,7 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
 }
 
 /**
- * Project conversations are model-agnostic: an optional default engine just
+ * Project chats are model-agnostic: an optional default engine just
  * prefills the agents spawned from here. The user can pick any engine per agent
  * and change it any time.
  */
@@ -85,7 +85,7 @@ export function CreateConversationDialog({
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>New Conversation</DialogTitle>
+      <DialogTitle>New Project chat</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           <TextField
@@ -169,9 +169,9 @@ export function createAgentInputFromForm(input: {
 }
 
 /**
- * Spawns an agent (agent). From a conversation, `fixedConversationId` locks the
+ * Spawns an agent. From a Project chat, `fixedConversationId` locks the
  * manager and prefills defaults; from the Agents tab, the user may optionally
- * assign it to a conversation.
+ * assign it to a Project chat.
  */
 export function CreateAgentDialog({
   open,
@@ -313,10 +313,10 @@ export function CreateAgentDialog({
           ) : null}
           {!fixedConversationId ? (
             <FormControl fullWidth size="small">
-              <InputLabel id="agent-master-label">Master chat (optional)</InputLabel>
+              <InputLabel id="agent-master-label">Project chat (optional)</InputLabel>
               <Select
                 labelId="agent-master-label"
-                label="Master chat (optional)"
+                label="Project chat (optional)"
                 value={conversationId}
                 onChange={(event: SelectChangeEvent) => setConversationId(event.target.value)}
               >

@@ -1679,6 +1679,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
     }
     if (!text) return reply.code(400).send({ error: "text is required" });
+    const scopedText = intent === "broadcast" ? stripLeadingScopeTag(text, "broadcast") : text;
+    if (!scopedText) return reply.code(400).send({ error: "text is required after the broadcast scope" });
     if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
     const requestedDocument = request.body?.document;
     if (requestedDocument && (requestedDocument.mediaType && requestedDocument.mediaType !== "text/markdown")) {
@@ -1752,9 +1754,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!currentAuthor.conversationIds.includes(capability.conversationId)) {
       return reply.code(409).send({ error: "agent is no longer an active member of this conversation" });
     }
-    let renderedText = intent === "broadcast"
-      ? capability.plainSharedReply ? stripLeadingScopeTag(text, "broadcast") : renderScopedMessage("broadcast", text)
-      : text;
+    let renderedText = scopedText;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration") {
       const recipientAgentIds = request.body.recipientAgentIds;
@@ -1783,7 +1783,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sender: { kind: "agent", agentId: capability.agentId, executionId: capability.runId },
       intent,
       audience: { kind: "organization", organizationId: currentAuthor.projectId },
-      text,
+      text: scopedText,
       ...(document ? { document } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -3595,7 +3595,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               const output = store.appendEvent(agent.id, {
                 type: "agent_output",
                 executionId: runId,
-                text: finalText,
+                text: finalText.trimEnd(),
                 sourceSeqStart: firstTextSeq,
                 sourceSeqEnd: lastTextSeq,
               });

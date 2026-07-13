@@ -187,7 +187,9 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
   }
   if (notification.method === "item/completed" && item.type === "agentMessage") {
     return typeof item.text === "string" && item.text.trim()
-      ? [{ type: "text", delta: item.text }]
+      // Each completed agentMessage is a semantic response block, not a token
+      // delta. Keep adjacent blocks separated in the durable Work log.
+      ? [{ type: "text", delta: `${item.text.trimEnd()}\n\n` }]
       : [];
   }
   if (notification.method === "item/completed" && item.type === "fileChange" && Array.isArray(item.changes)) {

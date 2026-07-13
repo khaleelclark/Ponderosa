@@ -1982,7 +1982,7 @@ describe("server chunk F", () => {
 
     const result = await opened.handleDynamicToolCall!({
       name: "ponderosa_send_message",
-      arguments: { intent: "broadcast", text: "The managed answer" },
+      arguments: { intent: "broadcast", text: "#broadcast The managed answer" },
     });
     expect(result.success, result.text).toBe(true);
     expect(store.getConversationMessages(conversation.id)).toContainEqual(expect.objectContaining({
@@ -2092,7 +2092,7 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ authorAgentId: author.id, text: "#user Private implementation note." }),
-        expect.objectContaining({ authorAgentId: author.id, text: "#broadcast Manager-facing checkpoint." }),
+        expect.objectContaining({ authorAgentId: author.id, text: "Manager-facing checkpoint." }),
       ]),
     );
     expect(store.getConversationMessages(master.id, "collaboration")).toEqual(

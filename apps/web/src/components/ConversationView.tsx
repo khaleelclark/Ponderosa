@@ -38,7 +38,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
-import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
+import { agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
@@ -96,6 +96,11 @@ export function ConversationMessage({
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
   const showUserLabel = fromManager && message.role === "user";
+  // Older projections stored the structured broadcast scope as visible prose.
+  // Agent-authored Project-chat messages already carry that scope structurally.
+  const visibleText = conversation === "main" && message.authorAgentId
+    ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
+    : message.text;
 
   return (
     <Box
@@ -107,7 +112,7 @@ export function ConversationMessage({
     >
       {showUserLabel ? <UserMessageLabel /> : null}
       <MessageContextMenu
-        text={message.text}
+        text={visibleText}
         onReply={() => onReply(message)}
         onOpenAgent={message.authorAgentId ? () => onOpenAgent(message.authorAgentId!) : undefined}
       >
@@ -147,7 +152,7 @@ export function ConversationMessage({
             <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
           </Box>
         ) : null}
-        <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+        <ChatMessageBody text={visibleText} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
@@ -316,7 +321,7 @@ export function ConversationView({
   const spawn = useMutation({
     mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
       if (!conversation) {
-        throw new Error("Master chat not loaded");
+        throw new Error("Project chat not loaded");
       }
       // Record the message in the shared pool, spawn a park-named agent on the
       // selected engine, and hand it the message as its first turn.
@@ -484,7 +489,7 @@ export function ConversationView({
             </Button>
           }
         >
-          This conversation could not be loaded. Check the server connection and try again.
+          This Project chat could not be loaded. Check the server connection and try again.
         </Alert>
       </Box>
     );
@@ -493,7 +498,7 @@ export function ConversationView({
   if (!detailQuery.data || !conversation) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="warning">Master chat not found.</Alert>
+        <Alert severity="warning">Project chat not found.</Alert>
       </Box>
     );
   }
@@ -595,12 +600,12 @@ export function ConversationView({
               {conversation.title}
             </Typography>
             <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" } }}>
-              Team group chat · agents report back here when done or stuck
+              Shared work and durable team updates
             </Typography>
           </Box>
           <Tooltip title="Rename">
             <IconButton
-              aria-label="Rename conversation"
+              aria-label="Rename Project chat"
               sx={{ minWidth: 44, minHeight: 44 }}
               onClick={() => {
                 setRenameValue(conversation.title);
@@ -611,7 +616,7 @@ export function ConversationView({
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete">
-            <IconButton aria-label="Delete conversation" color="error" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
+            <IconButton aria-label="Delete Project chat" color="error" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
               <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
@@ -758,9 +763,9 @@ export function ConversationView({
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {activeView === "collaboration" ? (
-              <>This is a separate agent team chat. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> for the current active room members.</>
+              <>Agent-to-agent messages appear here. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> to notify every agent in this Project chat.</>
             ) : (
-              <>Chat normally to start a fresh agent with the conversation’s shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file when you need them.</>
+              <>Chat normally to start a fresh agent with this Project chat's shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file.</>
             )}
           </Alert>
           {activeView === "main" && !engineReady ? (
@@ -775,8 +780,8 @@ export function ConversationView({
             {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {activeView === "collaboration"
-                  ? "No collaboration messages yet. Tag an agent to give them this chat's context."
-                  : "No messages yet. Send a task to spawn your first agent — it reports back here when it finishes or gets stuck."}
+                  ? "No team messages yet. Tag an agent to start agent-to-agent coordination."
+                  : "No messages yet. Send a request to start your first agent — its completed answer returns here."}
               </Typography>
             ) : null}
             {(activeView === "collaboration" ? collaborationMessages : messages).map((message) => (
@@ -821,22 +826,25 @@ export function ConversationView({
             : { width: "min(420px, 92vw)" },
         }}
       >
-        <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this conversation">
+        <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this Project chat">
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
-            <Typography variant="h6" sx={{ flex: 1 }}>Agents in this conversation</Typography>
+            <Typography variant="h6" sx={{ flex: 1 }}>Agents in this Project chat</Typography>
             <Chip size="small" label={agents.length} />
           </Stack>
           {agents.length === 0 ? (
             <Alert severity="info">No agents yet. Send a message to spawn one.</Alert>
           ) : (
             <List dense disablePadding>
-              {agents.map((agent) => {
+              {orderedAgentOrganization(agents).map(({ agent, depth }) => {
                 const status = statusByAgentId.get(agent.id) ?? "idle";
+                const manager = agent.managerAgentId
+                  ? agents.find((candidate) => candidate.id === agent.managerAgentId)
+                  : undefined;
                 return (
                   <ListItem
                     key={agent.id}
                     disablePadding
-                    sx={{ mb: 0.5 }}
+                    sx={{ mb: 0.5, ml: Math.min(depth, 3) * 2, borderLeft: depth ? 2 : 0, borderColor: "divider", pl: depth ? 0.75 : 0 }}
                     secondaryAction={
                       <Tooltip title="Delete agent">
                         <IconButton
@@ -862,7 +870,7 @@ export function ConversationView({
                     >
                       <ListItemText
                         primary={agent.title}
-                        secondary={`${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
+                        secondary={`${manager ? `Reports to ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
                         primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
                         secondaryTypographyProps={{ noWrap: true }}
                       />
@@ -896,7 +904,7 @@ export function ConversationView({
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
-                Type <Box component="strong">@</Box> to reply to an agent, or just send to spawn a new one.
+                Type <Box component="strong">#agent</Box> to message an existing agent, <Box component="strong">@</Box> to reference a file, or just send to start a new agent.
               </Typography>
             )}
           </Box>
@@ -913,7 +921,7 @@ export function ConversationView({
             activeView === "collaboration"
               ? replyTo?.authorAgentId ? `Reply to ${agentTitle(replyTo.authorAgentId)}` : "Tag #agent or #everyone"
               : engineReady
-                ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
+                ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
                 : "#tag an agent or use #broadcast for shared context"
           }
           onSend={submit}
@@ -927,12 +935,12 @@ export function ConversationView({
       </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Rename conversation</DialogTitle>
+        <DialogTitle>Rename Project chat</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
             fullWidth
-            label="Master chat name"
+            label="Project chat name"
             value={renameValue}
             onChange={(event) => setRenameValue(event.target.value)}
             sx={{ mt: 1 }}
@@ -959,7 +967,7 @@ export function ConversationView({
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>Delete conversation?</DialogTitle>
+        <DialogTitle>Delete Project chat?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{conversation.title}</Box> and its chat
@@ -989,7 +997,7 @@ export function ConversationView({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its run history, work items, and artifacts. Any in-flight run is stopped. This cannot be undone.
+            its run history, work items, and files &amp; results. Any in-flight run is stopped. This cannot be undone.
           </Typography>
           {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
         </DialogContent>
