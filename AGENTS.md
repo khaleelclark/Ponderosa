@@ -148,6 +148,22 @@ Ordinary runtime output → execution-scoped Thinking
   **Secondary:** Claude Agent SDK.
 - **Transport:** SSE for the live `AgentEvent` stream; REST for actions.
 
+### V1 interaction invariants
+
+- A direct message to an actively responding agent **steers by default**.
+  Queueing is an explicit manager choice and remains durable FIFO work.
+- Responding/typing state and elapsed time come from canonical execution
+  ownership, not optimistic component state. They survive refresh and SSE
+  reconnection and fail closed when ownership is ambiguous.
+- Delegation lineage is immutable execution provenance. Mutable roster
+  organization uses a separate organizational-parent projection; promoting or
+  re-parenting an agent never rewrites how it was spawned.
+- Activity and Changed Files are projections of canonical execution events.
+  Generated PDF preview/download routes remain project- and thread-scoped.
+- Project folders are optional at creation. Ponderosa may create a managed empty
+  workspace, but deleting a project removes Ponderosa-owned canonical data—not
+  the selected source folder.
+
 ---
 
 ## Repo Layout
