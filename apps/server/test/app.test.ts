@@ -1567,6 +1567,13 @@ describe("server chunk F", () => {
     expect(opening.statusCode, opening.body).toBe(200);
     await waitForRun(first.id);
 
+    const openingPrompt = adapter.seeds.find((turn) => turn.threadId === first.id)?.prompt ?? "";
+    expect(openingPrompt).toContain("Send its actual completed answer with intent broadcast, never direct_to_user");
+    expect(store.getMasterChatMessages(master.id)).toContainEqual(
+      expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorThreadId: first.id }),
+    );
+    expect(store.getMasterChatMessages(master.id).some((message) => message.text === "#broadcast Here are three trip options")).toBe(false);
+
     const privateAgent = store.createThread(project.id, { title: "Private", engine: "codex", masterChatId: master.id });
     adapter.responseText = "Private implementation detail";
     const privateTurn = await app.inject({
@@ -1592,7 +1599,7 @@ describe("server chunk F", () => {
 
     const prompt = adapter.seeds.find((turn) => turn.threadId === next.id)?.prompt ?? "";
     expect(prompt).toContain("Manager: Help me plan a trip");
-    expect(prompt).toContain("First: #broadcast Here are three trip options");
+    expect(prompt).toContain("First: Here are three trip options");
     expect(prompt).not.toContain("Inspect a private issue");
     expect(prompt).not.toContain("Private implementation detail");
     expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);
