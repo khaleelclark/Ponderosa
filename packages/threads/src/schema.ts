@@ -22,7 +22,7 @@ export const agentPresets = sqliteTable("agent_presets", {
 export const threads = sqliteTable("threads", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
-  masterChatId: text("master_chat_id"),
+  conversationId: text("conversation_id"),
   title: text("title").notNull(),
   activeEngine: text("active_engine").notNull(),
   activeSessionId: text("active_session_id"),
@@ -40,7 +40,7 @@ export const threads = sqliteTable("threads", {
   presetSnapshotJson: text("preset_snapshot_json"),
 });
 
-export const masterChats = sqliteTable("master_chats", {
+export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
   title: text("title").notNull(),
@@ -53,22 +53,22 @@ export const masterChats = sqliteTable("master_chats", {
 });
 
 /** Rebuildable projection of the canonical membership list in thread.json. */
-export const threadMasterChatMemberships = sqliteTable("thread_master_chat_memberships", {
+export const threadConversationMemberships = sqliteTable("thread_conversation_memberships", {
   threadId: text("thread_id").notNull(),
-  masterChatId: text("master_chat_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
   position: integer("position").notNull(),
 });
 
-export const masterChatMessages = sqliteTable("master_chat_messages", {
+export const conversationMessages = sqliteTable("conversation_messages", {
   id: text("id").primaryKey(),
   communicationEventId: text("communication_event_id"),
-  masterChatId: text("master_chat_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
   role: text("role").notNull(), // "user" | "assistant" | "system"
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
   // Set when an agent (thread) posts back into the group chat; null for the manager.
   authorThreadId: text("author_thread_id"),
-  // Main chat is manager-facing. Collaboration is opt-in and only sent to tagged agents.
+  // Project chat is user-facing. Collaboration is opt-in and only sent to explicit agents.
   channel: text("channel").notNull().default("main"),
   replyToJson: text("reply_to_json"),
   attachmentsJson: text("attachments_json"),
@@ -119,9 +119,9 @@ export const events = sqliteTable("events", {
 export type ProjectRow = typeof projects.$inferSelect;
 export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type ThreadRow = typeof threads.$inferSelect;
-export type MasterChatRow = typeof masterChats.$inferSelect;
-export type ThreadMasterChatMembershipRow = typeof threadMasterChatMemberships.$inferSelect;
-export type MasterChatMessageRow = typeof masterChatMessages.$inferSelect;
+export type ConversationRow = typeof conversations.$inferSelect;
+export type ThreadConversationMembershipRow = typeof threadConversationMemberships.$inferSelect;
+export type ConversationMessageRow = typeof conversationMessages.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;
 export type TaskRow = typeof tasks.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;

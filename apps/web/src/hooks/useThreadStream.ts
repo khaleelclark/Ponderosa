@@ -1,4 +1,4 @@
-import type { AgentActivityDto, AgentEvent, ArtifactDto, ChangedFileDto, SseEventEnvelope, TaskDto, ThinkingEntryDto, ThreadDetailDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentEvent, ArtifactDto, ChangedFileDto, SseEventEnvelope, TaskDto, RunOutputDto, ThreadDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -84,12 +84,12 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
 
   if (event.type === "text" || event.type === "reasoning") {
     if (envelope.replayed) return detail;
-    const thinking = compactDefined(detail.thinking ?? []);
+    const runOutput = compactDefined(detail.runOutput ?? []);
     const executionId = event.executionId ?? `live:${seq}`;
     const kind = event.type === "reasoning" ? "reasoning" : "response";
-    const id = `live-thinking:${executionId}:${kind}`;
-    const existing = thinking.find((entry) => entry.id === id);
-    const next: ThinkingEntryDto = existing ? {
+    const id = `live-runOutput:${executionId}:${kind}`;
+    const existing = runOutput.find((entry) => entry.id === id);
+    const next: RunOutputDto = existing ? {
       ...existing,
       text: `${existing.text}${event.delta}`,
       seq,
@@ -108,16 +108,16 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
     };
     return {
       ...detail,
-      thinking: existing
-        ? thinking.map((entry) => entry.id === id ? next : entry)
-        : [...thinking, next],
+      runOutput: existing
+        ? runOutput.map((entry) => entry.id === id ? next : entry)
+        : [...runOutput, next],
     };
   }
 
   if (event.type === "agent_output") {
-    const thinking = compactDefined(detail.thinking ?? []);
-    const entry: ThinkingEntryDto = {
-      id: `${threadId}:thinking:${seq}`,
+    const runOutput = compactDefined(detail.runOutput ?? []);
+    const entry: RunOutputDto = {
+      id: `${threadId}:runOutput:${seq}`,
       threadId,
       executionId: event.executionId,
       kind: "response",
@@ -128,10 +128,10 @@ export function updateThreadDetail(threadId: string, envelope: SseEventEnvelope,
       sourceSeqEnd: event.sourceSeqEnd,
       createdAt: ts,
     };
-    if (thinking.some((item) => item.id === entry.id)) return detail;
+    if (runOutput.some((item) => item.id === entry.id)) return detail;
     return {
       ...detail,
-      thinking: [...thinking.filter((item) => !(item.executionId === event.executionId && item.kind === "response" && !item.completed)), entry]
+      runOutput: [...runOutput.filter((item) => !(item.executionId === event.executionId && item.kind === "response" && !item.completed)), entry]
         .sort((a, b) => a.seq - b.seq),
     };
   }

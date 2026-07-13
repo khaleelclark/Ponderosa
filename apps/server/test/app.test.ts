@@ -11,15 +11,15 @@ import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function appendBroadcast(store: ThreadStore, projectId: string, masterChatId: string, text: string): void {
+function appendBroadcast(store: ThreadStore, projectId: string, conversationId: string, text: string): void {
   const eventId = randomUUID();
   store.appendCommunicationEvent({
-    eventId, schemaVersion: 1, projectId, masterChatId,
+    eventId, schemaVersion: 1, projectId, conversationId,
     sender: { kind: "user", userId: "local-operator" },
     intent: "broadcast", audience: { kind: "organization", organizationId: projectId },
     text, createdAt: new Date().toISOString(),
   });
-  store.appendMasterChatMessage(masterChatId, { text }, undefined, "main", undefined, undefined, eventId);
+  store.appendConversationMessage(conversationId, { text }, undefined, "main", undefined, undefined, eventId);
 }
 
 class MockAdapter implements Adapter {
@@ -274,8 +274,8 @@ describe("project lifecycle API", () => {
   it("renames and permanently deletes canonical project data without deleting source files", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Before", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
     store.appendEvent(thread.id, { type: "user_message", text: "canonical execution input" });
     const renamed = await app.inject({ method: "PATCH", url: `/api/projects/${project.id}`, payload: { label: "After" } });
     expect(renamed.statusCode).toBe(200);
@@ -318,7 +318,7 @@ describe("persistent engine steering", () => {
     expect(store.getMessages(thread.id).map((message) => message.text)).toEqual([
       "Start working", "Use the new direction",
     ]);
-    expect(store.getThreadDetail(thread.id)?.thinking).toEqual([
+    expect(store.getThreadDetail(thread.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "steered result", completed: true }),
     ]);
     expect(new CollaborationDeliveryStore(dataDir).pendingCount(thread.id)).toBe(0);
@@ -359,8 +359,8 @@ describe("persistent engine steering", () => {
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Persistent capabilities", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const thread = store.createThread(project.id, { title: "Dinosaur", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Dinosaur", engine: "codex", conversationId: master.id });
     const statuses: number[] = [];
     const observedTokens: string[] = [];
     persistent.onStartedTurn = async (turnNumber, environment) => {
@@ -387,7 +387,7 @@ describe("persistent engine steering", () => {
     expect(persistent.opened).toBe(1);
     expect(observedTokens).toEqual([observedTokens[0], observedTokens[0]]);
     expect(statuses).toEqual([200, 200]);
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.authorThreadId === thread.id)
+    expect(store.getConversationMessages(master.id).filter((message) => message.authorThreadId === thread.id)
       .map((message) => message.text)).toEqual(["#user reply 1", "#user reply 2"]);
     await app.close();
   });
@@ -481,17 +481,17 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("serves server-owned agent health at project and master-chat scope", async () => {
+  it("serves server-owned agent health at project and conversation scope", async () => {
     const project = store.createProject({ label: "Health", hostPath: repoDir });
-    const room = store.createMasterChat(project.id, { title: "Room" });
-    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    const room = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createThread(project.id, { title: "Agent", engine: "codex", conversationId: room.id });
     const outside = store.createThread(project.id, { title: "Outside", engine: "codex" });
     const app = createServer({ dataDir, store, engines, logger: false });
 
-    const roomHealth = await app.inject({ method: "GET", url: `/api/master-chats/${room.id}/agent-health` });
+    const roomHealth = await app.inject({ method: "GET", url: `/api/conversations/${room.id}/agent-health` });
     expect(roomHealth.statusCode).toBe(200);
     expect(roomHealth.json()).toMatchObject({
-      scope: { type: "master_chat", id: room.id },
+      scope: { type: "conversation", id: room.id },
       agents: [{ agentId: agent.id, status: "idle", reason: "no_active_work" }],
     });
 
@@ -667,7 +667,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("creates master chats, records control messages, and spawns linked agent threads", async () => {
+  it("creates conversations, records control messages, and spawns linked agent threads", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const projectRes = await app.inject({
       method: "POST",
@@ -678,7 +678,7 @@ describe("server chunk F", () => {
 
     const masterRes = await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/master-chats`,
+      url: `/api/projects/${project.id}/conversations`,
       payload: {
         title: "Release control room",
         defaultEngine: "codex",
@@ -687,12 +687,12 @@ describe("server chunk F", () => {
       },
     });
     expect(masterRes.statusCode).toBe(200);
-    const masterChat = masterRes.json<{ id: string; defaultEngine: string }>();
-    expect(masterChat.defaultEngine).toBe("codex");
+    const conversation = masterRes.json<{ id: string; defaultEngine: string }>();
+    expect(conversation.defaultEngine).toBe("codex");
 
     const messageRes = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${masterChat.id}/messages`,
+      url: `/api/conversations/${conversation.id}/messages`,
       payload: { text: "#broadcast Start an API agent." },
     });
     expect(messageRes.statusCode).toBe(200);
@@ -712,25 +712,25 @@ describe("server chunk F", () => {
     const threadRes = await app.inject({
       method: "POST",
       url: `/api/projects/${project.id}/threads`,
-      payload: { title: "API agent", engine: "codex", masterChatId: masterChat.id },
+      payload: { title: "API agent", engine: "codex", conversationId: conversation.id },
     });
     expect(threadRes.statusCode, threadRes.body).toBe(200);
-    const thread = threadRes.json<{ id: string; masterChatId: string }>();
-    expect(thread.masterChatId).toBe(masterChat.id);
+    const thread = threadRes.json<{ id: string; conversationId: string }>();
+    expect(thread.conversationId).toBe(conversation.id);
 
     const detailRes = await app.inject({
       method: "GET",
-      url: `/api/master-chats/${masterChat.id}`,
+      url: `/api/conversations/${conversation.id}`,
     });
     expect(detailRes.statusCode).toBe(200);
     expect(
       detailRes.json<{
         messages: { text: string }[];
-        threads: { id: string; masterChatId: string }[];
+        threads: { id: string; conversationId: string }[];
       }>(),
     ).toMatchObject({
       messages: [{ text: "#broadcast Start an API agent." }],
-      threads: [{ id: thread.id, masterChatId: masterChat.id }],
+      threads: [{ id: thread.id, conversationId: conversation.id }],
     });
 
     await app.close();
@@ -739,8 +739,8 @@ describe("server chunk F", () => {
   it("lets the user create an idle subagent for an existing manager and cascade-delete its organization branch", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "User-managed organization", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Organization" });
-    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Organization" });
+    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
 
     const childResponse = await app.inject({
       method: "POST",
@@ -749,11 +749,11 @@ describe("server chunk F", () => {
     });
     expect(childResponse.statusCode, childResponse.body).toBe(200);
     const child = childResponse.json<ThreadDto>();
-    expect(child).toMatchObject({ managerAgentId: manager.id, masterChatId: master.id });
+    expect(child).toMatchObject({ managerAgentId: manager.id, conversationId: master.id });
     expect(adapter.seeds).toHaveLength(0);
 
     const grandchild = store.createThread(project.id, {
-      title: "Assistant", engine: "codex", masterChatId: master.id, managerAgentId: child.id,
+      title: "Assistant", engine: "codex", conversationId: master.id, managerAgentId: child.id,
     });
     const deleted = await app.inject({ method: "DELETE", url: `/api/threads/${manager.id}` });
     expect(deleted.statusCode).toBe(200);
@@ -762,12 +762,12 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("shares Master Chat context without copying broadcasts into unrelated agent histories", async () => {
+  it("shares Conversation context without copying broadcasts into unrelated agent histories", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Shared default", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Project chat" });
-    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
-    const responsible = store.createThread(project.id, { title: "Responsible", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Project chat" });
+    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
+    const responsible = store.createThread(project.id, { title: "Responsible", engine: "codex", conversationId: master.id });
 
     const shared = await app.inject({
       method: "POST",
@@ -775,7 +775,7 @@ describe("server chunk F", () => {
       payload: {
         text: "Fix the onboarding flow",
         sourceChannel: "main",
-        sourceMasterChatId: master.id,
+        sourceConversationId: master.id,
         shareWithOrganization: true,
       },
     });
@@ -788,15 +788,15 @@ describe("server chunk F", () => {
       audience: { kind: "organization", organizationId: project.id },
       text: "Fix the onboarding flow",
     });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
+    expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
       expect.objectContaining({
         role: "user",
         text: "Fix the onboarding flow",
       }),
     ]);
-    expect(store.getMasterChatMessages(master.id)
+    expect(store.getConversationMessages(master.id)
       .find((message) => message.authorThreadId === responsible.id && message.text === "done")).toBeUndefined();
-    expect(store.getThreadDetail(responsible.id)?.thinking).toEqual([
+    expect(store.getThreadDetail(responsible.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "done", completed: true }),
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
@@ -811,11 +811,11 @@ describe("server chunk F", () => {
 
     const passive = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/messages`,
+      url: `/api/conversations/${master.id}/messages`,
       payload: { text: "#broadcast Release window is Friday" },
     });
     expect(passive.statusCode).toBe(200);
-    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
+    expect(store.getConversationMessages(master.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "#broadcast Release window is Friday" }),
     ]));
     expect(adapter.seeds.filter((turn) => turn.threadId === observer.id)).toHaveLength(0);
@@ -826,7 +826,7 @@ describe("server chunk F", () => {
     const futureViaApi = await app.inject({
       method: "POST",
       url: `/api/projects/${project.id}/threads`,
-      payload: { title: "Future via API", engine: "codex", masterChatId: master.id },
+      payload: { title: "Future via API", engine: "codex", conversationId: master.id },
     });
     expect(futureViaApi.statusCode).toBe(200);
     const futureId = futureViaApi.json<{ id: string }>().id;
@@ -835,23 +835,23 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("isolates reused display names and deleted Master Chat context", async () => {
+  it("isolates reused display names and deleted Conversation context", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Isolated rooms", hostPath: repoDir });
-    const oldMaster = store.createMasterChat(project.id, { title: "Deleted room" });
+    const oldMaster = store.createConversation(project.id, { title: "Deleted room" });
     appendBroadcast(store, project.id, oldMaster.id, "OLD ROOM SECRET MARKER");
     const oldAgent = store.createThread(project.id, {
-      title: "Olympic", engine: "codex", masterChatId: oldMaster.id,
+      title: "Olympic", engine: "codex", conversationId: oldMaster.id,
     });
     store.appendEvent(oldAgent.id, { type: "session", sessionId: "old-provider-session" });
 
-    const deleted = await app.inject({ method: "DELETE", url: `/api/master-chats/${oldMaster.id}` });
+    const deleted = await app.inject({ method: "DELETE", url: `/api/conversations/${oldMaster.id}` });
     expect(deleted.statusCode).toBe(200);
     expect(deleted.json()).toEqual({ deleted: true });
-    const freshMaster = store.createMasterChat(project.id, { title: "Fresh room" });
+    const freshMaster = store.createConversation(project.id, { title: "Fresh room" });
     const created = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/threads`,
-      payload: { title: "Olympic", engine: "codex", masterChatId: freshMaster.id },
+      payload: { title: "Olympic", engine: "codex", conversationId: freshMaster.id },
     });
     expect(created.statusCode).toBe(200);
     const freshAgent = created.json<{ id: string }>();
@@ -863,7 +863,7 @@ describe("server chunk F", () => {
       method: "POST", url: `/api/threads/${freshAgent.id}/messages`,
       payload: {
         text: "Start completely fresh", sourceChannel: "main",
-        sourceMasterChatId: freshMaster.id, shareWithOrganization: true,
+        sourceConversationId: freshMaster.id, shareWithOrganization: true,
       },
     });
     expect(turn.statusCode, turn.body).toBe(200);
@@ -873,7 +873,7 @@ describe("server chunk F", () => {
     expect(prompt).not.toContain("OLD ROOM SECRET MARKER");
     expect(adapter.continues.some((entry) => entry.threadId === freshAgent.id)).toBe(false);
     expect(store.readCommunicationProjections(project.id).some((projection) =>
-      store.getCommunicationEvent(project.id, projection.eventId)?.masterChatId === oldMaster.id)).toBe(false);
+      store.getCommunicationEvent(project.id, projection.eventId)?.conversationId === oldMaster.id)).toBe(false);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
   });
@@ -881,10 +881,10 @@ describe("server chunk F", () => {
   it("persists one tagged user message and fans it out to every explicit agent", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Group direct", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Friends" });
-    const kings = store.createThread(project.id, { title: "Kings Canyon", engine: "codex", masterChatId: master.id });
-    const cabrillo = store.createThread(project.id, { title: "Cabrillo", engine: "codex", masterChatId: master.id });
-    const olympic = store.createThread(project.id, { title: "Olympic", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Friends" });
+    const kings = store.createThread(project.id, { title: "Kings Canyon", engine: "codex", conversationId: master.id });
+    const cabrillo = store.createThread(project.id, { title: "Cabrillo", engine: "codex", conversationId: master.id });
+    const olympic = store.createThread(project.id, { title: "Olympic", engine: "codex", conversationId: master.id });
     const text = "#Kings-Canyon #Cabrillo #Olympic guess what! I just got married!!!!";
     const payload = {
       text,
@@ -893,12 +893,12 @@ describe("server chunk F", () => {
     };
 
     const sent = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/direct-messages`, payload,
+      method: "POST", url: `/api/conversations/${master.id}/direct-messages`, payload,
     });
     expect(sent.statusCode, sent.body).toBe(200);
     await Promise.all([waitForRun(kings.id), waitForRun(cabrillo.id), waitForRun(olympic.id)]);
 
-    const userMessages = store.getMasterChatMessages(master.id).filter((message) => message.role === "user");
+    const userMessages = store.getConversationMessages(master.id).filter((message) => message.role === "user");
     expect(userMessages).toEqual([expect.objectContaining({ text })]);
     for (const handle of ["#Kings-Canyon", "#Cabrillo", "#Olympic"]) {
       expect(userMessages[0]!.text.match(new RegExp(handle, "g"))).toHaveLength(1);
@@ -916,19 +916,19 @@ describe("server chunk F", () => {
       const prompt = adapter.seeds.find((seed) => seed.threadId === agent.id)?.prompt ?? "";
       expect(prompt.match(/guess what! I just got married!!!!/g)).toHaveLength(1);
     }
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#user done")).toHaveLength(0);
+    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#user done")).toHaveLength(0);
     for (const agent of [kings, cabrillo, olympic]) {
-      expect(store.getThreadDetail(agent.id)?.thinking).toEqual([
+      expect(store.getThreadDetail(agent.id)?.runOutput).toEqual([
         expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
       ]);
     }
 
     const replay = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/direct-messages`, payload,
+      method: "POST", url: `/api/conversations/${master.id}/direct-messages`, payload,
     });
     expect(replay.statusCode, replay.body).toBe(200);
     expect(replay.json()).toMatchObject({ replayed: true, messageId: userMessages[0]!.id });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.role === "user")).toHaveLength(1);
+    expect(store.getConversationMessages(master.id).filter((message) => message.role === "user")).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(3);
     await app.close();
   });
@@ -936,18 +936,18 @@ describe("server chunk F", () => {
   it("projects a user reaction onto its message and privately notifies only the author with reply context", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "User emoji reaction", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
     const text = "the user reacted with 🧑🏽‍🚀";
     const communicationEventId = randomUUID();
     store.appendCommunicationEvent({
-      eventId: communicationEventId, schemaVersion: 2, projectId: project.id, masterChatId: master.id,
+      eventId: communicationEventId, schemaVersion: 2, projectId: project.id, conversationId: master.id,
       sender: { kind: "agent", agentId: author.id, executionId: "run-result" },
       intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
       text: "Original agent result", createdAt: new Date().toISOString(),
     });
-    const original = store.appendMasterChatMessage(
+    const original = store.appendConversationMessage(
       master.id, { role: "assistant", text: "#broadcast Original agent result" }, author.id,
       "main", undefined, undefined, communicationEventId,
     )!;
@@ -973,8 +973,8 @@ describe("server chunk F", () => {
     expect(replay.json()).toMatchObject({ replayed: true, targetAuthorThreadId: author.id });
     await waitForRun(author.id);
 
-    expect(store.getMasterChatMessages(master.id)).toEqual([expect.objectContaining({ id: original.id })]);
-    const detail = await app.inject({ method: "GET", url: `/api/master-chats/${master.id}` });
+    expect(store.getConversationMessages(master.id)).toEqual([expect.objectContaining({ id: original.id })]);
+    const detail = await app.inject({ method: "GET", url: `/api/conversations/${master.id}` });
     expect(detail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
       { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
     ]);
@@ -997,8 +997,8 @@ describe("server chunk F", () => {
   it("lets a shared-task agent DM a question without publishing an accidental completion", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Question flow", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Planning" });
-    const agent = store.createThread(project.id, { title: "Planner", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Planning" });
+    const agent = store.createThread(project.id, { title: "Planner", engine: "codex", conversationId: master.id });
     let dmStatus: number | undefined;
     adapter.responseText = "This ordinary response must be suppressed";
     adapter.beforeResponse = async (opts) => {
@@ -1020,7 +1020,7 @@ describe("server chunk F", () => {
       payload: {
         text: "Plan my trip",
         sourceChannel: "main",
-        sourceMasterChatId: master.id,
+        sourceConversationId: master.id,
         shareWithOrganization: true,
       },
     });
@@ -1028,7 +1028,7 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
 
     expect(dmStatus).toBe(200);
-    const messages = store.getMasterChatMessages(master.id);
+    const messages = store.getConversationMessages(master.id);
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "Plan my trip" }),
       expect.objectContaining({ text: "#user Which dates should I use?", authorThreadId: agent.id }),
@@ -1037,35 +1037,35 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("deletes a master chat and preserves its agents as unassigned", async () => {
+  it("deletes a conversation and preserves its agents as unassigned", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = (await app.inject({
       method: "POST",
       url: "/api/projects",
       payload: { label: "Delete demo", hostPath: repoDir },
     })).json<{ id: string }>();
-    const masterChat = (await app.inject({
+    const conversation = (await app.inject({
       method: "POST",
-      url: `/api/projects/${project.id}/master-chats`,
+      url: `/api/projects/${project.id}/conversations`,
       payload: { title: "Temporary room" },
     })).json<{ id: string }>();
     const thread = (await app.inject({
       method: "POST",
       url: `/api/projects/${project.id}/threads`,
-      payload: { title: "Preserved agent", engine: "codex", masterChatId: masterChat.id },
+      payload: { title: "Preserved agent", engine: "codex", conversationId: conversation.id },
     })).json<{ id: string }>();
 
-    const deleteRes = await app.inject({ method: "DELETE", url: `/api/master-chats/${masterChat.id}` });
+    const deleteRes = await app.inject({ method: "DELETE", url: `/api/conversations/${conversation.id}` });
     expect(deleteRes.statusCode).toBe(200);
     expect(deleteRes.json()).toEqual({ deleted: true });
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${masterChat.id}` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{ thread: { masterChatId?: string } }>().thread.masterChatId).toBeUndefined();
-    expect((await app.inject({ method: "DELETE", url: `/api/master-chats/${masterChat.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${conversation.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{ thread: { conversationId?: string } }>().thread.conversationId).toBeUndefined();
+    expect((await app.inject({ method: "DELETE", url: `/api/conversations/${conversation.id}` })).statusCode).toBe(404);
 
     await app.close();
   });
 
-  it("rejects linking an agent thread to another project's master chat", async () => {
+  it("rejects linking an agent thread to another project's conversation", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const firstProjectRes = await app.inject({
       method: "POST",
@@ -1081,37 +1081,37 @@ describe("server chunk F", () => {
     const secondProject = secondProjectRes.json<{ id: string }>();
     const masterRes = await app.inject({
       method: "POST",
-      url: `/api/projects/${firstProject.id}/master-chats`,
+      url: `/api/projects/${firstProject.id}/conversations`,
       payload: { title: "Project one control room" },
     });
-    const masterChat = masterRes.json<{ id: string }>();
+    const conversation = masterRes.json<{ id: string }>();
 
     const threadRes = await app.inject({
       method: "POST",
       url: `/api/projects/${secondProject.id}/threads`,
-      payload: { title: "Wrong project", engine: "codex", masterChatId: masterChat.id },
+      payload: { title: "Wrong project", engine: "codex", conversationId: conversation.id },
     });
 
     expect(threadRes.statusCode).toBe(400);
-    expect(threadRes.json()).toEqual({ error: "master chat does not belong to project" });
+    expect(threadRes.json()).toEqual({ error: "conversation does not belong to project" });
     await app.close();
   });
 
   it("authorizes membership changes and routes a secondary-chat turn", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
-    const first = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/master-chats`, payload: { title: "Home" } })).json<{ id: string }>();
-    const second = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/master-chats`, payload: { title: "Review" } })).json<{ id: string }>();
-    const thread = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/threads`, payload: { title: "Agent", engine: "codex", masterChatId: first.id } })).json<{ id: string }>();
-    const membership = await app.inject({ method: "PUT", url: `/api/threads/${thread.id}/master-chat-memberships`, payload: { masterChatIds: [first.id, second.id], primaryMasterChatId: first.id } });
+    const first = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Home" } })).json<{ id: string }>();
+    const second = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Review" } })).json<{ id: string }>();
+    const thread = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/threads`, payload: { title: "Agent", engine: "codex", conversationId: first.id } })).json<{ id: string }>();
+    const membership = await app.inject({ method: "PUT", url: `/api/threads/${thread.id}/conversation-memberships`, payload: { conversationIds: [first.id, second.id], primaryConversationId: first.id } });
     expect(membership.statusCode).toBe(200);
-    expect(membership.json()).toMatchObject({ masterChatIds: [first.id, second.id] });
-    const turn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceMasterChatId: second.id } });
+    expect(membership.json()).toMatchObject({ conversationIds: [first.id, second.id] });
+    const turn = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceConversationId: second.id } });
     expect(turn.statusCode).toBe(200);
     await waitForRun(thread.id);
-    expect(store.getMasterChatMessages(second.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
-    expect(store.getMasterChatMessages(first.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
-    expect(store.getThreadDetail(thread.id)?.thinking).toEqual([
+    expect(store.getConversationMessages(second.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
+    expect(store.getConversationMessages(first.id).some((message) => message.authorThreadId === thread.id)).toBe(false);
+    expect(store.getThreadDetail(thread.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
     await app.close();
@@ -1133,7 +1133,7 @@ describe("server chunk F", () => {
       expect.objectContaining({ role: "user", text: "first", communicationEventId: firstEventId }),
     ]));
     expect(store.getMessages(thread.id).filter((message) => message.role === "assistant")).toEqual([]);
-    expect(store.getThreadDetail(thread.id)?.thinking).toEqual([
+    expect(store.getThreadDetail(thread.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
     expect(store.readCommunicationEvents(store.getThread(thread.id)!.projectId).some((event) =>
@@ -1264,12 +1264,12 @@ describe("server chunk F", () => {
   it("seeds bounded room context once and sends only the new message on continuation", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Release room" });
+    const master = store.createConversation(project.id, { title: "Release room" });
     appendBroadcast(store, project.id, master.id, "Ship the API change.");
     const thread = store.createThread(project.id, {
       title: "Aspen",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
 
     await app.inject({
@@ -1307,7 +1307,7 @@ describe("server chunk F", () => {
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n#Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("- tagged agents: #Aspen");
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
-    expect(store.getMasterChatMessages(master.id)).not.toEqual(
+    expect(store.getConversationMessages(master.id)).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ authorThreadId: thread.id, text: "Got it — I’m on it." }),
       ]),
@@ -1315,12 +1315,12 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("keeps agent-tagged master-chat messages out of other agents' runtime context", async () => {
+  it("keeps agent-tagged conversation messages out of other agents' runtime context", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Scoped room" });
-    const aspen = store.createThread(project.id, { title: "Aspen", engine: "codex", masterChatId: master.id });
-    const birch = store.createThread(project.id, { title: "Birch", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Scoped room" });
+    const aspen = store.createThread(project.id, { title: "Aspen", engine: "codex", conversationId: master.id });
+    const birch = store.createThread(project.id, { title: "Birch", engine: "codex", conversationId: master.id });
     appendBroadcast(store, project.id, master.id, "Shared release context.");
     appendBroadcast(store, project.id, master.id, "#Aspen private assignment marker");
 
@@ -1350,9 +1350,9 @@ describe("server chunk F", () => {
   it("delivers only accepted-session room deltas and does not replay unchanged history", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Incremental room" });
+    const master = store.createConversation(project.id, { title: "Incremental room" });
     appendBroadcast(store, project.id, master.id, "seed-only marker");
-    const thread = store.createThread(project.id, { title: "Delta", engine: "codex", masterChatId: master.id });
+    const thread = store.createThread(project.id, { title: "Delta", engine: "codex", conversationId: master.id });
 
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
     await waitForRun(thread.id);
@@ -1376,9 +1376,9 @@ describe("server chunk F", () => {
   it("does not advance context after a failed turn and reseeds a changed session epoch", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Retry room" });
+    const master = store.createConversation(project.id, { title: "Retry room" });
     appendBroadcast(store, project.id, master.id, "original context");
-    const thread = store.createThread(project.id, { title: "Retry", engine: "codex", masterChatId: master.id });
+    const thread = store.createThread(project.id, { title: "Retry", engine: "codex", conversationId: master.id });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
     await waitForRun(thread.id);
 
@@ -1396,35 +1396,35 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
     expect(adapter.continues[2]?.prompt).toContain("original context");
-    expect(adapter.continues[2]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Thinking tab");
+    expect(adapter.continues[2]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Work log tab");
     await app.close();
   });
 
   it("keeps incremental cursors isolated by visible master room", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const first = store.createMasterChat(project.id, { title: "First" });
-    const second = store.createMasterChat(project.id, { title: "Second" });
+    const first = store.createConversation(project.id, { title: "First" });
+    const second = store.createConversation(project.id, { title: "Second" });
     appendBroadcast(store, project.id, first.id, "first-room secret");
     appendBroadcast(store, project.id, second.id, "second-room secret");
-    const thread = store.createThread(project.id, { title: "Rooms", engine: "codex", masterChatId: first.id });
-    store.updateThreadMasterChatMemberships(thread.id, { masterChatIds: [first.id, second.id], primaryMasterChatId: first.id });
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceMasterChatId: first.id } });
+    const thread = store.createThread(project.id, { title: "Rooms", engine: "codex", conversationId: first.id });
+    store.updateThreadConversationMemberships(thread.id, { conversationIds: [first.id, second.id], primaryConversationId: first.id });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceConversationId: first.id } });
     await waitForRun(thread.id);
-    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceMasterChatId: second.id } });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceConversationId: second.id } });
     await waitForRun(thread.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
-    expect(adapter.continues[0]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Thinking tab");
+    expect(adapter.continues[0]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Work log tab");
     await app.close();
   });
 
   it("preserves accepted context cursors across a server restart", async () => {
     const firstApp = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Restart room" });
+    const master = store.createConversation(project.id, { title: "Restart room" });
     appendBroadcast(store, project.id, master.id, "before-restart marker");
-    const thread = store.createThread(project.id, { title: "Restart", engine: "codex", masterChatId: master.id });
+    const thread = store.createThread(project.id, { title: "Restart", engine: "codex", conversationId: master.id });
     await firstApp.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
     await waitForRun(thread.id);
     await firstApp.close();
@@ -1439,10 +1439,10 @@ describe("server chunk F", () => {
     await secondApp.close();
   });
 
-  it("starts a new master-chat agent with its initial message in the creation request", async () => {
+  it("starts a new conversation agent with its initial message in the creation request", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Release room" });
+    const master = store.createConversation(project.id, { title: "Release room" });
 
     const response = await app.inject({
       method: "POST",
@@ -1450,7 +1450,7 @@ describe("server chunk F", () => {
       payload: {
         title: "Acadia",
         engine: "codex",
-        masterChatId: master.id,
+        conversationId: master.id,
         initialMessage: "Check the first-run path.",
       },
     });
@@ -1460,7 +1460,7 @@ describe("server chunk F", () => {
     await waitForRun(thread.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
-    const shared = store.getMasterChatMessages(master.id).find((message) => message.text === "#Acadia Check the first-run path.");
+    const shared = store.getConversationMessages(master.id).find((message) => message.text === "#Acadia Check the first-run path.");
     const audit = store.getMessages(thread.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
     expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
@@ -1475,7 +1475,7 @@ describe("server chunk F", () => {
     ]);
     expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId)
       .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
-        ["master_chat", master.id],
+        ["conversation", master.id],
         ["direct_agent_audit", thread.id],
         ["user_inbox", "local-operator"],
       ]));
@@ -1486,15 +1486,15 @@ describe("server chunk F", () => {
   it("dispatches a valid collaboration-chat mention without exposing it in the main chat", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
+    const master = store.createConversation(project.id, { title: "Collaboration room" });
     const yosemite = store.createThread(project.id, {
       title: "Yosemite",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
     const response = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "can you review this?", recipientAgentIds: [yosemite.id] },
     });
 
@@ -1508,11 +1508,11 @@ describe("server chunk F", () => {
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Yosemite can you review this?" })]),
     );
-    expect(store.getMasterChatMessages(master.id)).toEqual([]);
-    expect(store.getThreadDetail(yosemite.id)?.thinking).toEqual([
+    expect(store.getConversationMessages(master.id)).toEqual([]);
+    expect(store.getThreadDetail(yosemite.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
     ]);
-    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
+    expect(store.getConversationMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "#Yosemite can you review this?" })]),
     );
     await app.close();
@@ -1522,12 +1522,12 @@ describe("server chunk F", () => {
     adapter.failuresRemaining = 1;
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Retry recipient failure" });
-    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Retry recipient failure" });
+    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "retry this failed turn", recipientAgentIds: [recipient.id] },
     });
     const messageId = response.json<{ message: { id: string } }>().message.id;
@@ -1544,12 +1544,12 @@ describe("server chunk F", () => {
     adapter.failuresRemaining = 2;
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Bounded recipient failure" });
-    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Bounded recipient failure" });
+    const recipient = store.createThread(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "fail this turn twice", recipientAgentIds: [recipient.id] },
     });
     const messageId = response.json<{ message: { id: string } }>().message.id;
@@ -1574,16 +1574,16 @@ describe("server chunk F", () => {
   it("dispatches a canonical mention for an agent whose display name contains punctuation", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
+    const master = store.createConversation(project.id, { title: "Collaboration room" });
     const wrangell = store.createThread(project.id, {
       title: "Wrangell-St. Elias",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "can you review this?", recipientAgentIds: [wrangell.id] },
     });
 
@@ -1599,15 +1599,15 @@ describe("server chunk F", () => {
   it("delivers an explicit collaboration once to every selected active member", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Broadcast room" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
-    const second = store.createThread(project.id, { title: "Second", engine: "codex", masterChatId: master.id });
-    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Broadcast room" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: master.id });
+    const second = store.createThread(project.id, { title: "Second", engine: "codex", conversationId: master.id });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
     store.updateThread(archived.id, { archived: true });
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "please report status.", recipientAgentIds: [first.id, second.id] },
     });
 
@@ -1618,7 +1618,7 @@ describe("server chunk F", () => {
     expect(store.getMessages(first.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
     expect(store.getMessages(second.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
     expect(store.getMessages(archived.id)).toHaveLength(0);
-    const intents = store.getMasterChatDeliveryIntents(master.id);
+    const intents = store.getConversationDeliveryIntents(master.id);
     expect(intents.map(({ intent }) => ({ id: intent.targetThreadId, audience: intent.audience }))).toEqual([
       { id: first.id, audience: "mention" },
       { id: second.id, audience: "mention" },
@@ -1630,17 +1630,17 @@ describe("server chunk F", () => {
   it("rejects recipient-free collaboration and sends context only after explicit routing", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Private collaboration" });
+    const master = store.createConversation(project.id, { title: "Private collaboration" });
     const agent = store.createThread(project.id, {
       title: "Yosemite",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
-    store.appendMasterChatMessage(master.id, { text: "Main-chat-only deployment plan." });
+    store.appendConversationMessage(master.id, { text: "Main-chat-only deployment plan." });
 
     const untargeted = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "Private review notes that should not reach an agent yet." },
     });
     expect(untargeted.statusCode).toBe(400);
@@ -1649,7 +1649,7 @@ describe("server chunk F", () => {
 
     const targeted = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "Please review the private notes.", recipientAgentIds: [agent.id] },
     });
     expect(targeted.statusCode).toBe(200);
@@ -1659,10 +1659,10 @@ describe("server chunk F", () => {
     expect(prompt).not.toContain("Private review notes that should not reach an agent yet.");
     expect(prompt).toContain("#Yosemite Please review the private notes.");
     expect(prompt).not.toContain("Main-chat-only deployment plan.");
-    expect(store.getMasterChatMessages(master.id)).toEqual(
+    expect(store.getConversationMessages(master.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Main-chat-only deployment plan." })]),
     );
-    expect(store.getMasterChatMessages(master.id)).not.toEqual(
+    expect(store.getConversationMessages(master.id)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Private review notes that should not reach an agent yet." })]),
     );
     await app.close();
@@ -1671,22 +1671,22 @@ describe("server chunk F", () => {
   it("isolates three-agent collaboration context by canonical recipient audience", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Three-agent room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
-    const verifier = store.createThread(project.id, { title: "Verifier", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Three-agent room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const verifier = store.createThread(project.id, { title: "Verifier", engine: "codex", conversationId: master.id });
 
     // Organization-audience system guidance is explicitly shared with every
     // project agent through the Main projection.
     const sharedAt = "2026-07-12T00:00:00.000Z";
     store.appendCommunicationEvent({
-      eventId: "shared-collaboration-guidance", schemaVersion: 1, projectId: project.id, masterChatId: master.id,
+      eventId: "shared-collaboration-guidance", schemaVersion: 1, projectId: project.id, conversationId: master.id,
       sender: { kind: "system", component: "collaboration-policy" }, intent: "broadcast",
       audience: { kind: "organization", organizationId: project.id },
       text: "Shared system guidance for all project agents.", createdAt: sharedAt,
     });
     store.appendCommunicationProjection(project.id, {
-      eventId: "shared-collaboration-guidance", surface: "master_chat", projectionKey: master.id,
+      eventId: "shared-collaboration-guidance", surface: "conversation", projectionKey: master.id,
       projectedAt: sharedAt,
       message: { messageId: "shared-guidance-message", role: "system", createdAt: sharedAt },
     });
@@ -1708,7 +1708,7 @@ describe("server chunk F", () => {
     await waitForSeedCount(2);
 
     const crossAudienceReply = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: {
         text: "Do not disclose the quoted credential.", recipientAgentIds: [verifier.id],
         replyToMessageId: toReviewer.json<{ messageId: string }>().messageId,
@@ -1746,9 +1746,9 @@ describe("server chunk F", () => {
   it("inherits broadcasts but not direct messages or collaboration in a newly spawned agent", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Immutable scope", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Scope room" });
-    const participant = store.createThread(project.id, { title: "Participant", engine: "codex", masterChatId: master.id });
-    const collaborator = store.createThread(project.id, { title: "Collaborator", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Scope room" });
+    const participant = store.createThread(project.id, { title: "Participant", engine: "codex", conversationId: master.id });
+    const collaborator = store.createThread(project.id, { title: "Collaborator", engine: "codex", conversationId: master.id });
 
     appendBroadcast(store, project.id, master.id, "shared project finding");
     adapter.mode = "hang";
@@ -1773,13 +1773,13 @@ describe("server chunk F", () => {
     expect(directEvent).toMatchObject({ schemaVersion: 2, intent: "user_dm" });
     expect(collaborationEvent).toMatchObject({ schemaVersion: 2, intent: "collaboration" });
 
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.communicationEventId === directEvent?.eventId)).toEqual([
+    expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === directEvent?.eventId)).toEqual([
       expect.objectContaining({ text: "#Participant private manager note" }),
     ]);
     await cancelAndWait(app, participant.id);
     await cancelAndWait(app, collaborator.id);
     adapter.mode = "normal";
-    const future = store.createThread(project.id, { title: "Future", engine: "codex", masterChatId: master.id });
+    const future = store.createThread(project.id, { title: "Future", engine: "codex", conversationId: master.id });
     await app.inject({
       method: "POST", url: `/api/threads/${future.id}/messages`,
       payload: { text: "Start", sourceChannel: "main" },
@@ -1792,12 +1792,12 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("keeps an ordinary conversational response in Thinking instead of inferring a DM", async () => {
+  it("keeps an ordinary conversational response in Work log instead of inferring a DM", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Conversational reply", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Team room" });
+    const master = store.createConversation(project.id, { title: "Team room" });
     appendBroadcast(store, project.id, master.id, "#Greeter sounds good thanks!");
-    const greeter = store.createThread(project.id, { title: "Greeter", engine: "codex", masterChatId: master.id });
+    const greeter = store.createThread(project.id, { title: "Greeter", engine: "codex", conversationId: master.id });
     adapter.responseText = "You're welcome!";
 
     await app.inject({
@@ -1806,15 +1806,15 @@ describe("server chunk F", () => {
     });
     await waitForRun(greeter.id);
 
-    expect(store.getMasterChatMessages(master.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
+    expect(store.getConversationMessages(master.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
     expect(store.getMessages(greeter.id).some((message) => message.text.includes("You're welcome!"))).toBe(false);
-    expect(store.getThreadDetail(greeter.id)?.thinking).toEqual([
+    expect(store.getThreadDetail(greeter.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "You're welcome!", completed: true }),
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.sender.kind === "agent" && event.text === "You're welcome!")).toBe(false);
 
-    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", masterChatId: master.id });
+    const observer = store.createThread(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
     await app.inject({
       method: "POST", url: `/api/threads/${observer.id}/messages`,
       payload: { text: "What shared context is available?", sourceChannel: "main" },
@@ -1827,8 +1827,8 @@ describe("server chunk F", () => {
   it("continues casual conversation through explicit broadcasts without inheriting ordinary output", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Casual conversation", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Trip planning" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Trip planning" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: master.id });
     adapter.responseText = "Here are three trip options";
     adapter.beforeResponse = async (opts) => {
       const response = await app.inject({
@@ -1845,7 +1845,7 @@ describe("server chunk F", () => {
       payload: {
         text: "Help me plan a trip",
         sourceChannel: "main",
-        sourceMasterChatId: master.id,
+        sourceConversationId: master.id,
         shareWithOrganization: true,
       },
     });
@@ -1854,28 +1854,28 @@ describe("server chunk F", () => {
 
     const openingPrompt = adapter.seeds.find((turn) => turn.threadId === first.id)?.prompt ?? "";
     expect(openingPrompt).toContain("Send its actual completed answer with intent broadcast, never direct_to_user");
-    expect(store.getMasterChatMessages(master.id)).toContainEqual(
+    expect(store.getConversationMessages(master.id)).toContainEqual(
       expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorThreadId: first.id }),
     );
-    expect(store.getMasterChatMessages(master.id).some((message) => message.text === "#broadcast Here are three trip options")).toBe(false);
+    expect(store.getConversationMessages(master.id).some((message) => message.text === "#broadcast Here are three trip options")).toBe(false);
 
-    const privateAgent = store.createThread(project.id, { title: "Private", engine: "codex", masterChatId: master.id });
+    const privateAgent = store.createThread(project.id, { title: "Private", engine: "codex", conversationId: master.id });
     adapter.responseText = "Private implementation detail";
     const privateTurn = await app.inject({
       method: "POST", url: `/api/threads/${privateAgent.id}/messages`,
-      payload: { text: "Inspect a private issue", sourceChannel: "main", sourceMasterChatId: master.id },
+      payload: { text: "Inspect a private issue", sourceChannel: "main", sourceConversationId: master.id },
     });
     expect(privateTurn.statusCode, privateTurn.body).toBe(200);
     await waitForRun(privateAgent.id);
 
-    const next = store.createThread(project.id, { title: "Next", engine: "codex", masterChatId: master.id });
+    const next = store.createThread(project.id, { title: "Next", engine: "codex", conversationId: master.id });
     adapter.responseText = "Let's continue";
     const followUp = await app.inject({
       method: "POST", url: `/api/threads/${next.id}/messages`,
       payload: {
         text: "I can leave Friday",
         sourceChannel: "main",
-        sourceMasterChatId: master.id,
+        sourceConversationId: master.id,
         shareWithOrganization: true,
       },
     });
@@ -1888,7 +1888,7 @@ describe("server chunk F", () => {
     expect(prompt).not.toContain("Inspect a private issue");
     expect(prompt).not.toContain("Private implementation detail");
     expect(prompt.match(/I can leave Friday/g)).toHaveLength(1);
-    expect(store.getThreadDetail(privateAgent.id)?.thinking).toEqual([
+    expect(store.getThreadDetail(privateAgent.id)?.runOutput).toEqual([
       expect.objectContaining({ text: "Private implementation detail", completed: true }),
     ]);
     await app.close();
@@ -1897,25 +1897,25 @@ describe("server chunk F", () => {
   it("serves every room timeline from canonical projections", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Cutover", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Canonical room" });
-    const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Canonical room" });
+    const agent = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
 
     const main = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/messages`, payload: { text: "Shared decision" },
+      method: "POST", url: `/api/conversations/${master.id}/messages`, payload: { text: "Shared decision" },
     });
     const collaboration = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`,
+      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "Review this", recipientAgentIds: [agent.id] },
     });
     expect(main.statusCode).toBe(200);
     expect(collaboration.statusCode, collaboration.body).toBe(200);
     await waitForRun(agent.id);
 
-    const mainDetail = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}` })).json<{
-      messages: MasterChatMessageDto[];
+    const mainDetail = (await app.inject({ method: "GET", url: `/api/conversations/${master.id}` })).json<{
+      messages: ConversationMessageDto[];
     }>();
-    const collaborationDetail = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/collaboration` })).json<{
-      messages: MasterChatMessageDto[];
+    const collaborationDetail = (await app.inject({ method: "GET", url: `/api/conversations/${master.id}/collaboration` })).json<{
+      messages: ConversationMessageDto[];
     }>();
     expect(mainDetail.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: main.json().communicationEventId, text: "#broadcast Shared decision" }),
@@ -1932,21 +1932,21 @@ describe("server chunk F", () => {
   it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Routing room" });
+    const master = store.createConversation(project.id, { title: "Routing room" });
     const author = store.createThread(project.id, {
       title: "Author Agent",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
     const reviewer = store.createThread(project.id, {
       title: "Review Agent",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
     const verifier = store.createThread(project.id, {
       title: "Verify Agent",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
 
     adapter.mode = "hang";
@@ -1985,13 +1985,13 @@ describe("server chunk F", () => {
     expect(store.getMessages(author.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "assistant", text: "Private implementation note." })]),
     );
-    expect(store.getMasterChatMessages(master.id)).toEqual(
+    expect(store.getConversationMessages(master.id)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ authorThreadId: author.id, text: "#user Private implementation note." }),
         expect.objectContaining({ authorThreadId: author.id, text: "#broadcast Manager-facing checkpoint." }),
       ]),
     );
-    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(
+    expect(store.getConversationMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           authorThreadId: author.id,
@@ -2033,11 +2033,11 @@ describe("server chunk F", () => {
     expect(communicationEvents.filter((event) => event.eventId === directEventId)).toHaveLength(1);
     expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === directEventId)
       .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
-        ["master_chat", master.id],
+        ["conversation", master.id],
         ["direct_agent_audit", author.id],
         ["user_inbox", "local-operator"],
       ]));
-    expect(store.getMasterChatMessages(master.id)).toEqual(expect.arrayContaining([
+    expect(store.getConversationMessages(master.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
     ]));
     expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
@@ -2047,13 +2047,13 @@ describe("server chunk F", () => {
       expect(store.getMessages(agent.id).some((message) =>
         message.text === "#broadcast Manager-facing checkpoint.")).toBe(false);
     }
-    expect(store.getMasterChatMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
+    expect(store.getConversationMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
       expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
     ]));
     const collaborationEventId = collaboration.json<{ eventId: string }>().eventId;
     expect(communicationEvents.filter((event) => event.eventId === collaborationEventId)).toHaveLength(1);
     expect(store.readCommunicationProjections(project.id).filter((projection) =>
-      projection.eventId === collaborationEventId && projection.surface === "collaboration_chat")).toHaveLength(1);
+      projection.eventId === collaborationEventId && projection.surface === "collaboration_view")).toHaveLength(1);
     const deliveryStore = new CollaborationDeliveryStore(dataDir);
     expect([reviewer.id, verifier.id].map((agentId) =>
       deliveryStore.getForMessageTarget(collaboration.json<{ messageId: string }>().messageId, agentId)?.communicationEventId))
@@ -2083,12 +2083,12 @@ describe("server chunk F", () => {
   it("rejects retired routing syntax and preserves explicit intents", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Retirement", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Explicit room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Explicit room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
 
     const manualMention = await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "#Reviewer inspect this" },
+      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`, payload: { text: "#Reviewer inspect this" },
     });
     expect(manualMention.statusCode).toBe(400);
     expect(manualMention.json()).toMatchObject({ error: expect.stringContaining("explicit recipientAgentIds") });
@@ -2116,11 +2116,11 @@ describe("server chunk F", () => {
   it("delivers scoped Markdown documents as concise summaries with on-demand content", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Documents", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Private room" });
-    const outsiderRoom = store.createMasterChat(project.id, { title: "Unrelated room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
-    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", masterChatId: outsiderRoom.id });
+    const master = store.createConversation(project.id, { title: "Private room" });
+    const outsiderRoom = store.createConversation(project.id, { title: "Unrelated room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
+    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", conversationId: outsiderRoom.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Begin" } });
     await waitForSeedCount(1);
@@ -2134,10 +2134,10 @@ describe("server chunk F", () => {
     await waitForSeedCount(2);
     const event = store.getCommunicationEvent(project.id, sent.json<{ eventId: string }>().eventId)!;
     expect(event.document).toMatchObject({ title: "Detailed Review", authorAgentId: author.id, executionId: expect.any(String) });
-    expect(store.getProjectedMasterChatMessages(master.id, "main")).not.toEqual(
+    expect(store.getProjectedConversationMessages(master.id, "main")).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ document: expect.anything() })]),
     );
-    const projected = store.getProjectedMasterChatMessages(master.id, "collaboration")[0]!;
+    const projected = store.getProjectedConversationMessages(master.id, "collaboration")[0]!;
     expect(projected.text).toContain("Review complete");
     expect(projected.text).not.toContain("private analysis");
     expect(projected.document).toMatchObject({ title: "Detailed Review", previewUrl: expect.any(String), downloadUrl: expect.any(String) });
@@ -2177,9 +2177,9 @@ describe("server chunk F", () => {
   it("lets eligible room agents retrieve broadcast documents without seeding full content", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Broadcast documents", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Shared room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const reader = store.createThread(project.id, { title: "Reader", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Shared room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reader = store.createThread(project.id, { title: "Reader", engine: "codex", conversationId: master.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Prepare shared guidance" } });
     await waitForSeedCount(1);
@@ -2194,7 +2194,7 @@ describe("server chunk F", () => {
 
     const turn = await app.inject({
       method: "POST", url: `/api/threads/${reader.id}/messages`,
-      payload: { text: "Use the shared guidance", sourceChannel: "main", sourceMasterChatId: master.id, shareWithOrganization: true },
+      payload: { text: "Use the shared guidance", sourceChannel: "main", sourceConversationId: master.id, shareWithOrganization: true },
     });
     expect(turn.statusCode).toBe(200);
     await waitForSeedCount(2);
@@ -2214,10 +2214,10 @@ describe("server chunk F", () => {
   it("rejects recipient-free and out-of-room collaboration intents before persistence", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Routing room" });
-    const otherMaster = store.createMasterChat(project.id, { title: "Other room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", masterChatId: otherMaster.id });
+    const master = store.createConversation(project.id, { title: "Routing room" });
+    const otherMaster = store.createConversation(project.id, { title: "Other room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const outsider = store.createThread(project.id, { title: "Outsider", engine: "codex", conversationId: otherMaster.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
@@ -2234,8 +2234,8 @@ describe("server chunk F", () => {
 
     expect(recipientFree.statusCode).toBe(400);
     expect(unauthorized.statusCode).toBe(400);
-    expect(store.getMasterChatMessages(master.id, "collaboration")).toHaveLength(0);
-    expect(store.getMasterChatDeliveryIntents(master.id)).toHaveLength(0);
+    expect(store.getConversationMessages(master.id, "collaboration")).toHaveLength(0);
+    expect(store.getConversationDeliveryIntents(master.id)).toHaveLength(0);
     await cancelAndWait(app, author.id);
     await app.close();
   });
@@ -2243,9 +2243,9 @@ describe("server chunk F", () => {
   it("lets a room member broadcast idempotently without delivering to itself", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Agent broadcast" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Agent broadcast" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
@@ -2260,7 +2260,7 @@ describe("server chunk F", () => {
     expect(adapter.seeds).toHaveLength(2);
     expect(store.getMessages(author.id).filter((message) => message.text.includes("review this"))).toHaveLength(0);
     expect(store.getMessages(reviewer.id).filter((message) => message.text.includes("review this"))).toHaveLength(1);
-    expect(store.getMasterChatDeliveryIntents(master.id).filter(({ message }) => message.id === first.json<{ messageId: string }>().messageId))
+    expect(store.getConversationDeliveryIntents(master.id).filter(({ message }) => message.id === first.json<{ messageId: string }>().messageId))
       .toHaveLength(1);
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
     await app.close();
@@ -2269,14 +2269,14 @@ describe("server chunk F", () => {
   it("rejects a broadcast when the authenticated agent is no longer a current room member", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Membership room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Membership room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    store.updateThreadMasterChatMemberships(author.id, { masterChatIds: [] });
+    store.updateThreadConversationMemberships(author.id, { conversationIds: [] });
 
     const response = await app.inject({
       method: "POST",
@@ -2286,9 +2286,9 @@ describe("server chunk F", () => {
     });
 
     expect(response.statusCode).toBe(409);
-    expect(store.getMasterChatMessages(master.id, "collaboration")).toHaveLength(0);
+    expect(store.getConversationMessages(master.id, "collaboration")).toHaveLength(0);
     expect(store.getMessages(reviewer.id)).toHaveLength(0);
-    expect(store.getMasterChatDeliveryIntents(master.id)).toHaveLength(0);
+    expect(store.getConversationDeliveryIntents(master.id)).toHaveLength(0);
     await cancelAndWait(app, author.id);
     await app.close();
   });
@@ -2296,11 +2296,11 @@ describe("server chunk F", () => {
   it("expires an agent messaging capability when its run ends", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Room" });
+    const master = store.createConversation(project.id, { title: "Room" });
     const thread = store.createThread(project.id, {
       title: "Agent",
       engine: "codex",
-      masterChatId: master.id,
+      conversationId: master.id,
     });
     await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "Finish." } });
     await waitForRun(thread.id);
@@ -2312,10 +2312,10 @@ describe("server chunk F", () => {
       payload: { intent: "direct_to_user", text: "Too late." },
     });
     expect(response.statusCode).toBe(401);
-    expect(store.getMasterChatMessages(master.id)).toEqual([
+    expect(store.getConversationMessages(master.id)).toEqual([
       expect.objectContaining({ text: "#Agent Finish.", communicationEventId: expect.any(String) }),
     ]);
-    expect(store.getMasterChatMessages(master.id)).not.toEqual(
+    expect(store.getConversationMessages(master.id)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Too late." })]),
     );
     await app.close();
@@ -2341,9 +2341,9 @@ describe("server chunk F", () => {
   it("queues a handoff sent through an active agent's messaging capability", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Collaboration room" });
-    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", masterChatId: master.id });
-    const author = store.createThread(project.id, { title: "Badlands", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Collaboration room" });
+    const reviewer = store.createThread(project.id, { title: "Pinnacles", engine: "codex", conversationId: master.id });
+    const author = store.createThread(project.id, { title: "Badlands", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
     await app.inject({
@@ -2381,9 +2381,9 @@ describe("server chunk F", () => {
   it("persists several active-turn tags, retries a cancelled delivery, and de-duplicates an agent retry", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Async handoffs" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
-    const child = store.createThread(project.id, { title: "Child", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Async handoffs" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const child = store.createThread(project.id, { title: "Child", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Stay busy." } });
@@ -2399,12 +2399,12 @@ describe("server chunk F", () => {
     expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
     await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "second completed result", recipientAgentIds: [parent.id] },
     });
     await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "third completed result", recipientAgentIds: [parent.id] },
     });
 
@@ -2417,7 +2417,7 @@ describe("server chunk F", () => {
     expect(batchPrompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
     expect(batchPrompt.indexOf("#Parent first completed result")).toBeLessThan(batchPrompt.indexOf("#Parent second completed result"));
     expect(batchPrompt.indexOf("#Parent second completed result")).toBeLessThan(batchPrompt.indexOf("#Parent third completed result"));
-    expect(store.getCollaborationChatDetail(master.id)?.messages.filter((message) => message.text === "#Parent first completed result")).toHaveLength(1);
+    expect(store.getCollaborationViewDetail(master.id)?.messages.filter((message) => message.text === "#Parent first completed result")).toHaveLength(1);
     await cancelAndWait(app, child.id);
     await app.close();
   });
@@ -2425,15 +2425,15 @@ describe("server chunk F", () => {
   it("starts queued tags after a normal tool-boundary turn completes", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Safe boundary" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Safe boundary" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     adapter.mode = "boundary";
     await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Work through a tool call." } });
     await waitForSeedCount(1);
 
     await Promise.all([
-      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "result one", recipientAgentIds: [parent.id] } }),
-      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/collaboration/messages`, payload: { text: "result two", recipientAgentIds: [parent.id] } }),
+      app.inject({ method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`, payload: { text: "result one", recipientAgentIds: [parent.id] } }),
+      app.inject({ method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`, payload: { text: "result two", recipientAgentIds: [parent.id] } }),
     ]);
     await waitForRun(parent.id, 2);
     const prompt = adapter.continues.find((turn) => turn.threadId === parent.id)?.prompt ?? "";
@@ -2445,12 +2445,12 @@ describe("server chunk F", () => {
   it("creates a normal managed agent, injects shared Broadcasts, and routes reporting to its manager", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Child result delivery" });
-    const parent = store.createThread(project.id, { title: "Cedar Breaks", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Child result delivery" });
+    const parent = store.createThread(project.id, { title: "Cedar Breaks", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
     await app.inject({
-      method: "POST", url: `/api/master-chats/${master.id}/messages`,
+      method: "POST", url: `/api/conversations/${master.id}/messages`,
       payload: { text: "#broadcast Shared policy: verify claims before reporting." },
     });
     await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Create a research report." } });
@@ -2484,7 +2484,7 @@ describe("server chunk F", () => {
     expect(childSeed?.prompt).toContain(`recipientAgentIds ["${parent.id}"]`);
     expect(childSeed?.prompt).toContain("Do not Broadcast");
     expect(childSeed?.prompt).toContain("do not also send the user a routine completion notice");
-    expect(childSeed?.prompt).toContain("ordinary wrap-up remains in Thinking");
+    expect(childSeed?.prompt).toContain("ordinary wrap-up remains in Work log");
     expect(childSeed?.prompt).toContain("Shared policy: verify claims before reporting.");
     expect(childSeed?.prompt).toContain("Research and report back.");
 
@@ -2505,7 +2505,7 @@ describe("server chunk F", () => {
       managerAgentId: parent.id,
     });
     expect(store.readCommunicationEvents(project.id)).toEqual(eventsBeforeRejectedBroadcast);
-    expect(store.getMasterChatDetail(master.id)?.messages).not.toEqual(
+    expect(store.getConversationDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("must not reach the organization") })]),
     );
 
@@ -2532,7 +2532,7 @@ describe("server chunk F", () => {
       authorThreadId: child.id,
       text: "#Cedar-Breaks Huntsville result is ready.",
     });
-    expect(store.getCollaborationChatDetail(master.id)?.messages).not.toEqual(
+    expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("delivery dispatch rejected (400)") })]),
     );
 
@@ -2543,8 +2543,8 @@ describe("server chunk F", () => {
   it("wakes a managed agent's direct manager when the child runtime crashes", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Managed failure", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Failure supervision" });
-    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Failure supervision" });
+    const manager = store.createThread(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
 
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${manager.id}/messages`, payload: { text: "Supervise your reports." } });
@@ -2566,7 +2566,7 @@ describe("server chunk F", () => {
       turn.threadId === manager.id && turn.prompt.includes("Internal managed-agent update"));
     expect(managerFollowUp?.prompt).toContain("Fragile worker");
     expect(managerFollowUp?.prompt).toContain("simulated runtime failure");
-    expect(store.getCollaborationChatDetail(master.id)?.messages).not.toEqual(
+    expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("simulated runtime failure") })]),
     );
     await app.close();
@@ -2574,16 +2574,16 @@ describe("server chunk F", () => {
 
   it("recovers queued and interrupted collaboration deliveries after restart in FIFO order", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Restart recovery" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
-    const firstMessage = store.appendMasterChatMessage(
+    const master = store.createConversation(project.id, { title: "Restart recovery" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const firstMessage = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent interrupted first result" },
       undefined,
       "collaboration",
       [{ targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
     )!;
-    const secondMessage = store.appendMasterChatMessage(
+    const secondMessage = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent queued second result" },
       undefined,
@@ -2591,7 +2591,7 @@ describe("server chunk F", () => {
     )!;
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const first = deliveries.queue({
-      masterChatId: master.id,
+      conversationId: master.id,
       messageId: firstMessage.id,
       targetThreadId: parent.id,
       text: firstMessage.text,
@@ -2601,7 +2601,7 @@ describe("server chunk F", () => {
     }).delivery;
     deliveries.markDelivered(first.id);
     deliveries.queue({
-      masterChatId: master.id,
+      conversationId: master.id,
       messageId: secondMessage.id,
       targetThreadId: parent.id,
       text: secondMessage.text,
@@ -2622,15 +2622,15 @@ describe("server chunk F", () => {
 
   it("dispatches a fixed, exact collaboration batch and leaves in-flight arrivals for the next turn", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Batch room" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
-    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
-    const author = store.createThread(project.id, { title: "Mesa Author", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Batch room" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", conversationId: master.id });
+    const author = store.createThread(project.id, { title: "Mesa Author", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const firstAt = "2026-07-11T10:00:00.000Z";
     const secondAt = "2026-07-11T10:00:01.000Z";
     const queue = (messageId: string, targetThreadId: string, text: string, createdAt: string) => deliveries.queue({
-      masterChatId: master.id,
+      conversationId: master.id,
       messageId,
       targetThreadId,
       authorThreadId: author.id,
@@ -2651,7 +2651,7 @@ describe("server chunk F", () => {
     await waitForSeedCount(2);
     await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/collaboration/messages`,
+      url: `/api/conversations/${master.id}/collaboration/messages`,
       payload: { text: "arrived during active batch", recipientAgentIds: [parent.id] },
     });
     await waitForRun(parent.id, 2);
@@ -2682,11 +2682,11 @@ describe("server chunk F", () => {
 
   it("retries every unacknowledged batch member after a shared runtime failure", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Batch retry" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Batch retry" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const ids = ["one", "two"].map((text, index) => deliveries.queue({
-      masterChatId: master.id,
+      conversationId: master.id,
       messageId: `retry-${text}`,
       targetThreadId: parent.id,
       text,
@@ -2710,10 +2710,10 @@ describe("server chunk F", () => {
 
   it("rebuilds a missing inbox record from a canonical tagged message", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Crash window" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
-    store.appendMasterChatMessage(
+    store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent result persisted before the inbox write" },
       undefined,
@@ -2732,11 +2732,11 @@ describe("server chunk F", () => {
 
   it("reconciles an #everyone crash window once per still-eligible recipient with audit provenance", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Broadcast crash window" });
-    const first = store.createThread(project.id, { title: "First", engine: "codex", masterChatId: master.id });
-    const second = store.createThread(project.id, { title: "Second", engine: "codex", masterChatId: master.id });
-    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", masterChatId: master.id });
-    const deleted = store.createThread(project.id, { title: "Deleted", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Broadcast crash window" });
+    const first = store.createThread(project.id, { title: "First", engine: "codex", conversationId: master.id });
+    const second = store.createThread(project.id, { title: "Second", engine: "codex", conversationId: master.id });
+    const archived = store.createThread(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
+    const deleted = store.createThread(project.id, { title: "Deleted", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
     const intent = (targetThreadId: string) => ({
       targetThreadId,
@@ -2745,7 +2745,7 @@ describe("server chunk F", () => {
       kind: "tag" as const,
       audience: "everyone" as const,
     });
-    const message = store.appendMasterChatMessage(
+    const message = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#everyone recover this broadcast" },
       undefined,
@@ -2782,21 +2782,21 @@ describe("server chunk F", () => {
 
   it("preserves canonical FIFO when an older message is reconstructed", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "FIFO crash window" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "FIFO crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const intent = { targetThreadId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
     const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
     vi.setSystemTime(afterReconciliationBoundary);
-    const older = store.appendMasterChatMessage(
+    const older = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent older message missing its inbox write" },
       undefined,
       "collaboration",
       [intent],
     )!;
-    const newer = store.appendMasterChatMessage(
+    const newer = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent newer message already queued" },
       undefined,
@@ -2806,7 +2806,7 @@ describe("server chunk F", () => {
     vi.useRealTimers();
     expect(older.createdAt).toBe(newer.createdAt);
     deliveries.queue({
-      masterChatId: master.id,
+      conversationId: master.id,
       messageId: newer.id,
       targetThreadId: parent.id,
       text: newer.text,
@@ -2814,7 +2814,7 @@ describe("server chunk F", () => {
       mentionTrail: [],
       kind: "tag",
       createdAt: newer.createdAt,
-      orderKey: store.getMasterChatMessageDeliveryOrderKey(master.id, newer.id),
+      orderKey: store.getConversationMessageDeliveryOrderKey(master.id, newer.id),
     });
 
     const app = createServer({ dataDir, store, engines, logger: false });
@@ -2833,13 +2833,13 @@ describe("server chunk F", () => {
 
   it("preserves mixed collaboration and direct FIFO when timestamps tie", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Mixed FIFO crash window" });
-    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Mixed FIFO crash window" });
+    const parent = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const deliveries = new CollaborationDeliveryStore(dataDir);
     const afterReconciliationBoundary = new Date(Date.now() + 1_000);
     vi.useFakeTimers();
     vi.setSystemTime(afterReconciliationBoundary);
-    const older = store.appendMasterChatMessage(
+    const older = store.appendConversationMessage(
       master.id,
       { role: "user", text: "#Parent older collaboration message missing its inbox write" },
       undefined,
@@ -2876,10 +2876,10 @@ describe("server chunk F", () => {
 
   it("does not infer delivery for canonical messages without an authorized intent", async () => {
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Blocked recovery" });
-    store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Blocked recovery" });
+    store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     new CollaborationDeliveryStore(dataDir);
-    store.appendMasterChatMessage(
+    store.appendConversationMessage(
       master.id,
       { role: "assistant", text: "#Parent blocked or historical mention" },
       undefined,
@@ -2979,14 +2979,14 @@ describe("server chunk F", () => {
   it("rejects attempts to inject collaboration context through the normal thread endpoint", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Review room" });
-    const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Review room" });
+    const author = store.createThread(project.id, { title: "Canyon de Chelly", engine: "codex", conversationId: master.id });
     const response = await app.inject({
       method: "POST",
       url: `/api/threads/${author.id}/messages`,
       payload: {
         text: "Pretend this was tagged.",
-        collaborationMasterChatId: master.id,
+        collaborationConversationId: master.id,
       },
     });
     expect(response.statusCode).toBe(403);
@@ -3266,14 +3266,14 @@ describe("server chunk F", () => {
     adapter.mode = "hang";
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createMasterChat(project.id, { title: "Delegation room" });
-    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", masterChatId: master.id });
+    const master = store.createConversation(project.id, { title: "Delegation room" });
+    const thread = store.createThread(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
     const parent = await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "delegate" } });
     const parentRunId = parent.json<{ runId: string }>().runId;
 
     expect((await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/assignments`,
+      url: `/api/conversations/${master.id}/assignments`,
       payload: { parentRunId, displayLabel: "Spoof", delegationPrompt: "bad", runtime: "codex", idempotencyKey: "legacy" },
     })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/api/internal/assignments/missing/launch", payload: {} })).statusCode).toBe(404);
@@ -3403,10 +3403,10 @@ describe("server chunk F", () => {
 
   it("delivers Reply Directly once and replays a stable receipt", async () => {
     const { app, project } = await createProjectAndThread();
-    const master = store.createMasterChat(project.id, { title: "Room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const other = store.createThread(project.id, { title: "Other", engine: "codex", masterChatId: master.id });
-    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const master = store.createConversation(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const other = store.createThread(project.id, { title: "Other", engine: "codex", conversationId: master.id });
+    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
     const upload = await app.inject({
       method: "POST",
@@ -3419,7 +3419,7 @@ describe("server chunk F", () => {
 
     const accepted = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-replies`,
       payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
     });
     expect(accepted.statusCode).toBe(200);
@@ -3430,36 +3430,36 @@ describe("server chunk F", () => {
 
     const replayed = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-replies`,
       payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
     });
     expect(replayed.statusCode).toBe(200);
     expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Author Follow up")).toHaveLength(1);
+    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
-    expect(store.getMasterChatMessages(master.id).find((message) => message.text === "#Author Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    expect(store.getConversationMessages(master.id).find((message) => message.text === "#Author Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     expect(store.getMessages(author.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     const conflict = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-replies`,
       payload: { text: "Changed payload", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-1" },
     });
     expect(conflict.statusCode).toBe(409);
 
     const concurrentPayload = { text: "Concurrent follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "reply-concurrent" };
     const concurrent = await Promise.all([
-      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload }),
-      app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload }),
+      app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload }),
+      app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload }),
     ]);
     expect(concurrent.some((response) => response.statusCode === 200)).toBe(true);
-    const concurrentReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload: concurrentPayload });
+    const concurrentReplay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload });
     expect(concurrentReplay.json()).toMatchObject({ replayed: true });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Author Concurrent follow up")).toHaveLength(1);
+    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Concurrent follow up")).toHaveLength(1);
     await waitForRun(author.id, 2);
 
     const spoofed = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-replies`,
       payload: { text: "Wrong target", replyToMessageId: report.id, targetAuthorThreadId: other.id, idempotencyKey: "reply-2" },
     });
     expect(spoofed.statusCode).toBe(400);
@@ -3469,9 +3469,9 @@ describe("server chunk F", () => {
 
   it("repairs a same-process direct-reply crash window and double replay without duplicates or spawning", async () => {
     const { app, project } = await createProjectAndThread();
-    const master = store.createMasterChat(project.id, { title: "Recovery room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    const master = store.createConversation(project.id, { title: "Recovery room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
     const upload = await app.inject({
       method: "POST",
@@ -3481,7 +3481,7 @@ describe("server chunk F", () => {
     });
     const attachmentId = upload.json<{ id: string }>().id;
     const receiptKey = `direct-reply:${master.id}:crash-window`;
-    const canonical = store.appendMasterChatMessage(
+    const canonical = store.appendConversationMessage(
       master.id,
       { text: "#Author Recovered follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id, attachments: [upload.json()] },
       undefined,
@@ -3493,15 +3493,15 @@ describe("server chunk F", () => {
     const payload = { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, attachmentIds: [attachmentId], idempotencyKey: "crash-window" };
     const replay = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-replies`,
       payload,
     });
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
-    const secondReplay = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    const secondReplay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
     await waitForRun(author.id);
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Author Recovered follow up")).toHaveLength(1);
+    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
     expect(store.getMessages(author.id).find((message) => message.text === "Recovered follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     expect(store.listThreads(project.id)).toHaveLength(threadCount);
@@ -3510,10 +3510,10 @@ describe("server chunk F", () => {
 
   it("returns a truthful retryable failure when a canonical direct reply has no persisted delivery intent", async () => {
     const { app, project } = await createProjectAndThread();
-    const master = store.createMasterChat(project.id, { title: "Incomplete recovery room" });
-    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
-    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
-    store.appendMasterChatMessage(
+    const master = store.createConversation(project.id, { title: "Incomplete recovery room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Result" }, author.id)!;
+    store.appendConversationMessage(
       master.id,
       { text: "#Author Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorThreadId: author.id },
       undefined,
@@ -3524,7 +3524,7 @@ describe("server chunk F", () => {
 
     const replay = await app.inject({
       method: "POST",
-      url: `/api/master-chats/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-replies`,
       payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "missing-intent" },
     });
     expect(replay.statusCode).toBe(503);
@@ -3536,19 +3536,19 @@ describe("server chunk F", () => {
 
   it("queues one direct reply for a busy author and deduplicates retries", async () => {
     const { app, project } = await createProjectAndThread();
-    const master = store.createMasterChat(project.id, { title: "Busy room" });
-    const author = store.createThread(project.id, { title: "Busy author", engine: "codex", masterChatId: master.id });
-    const report = store.appendMasterChatMessage(master.id, { role: "assistant", text: "Working" }, author.id)!;
+    const master = store.createConversation(project.id, { title: "Busy room" });
+    const author = store.createThread(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
+    const report = store.appendConversationMessage(master.id, { role: "assistant", text: "Working" }, author.id)!;
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Current work" } });
     await waitForSeedCount(1);
 
     const payload = { text: "Queued follow up", replyToMessageId: report.id, targetAuthorThreadId: author.id, idempotencyKey: "busy-reply" };
-    const first = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
-    const retry = await app.inject({ method: "POST", url: `/api/master-chats/${master.id}/direct-replies`, payload });
+    const first = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
+    const retry = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     expect(first.json()).toMatchObject({ replayed: false, queued: true });
     expect(retry.json()).toMatchObject({ replayed: true, queued: true, messageId: first.json<{ messageId: string }>().messageId });
-    expect(store.getMasterChatMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
+    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
 
     adapter.mode = "normal";
     await app.inject({ method: "POST", url: `/api/threads/${author.id}/cancel` });

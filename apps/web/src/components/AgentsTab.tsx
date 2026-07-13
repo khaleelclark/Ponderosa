@@ -26,14 +26,14 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { MasterChatDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { ConversationDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import {
   agentActivity,
   agentDescendants,
-  agentBelongsToMasterChat,
+  agentBelongsToConversation,
   agentStatusColor,
   agentStatusLabel,
   relativeTime,
@@ -45,14 +45,14 @@ type StatusFilter = "all" | "running" | "waiting" | "idle" | "unassigned";
 
 export function AgentsTab({
   agents,
-  masterChats,
+  conversations,
   statusByAgentId,
   detailByAgentId,
   onOpenAgent,
   onNewAgent,
 }: {
   agents: ThreadDto[];
-  masterChats: MasterChatDto[];
+  conversations: ConversationDto[];
   statusByAgentId: Map<string, AgentStatus>;
   detailByAgentId: Map<string, ThreadDetailDto | undefined>;
   onOpenAgent(agentId: string): void;
@@ -69,7 +69,7 @@ export function AgentsTab({
     onSuccess: (_data, agentId) => {
       queryClient.removeQueries({ queryKey: ["thread", agentId] });
       void queryClient.invalidateQueries({ queryKey: ["threads"] });
-      void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
+      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       setPendingDelete(undefined);
     },
   });
@@ -82,11 +82,11 @@ export function AgentsTab({
   });
 
   const masterName = (id: string | undefined): string =>
-    id ? (masterChats.find((master) => master.id === id)?.title ?? "Unknown master chat") : "Unassigned";
+    id ? (conversations.find((master) => master.id === id)?.title ?? "Unknown conversation") : "Unassigned";
 
   const filtered = orderedAgentOrganization(agents).filter(({ agent }) => {
     const status = statusByAgentId.get(agent.id) ?? "idle";
-    if (statusFilter === "unassigned" && agent.masterChatIds.length > 0) {
+    if (statusFilter === "unassigned" && agent.conversationIds.length > 0) {
       return false;
     }
     if (statusFilter === "running" && status !== "running") {
@@ -98,7 +98,7 @@ export function AgentsTab({
     if (statusFilter === "idle" && status !== "idle") {
       return false;
     }
-    if (masterFilter !== "all" && !agentBelongsToMasterChat(agent, masterFilter)) {
+    if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
       return false;
     }
     if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
@@ -174,8 +174,8 @@ export function AgentsTab({
             value={masterFilter}
             onChange={(event: SelectChangeEvent) => setMasterFilter(event.target.value)}
           >
-            <MenuItem value="all">All master chats</MenuItem>
-            {masterChats.map((master) => (
+            <MenuItem value="all">All conversations</MenuItem>
+            {conversations.map((master) => (
               <MenuItem key={master.id} value={master.id}>
                 {master.title}
               </MenuItem>
@@ -247,11 +247,11 @@ export function AgentsTab({
                       <Chip
                         size="small"
                         variant="outlined"
-                        color={agent.masterChatId ? "default" : "warning"}
-                        label={masterName(agent.masterChatId)}
+                        color={agent.conversationId ? "default" : "warning"}
+                        label={masterName(agent.conversationId)}
                       />
-                      {agent.masterChatIds.length > 1 ? (
-                        <Chip size="small" variant="outlined" label={`+${agent.masterChatIds.length - 1} chats`} />
+                      {agent.conversationIds.length > 1 ? (
+                        <Chip size="small" variant="outlined" label={`+${agent.conversationIds.length - 1} chats`} />
                       ) : null}
                       <Typography variant="caption" color="text.secondary">
                         updated {relativeTime(agent.updatedAt)}

@@ -21,11 +21,11 @@ describe("mapClaudeEvent — per event type", () => {
     ).toEqual([{ type: "text", delta: "hello" }]);
   });
 
-  it("assistant thinking block → reasoning", () => {
+  it("assistant runOutput block → reasoning", () => {
     expect(
       mapClaudeEvent({
         type: "assistant",
-        message: { content: [{ type: "thinking", thinking: "hmm" }] },
+        message: { content: [{ type: "runOutput", runOutput: "hmm" }] },
       }),
     ).toEqual([{ type: "reasoning", delta: "hmm" }]);
   });

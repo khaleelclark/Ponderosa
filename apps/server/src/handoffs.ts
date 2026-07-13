@@ -7,7 +7,7 @@ export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged
 
 export interface CollaborationDelivery {
   id: string;
-  masterChatId?: string;
+  conversationId?: string;
   messageId: string;
   /** Canonical communication identity shared by every resulting projection. */
   communicationEventId?: string;

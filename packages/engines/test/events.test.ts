@@ -58,9 +58,9 @@ describe("mapCodexEvent — per event type", () => {
     expect(
       mapCodexEvent({
         type: "item.completed",
-        item: { id: "i0", type: "reasoning", text: "thinking" },
+        item: { id: "i0", type: "reasoning", text: "runOutput" },
       }),
-    ).toEqual([{ type: "reasoning", delta: "thinking" }]);
+    ).toEqual([{ type: "reasoning", delta: "runOutput" }]);
   });
 
   it("item.started command_execution → command (with run cwd)", () => {

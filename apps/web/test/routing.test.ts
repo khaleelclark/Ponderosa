@@ -4,7 +4,7 @@ import { parseRoute, routeToPath, type Route } from "../src/routing";
 describe("mobile-critical durable navigation", () => {
   it.each<Route>([
     { kind: "project", projectId: "project / one" },
-    { kind: "master-chat", projectId: "project / one", masterChatId: "control room" },
+    { kind: "conversation", projectId: "project / one", conversationId: "control room" },
     { kind: "agents", projectId: "project / one" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {

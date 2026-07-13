@@ -29,7 +29,7 @@ describe("message sender identity", () => {
   });
 
   it("keeps team-chat navigation separate from the copyable sender label", () => {
-    const source = readFileSync(new URL("../src/components/MasterChatView.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(source).toContain('<MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorThreadId)} />');
     expect(source).toContain('component="article"');
     expect(source).toContain('aria-label={`${fromManager ? "You" : agentTitle(message.authorThreadId)} message`}');

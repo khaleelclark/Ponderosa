@@ -76,7 +76,7 @@ function printEvent(ev: AgentEvent): void {
       process.stdout.write(c.green(`\n▸ ${ev.delta}\n`));
       break;
     case "reasoning":
-      process.stdout.write(c.dim(`  (thinking) ${ev.delta}\n`));
+      process.stdout.write(c.dim(`  (runOutput) ${ev.delta}\n`));
       break;
     case "command":
       process.stdout.write(c.cyan(`$ ${ev.command}`) + c.dim(`  [${ev.cwd}]\n`));

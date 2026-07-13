@@ -6,8 +6,8 @@ Ponderosa is a web interface for working with AI agents running on your own
 computer. It should remain useful when you are away from that computer,
 especially from a phone.
 
-The default experience should feel as approachable as ChatGPT: open a Master
-Chat, describe what you want, and receive a useful response. Behind that simple
+The default experience should feel as approachable as ChatGPT: open a Project
+chat, describe what you want, and receive a useful response. Behind that simple
 conversation, Ponderosa can start fresh agent runs, preserve the right context,
 delegate work, and coordinate multiple agents.
 
@@ -20,7 +20,7 @@ engage with it.
 ## Product principles
 
 1. **Simple by default, powerful by choice.** A new user should only need to
-   understand Master Chat. Advanced organization and orchestration are optional.
+   understand Project chat. Advanced organization and orchestration are optional.
 2. **Fresh execution with intentional continuity.** Agents may spin up for each
    request so usage and runtime context remain manageable. Ponderosa preserves
    the important project knowledge without indiscriminately replaying every
@@ -49,10 +49,10 @@ restored across navigation and refresh so inspecting another agent does not
 discard the manager's place.
 
 Agent Detail separates durable views of the same execution domain: Chat for
-explicit communication, Thinking for ordinary runtime output, Activity for the
+explicit communication, Work log for ordinary runtime output, Activity for the
 chronological command/test/tool/file feed, Changed Files for the canonical
 agent-attributed file set, Review for the current Git working tree and safe
-diff/file inspection, Tasks for structured work state, and Artifacts for durable outputs.
+diff/file inspection, Runs for execution state, and Files & results for durable outputs.
 Sources remain attached to their message in a compact footer. Generated PDFs are
 previewable and downloadable as project-scoped artifacts.
 
@@ -80,7 +80,7 @@ and projections without deleting the selected source folder.
 
 There is one kind of agent. A subagent is an ordinary agent with a direct manager,
 not a separate delegated runtime or rigid Assignment. It has the same Chat,
-Thinking, Activity, Changed Files, Review, Tasks, Artifacts, steering, queueing,
+Work log, Activity, Changed Files, Review, Runs, Files & results, steering, queueing,
 and execution audit as a top-level agent.
 
 Users can create a top-level agent or choose any existing active agent as its
@@ -90,8 +90,8 @@ supply an exact opening messageâ€”a task, role, introduction, or anything elseâ€
 create an idle report with no initial work. Creator, execution, and the original
 message remain inspectable.
 
-A newly created agent receives the current Master Chat's Broadcast context, never
-its manager's private messages, Collaboration history, Thinking, or provider
+A newly created agent receives the current Project chat's Broadcast context, never
+its manager's private messages, Collaboration history, Work log, or provider
 session. Managed agents report questions, findings, and results to their direct
 manager through ordinary Collaboration. They may Direct Message the user and
 reply to agents that contact them, but only top-level agents Broadcast durable
@@ -107,25 +107,25 @@ or execution history.
 
 Ponderosa has three communication surfaces. Each has one purpose.
 
-### Master Chat
+### Project chat
 
-Master Chat is the primary interface between the user and the AI organization.
+Project chat is the primary interface between the user and the AI organization.
 It is both the user's conversation and the project's shared timeline. It should
 read like the story of the project, not a dump of execution logs.
 
-Different agents may respond over the course of a Master Chat. For a casual
+Different agents may respond over the course of a Project chat. For a casual
 user, the changing responder name can be the only visible indication that an
 organization is working behind the conversation.
 
-Two message scopes appear in Master Chat:
+Two message scopes appear in Project chat:
 
 - **Broadcast:** The user or an agent tells the organization something durable.
   Broadcasts become shared knowledge available to future agents.
 - **Direct Message:** The user and one or more explicitly addressed agents
-  communicate privately. The message is visible once in Master Chat but does
+  communicate privately. The message is visible once in Project chat but does
   not become shared context for future agents.
 
-A plain user message in Master Chat is a Broadcast and starts a fresh agent to
+A plain user message in Project chat is a Broadcast and starts a fresh agent to
 handle it. This is the familiar default chat workflow: the request remains part
 of the shared project story while Ponderosa handles agent creation behind the
 scenes. It is rendered exactly as the user typed it, without an automatic scope
@@ -134,7 +134,7 @@ context without starting an agent and retains that visible prefix. Starting with
 one or more agent `#names` creates one Direct Message with that immutable
 audience and one delivery per addressed agent. Only an explicit `#everyone`
 action may wake every agent. Broadcast context is supplied from the current
-Master Chat at a turn boundary; it is not copied into private agent history.
+Project chat at a turn boundary; it is not copied into private agent history.
 
 Agent `#names` in rendered message history are links to the corresponding Direct
 Agent Chat, making the visible recipient or referenced agent directly
@@ -144,30 +144,30 @@ not an agent.
 
 Important collaboration results do not automatically become Broadcasts. An agent
 must deliberately publish durable knowledge or deliberately tell the user. This
-keeps Master Chat useful and prevents coordination traffic from overwhelming the
+keeps Project chat useful and prevents coordination traffic from overwhelming the
 project narrative.
 
 An agent's ordinary runtime response is not a fourth communication scope. It is
-execution data shown in that agent's Thinking tab. Only an explicit Broadcast,
+execution data shown in that agent's Work log tab. Only an explicit Broadcast,
 Direct Message, or Collaboration event may appear on a communication surface.
 Ponderosa never guesses scope from response text, mentions, or the room that
 started the turn.
 
-### Collaboration Chat
+### Team Chat
 
-Collaboration Chat is exclusively for agent-to-agent communication. An agent
+Team Chat is exclusively for agent-to-agent communication. An agent
 chooses one or more explicit recipients and supplies the message. Ponderosa owns
 routing and renders recipient labels; agents do not manually construct textual
 mentions.
 
-Collaboration messages do not appear in Master Chat and do not become shared
+Collaboration messages do not appear in Project chat and do not become shared
 context for future agents. If a finding matters to the organization, an agent
 creates a new Broadcast. If it matters only to the user, the agent creates a
 Direct Message.
 
-### Direct Agent Chat
+### Agent chat
 
-Direct Agent Chat is an agent's complete inbound and outbound audit timeline. It
+Agent chat is an agent's complete inbound and outbound communication timeline. It
 is a hub over existing communication and activity, not a separate conversation
 or an additional message scope.
 
@@ -180,21 +180,21 @@ The Chat tab can show:
 - the exact agent-creation message and creator when another agent spawned it;
 - explicit communication to or from that agent.
 
-The adjacent Thinking tab shows ordinary response text and transient reasoning,
+The adjacent Work log tab shows ordinary response text and transient reasoning,
 chronologically and associated with the originating execution. Completed
-response text is durable canonical execution data. Thinking never becomes
+response text is durable canonical execution data. Work log never becomes
 future-agent context and never creates or triggers a delivery.
 
 When a user writes from this surface, the result is a Direct Message addressed to
-that agent. It remains visible in Master Chat without creating a duplicate
+that agent. It remains visible in Project chat without creating a duplicate
 canonical message.
 
-Broadcasts remain in their originating Master Chat and may be supplied as that
+Broadcasts remain in their originating Project chat and may be supplied as that
 room's shared context. They are never retroactively copied into a new agent's
-Direct Agent Chat. An agent's own explicit Broadcast remains visible in its audit
+Agent chat. An agent's own explicit Broadcast remains visible in its audit
 timeline, but another agent's Broadcast never masquerades as local authorship.
 
-Direct Agent Chat exists for debugging, transparency, and understanding an
+Agent chat exists for debugging, transparency, and understanding an
 individual agent. Its contents do not become shared knowledge merely because
 they are visible there.
 
@@ -205,11 +205,11 @@ without adding a new chat entry. The author receives a private notification with
 the original message attached as reply context. Agents cannot create reactions,
 and reaction notifications never become organizational context.
 
-For ordinary conversation, a plain Master Chat request creates shared work. The
+For ordinary conversation, a plain Project-chat request creates shared work. The
 responsible agent can Direct Message the user with a question, private progress,
 or useful information, and explicitly Broadcast its completed answer or task
 result. An ordinary final response that does not invoke one of those intents
-stays in Thinking. Completed Broadcasts give the next fresh responder coherent
+stays in Work log. Completed Broadcasts give the next fresh responder coherent
 conversation context and tell other agents what has already been done.
 
 ## Shared knowledge and immutable scope
@@ -238,8 +238,8 @@ In short:
 
 ## One architecture, two levels of experience
 
-Casual users talk to Master Chats as if they were familiar AI conversation
-threads. Ponderosa handles fresh agent runs, managed reports, responder changes, and
+Casual users talk in Project chats as if they were familiar AI chats.
+Ponderosa handles fresh agent runs, managed reports, responder changes, and
 context boundaries for them.
 
 Power users can inspect and shape organizations of agents and subagents. They can
@@ -254,7 +254,7 @@ control without making the default conversation harder to understand.
 
 A proposal fits the vision when it can answer yes to these questions:
 
-1. Does the ordinary Master Chat workflow remain understandable without learning
+1. Does the ordinary Project-chat workflow remain understandable without learning
    orchestration concepts?
 2. Does each communication have exactly one explicit, immutable purpose and
    audience?
@@ -263,5 +263,8 @@ A proposal fits the vision when it can answer yes to these questions:
 5. Are routing identities structured and stable rather than inferred from
    display names or textual mentions?
 6. Does audit visibility remain separate from context inheritance?
-7. Does the change improve reliability or capability without turning Master Chat
+7. Does the change improve reliability or capability without turning Project chat
    into an execution log?
+
+The canonical UI and domain terms used by this document are defined in
+[VOCABULARY.md](./VOCABULARY.md).

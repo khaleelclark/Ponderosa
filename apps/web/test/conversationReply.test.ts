@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../src/masterChatReply.js";
+import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../src/conversationReply.js";
 
-describe("master-chat Reply Directly routing", () => {
+describe("conversation Reply Directly routing", () => {
   it("recognizes only a leading standalone #broadcast directive", () => {
     expect(managerBroadcastText("#broadcast release context")).toBe("release context");
     expect(managerBroadcastText("  #BROADCAST   release context  ")).toBe("release context");
@@ -11,16 +11,16 @@ describe("master-chat Reply Directly routing", () => {
   });
 
   it("routes to exactly the locked author without a mention", () => {
-    expect(resolveMasterChatSendRoute("author", [])).toEqual({ kind: "direct-reply", agentIds: ["author"] });
+    expect(resolveConversationSendRoute("author", [])).toEqual({ kind: "direct-reply", agentIds: ["author"] });
   });
 
   it("does not let typed mentions override the locked author", () => {
-    expect(resolveMasterChatSendRoute("author", ["other"])).toEqual({ kind: "direct-reply", agentIds: ["author"] });
+    expect(resolveConversationSendRoute("author", ["other"])).toEqual({ kind: "direct-reply", agentIds: ["author"] });
   });
 
   it("preserves normal mention and spawn routing", () => {
-    expect(resolveMasterChatSendRoute(undefined, ["one", "two"])).toEqual({ kind: "mentioned-reply", agentIds: ["one", "two"] });
-    expect(resolveMasterChatSendRoute(undefined, [])).toEqual({ kind: "spawn" });
+    expect(resolveConversationSendRoute(undefined, ["one", "two"])).toEqual({ kind: "mentioned-reply", agentIds: ["one", "two"] });
+    expect(resolveConversationSendRoute(undefined, [])).toEqual({ kind: "spawn" });
   });
 
   it("cleans every successful staged upload when one direct-reply upload fails", async () => {

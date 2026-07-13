@@ -29,15 +29,15 @@ import type {
   ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
-  CollaborationChatDetailDto,
-  CreateMasterChatMessageRequest,
-  CreateMasterChatRequest,
+  CollaborationViewDto,
+  CreateConversationMessageRequest,
+  CreateConversationRequest,
   CreateProjectRequest,
   CreateThreadRequest,
-  MasterChatDetailDto,
-  MasterChatChannel,
-  MasterChatDto,
-  MasterChatMessageDto,
+  ConversationDetailDto,
+  ConversationChannel,
+  ConversationDto,
+  ConversationMessageDto,
   MessageDto,
   ProjectDto,
   TaskDto,
@@ -45,10 +45,10 @@ import type {
   ThreadDetailDto,
   ThreadDto,
   ThreadState,
-  ThinkingEntryDto,
+  RunOutputDto,
   UpdateProjectRequest,
-  UpdateThreadMasterChatMembershipsRequest,
-  UpdateMasterChatRequest,
+  UpdateThreadConversationMembershipsRequest,
+  UpdateConversationRequest,
   UpdateThreadRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
@@ -75,13 +75,13 @@ import {
   artifacts,
   agentPresets,
   events,
-  masterChatMessages,
-  masterChats,
+  conversationMessages,
+  conversations,
   messages,
   projects,
   tasks,
   threads,
-  threadMasterChatMemberships,
+  threadConversationMemberships,
 } from "./schema.js";
 import {
   artifactsDir,
@@ -89,14 +89,14 @@ import {
   attachmentsDir,
   dbPath,
   eventsPath,
-  masterChatDir,
-  collaborationChatMessagesPath,
+  conversationDir,
+  collaborationMessagesPath,
   communicationEventsPath,
   communicationContextPath,
   communicationProjectionsPath,
-  masterChatJsonPath,
-  masterChatMessagesPath,
-  masterChatsDir,
+  conversationJsonPath,
+  conversationMessagesPath,
+  conversationsDir,
   projectJsonPath,
   agentPresetsPath,
   agentOrganizationEventsPath,
@@ -118,8 +118,8 @@ interface ProjectJson {
 interface ThreadJson {
   id: string;
   projectId: string;
-  masterChatId?: string;
-  masterChatIds?: string[];
+  conversationId?: string;
+  conversationIds?: string[];
   title: string;
   activeEngine: string;
   createdAt: string;
@@ -147,7 +147,7 @@ const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine
   { name: "Documentation", description: "Create clear, accurate documentation", guidance: "Act as a technical writer. Verify behavior in the code and write concise task-oriented documentation.", engine: "codex" },
 ];
 
-interface MasterChatJson {
+interface ConversationJson {
   id: string;
   projectId: string;
   title: string;
@@ -159,7 +159,7 @@ interface MasterChatJson {
   archived: boolean;
 }
 
-export interface MasterChatDeliveryIntent {
+export interface ConversationDeliveryIntent {
   targetThreadId: string;
   relayDepth: number;
   mentionTrail: string[];
@@ -170,16 +170,16 @@ export interface MasterChatDeliveryIntent {
   attachmentIds?: string[];
 }
 
-interface MasterChatMessageJson {
+interface ConversationMessageJson {
   id: string;
   communicationEventId?: string;
-  masterChatId: string;
+  conversationId: string;
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
   authorThreadId?: string | null;
-  channel?: MasterChatChannel;
-  deliveryIntents?: MasterChatDeliveryIntent[];
+  channel?: ConversationChannel;
+  deliveryIntents?: ConversationDeliveryIntent[];
   messageReceiptKey?: string;
   deliveryOrderKey?: string;
   replyTo?: import("@ponderosa/core").MessageReferenceDto;
@@ -352,7 +352,7 @@ export class ThreadStore {
     for (const agentId of audienceIds) {
       const agent = this.getThread(agentId);
       if (!agent || agent.projectId !== event.projectId || agent.archived) throw new Error("communication recipient must be an active agent in its project");
-      if (event.masterChatId && !agent.masterChatIds.includes(event.masterChatId)) throw new Error("communication recipient must belong to its master chat");
+      if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) throw new Error("communication recipient must belong to its conversation");
     }
     if (event.schemaVersion === 2 && event.intent === "collaboration") {
       if (event.sender.kind === "agent") {
@@ -360,17 +360,17 @@ export class ThreadStore {
         if (!sender || sender.projectId !== event.projectId || sender.archived) {
           throw new Error("collaboration sender must be an active agent in its project");
         }
-        if (event.masterChatId && !sender.masterChatIds.includes(event.masterChatId)) {
-          throw new Error("collaboration sender must belong to its master chat");
+        if (event.conversationId && !sender.conversationIds.includes(event.conversationId)) {
+          throw new Error("collaboration sender must belong to its conversation");
         }
         if (event.audience.agentIds.includes(event.sender.agentId)) {
           throw new Error("collaboration cannot target its sender");
         }
       }
     }
-    if (event.masterChatId) {
-      const master = this.getMasterChat(event.masterChatId);
-      if (!master || master.projectId !== event.projectId || master.archived) throw new Error("communication master chat must be active in its project");
+    if (event.conversationId) {
+      const master = this.getConversation(event.conversationId);
+      if (!master || master.projectId !== event.projectId || master.archived) throw new Error("communication conversation must be active in its project");
     }
     const file = communicationEventsPath(this.dataDir, event.projectId);
     const classification: CommunicationContextClassification = {
@@ -383,7 +383,7 @@ export class ThreadStore {
     const idempotent = event.idempotencyKey
       ? index.byIdempotency.get(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`) : undefined;
     if (idempotent) {
-      const equivalent = idempotent.projectId === event.projectId && idempotent.masterChatId === event.masterChatId &&
+      const equivalent = idempotent.projectId === event.projectId && idempotent.conversationId === event.conversationId &&
         idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
         idempotent.text === event.text && JSON.stringify(idempotent.document) === JSON.stringify(event.document);
       if (!equivalent) throw new Error("communication idempotency collision");
@@ -449,14 +449,14 @@ export class ThreadStore {
     if (!event) throw new Error("communication projection source event not found");
     // Deleted rooms are hard context boundaries. Their retained append-only
     // records are historical storage only and may not materialize anywhere.
-    if (event.masterChatId && !this.getMasterChat(event.masterChatId)) return false;
-    const roomKeyAllowed = event.masterChatId === projection.projectionKey && (() => {
-      const room = this.getMasterChat(projection.projectionKey);
+    if (event.conversationId && !this.getConversation(event.conversationId)) return false;
+    const roomKeyAllowed = event.conversationId === projection.projectionKey && (() => {
+      const room = this.getConversation(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
     })();
-    if (projection.surface === "master_chat") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
+    if (projection.surface === "conversation") return roomKeyAllowed && (event.intent === "broadcast" || event.intent === "direct_to_user" ||
       (event.schemaVersion === 2 && event.intent === "user_dm"));
-    if (projection.surface === "collaboration_chat") return roomKeyAllowed && (event.intent === "collaboration" ||
+    if (projection.surface === "collaboration_view") return roomKeyAllowed && (event.intent === "collaboration" ||
       (event.schemaVersion === 1 && event.intent === "direct_to_user"));
     if (projection.surface === "direct_agent_audit") {
       if (event.intent === "broadcast") {
@@ -593,12 +593,12 @@ export class ThreadStore {
   private repairCommunicationProjectionLedger(projectId: string): void {
     const canonicalIds = new Set(this.readCommunicationEvents(projectId).map((event) => event.eventId));
     if (canonicalIds.size === 0) return;
-    for (const master of this.listMasterChats(projectId)) {
+    for (const master of this.listConversations(projectId)) {
       for (const [surface, file] of [
-        ["master_chat", masterChatMessagesPath(this.dataDir, projectId, master.id)],
-        ["collaboration_chat", collaborationChatMessagesPath(this.dataDir, projectId, master.id)],
+        ["conversation", conversationMessagesPath(this.dataDir, projectId, master.id)],
+        ["collaboration_view", collaborationMessagesPath(this.dataDir, projectId, master.id)],
       ] as const) {
-        for (const message of readJsonLines<MasterChatMessageJson>(file)) {
+        for (const message of readJsonLines<ConversationMessageJson>(file)) {
           if (message.communicationEventId && canonicalIds.has(message.communicationEventId)) {
             this.appendCommunicationProjection(projectId, {
               eventId: message.communicationEventId, surface, projectionKey: master.id, projectedAt: message.createdAt,
@@ -636,7 +636,7 @@ export class ThreadStore {
   /** Compare canonical events with legacy disk projections during shadow mode. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
     const canonical = this.readCommunicationEvents(projectId).filter((event) =>
-      !event.masterChatId || Boolean(this.getMasterChat(event.masterChatId)));
+      !event.conversationId || Boolean(this.getConversation(event.conversationId)));
     const canonicalIds = new Set(canonical.map((event) => event.eventId));
     const projections = this.readCommunicationProjections(projectId);
     const counts = new Map<string, number>();
@@ -656,22 +656,22 @@ export class ThreadStore {
     const missingClassificationEventIds = canonical
       .filter((event) => !classifiedIds.has(event.eventId)).map((event) => event.eventId);
     const missingProjectionMetadataEventIds = [...new Set(projections
-      .filter((projection) => (projection.surface === "master_chat" || projection.surface === "collaboration_chat" || projection.surface === "direct_agent_audit") && !projection.message)
+      .filter((projection) => (projection.surface === "conversation" || projection.surface === "collaboration_view" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
     const unlinkedLegacyMessageIds: string[] = [];
     const projectionReadMismatchMessageIds: string[] = [];
-    for (const master of this.listMasterChats(projectId)) {
+    for (const master of this.listConversations(projectId)) {
       for (const channel of ["main", "collaboration"] as const) {
-        const legacy = this.getMasterChatMessages(master.id, channel);
-        const projected = new Map(this.getProjectedMasterChatMessages(master.id, channel).map((message) => [message.id, message]));
+        const legacy = this.getConversationMessages(master.id, channel);
+        const projected = new Map(this.getProjectedConversationMessages(master.id, channel).map((message) => [message.id, message]));
         for (const message of legacy) {
           if (!message.communicationEventId) {
             unlinkedLegacyMessageIds.push(message.id);
             continue;
           }
           const candidate = projected.get(message.id);
-          const parityKey = (item: MasterChatMessageDto) => JSON.stringify([
-            item.id, item.communicationEventId, item.masterChatId, item.role, item.text, item.createdAt,
+          const parityKey = (item: ConversationMessageDto) => JSON.stringify([
+            item.id, item.communicationEventId, item.conversationId, item.role, item.text, item.createdAt,
             item.authorThreadId, item.replyTo, item.attachments ?? [],
           ]);
           if (!candidate || parityKey(candidate) !== parityKey(message)) {
@@ -763,7 +763,7 @@ export class ThreadStore {
       createdAt: now,
     };
     writeJson(projectJsonPath(this.dataDir, id), record);
-    mkdirSync(masterChatsDir(this.dataDir, id), { recursive: true });
+    mkdirSync(conversationsDir(this.dataDir, id), { recursive: true });
     mkdirSync(threadsDir(this.dataDir, id), { recursive: true });
     this.db
       .insert(projects)
@@ -853,13 +853,13 @@ export class ThreadStore {
     };
   }
 
-  // ─── Master chats ─────────────────────────────────────────────────────────
+  // ─── Conversations ─────────────────────────────────────────────────────────
 
-  createMasterChat(projectId: string, input: CreateMasterChatRequest): MasterChatDto {
+  createConversation(projectId: string, input: CreateConversationRequest): ConversationDto {
     if (!this.getProject(projectId)) throw new Error(`unknown project: ${projectId}`);
     const id = randomUUID();
     const now = new Date().toISOString();
-    const record: MasterChatJson = {
+    const record: ConversationJson = {
       id,
       projectId,
       title: input.title,
@@ -870,10 +870,10 @@ export class ThreadStore {
       updatedAt: now,
       archived: false,
     };
-    mkdirSync(masterChatDir(this.dataDir, projectId, id), { recursive: true });
-    writeJson(masterChatJsonPath(this.dataDir, projectId, id), record);
+    mkdirSync(conversationDir(this.dataDir, projectId, id), { recursive: true });
+    writeJson(conversationJsonPath(this.dataDir, projectId, id), record);
     this.db
-      .insert(masterChats)
+      .insert(conversations)
       .values({
         id,
         projectId,
@@ -886,47 +886,47 @@ export class ThreadStore {
         archived: 0,
       })
       .run();
-    return this.masterChatRowToDto(
-      this.db.select().from(masterChats).where(eq(masterChats.id, id)).get()!,
+    return this.conversationRowToDto(
+      this.db.select().from(conversations).where(eq(conversations.id, id)).get()!,
     );
   }
 
-  listMasterChats(projectId: string): MasterChatDto[] {
+  listConversations(projectId: string): ConversationDto[] {
     return this.db
       .select()
-      .from(masterChats)
-      .where(eq(masterChats.projectId, projectId))
-      .orderBy(asc(masterChats.createdAt))
+      .from(conversations)
+      .where(eq(conversations.projectId, projectId))
+      .orderBy(asc(conversations.createdAt))
       .all()
-      .map((row) => this.masterChatRowToDto(row));
+      .map((row) => this.conversationRowToDto(row));
   }
 
-  getMasterChat(id: string): MasterChatDto | undefined {
-    const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
-    return row ? this.masterChatRowToDto(row) : undefined;
+  getConversation(id: string): ConversationDto | undefined {
+    const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
+    return row ? this.conversationRowToDto(row) : undefined;
   }
 
-  getMasterChatDetail(id: string): MasterChatDetailDto | undefined {
-    const masterChat = this.getMasterChat(id);
-    if (!masterChat) return undefined;
+  getConversationDetail(id: string): ConversationDetailDto | undefined {
+    const conversation = this.getConversation(id);
+    if (!conversation) return undefined;
     return {
-      masterChat,
-      messages: this.getMasterChatMessages(id, "main"),
-      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatIds.includes(id)),
+      conversation,
+      messages: this.getConversationMessages(id, "main"),
+      threads: this.listThreads(conversation.projectId).filter((thread) => thread.conversationIds.includes(id)),
     };
   }
 
-  getCollaborationChatDetail(id: string): CollaborationChatDetailDto | undefined {
-    const masterChat = this.getMasterChat(id);
-    if (!masterChat) return undefined;
+  getCollaborationViewDetail(id: string): CollaborationViewDto | undefined {
+    const conversation = this.getConversation(id);
+    if (!conversation) return undefined;
     return {
-      messages: this.getMasterChatMessages(id, "collaboration"),
-      threads: this.listThreads(masterChat.projectId).filter((thread) => thread.masterChatIds.includes(id)),
+      messages: this.getConversationMessages(id, "collaboration"),
+      threads: this.listThreads(conversation.projectId).filter((thread) => thread.conversationIds.includes(id)),
     };
   }
 
-  updateMasterChat(id: string, patch: UpdateMasterChatRequest): MasterChatDto | undefined {
-    const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
+  updateConversation(id: string, patch: UpdateConversationRequest): ConversationDto | undefined {
+    const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return undefined;
     const now = new Date().toISOString();
     const next = {
@@ -937,7 +937,7 @@ export class ThreadStore {
       archived: patch.archived ?? row.archived === 1,
     };
     this.db
-      .update(masterChats)
+      .update(conversations)
       .set({
         title: next.title,
         defaultEngine: next.defaultEngine,
@@ -946,10 +946,10 @@ export class ThreadStore {
         archived: next.archived ? 1 : 0,
         updatedAt: now,
       })
-      .where(eq(masterChats.id, id))
+      .where(eq(conversations.id, id))
       .run();
-    const json = readJson<MasterChatJson>(masterChatJsonPath(this.dataDir, row.projectId, id));
-    writeJson(masterChatJsonPath(this.dataDir, row.projectId, id), {
+    const json = readJson<ConversationJson>(conversationJsonPath(this.dataDir, row.projectId, id));
+    writeJson(conversationJsonPath(this.dataDir, row.projectId, id), {
       ...json,
       ...next,
       defaultEngine: next.defaultEngine ?? undefined,
@@ -957,43 +957,43 @@ export class ThreadStore {
       defaultEffort: next.defaultEffort ?? undefined,
       updatedAt: now,
     });
-    return this.getMasterChat(id);
+    return this.getConversation(id);
   }
 
-  /** Permanently remove a master chat while preserving its agents as unassigned threads. */
-  deleteMasterChat(id: string): boolean {
-    const row = this.db.select().from(masterChats).where(eq(masterChats.id, id)).get();
+  /** Permanently remove a conversation while preserving its agents as unassigned threads. */
+  deleteConversation(id: string): boolean {
+    const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
     if (!row) return false;
-    const linkedThreads = this.listThreads(row.projectId).filter((thread) => thread.masterChatIds.includes(id));
+    const linkedThreads = this.listThreads(row.projectId).filter((thread) => thread.conversationIds.includes(id));
     this.db.transaction((tx) => {
-      tx.delete(threadMasterChatMemberships).where(eq(threadMasterChatMemberships.masterChatId, id)).run();
-      tx.delete(masterChatMessages).where(eq(masterChatMessages.masterChatId, id)).run();
-      tx.delete(masterChats).where(eq(masterChats.id, id)).run();
+      tx.delete(threadConversationMemberships).where(eq(threadConversationMemberships.conversationId, id)).run();
+      tx.delete(conversationMessages).where(eq(conversationMessages.conversationId, id)).run();
+      tx.delete(conversations).where(eq(conversations.id, id)).run();
     });
     for (const thread of linkedThreads) {
-      const remaining = thread.masterChatIds.filter((memberId) => memberId !== id);
-      const primary = thread.masterChatId === id ? remaining[0] : thread.masterChatId;
+      const remaining = thread.conversationIds.filter((memberId) => memberId !== id);
+      const primary = thread.conversationId === id ? remaining[0] : thread.conversationId;
       this.persistThreadMemberships(thread.id, remaining, primary);
     }
-    rmSync(masterChatDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+    rmSync(conversationDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
     return true;
   }
 
-  appendMasterChatMessage(
-    masterChatId: string,
-    input: CreateMasterChatMessageRequest & { directReplyToAuthorThreadId?: string },
+  appendConversationMessage(
+    conversationId: string,
+    input: CreateConversationMessageRequest & { directReplyToAuthorThreadId?: string },
     authorThreadId?: string,
-    channel: MasterChatChannel = "main",
-    deliveryIntents?: MasterChatDeliveryIntent[],
+    channel: ConversationChannel = "main",
+    deliveryIntents?: ConversationDeliveryIntent[],
     messageReceiptKey?: string,
     communicationEventId?: string,
-  ): MasterChatMessageDto | undefined {
-    const masterChat = this.getMasterChat(masterChatId);
-    if (!masterChat) return undefined;
-    if (communicationEventId && !this.communicationProjectionAllowed(masterChat.projectId, {
+  ): ConversationMessageDto | undefined {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return undefined;
+    if (communicationEventId && !this.communicationProjectionAllowed(conversation.projectId, {
       eventId: communicationEventId,
-      surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
-      projectionKey: masterChatId,
+      surface: channel === "collaboration" ? "collaboration_view" : "conversation",
+      projectionKey: conversationId,
     })) {
       // Validate the canonical communication before writing a legacy placement.
       // A failed projection must never leave a chat row that startup repair will
@@ -1002,24 +1002,24 @@ export class ThreadStore {
     }
     const now = new Date().toISOString();
     const messagePath = channel === "collaboration"
-      ? collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)
-      : masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId);
+      ? collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId)
+      : conversationMessagesPath(this.dataDir, conversation.projectId, conversationId);
     const replyTo = input.replyToMessageId
-      ? this.masterChatReference(masterChatId, channel, input.replyToMessageId)
+      ? this.conversationReference(conversationId, channel, input.replyToMessageId)
       : undefined;
     if (input.directReplyToAuthorThreadId) {
       if (channel !== "main" || !replyTo || replyTo.authorThreadId !== input.directReplyToAuthorThreadId) {
         throw new Error("direct reply target must be the author of the referenced main-chat message");
       }
       const target = this.getThread(input.directReplyToAuthorThreadId);
-      if (!target || target.archived || !target.masterChatIds.includes(masterChatId)) {
-        throw new Error("direct reply target is not an active agent in this master chat");
+      if (!target || target.archived || !target.conversationIds.includes(conversationId)) {
+        throw new Error("direct reply target is not an active agent in this conversation");
       }
     }
-    const message: MasterChatMessageJson = {
+    const message: ConversationMessageJson = {
       id: randomUUID(),
       ...(communicationEventId ? { communicationEventId } : {}),
-      masterChatId,
+      conversationId,
       role: input.role ?? "user",
       text: input.text,
       createdAt: now,
@@ -1034,16 +1034,16 @@ export class ThreadStore {
         ? { deliveryOrderKey: this.nextDeliveryOrderKey(now) }
         : {}),
     };
-    mkdirSync(masterChatDir(this.dataDir, masterChat.projectId, masterChatId), { recursive: true });
+    mkdirSync(conversationDir(this.dataDir, conversation.projectId, conversationId), { recursive: true });
     appendFileSync(
       messagePath,
       JSON.stringify(message) + "\n",
       "utf8",
     );
-    this.db.insert(masterChatMessages).values({
+    this.db.insert(conversationMessages).values({
       id: message.id,
       communicationEventId: message.communicationEventId ?? null,
-      masterChatId: message.masterChatId,
+      conversationId: message.conversationId,
       role: message.role,
       text: message.text,
       createdAt: message.createdAt,
@@ -1053,18 +1053,18 @@ export class ThreadStore {
       attachmentsJson: message.attachments?.length ? JSON.stringify(message.attachments) : null,
     }).run();
     this.db
-      .update(masterChats)
+      .update(conversations)
       .set({ updatedAt: now })
-      .where(eq(masterChats.id, masterChatId))
+      .where(eq(conversations.id, conversationId))
       .run();
-    const jsonPath = masterChatJsonPath(this.dataDir, masterChat.projectId, masterChatId);
-    const json = readJson<MasterChatJson>(jsonPath);
+    const jsonPath = conversationJsonPath(this.dataDir, conversation.projectId, conversationId);
+    const json = readJson<ConversationJson>(jsonPath);
     writeJson(jsonPath, { ...json, updatedAt: now });
     if (message.communicationEventId) {
-      this.appendCommunicationProjection(masterChat.projectId, {
+      this.appendCommunicationProjection(conversation.projectId, {
         eventId: message.communicationEventId,
-        surface: channel === "collaboration" ? "collaboration_chat" : "master_chat",
-        projectionKey: masterChatId,
+        surface: channel === "collaboration" ? "collaboration_view" : "conversation",
+        projectionKey: conversationId,
         projectedAt: now,
         message: {
           messageId: message.id, role: message.role, renderedText: message.text, createdAt: message.createdAt,
@@ -1079,7 +1079,7 @@ export class ThreadStore {
     return {
       id: message.id,
       communicationEventId: message.communicationEventId,
-      masterChatId: message.masterChatId,
+      conversationId: message.conversationId,
       role: message.role,
       text: message.text,
       createdAt: message.createdAt,
@@ -1089,23 +1089,23 @@ export class ThreadStore {
     };
   }
 
-  getMasterChatDeliveryIntents(masterChatId: string): Array<{
-    message: MasterChatMessageDto;
-    intent: MasterChatDeliveryIntent;
+  getConversationDeliveryIntents(conversationId: string): Array<{
+    message: ConversationMessageDto;
+    intent: ConversationDeliveryIntent;
     messageReceiptKey?: string;
     deliveryOrderKey: string;
   }> {
-    const masterChat = this.getMasterChat(masterChatId);
-    if (!masterChat) return [];
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return [];
     const messages = [
-      ...readJsonLines<MasterChatMessageJson>(masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)),
-      ...readJsonLines<MasterChatMessageJson>(collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId)),
+      ...readJsonLines<ConversationMessageJson>(conversationMessagesPath(this.dataDir, conversation.projectId, conversationId)),
+      ...readJsonLines<ConversationMessageJson>(collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId)),
     ];
     return messages.flatMap((message) => (message.deliveryIntents ?? []).map((intent) => ({
       message: {
         id: message.id,
         communicationEventId: message.communicationEventId,
-        masterChatId: message.masterChatId,
+        conversationId: message.conversationId,
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
@@ -1119,16 +1119,16 @@ export class ThreadStore {
     })));
   }
 
-  getMasterChatMessageByReceiptKey(masterChatId: string, receiptKey: string): MasterChatMessageDto | undefined {
-    const masterChat = this.getMasterChat(masterChatId);
-    if (!masterChat) return undefined;
-    const message = readJsonLines<MasterChatMessageJson>(
-      masterChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+  getConversationMessageByReceiptKey(conversationId: string, receiptKey: string): ConversationMessageDto | undefined {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return undefined;
+    const message = readJsonLines<ConversationMessageJson>(
+      conversationMessagesPath(this.dataDir, conversation.projectId, conversationId),
     ).find((candidate) => candidate.messageReceiptKey === receiptKey);
     return message ? {
       id: message.id,
       communicationEventId: message.communicationEventId,
-      masterChatId: message.masterChatId,
+      conversationId: message.conversationId,
       role: message.role,
       text: message.text,
       createdAt: message.createdAt,
@@ -1138,22 +1138,22 @@ export class ThreadStore {
     } : undefined;
   }
 
-  getMasterChatMessageDeliveryOrderKey(masterChatId: string, messageId: string): string | undefined {
-    const masterChat = this.getMasterChat(masterChatId);
-    if (!masterChat) return undefined;
-    return readJsonLines<MasterChatMessageJson>(
-      collaborationChatMessagesPath(this.dataDir, masterChat.projectId, masterChatId),
+  getConversationMessageDeliveryOrderKey(conversationId: string, messageId: string): string | undefined {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return undefined;
+    return readJsonLines<ConversationMessageJson>(
+      collaborationMessagesPath(this.dataDir, conversation.projectId, conversationId),
     ).find((message) => message.id === messageId)?.deliveryOrderKey;
   }
 
-  getMasterChatMessages(masterChatId: string, channel: MasterChatChannel = "main"): MasterChatMessageDto[] {
-    const master = this.getMasterChat(masterChatId);
+  getConversationMessages(conversationId: string, channel: ConversationChannel = "main"): ConversationMessageDto[] {
+    const master = this.getConversation(conversationId);
     if (!master) return [];
     return this.db
       .select()
-      .from(masterChatMessages)
-      .where(eq(masterChatMessages.masterChatId, masterChatId))
-      .orderBy(asc(masterChatMessages.createdAt))
+      .from(conversationMessages)
+      .where(eq(conversationMessages.conversationId, conversationId))
+      .orderBy(asc(conversationMessages.createdAt))
       .all()
       .filter((row) => row.channel === channel)
       .map((row) => {
@@ -1173,7 +1173,7 @@ export class ThreadStore {
         return {
           id: row.id,
           communicationEventId: row.communicationEventId ?? undefined,
-          masterChatId: row.masterChatId,
+          conversationId: row.conversationId,
           role,
           text: row.text,
           createdAt: row.createdAt,
@@ -1190,18 +1190,18 @@ export class ThreadStore {
    * (attachments and quoted replies) until those immutable payloads move into
    * the canonical envelope; they do not select membership, ordering, or text.
    */
-  getProjectedMasterChatMessages(
-    masterChatId: string,
-    channel: MasterChatChannel = "main",
-  ): MasterChatMessageDto[] {
-    const master = this.getMasterChat(masterChatId);
+  getProjectedConversationMessages(
+    conversationId: string,
+    channel: ConversationChannel = "main",
+  ): ConversationMessageDto[] {
+    const master = this.getConversation(conversationId);
     if (!master) return [];
-    const surface = channel === "collaboration" ? "collaboration_chat" : "master_chat";
-    return this.readProjectedCommunicationMessages(master.projectId, surface, masterChatId).map((message) => {
+    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
+    return this.readProjectedCommunicationMessages(master.projectId, surface, conversationId).map((message) => {
       return {
         id: message.messageId,
         communicationEventId: message.eventId,
-        masterChatId,
+        conversationId,
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
@@ -1213,8 +1213,8 @@ export class ThreadStore {
     });
   }
 
-  private masterChatReference(masterChatId: string, channel: MasterChatChannel, messageId: string) {
-    const target = this.getMasterChatMessages(masterChatId, channel).find((message) => message.id === messageId);
+  private conversationReference(conversationId: string, channel: ConversationChannel, messageId: string) {
+    const target = this.getConversationMessages(conversationId, channel).find((message) => message.id === messageId);
     if (!target) throw new Error("reply target was not found in this conversation");
     return {
       messageId: target.id,
@@ -1235,8 +1235,8 @@ export class ThreadStore {
     const record: ThreadJson = {
       id,
       projectId,
-      masterChatId: input.masterChatId,
-      masterChatIds: input.masterChatId ? [input.masterChatId] : [],
+      conversationId: input.conversationId,
+      conversationIds: input.conversationId ? [input.conversationId] : [],
       title: input.title,
       activeEngine: input.engine,
       createdAt: now,
@@ -1257,7 +1257,7 @@ export class ThreadStore {
       .values({
         id,
         projectId,
-        masterChatId: input.masterChatId ?? null,
+        conversationId: input.conversationId ?? null,
         title: input.title,
         activeEngine: input.engine,
         createdAt: now,
@@ -1270,8 +1270,8 @@ export class ThreadStore {
         presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
       })
       .run();
-    if (input.masterChatId) {
-      this.db.insert(threadMasterChatMemberships).values({ threadId: id, masterChatId: input.masterChatId, position: 0 }).run();
+    if (input.conversationId) {
+      this.db.insert(threadConversationMemberships).values({ threadId: id, conversationId: input.conversationId, position: 0 }).run();
     }
     if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
     return this.rowToThreadDto(id)!;
@@ -1385,24 +1385,24 @@ export class ThreadStore {
     );
   }
 
-  updateThreadMasterChatMemberships(
+  updateThreadConversationMemberships(
     id: string,
-    input: UpdateThreadMasterChatMembershipsRequest,
+    input: UpdateThreadConversationMembershipsRequest,
   ): ThreadDto | undefined {
     const thread = this.getThread(id);
     if (!thread) return undefined;
-    const ids = [...new Set(input.masterChatIds)];
-    if (ids.length !== input.masterChatIds.length) throw new Error("duplicate master chat membership");
-    if (ids.length > 0 && !input.primaryMasterChatId) throw new Error("primary master chat is required");
-    if (input.primaryMasterChatId && !ids.includes(input.primaryMasterChatId)) {
-      throw new Error("primary master chat must be a member");
+    const ids = [...new Set(input.conversationIds)];
+    if (ids.length !== input.conversationIds.length) throw new Error("duplicate conversation membership");
+    if (ids.length > 0 && !input.primaryConversationId) throw new Error("primary conversation is required");
+    if (input.primaryConversationId && !ids.includes(input.primaryConversationId)) {
+      throw new Error("primary conversation must be a member");
     }
-    for (const masterChatId of ids) {
-      const master = this.getMasterChat(masterChatId);
-      if (!master || master.projectId !== thread.projectId) throw new Error("master chat does not belong to project");
-      if (master.archived && !thread.masterChatIds.includes(masterChatId)) throw new Error("archived master chat cannot accept agents");
+    for (const conversationId of ids) {
+      const master = this.getConversation(conversationId);
+      if (!master || master.projectId !== thread.projectId) throw new Error("conversation does not belong to project");
+      if (master.archived && !thread.conversationIds.includes(conversationId)) throw new Error("archived conversation cannot accept agents");
     }
-    this.persistThreadMemberships(id, ids, input.primaryMasterChatId);
+    this.persistThreadMemberships(id, ids, input.primaryConversationId);
     return this.getThread(id);
   }
 
@@ -1426,7 +1426,7 @@ export class ThreadStore {
       tx.delete(artifacts).where(eq(artifacts.threadId, id)).run();
       tx.delete(tasks).where(eq(tasks.threadId, id)).run();
       tx.delete(messages).where(eq(messages.threadId, id)).run();
-      tx.delete(threadMasterChatMemberships).where(eq(threadMasterChatMemberships.threadId, id)).run();
+      tx.delete(threadConversationMemberships).where(eq(threadConversationMemberships.threadId, id)).run();
       tx.delete(threads).where(eq(threads.id, id)).run();
     });
 
@@ -1446,7 +1446,7 @@ export class ThreadStore {
     return {
       thread,
       messages: this.getMessages(id),
-      thinking: this.getThinkingEntries(id),
+      runOutput: this.getRunOutputs(id),
       activity: this.getActivity(id),
       changedFiles: this.getChangedFiles(id),
       tasks: this.getTasks(id),
@@ -1488,14 +1488,14 @@ export class ThreadStore {
   /**
    * Completed ordinary responses are read from the canonical thread log. Legacy
    * text events are grouped by their surrounding execution and fail closed into
-   * Thinking rather than being inferred as communication.
+   * Work log rather than being inferred as communication.
    */
-  getThinkingEntries(threadId: string): ThinkingEntryDto[] {
+  getRunOutputs(threadId: string): RunOutputDto[] {
     const storedEvents = this.readEvents(threadId);
     const completedExecutionIds = new Set(storedEvents.flatMap(({ event }) =>
       event.type === "agent_output" ? [event.executionId] : [],
     ));
-    const entries: ThinkingEntryDto[] = [];
+    const entries: RunOutputDto[] = [];
     const legacy = new Map<string, { text: string; firstSeq: number; lastSeq: number; createdAt: string }>();
     let activeExecutionId: string | undefined;
     let fallbackExecutionId: string | undefined;
@@ -1533,7 +1533,7 @@ export class ThreadStore {
 
       if (event.type === "agent_output" && event.text.trim()) {
         entries.push({
-          id: `${threadId}:thinking:${stored.seq}`,
+          id: `${threadId}:runOutput:${stored.seq}`,
           threadId,
           executionId: event.executionId,
           kind: "response",
@@ -1550,7 +1550,7 @@ export class ThreadStore {
     for (const [executionId, item] of legacy) {
       if (!item.text.trim()) continue;
       entries.push({
-        id: `${threadId}:thinking:legacy:${item.lastSeq}`,
+        id: `${threadId}:runOutput:legacy:${item.lastSeq}`,
         threadId,
         executionId,
         kind: "response",
@@ -1769,9 +1769,9 @@ export class ThreadStore {
     this.db.delete(tasks).run();
     this.db.delete(messages).run();
     this.db.delete(threads).run();
-    this.db.delete(threadMasterChatMemberships).run();
-    this.db.delete(masterChatMessages).run();
-    this.db.delete(masterChats).run();
+    this.db.delete(threadConversationMemberships).run();
+    this.db.delete(conversationMessages).run();
+    this.db.delete(conversations).run();
     this.db.delete(projects).run();
     this.db.delete(agentPresets).run();
     this.logs.clear();
@@ -1804,14 +1804,14 @@ export class ThreadStore {
         }
       }
 
-      const mDir = masterChatsDir(this.dataDir, projectId);
+      const mDir = conversationsDir(this.dataDir, projectId);
       if (existsSync(mDir)) {
-        for (const masterChatId of readdirSync(mDir)) {
-          const mj = masterChatJsonPath(this.dataDir, projectId, masterChatId);
+        for (const conversationId of readdirSync(mDir)) {
+          const mj = conversationJsonPath(this.dataDir, projectId, conversationId);
           if (!existsSync(mj)) continue;
-          const m = readJson<MasterChatJson>(mj);
+          const m = readJson<ConversationJson>(mj);
           this.db
-            .insert(masterChats)
+            .insert(conversations)
             .values({
               id: m.id,
               projectId: m.projectId,
@@ -1825,14 +1825,14 @@ export class ThreadStore {
             })
             .run();
           for (const [channel, messagePath] of [
-            ["main", masterChatMessagesPath(this.dataDir, projectId, masterChatId)],
-            ["collaboration", collaborationChatMessagesPath(this.dataDir, projectId, masterChatId)],
+            ["main", conversationMessagesPath(this.dataDir, projectId, conversationId)],
+            ["collaboration", collaborationMessagesPath(this.dataDir, projectId, conversationId)],
           ] as const) {
-            for (const message of readJsonLines<MasterChatMessageJson>(messagePath)) {
-              this.db.insert(masterChatMessages).values({
+            for (const message of readJsonLines<ConversationMessageJson>(messagePath)) {
+              this.db.insert(conversationMessages).values({
                 id: message.id,
                 communicationEventId: message.communicationEventId ?? null,
-                masterChatId: message.masterChatId,
+                conversationId: message.conversationId,
                 role: message.role,
                 text: message.text,
                 createdAt: message.createdAt,
@@ -1852,16 +1852,16 @@ export class ThreadStore {
         const tj = threadJsonPath(this.dataDir, projectId, threadId);
         if (!existsSync(tj)) continue;
         const t = readJson<ThreadJson>(tj);
-        const membershipIds = [...new Set(t.masterChatIds ?? (t.masterChatId ? [t.masterChatId] : []))];
-        const primaryMasterChatId = t.masterChatId && membershipIds.includes(t.masterChatId)
-          ? t.masterChatId
+        const membershipIds = [...new Set(t.conversationIds ?? (t.conversationId ? [t.conversationId] : []))];
+        const primaryConversationId = t.conversationId && membershipIds.includes(t.conversationId)
+          ? t.conversationId
           : membershipIds[0];
         this.db
           .insert(threads)
           .values({
             id: t.id,
             projectId: t.projectId,
-            masterChatId: primaryMasterChatId ?? null,
+            conversationId: primaryConversationId ?? null,
             title: t.title,
             activeEngine: t.activeEngine,
             createdAt: t.createdAt,
@@ -1875,11 +1875,11 @@ export class ThreadStore {
             presetSnapshotJson: t.presetSnapshot ? JSON.stringify(t.presetSnapshot) : null,
           })
           .run();
-        membershipIds.forEach((masterChatId, position) => {
-          this.db.insert(threadMasterChatMemberships).values({ threadId: t.id, masterChatId, position }).run();
+        membershipIds.forEach((conversationId, position) => {
+          this.db.insert(threadConversationMemberships).values({ threadId: t.id, conversationId, position }).run();
         });
-        if (t.masterChatIds === undefined || t.masterChatId !== primaryMasterChatId) {
-          writeJson(tj, { ...t, masterChatId: primaryMasterChatId, masterChatIds: membershipIds });
+        if (t.conversationIds === undefined || t.conversationId !== primaryConversationId) {
+          writeJson(tj, { ...t, conversationId: primaryConversationId, conversationIds: membershipIds });
         }
 
         const logFile = eventsPath(this.dataDir, projectId, threadId);
@@ -2045,10 +2045,10 @@ export class ThreadStore {
     return {
       id: row.id,
       projectId: row.projectId,
-      masterChatId: row.masterChatId ?? undefined,
-      masterChatIds: this.db.select().from(threadMasterChatMemberships)
-        .where(eq(threadMasterChatMemberships.threadId, row.id))
-        .orderBy(asc(threadMasterChatMemberships.position)).all().map((membership) => membership.masterChatId),
+      conversationId: row.conversationId ?? undefined,
+      conversationIds: this.db.select().from(threadConversationMemberships)
+        .where(eq(threadConversationMemberships.threadId, row.id))
+        .orderBy(asc(threadConversationMemberships.position)).all().map((membership) => membership.conversationId),
       title: row.title,
       activeEngine: row.activeEngine,
       state,
@@ -2064,24 +2064,24 @@ export class ThreadStore {
   }
 
 
-  private persistThreadMemberships(id: string, masterChatIds: string[], primaryMasterChatId?: string): void {
+  private persistThreadMemberships(id: string, conversationIds: string[], primaryConversationId?: string): void {
     const row = this.db.select().from(threads).where(eq(threads.id, id)).get();
     if (!row) throw new Error(`unknown thread: ${id}`);
     const now = new Date().toISOString();
     const jsonPath = threadJsonPath(this.dataDir, row.projectId, id);
     const json = readJson<ThreadJson>(jsonPath);
     // Canonical metadata is committed first; SQLite remains a rebuildable projection.
-    writeJson(jsonPath, { ...json, masterChatId: primaryMasterChatId, masterChatIds, updatedAt: now });
+    writeJson(jsonPath, { ...json, conversationId: primaryConversationId, conversationIds, updatedAt: now });
     this.db.transaction((tx) => {
-      tx.delete(threadMasterChatMemberships).where(eq(threadMasterChatMemberships.threadId, id)).run();
-      masterChatIds.forEach((masterChatId, position) => {
-        tx.insert(threadMasterChatMemberships).values({ threadId: id, masterChatId, position }).run();
+      tx.delete(threadConversationMemberships).where(eq(threadConversationMemberships.threadId, id)).run();
+      conversationIds.forEach((conversationId, position) => {
+        tx.insert(threadConversationMemberships).values({ threadId: id, conversationId, position }).run();
       });
-      tx.update(threads).set({ masterChatId: primaryMasterChatId ?? null, updatedAt: now }).where(eq(threads.id, id)).run();
+      tx.update(threads).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(threads.id, id)).run();
     });
   }
 
-  private masterChatRowToDto(row: typeof masterChats.$inferSelect): MasterChatDto {
+  private conversationRowToDto(row: typeof conversations.$inferSelect): ConversationDto {
     return {
       id: row.id,
       projectId: row.projectId,

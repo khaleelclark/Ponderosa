@@ -14,10 +14,10 @@ describe("updateThreadDetail", () => {
     expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "running", reason: "active_run" })).toBe(true);
   });
 
-  it("keeps streamed response and reasoning deltas in distinct transient Thinking entries", () => {
+  it("keeps streamed response and reasoning deltas in distinct transient Work log entries", () => {
     const detail = {
       messages: [],
-      thinking: [],
+      runOutput: [],
       activity: [],
       changedFiles: [],
       tasks: [],
@@ -37,7 +37,7 @@ describe("updateThreadDetail", () => {
 
     const updated = updateThreadDetail("thread-1", reasoning, updateThreadDetail("thread-1", response, detail));
     expect(updated.messages).toEqual([]);
-    expect(updated.thinking).toEqual([
+    expect(updated.runOutput).toEqual([
       expect.objectContaining({ kind: "response", text: "final answer", completed: false, executionId: "run-1" }),
       expect.objectContaining({ kind: "reasoning", text: "checking", completed: false, executionId: "run-1" }),
     ]);
@@ -46,8 +46,8 @@ describe("updateThreadDetail", () => {
   it("replaces transient response text with the canonical completed output", () => {
     const detail = {
       messages: [],
-      thinking: [{
-        id: "live-thinking:run-1:response", threadId: "thread-1", executionId: "run-1", kind: "response",
+      runOutput: [{
+        id: "live-runOutput:run-1:response", threadId: "thread-1", executionId: "run-1", kind: "response",
         text: "partial", completed: false, seq: 2, sourceSeqStart: 2, sourceSeqEnd: 2, createdAt: "2026-07-11T08:00:00.000Z",
       }],
       tasks: [], artifacts: [], thread: { activeEngine: "codex" },
@@ -58,7 +58,7 @@ describe("updateThreadDetail", () => {
       event: { type: "agent_output", executionId: "run-1", text: "complete", sourceSeqStart: 2, sourceSeqEnd: 4 },
     } as SseEventEnvelope;
 
-    expect(updateThreadDetail("thread-1", envelope, detail).thinking).toEqual([
+    expect(updateThreadDetail("thread-1", envelope, detail).runOutput).toEqual([
       expect.objectContaining({ kind: "response", text: "complete", completed: true, executionId: "run-1", seq: 5 }),
     ]);
   });
@@ -101,7 +101,7 @@ describe("updateThreadDetail", () => {
 
   it("projects streamed execution activity and changed files without duplicating replay", () => {
     const detail = {
-      messages: [], thinking: [], activity: [], changedFiles: [], tasks: [], artifacts: [],
+      messages: [], runOutput: [], activity: [], changedFiles: [], tasks: [], artifacts: [],
       thread: { activeEngine: "codex" },
     } as unknown as ThreadDetailDto;
     const envelope = {

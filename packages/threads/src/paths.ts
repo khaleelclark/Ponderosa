@@ -10,11 +10,11 @@
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
 //         agent-organization.jsonl    ← canonical mutable reporting relationships
-//         master-chats/
-//           <master-chat-id>/
-//             master-chat.json         ← title, defaults, timestamps
+//         conversations/
+//           <conversation-id>/
+//             conversation.json         ← title, defaults, timestamps
 //             messages.jsonl           ← model-agnostic control chat
-//             collaboration.jsonl      ← opt-in agent collaboration chat
+//             collaboration.jsonl      ← opt-in agent team chat
 //         threads/
 //           <thread-id>/
 //             thread.json              ← title, active engine, sessionIds, state, ts
@@ -65,36 +65,36 @@ export function agentOrganizationEventsPath(dataDir: string, projectId: string):
   return path.join(projectDir(dataDir, projectId), "agent-organization.jsonl");
 }
 
-export function masterChatsDir(dataDir: string, projectId: string): string {
-  return path.join(projectDir(dataDir, projectId), "master-chats");
+export function conversationsDir(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "conversations");
 }
 
-export function masterChatDir(dataDir: string, projectId: string, masterChatId: string): string {
-  return path.join(masterChatsDir(dataDir, projectId), masterChatId);
+export function conversationDir(dataDir: string, projectId: string, conversationId: string): string {
+  return path.join(conversationsDir(dataDir, projectId), conversationId);
 }
 
-export function masterChatJsonPath(
+export function conversationJsonPath(
   dataDir: string,
   projectId: string,
-  masterChatId: string,
+  conversationId: string,
 ): string {
-  return path.join(masterChatDir(dataDir, projectId, masterChatId), "master-chat.json");
+  return path.join(conversationDir(dataDir, projectId, conversationId), "conversation.json");
 }
 
-export function masterChatMessagesPath(
+export function conversationMessagesPath(
   dataDir: string,
   projectId: string,
-  masterChatId: string,
+  conversationId: string,
 ): string {
-  return path.join(masterChatDir(dataDir, projectId, masterChatId), "messages.jsonl");
+  return path.join(conversationDir(dataDir, projectId, conversationId), "messages.jsonl");
 }
 
-export function collaborationChatMessagesPath(
+export function collaborationMessagesPath(
   dataDir: string,
   projectId: string,
-  masterChatId: string,
+  conversationId: string,
 ): string {
-  return path.join(masterChatDir(dataDir, projectId, masterChatId), "collaboration.jsonl");
+  return path.join(conversationDir(dataDir, projectId, conversationId), "collaboration.jsonl");
 }
 
 export function threadsDir(dataDir: string, projectId: string): string {

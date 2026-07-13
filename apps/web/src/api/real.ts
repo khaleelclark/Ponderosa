@@ -1,18 +1,18 @@
 import type {
   ArtifactContentDto,
   AgentHealthProjectionDto,
-  CollaborationChatDetailDto,
+  CollaborationViewDto,
   CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
-  CreateMasterChatMessageRequest,
-  CreateMasterChatRequest,
+  CreateConversationMessageRequest,
+  CreateConversationRequest,
   CreateProjectRequest,
   CreateThreadRequest,
-  MasterChatDetailDto,
-  MasterChatDto,
-  UpdateMasterChatRequest,
+  ConversationDetailDto,
+  ConversationDto,
+  UpdateConversationRequest,
   UpdateThreadRequest,
-  UpdateThreadMasterChatMembershipsRequest,
+  UpdateThreadConversationMembershipsRequest,
   UpdateAgentOrganizationRequest,
   EngineDto,
   ImageAttachmentDto,
@@ -91,46 +91,46 @@ export const realApi: PonderosaApi = {
   getAgentHealth(projectId) {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
-  listMasterChats(projectId) {
-    return requestJson<MasterChatDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/master-chats");
+  listConversations(projectId) {
+    return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
   },
-  createMasterChat(projectId, request) {
-    return requestJson<MasterChatDto>("/api/projects/" + encodeURIComponent(projectId) + "/master-chats", {
+  createConversation(projectId, request) {
+    return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
       method: "POST",
-      body: JSON.stringify(request satisfies CreateMasterChatRequest),
+      body: JSON.stringify(request satisfies CreateConversationRequest),
     });
   },
-  getMasterChat(masterChatId) {
-    return requestJson<MasterChatDetailDto>("/api/master-chats/" + encodeURIComponent(masterChatId));
+  getConversation(conversationId) {
+    return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId));
   },
-  getCollaborationChat(masterChatId) {
-    return requestJson<CollaborationChatDetailDto>(
-      "/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration",
+  getCollaborationView(conversationId) {
+    return requestJson<CollaborationViewDto>(
+      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration",
     );
   },
-  updateMasterChat(masterChatId, patch) {
-    return requestJson<MasterChatDto>("/api/master-chats/" + encodeURIComponent(masterChatId), {
+  updateConversation(conversationId, patch) {
+    return requestJson<ConversationDto>("/api/conversations/" + encodeURIComponent(conversationId), {
       method: "PATCH",
-      body: JSON.stringify(patch satisfies UpdateMasterChatRequest),
+      body: JSON.stringify(patch satisfies UpdateConversationRequest),
     });
   },
-  async deleteMasterChat(masterChatId) {
-    await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId), { method: "DELETE" });
+  async deleteConversation(conversationId) {
+    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
   },
-  async sendMasterChatMessage(masterChatId, request) {
-    await requestJson("/api/master-chats/" + encodeURIComponent(masterChatId) + "/messages", {
+  async sendConversationMessage(conversationId, request) {
+    await requestJson("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
       method: "POST",
-      body: JSON.stringify(request satisfies CreateMasterChatMessageRequest),
+      body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });
   },
-  sendDirectReply(masterChatId, request) {
-    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/direct-replies`, {
+  sendDirectReply(conversationId, request) {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-replies`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  sendMultiAgentDirectMessage(masterChatId, request) {
-    return requestJson(`/api/master-chats/${encodeURIComponent(masterChatId)}/direct-messages`, {
+  sendMultiAgentDirectMessage(conversationId, request) {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-messages`, {
       method: "POST",
       body: JSON.stringify(request),
     });
@@ -141,8 +141,8 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request),
     });
   },
-  async sendCollaborationMessage(masterChatId, request) {
-    return requestJson<CreateCollaborationMessageResponse>("/api/master-chats/" + encodeURIComponent(masterChatId) + "/collaboration/messages", {
+  async sendCollaborationMessage(conversationId, request) {
+    return requestJson<CreateCollaborationMessageResponse>("/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
@@ -156,11 +156,11 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateThreadRequest),
     });
   },
-  createAgent(projectId, masterChatId, options) {
+  createAgent(projectId, conversationId, options) {
     return this.createThread(projectId, {
       title: options.title,
       engine: options.engine as CreateThreadRequest["engine"],
-      masterChatId,
+      conversationId,
       model: options.model,
       effort: options.effort,
       initialMessage: options.initialMessage,
@@ -179,10 +179,10 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(patch satisfies UpdateThreadRequest),
     });
   },
-  updateThreadMasterChatMemberships(threadId, membership) {
-    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/master-chat-memberships`, {
+  updateThreadConversationMemberships(threadId, membership) {
+    return requestJson<ThreadDto>(`/api/threads/${encodeURIComponent(threadId)}/conversation-memberships`, {
       method: "PUT",
-      body: JSON.stringify(membership satisfies UpdateThreadMasterChatMembershipsRequest),
+      body: JSON.stringify(membership satisfies UpdateThreadConversationMembershipsRequest),
     });
   },
   updateAgentOrganization(threadId, organization) {

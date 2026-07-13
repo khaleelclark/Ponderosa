@@ -40,7 +40,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -51,9 +51,9 @@ import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, TasksPane, ThinkingPane, WorkspaceReviewPane } from "./panes";
+import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 
-type AgentTab = "chat" | "thinking" | "activity" | "changed_files" | "review" | "tasks" | "artifacts";
+type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "tasks" | "artifacts";
 
 export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
@@ -80,12 +80,12 @@ function RespondingIndicator({ agentName, startedAt }: { agentName: string; star
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "thinking", label: "Thinking", icon: <PsychologyOutlinedIcon /> },
+  { value: "runOutput", label: "Work log", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
   { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
-  { value: "tasks", label: "Tasks", icon: <TaskAltOutlinedIcon /> },
-  { value: "artifacts", label: "Artifacts", icon: <Inventory2OutlinedIcon /> },
+  { value: "tasks", label: "Runs", icon: <TaskAltOutlinedIcon /> },
+  { value: "artifacts", label: "Files & results", icon: <Inventory2OutlinedIcon /> },
 ];
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
@@ -114,7 +114,7 @@ export function AgentDetail({
   projectedStatus,
   projectedHealth,
   agents,
-  masterChats,
+  conversations,
   onBack,
   onOpenAgent,
   onOpenMaster,
@@ -127,10 +127,10 @@ export function AgentDetail({
   projectedStatus?: AgentStatus;
   projectedHealth?: AgentHealthDto;
   agents: ThreadDto[];
-  masterChats: MasterChatDto[];
+  conversations: ConversationDto[];
   onBack(): void;
   onOpenAgent(agentId: string): void;
-  onOpenMaster(masterChatId: string): void;
+  onOpenMaster(conversationId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -151,7 +151,7 @@ export function AgentDetail({
   const [organizationOpen, setOrganizationOpen] = useState(false);
   const [organizationParentId, setOrganizationParentId] = useState("");
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
-  const [primaryMasterChatId, setPrimaryMasterChatId] = useState("");
+  const [primaryConversationId, setPrimaryConversationId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
   const [runSetupOpen, setRunSetupOpen] = useState(false);
@@ -223,7 +223,7 @@ export function AgentDetail({
       queryClient.setQueriesData<ThreadDto[]>({ queryKey: ["threads"] }, (current) =>
         current?.map((thread) => (thread.id === updated.id ? updated : thread)),
       );
-      queryClient.setQueriesData<MasterChatDetailDto>({ queryKey: ["master-chat"] }, (current) =>
+      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
         current
           ? {
               ...current,
@@ -233,22 +233,22 @@ export function AgentDetail({
       );
       void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
       void queryClient.invalidateQueries({ queryKey: ["threads"] });
-      void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
+      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       setRenameOpen(false);
     },
   });
 
   const updateMemberships = useMutation({
-    mutationFn: () => api.updateThreadMasterChatMemberships(agentId, {
-      masterChatIds: membershipIds,
-      primaryMasterChatId: membershipIds.length ? primaryMasterChatId : undefined,
+    mutationFn: () => api.updateThreadConversationMemberships(agentId, {
+      conversationIds: membershipIds,
+      primaryConversationId: membershipIds.length ? primaryConversationId : undefined,
     }),
     onSuccess: (updated) => {
       queryClient.setQueryData<ThreadDetailDto>(["thread", agentId], (current) =>
         current ? { ...current, thread: updated } : current,
       );
       void queryClient.invalidateQueries({ queryKey: ["threads"] });
-      void queryClient.invalidateQueries({ queryKey: ["master-chat"] });
+      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
       setMembershipOpen(false);
     },
   });
@@ -299,8 +299,8 @@ export function AgentDetail({
 
   const models = engine?.models ?? [];
   const efforts = engine?.efforts ?? [];
-  const master = detail.thread.masterChatId
-    ? masterChats.find((candidate) => candidate.id === detail.thread.masterChatId)
+  const master = detail.thread.conversationId
+    ? conversations.find((candidate) => candidate.id === detail.thread.conversationId)
     : undefined;
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
   const agentNameForId = (candidateId: string): string | undefined =>
@@ -358,11 +358,11 @@ export function AgentDetail({
     }).then(() => {
       void queryClient.invalidateQueries({ queryKey: ["thread", agentId] });
     })} onReply={setReplyTo} />,
-    thinking: <ThinkingPane entries={detail.thinking} />,
+    runOutput: <WorkLogPane entries={detail.runOutput} />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.thread.projectId} files={detail.changedFiles} running={stream.running} />,
-    tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
+    tasks: <RunsPane tasks={detail.tasks} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={agentId} timeline={stream.timeline} />,
   };
 
@@ -456,8 +456,8 @@ export function AgentDetail({
             </IconButton>
           </Tooltip>
           <Button size="small" variant="outlined" sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
-            setMembershipIds(detail.thread.masterChatIds);
-            setPrimaryMasterChatId(detail.thread.masterChatId ?? "");
+            setMembershipIds(detail.thread.conversationIds);
+            setPrimaryConversationId(detail.thread.conversationId ?? "");
             setMembershipOpen(true);
           }}>
             Assign chats
@@ -659,20 +659,20 @@ export function AgentDetail({
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <FormControl fullWidth>
-              <InputLabel id="agent-memberships-label">Master chats</InputLabel>
+              <InputLabel id="agent-memberships-label">Conversations</InputLabel>
               <Select
                 labelId="agent-memberships-label"
                 multiple
                 value={membershipIds}
-                label="Master chats"
-                renderValue={(selected) => selected.map((id) => masterChats.find((chat) => chat.id === id)?.title ?? id).join(", ")}
+                label="Conversations"
+                renderValue={(selected) => selected.map((id) => conversations.find((chat) => chat.id === id)?.title ?? id).join(", ")}
                 onChange={(event) => {
                   const ids = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
                   setMembershipIds(ids);
-                  if (!ids.includes(primaryMasterChatId)) setPrimaryMasterChatId(ids[0] ?? "");
+                  if (!ids.includes(primaryConversationId)) setPrimaryConversationId(ids[0] ?? "");
                 }}
               >
-                {masterChats.filter((chat) => !chat.archived || membershipIds.includes(chat.id)).map((chat) => (
+                {conversations.filter((chat) => !chat.archived || membershipIds.includes(chat.id)).map((chat) => (
                   <MenuItem key={chat.id} value={chat.id}>
                     <Checkbox checked={membershipIds.includes(chat.id)} />
                     <ListItemText primary={chat.title} secondary={chat.archived ? "Archived" : undefined} />
@@ -682,8 +682,8 @@ export function AgentDetail({
             </FormControl>
             <FormControl fullWidth disabled={membershipIds.length === 0}>
               <InputLabel id="agent-primary-chat-label">Home chat</InputLabel>
-              <Select labelId="agent-primary-chat-label" value={primaryMasterChatId} label="Home chat" onChange={(event) => setPrimaryMasterChatId(event.target.value)}>
-                {membershipIds.map((id) => <MenuItem key={id} value={id}>{masterChats.find((chat) => chat.id === id)?.title ?? id}</MenuItem>)}
+              <Select labelId="agent-primary-chat-label" value={primaryConversationId} label="Home chat" onChange={(event) => setPrimaryConversationId(event.target.value)}>
+                {membershipIds.map((id) => <MenuItem key={id} value={id}>{conversations.find((chat) => chat.id === id)?.title ?? id}</MenuItem>)}
               </Select>
             </FormControl>
             <Typography variant="body2" color="text.secondary">
@@ -694,7 +694,7 @@ export function AgentDetail({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
-          <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryMasterChatId)} onClick={() => updateMemberships.mutate()}>
+          <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryConversationId)} onClick={() => updateMemberships.mutate()}>
             Save membership
           </Button>
         </DialogActions>

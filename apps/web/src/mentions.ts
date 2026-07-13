@@ -13,7 +13,7 @@ export function agentMentionHandle(title: string): string {
 /**
  * Return the distinct, canonical handles mentioned in text. Keeping this
  * independent of thread data lets the composer update its local UI without
- * causing the whole master-chat transcript to re-render on every keystroke.
+ * causing the whole conversation transcript to re-render on every keystroke.
  */
 export function findMentionedHandles(text: string, handles: Iterable<string>): string[] {
   const byHandle = new Map(
@@ -44,7 +44,7 @@ export function agentIdForMentionHandle(
   return threads.find((thread) => agentMentionHandle(thread.title).toLocaleLowerCase() === normalized)?.id;
 }
 
-/** Resolve every distinct #tag against the agents currently in a master chat. */
+/** Resolve every distinct #tag against the agents currently in a conversation. */
 export function findMentionedAgents(text: string, threads: ThreadDto[]): ThreadDto[] {
   const byHandle = new Map(
     threads

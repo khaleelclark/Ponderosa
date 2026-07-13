@@ -1,7 +1,8 @@
 # AGENTS.md — Ponderosa
 
 Rules for any AI agent (or human) working on **this repository**. Read this
-before editing. [VISION.md](./VISION.md) defines the current product direction;
+before editing. [VISION.md](./VISION.md) defines the current product direction and
+[VOCABULARY.md](./VOCABULARY.md) defines canonical UI and domain names;
 this file translates that vision into working invariants and repository rules.
 
 ---
@@ -9,7 +10,7 @@ this file translates that vision into working invariants and repository rules.
 ## Mission
 
 Ponderosa is a self-hosted web interface for AI agents running on the user's own
-computer. A casual user should be able to open a Master Chat and interact with it
+computer. A casual user should be able to open a Project chat and interact with it
 like a familiar AI conversation. Ponderosa handles fresh agent runs,
 collaboration, and context boundaries behind that simple surface.
 
@@ -37,25 +38,25 @@ pay-per-token provider API keys.
    an adapter, nothing else.
 
 3. **The event log is canonical; views are projections.** The append-only event
-   log is the source of truth and SQLite is rebuildable from it. Master Chat,
-   Collaboration Chat, Direct Agent Chat, and output views must project canonical
+   log is the source of truth and SQLite is rebuildable from it. Project chat,
+   Team chat, Agent chat, and output views must project canonical
    events rather than create duplicate conversations or competing state.
 
 4. **Communication scope is explicit and immutable.** A communication is created
    as exactly one of:
 
-   - **Broadcast:** user or agent to organization; visible in Master Chat and
-     inherited as shared context by future agents. A plain Master Chat request is
+   - **Broadcast:** user or agent to organization; visible in Project chat and
+     inherited as shared context by future agents. A plain Project-chat request is
      a Broadcast that also starts one fresh responsible agent and is rendered
      without an automatic scope prefix; explicit `#broadcast` records context
      without starting one and retains its visible prefix.
    - **Direct Message:** a private exchange between the user and one or more
-     explicit agents; visible in Master Chat but excluded from shared
+     explicit agents; visible in Project chat but excluded from shared
      organizational context. One user action is one canonical message even when
      it creates multiple stable-ID recipient deliveries.
    - **Collaboration:** agent to one or more explicit agent recipients; visible in
-     Collaboration Chat and relevant Direct Agent timelines, but excluded from
-     Master Chat and shared organizational context.
+     Team Chat and relevant Direct Agent timelines, but excluded from
+     Project chat and shared organizational context.
 
    Scope never changes after creation. Only an explicit communication event may
    create a chat projection. Never infer scope from runtime response text,
@@ -63,49 +64,50 @@ pay-per-token provider API keys.
    into execution data, never communication. To share a private finding more
    broadly, create a new communication with the intended scope.
 
-5. **Only Broadcasts are shared knowledge.** Plain Master Chat requests are
+5. **Only Broadcasts are shared knowledge.** Plain Project-chat requests are
    intentionally created as Broadcasts. Visibility does not otherwise imply context
    inheritance. Direct Messages, Collaboration, agent-creation records, tool calls,
    lifecycle events, and outputs do not become future-agent context merely
    because they are stored or displayed. Never rebuild context by indiscriminately
    replaying every recorded interaction.
 
-   Shared does not mean copied into every private thread. Resolve Broadcast
-   context from the current Master Chat at the turn boundary. A new thread must
+   Shared does not mean copied into every private agent history. Resolve Broadcast
+   context from the current Project chat at the turn boundary. A new agent must
    begin with a new provider session and an empty Direct Agent history regardless
    of display-name reuse; deleted-room events are inert and fail closed.
 
-   A plain Master Chat request starts shared work. The responsible agent must use
+   A plain Project-chat request starts shared work. The responsible agent must use
    an explicit Broadcast for a completed answer or result, an explicit Direct
    Message for a question or private manager update, and explicit Collaboration
    for agent recipients. Its ordinary runtime response is not communication.
 
-6. **Master Chat stays human-facing.** It is the user's conversation and the
+6. **Project chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
    calls, terminal output, file changes, or lifecycle noise into it. Different
    responder names may be the only orchestration detail a casual user sees.
 
-7. **Agent detail is an audit hub, not another conversation.** Direct Agent Chat
-   projects explicit inbound and outbound communication for one agent. Thinking
+7. **Agent detail is an audit hub, not another conversation.** Agent chat
+   projects explicit inbound and outbound communication for one agent. Work log
    projects ordinary response text and transient reasoning for the originating
-   execution; Log, Tasks, and Artifacts project the remaining execution data. User input from
+   execution; Activity, Runs, and Files & results project the remaining execution data. User input from
    this surface creates a Direct Message to that agent; it does not create a
    second canonical message or gain shared scope.
 
-   Completed ordinary response text is canonical and durable in Thinking.
+   Completed ordinary response text is canonical and durable in Work log.
    Reasoning deltas may remain transient stream detail. Neither may create a
    delivery, enter a future agent's context, or escape its originating agent and
    execution.
 
-   Every Broadcast is passively projected into every current and future Direct
-   Agent Chat. Projection alone must never enqueue, steer, or start an agent;
-   only explicit recipient delivery (including `#everyone`) may do that.
+   Broadcasts inherited as context are shown through the originating execution's
+   inspectable context manifest, not manufactured as Agent-chat messages.
+   Projection alone must never enqueue, steer, or start an agent; only explicit
+   recipient delivery (including `#everyone`) may do that.
 
    Emoji reactions are user-authored metadata on a canonical agent message, not
    chat messages. Only the user can react, and only to agent-authored messages.
    The emoji is projected onto every view of that communication and privately
    notifies the stable author agent with immutable reply context. It must not
-   create a Main Chat entry or shared context. Agents cannot create reactions.
+   create a Project-chat entry or shared context. Agents cannot create reactions.
 
    Runtime callback capabilities injected into a persistent engine session keep
    the same secret for that session, but authorize requests only while its owning
@@ -136,11 +138,11 @@ pay-per-token provider API keys.
 ## Architecture (one screen)
 
 ```
-Master Chat → Agents → ephemeral runtime sessions
+Project chat → Agents → ephemeral runtime sessions
 Canonical event log → rebuildable SQLite projections
 Communication → Broadcast | Direct Message | Collaboration
-Explicit communication → Direct Agent Chat audit timeline
-Ordinary runtime output → execution-scoped Thinking
+Explicit communication → Agent chat audit timeline
+Ordinary runtime output → execution-scoped Work log
 ```
 
 - **Web (required):** React + TypeScript + MUI, bundled with **Rspack** (via
@@ -160,7 +162,7 @@ Ordinary runtime output → execution-scoped Thinking
 - Responding/typing state and elapsed time come from canonical execution
   ownership, not optimistic component state. They survive refresh and SSE
   reconnection and fail closed when ownership is ambiguous.
-- Every agent uses the same thread, runtime, communication, steering, and audit
+- Every agent uses the same identity, runtime, communication, steering, and audit
   implementation. A subagent is an ordinary agent with a direct `managerAgentId`;
   do not create a second delegated-agent or assignment subsystem.
 - User and agent creation share one service. User-authenticated creation may
@@ -182,7 +184,7 @@ Ordinary runtime output → execution-scoped Thinking
 - Activity and Changed Files are projections of canonical execution events.
   Review may layer read-only, current Git working-tree state over that provenance;
   it never rewrites the event log or attributes unscoped changes to an agent.
-  Generated PDF preview/download routes remain project- and thread-scoped.
+  Generated PDF preview/download routes remain project- and agent-scoped.
 - Long-form Markdown documents are immutable payloads of one explicit
   communication event. Chat and ordinary future context carry only the concise
   summary plus document reference; full content is retrieved on demand. The
@@ -192,7 +194,7 @@ Ordinary runtime output → execution-scoped Thinking
 - Project folders are optional at creation. Ponderosa may create a managed empty
   workspace, but deleting a project removes Ponderosa-owned canonical data—not
   the selected source folder.
-- V1 Master Chats have two lifecycle states: active and deleted. Do not add an
+- V1 Project chats have two lifecycle states: active and deleted. Do not add an
   archive state without a complete archive browser, restore flow, and retention
   policy.
 
@@ -317,8 +319,8 @@ committing, or pushing.
 - ❌ Call a model provider API with an API key (breaks the subscription premise).
 - ❌ Add engine-specific logic outside `packages/engines`.
 - ❌ Dump Collaboration, tool calls, terminal output, diffs, or lifecycle noise
-  into Master Chat.
-- ❌ Treat Direct Agent Chat as a separate conversation or source of shared
+  into Project chat.
+- ❌ Treat Agent chat as a separate conversation or source of shared
   context.
 - ❌ Route messages by display name or agent-authored textual `@mentions`.
 - ❌ Re-send indiscriminate conversation and audit history to every fresh runtime.

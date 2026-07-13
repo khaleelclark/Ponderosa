@@ -36,11 +36,11 @@ function fixture(count: number, text: (index: number) => string = (index) => `me
   dirs.push(dataDir);
   const store = new ThreadStore(dataDir);
   const project = store.createProject({ label: "Project", hostPath: dataDir });
-  const master = store.createMasterChat(project.id, { title: "Room" });
-  const thread = store.createThread(project.id, { title: "Recipient", engine: "codex", masterChatId: master.id });
+  const master = store.createConversation(project.id, { title: "Room" });
+  const thread = store.createThread(project.id, { title: "Recipient", engine: "codex", conversationId: master.id });
   const ledger = new CollaborationDeliveryStore(dataDir);
   const ids = Array.from({ length: count }, (_, index) => ledger.queue({
-    masterChatId: master.id,
+    conversationId: master.id,
     messageId: `message-${index}`,
     targetThreadId: thread.id,
     text: text(index),

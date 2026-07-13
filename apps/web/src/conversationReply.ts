@@ -1,4 +1,4 @@
-export type MasterChatSendRoute =
+export type ConversationSendRoute =
   | { kind: "direct-reply"; agentIds: [string] }
   | { kind: "mentioned-reply"; agentIds: string[] }
   | { kind: "spawn" };
@@ -10,10 +10,10 @@ export function managerBroadcastText(text: string): string | undefined {
 }
 
 /** Direct-reply state takes precedence over message text and can never spawn. */
-export function resolveMasterChatSendRoute(
+export function resolveConversationSendRoute(
   directReplyTargetId: string | undefined,
   mentionedAgentIds: string[],
-): MasterChatSendRoute {
+): ConversationSendRoute {
   if (directReplyTargetId) return { kind: "direct-reply", agentIds: [directReplyTargetId] };
   if (mentionedAgentIds.length > 0) return { kind: "mentioned-reply", agentIds: mentionedAgentIds };
   return { kind: "spawn" };

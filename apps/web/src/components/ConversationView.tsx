@@ -33,17 +33,17 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useCollaborationChat, useMasterChat } from "../hooks/queries";
+import { useCollaborationView, useConversation } from "../hooks/queries";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
+import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
 import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
@@ -73,7 +73,7 @@ import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { MessageContextMenu } from "./MessageContextMenu";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 
-export function MasterChatMessage({
+export function ConversationMessage({
   message,
   conversation,
   agentTitle,
@@ -84,15 +84,15 @@ export function MasterChatMessage({
   onDirectReply,
   onReact,
 }: {
-  message: MasterChatMessageDto;
+  message: ConversationMessageDto;
   conversation: "main" | "collaboration";
   agentTitle(threadId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
   compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
-  onReply(message: MasterChatMessageDto): void;
-  onDirectReply(message: MasterChatMessageDto): void;
-  onReact(message: MasterChatMessageDto, emoji: string): Promise<void>;
+  onReply(message: ConversationMessageDto): void;
+  onDirectReply(message: ConversationMessageDto): void;
+  onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
 }): JSX.Element {
   const fromManager = !message.authorThreadId;
   const showUserLabel = fromManager && message.role === "user";
@@ -178,8 +178,8 @@ export function MasterChatMessage({
   );
 }
 
-export function MasterChatView({
-  masterChatId,
+export function ConversationView({
+  conversationId,
   engines,
   engineCapabilities,
   statusByAgentId,
@@ -188,20 +188,20 @@ export function MasterChatView({
   onNewAgent,
   onDeleted,
 }: {
-  masterChatId: string;
+  conversationId: string;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
-  onNewAgent(master: MasterChatDto): void;
+  onNewAgent(master: ConversationDto): void;
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const detailQuery = useMasterChat(masterChatId);
-  const collaborationQuery = useCollaborationChat(masterChatId);
-  const [conversation, setConversation] = useState<"main" | "collaboration">(() =>
-    readChatState(chatStateKey("view", `master.${masterChatId}`)) === "collaboration" ? "collaboration" : "main",
+  const detailQuery = useConversation(conversationId);
+  const collaborationQuery = useCollaborationView(conversationId);
+  const [activeView, setActiveView] = useState<"main" | "collaboration">(() =>
+    readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main",
   );
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -209,7 +209,7 @@ export function MasterChatView({
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
-  const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
+  const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
@@ -225,7 +225,7 @@ export function MasterChatView({
     setDirectReplyRequestId(undefined);
   };
 
-  // The engine/model/effort currently selected for this master chat. Model-agnostic:
+  // The engine/model/effort currently selected for this conversation. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
   // already-running agents keep the model they were spawned with.
   const [engine, setEngine] = useState("");
@@ -234,21 +234,21 @@ export function MasterChatView({
   const initializedFor = useRef<string | undefined>(undefined);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowNewMessages = useRef(true);
-  const displayedMasterChatId = useRef<string>();
-  const displayedConversation = useRef<"main" | "collaboration">();
+  const displayedConversationId = useRef<string>();
+  const displayedView = useRef<"main" | "collaboration">();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   useEffect(() => {
-    setConversation(readChatState(chatStateKey("view", `master.${masterChatId}`)) === "collaboration" ? "collaboration" : "main");
-  }, [masterChatId]);
+    setActiveView(readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main");
+  }, [conversationId]);
 
   useEffect(() => {
-    writeChatState(chatStateKey("view", `master.${masterChatId}`), conversation);
-  }, [conversation, masterChatId]);
+    writeChatState(chatStateKey("view", `conversation.${conversationId}`), activeView);
+  }, [activeView, conversationId]);
 
-  const masterChat = detailQuery.data?.masterChat;
+  const conversation = detailQuery.data?.conversation;
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
   const messages = compactDefined(detailQuery.data?.messages ?? []);
@@ -256,12 +256,12 @@ export function MasterChatView({
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
   useLayoutEffect(() => {
     if (
-      displayedMasterChatId.current !== masterChatId ||
-      displayedConversation.current !== conversation
+      displayedConversationId.current !== conversationId ||
+      displayedView.current !== activeView
     ) {
-      displayedMasterChatId.current = masterChatId;
-      displayedConversation.current = conversation;
-      const key = chatStateKey("scroll", `master.${masterChatId}.${conversation}`);
+      displayedConversationId.current = conversationId;
+      displayedView.current = activeView;
+      const key = chatStateKey("scroll", `conversation.${conversationId}.${activeView}`);
       const saved = readScrollPosition(key);
       if (chatScrollRef.current && saved !== undefined) {
         chatScrollRef.current.scrollTop = saved;
@@ -273,54 +273,54 @@ export function MasterChatView({
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
     }
-  }, [masterChatId, conversation, messages, collaborationMessages]);
+  }, [conversationId, activeView, messages, collaborationMessages]);
 
   useEffect(() => {
-    if (!masterChat || initializedFor.current === masterChat.id) {
+    if (!conversation || initializedFor.current === conversation.id) {
       return;
     }
-    initializedFor.current = masterChat.id;
+    initializedFor.current = conversation.id;
     setEngine(
-      masterChat.defaultEngine ??
+      conversation.defaultEngine ??
         engines.find((candidate) => candidate.authenticated)?.id ??
         engines[0]?.id ??
         "",
     );
-    setModel(masterChat.defaultModel ?? "");
-    setEffort(masterChat.defaultEffort ?? "");
-  }, [masterChat, engines]);
+    setModel(conversation.defaultModel ?? "");
+    setEffort(conversation.defaultEffort ?? "");
+  }, [conversation, engines]);
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ["master-chat", masterChatId] });
-    void queryClient.invalidateQueries({ queryKey: ["master-chats"] });
-    void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
-    if (masterChat) {
-      void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
+    void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+    void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+    void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
+    if (conversation) {
+      void queryClient.invalidateQueries({ queryKey: ["threads", conversation.projectId] });
     }
   };
 
-  // Persist the selection so "the model selected for this master chat" survives
+  // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const persistDefaults = useMutation({
     mutationFn: (patch: {
       defaultEngine?: EngineDto["id"];
       defaultModel?: string | null;
       defaultEffort?: string | null;
-    }) => api.updateMasterChat(masterChatId, patch),
+    }) => api.updateConversation(conversationId, patch),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["master-chat", masterChatId] });
-      void queryClient.invalidateQueries({ queryKey: ["master-chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
     },
   });
 
   const spawn = useMutation({
     mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
-      if (!masterChat) {
+      if (!conversation) {
         throw new Error("Master chat not loaded");
       }
       // Record the message in the shared pool, spawn a park-named agent on the
       // selected engine, and hand it the message as its first turn.
-      const agent = await api.createAgent(masterChat.projectId, masterChatId, {
+      const agent = await api.createAgent(conversation.projectId, conversationId, {
         title: pickAgentName((detailQuery.data?.threads ?? []).map((thread) => thread.title)),
         engine,
         model: model || undefined,
@@ -333,7 +333,7 @@ export function MasterChatView({
           attachmentIds: attachments.map((item) => item.id),
           sourceChannel: "main",
           shareWithOrganization: true,
-          sourceMasterChatId: masterChatId,
+          sourceConversationId: conversationId,
           replyToMessageId: replyTo?.id,
         });
       } catch (error) {
@@ -356,7 +356,7 @@ export function MasterChatView({
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agentId, file)));
         return { agentId, attachmentIds: attachments.map((item) => item.id) };
       }));
-      return api.sendMultiAgentDirectMessage(masterChatId, {
+      return api.sendMultiAgentDirectMessage(conversationId, {
         text,
         recipients,
         replyToMessageId,
@@ -382,7 +382,7 @@ export function MasterChatView({
 
   const broadcast = useMutation({
     mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) =>
-      api.sendMasterChatMessage(masterChatId, { text, replyToMessageId }),
+      api.sendConversationMessage(conversationId, { text, replyToMessageId }),
     onSuccess: () => {
       clearReply();
       invalidate();
@@ -400,7 +400,7 @@ export function MasterChatView({
         );
         directReplyUploads.current.set(requestId, attachments);
       }
-      return api.sendDirectReply(masterChatId, {
+      return api.sendDirectReply(conversationId, {
         text,
         replyToMessageId,
         targetAuthorThreadId: targetId,
@@ -419,7 +419,7 @@ export function MasterChatView({
 
   const sendReaction = useMutation({
     mutationFn: ({ communicationEventId, emoji, requestId }: { communicationEventId: string; emoji: string; requestId: string }) =>
-      api.sendUserReaction({ projectId: masterChat!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
+      api.sendUserReaction({ projectId: conversation!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
     onSuccess: (response) => {
       invalidate();
       setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorThreadId)}; it will start when the current response finishes.` : undefined);
@@ -429,28 +429,28 @@ export function MasterChatView({
 
   const collaborate = useMutation({
     mutationFn: ({ text, recipientAgentIds, replyToMessageId }: { text: string; recipientAgentIds: string[]; replyToMessageId?: string }) =>
-      api.sendCollaborationMessage(masterChatId, { text, recipientAgentIds, replyToMessageId }),
+      api.sendCollaborationMessage(conversationId, { text, recipientAgentIds, replyToMessageId }),
     onSuccess: () => {
       clearReply();
-      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", masterChatId] });
-      if (masterChat) void queryClient.invalidateQueries({ queryKey: ["threads", masterChat.projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
+      if (conversation) void queryClient.invalidateQueries({ queryKey: ["threads", conversation.projectId] });
     },
   });
 
   const rename = useMutation({
-    mutationFn: (title: string) => api.updateMasterChat(masterChatId, { title }),
+    mutationFn: (title: string) => api.updateConversation(conversationId, { title }),
     onSuccess: () => {
       invalidate();
       setRenameOpen(false);
     },
   });
 
-  const deleteMasterChat = useMutation({
-    mutationFn: () => api.deleteMasterChat(masterChatId),
+  const deleteConversation = useMutation({
+    mutationFn: () => api.deleteConversation(conversationId),
     onSuccess: () => {
-      queryClient.removeQueries({ queryKey: ["master-chat", masterChatId] });
-      void queryClient.invalidateQueries({ queryKey: ["master-chats"] });
-      void queryClient.invalidateQueries({ queryKey: ["threads", masterChat?.projectId] });
+      queryClient.removeQueries({ queryKey: ["conversation", conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      void queryClient.invalidateQueries({ queryKey: ["threads", conversation?.projectId] });
       setDeleteOpen(false);
       onDeleted();
     },
@@ -484,13 +484,13 @@ export function MasterChatView({
             </Button>
           }
         >
-          This master chat could not be loaded. Check the server connection and try again.
+          This conversation could not be loaded. Check the server connection and try again.
         </Alert>
       </Box>
     );
   }
 
-  if (!detailQuery.data || !masterChat) {
+  if (!detailQuery.data || !conversation) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert severity="warning">Master chat not found.</Alert>
@@ -509,7 +509,7 @@ export function MasterChatView({
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(threads, handle);
-  const mentionHandles = conversation === "collaboration"
+  const mentionHandles = activeView === "collaboration"
     ? [
         "everyone",
         ...threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title)),
@@ -530,7 +530,7 @@ export function MasterChatView({
   const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
 
   const submit = async (text: string, files: File[]) => {
-    if (conversation === "collaboration") {
+    if (activeView === "collaboration") {
       if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
       const activeThreads = threads.filter((thread) => !thread.archived);
       let targets = hasEveryoneMention(text) ? activeThreads : findMentionedAgentsStrict(text, activeThreads);
@@ -555,7 +555,7 @@ export function MasterChatView({
       ? threads.filter((thread) => !thread.archived)
       : findMentioned(text);
     if (hasEveryoneMention(text) && targets.length === 0) throw new Error("There are no active agents to notify.");
-    const route = resolveMasterChatSendRoute(directReplyTargetId, targets.map((target) => target.id));
+    const route = resolveConversationSendRoute(directReplyTargetId, targets.map((target) => target.id));
     if (route.kind === "direct-reply") {
       if (!replyTo) throw new Error("The direct reply target is no longer available. Cancel the reply and try again.");
       if (!directReplyRequestId) throw new Error("The direct reply receipt is no longer available. Cancel the reply and try again.");
@@ -582,7 +582,7 @@ export function MasterChatView({
   };
 
   return (
-    <Box data-testid="master-chat" data-master-chat-id={masterChatId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+    <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
@@ -592,7 +592,7 @@ export function MasterChatView({
         >
           <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "100%", sm: "auto" } }}>
             <Typography variant="h6" noWrap>
-              {masterChat.title}
+              {conversation.title}
             </Typography>
             <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" } }}>
               Team group chat · agents report back here when done or stuck
@@ -600,10 +600,10 @@ export function MasterChatView({
           </Box>
           <Tooltip title="Rename">
             <IconButton
-              aria-label="Rename master chat"
+              aria-label="Rename conversation"
               sx={{ minWidth: 44, minHeight: 44 }}
               onClick={() => {
-                setRenameValue(masterChat.title);
+                setRenameValue(conversation.title);
                 setRenameOpen(true);
               }}
             >
@@ -611,7 +611,7 @@ export function MasterChatView({
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete">
-            <IconButton aria-label="Delete master chat" color="error" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
+            <IconButton aria-label="Delete conversation" color="error" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
               <DeleteOutlineIcon />
             </IconButton>
           </Tooltip>
@@ -628,24 +628,24 @@ export function MasterChatView({
             <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({threads.length})
           </Button>
           <Button
-            variant={conversation === "collaboration" ? "contained" : "outlined"}
+            variant={activeView === "collaboration" ? "contained" : "outlined"}
             size="small"
             startIcon={<ForumOutlinedIcon />}
             onClick={() => {
               clearReply();
-              setConversation((current) => current === "main" ? "collaboration" : "main");
+              setActiveView((current) => current === "main" ? "collaboration" : "main");
             }}
-            aria-pressed={conversation === "collaboration"}
-            aria-label={conversation === "collaboration" ? "Switch to main chat" : "Switch to collaboration chat"}
+            aria-pressed={activeView === "collaboration"}
+            aria-label={activeView === "collaboration" ? "Switch to project chat" : "Switch to team chat"}
             sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
-            {conversation === "collaboration" ? "Main" : "Collab"}
+            {activeView === "collaboration" ? "Project chat" : "Team chat"}
           </Button>
           <Button
             variant="outlined"
             size="small"
             startIcon={<AddIcon />}
-            onClick={() => onNewAgent(masterChat)}
+            onClick={() => onNewAgent(conversation)}
             sx={{ minHeight: compactViewport ? 44 : undefined }}
           >
             <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New</Box>{" "}Agent
@@ -748,7 +748,7 @@ export function MasterChatView({
           if (chatScrollRef.current) {
             shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
             writeChatState(
-              chatStateKey("scroll", `master.${masterChatId}.${conversation}`),
+              chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
               String(chatScrollRef.current.scrollTop),
             );
           }
@@ -757,33 +757,33 @@ export function MasterChatView({
       >
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            {conversation === "collaboration" ? (
-              <>This is a separate agent collaboration chat. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> for the current active room members.</>
+            {activeView === "collaboration" ? (
+              <>This is a separate agent team chat. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> for the current active room members.</>
             ) : (
               <>Chat normally to start a fresh agent with the conversation’s shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file when you need them.</>
             )}
           </Alert>
-          {conversation === "main" && !engineReady ? (
+          {activeView === "main" && !engineReady ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
               {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
               host, or pick a signed-in engine, before spawning agents.
             </Alert>
           ) : null}
-          {conversation === "main" ? <MasterRespondingIndicator agents={threads} healthByAgentId={healthByAgentId} /> : null}
+          {activeView === "main" ? <MasterRespondingIndicator agents={threads} healthByAgentId={healthByAgentId} /> : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
-            {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (
+            {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
-                {conversation === "collaboration"
+                {activeView === "collaboration"
                   ? "No collaboration messages yet. Tag an agent to give them this chat's context."
                   : "No messages yet. Send a task to spawn your first agent — it reports back here when it finishes or gets stuck."}
               </Typography>
             ) : null}
-            {(conversation === "collaboration" ? collaborationMessages : messages).map((message) => (
-              <MasterChatMessage
+            {(activeView === "collaboration" ? collaborationMessages : messages).map((message) => (
+              <ConversationMessage
                 key={message.id}
                 message={message}
-                conversation={conversation}
+                conversation={activeView}
                 agentTitle={agentTitle}
                 agentIdForHandle={agentIdForHandle}
                 compactViewport={compactViewport}
@@ -821,9 +821,9 @@ export function MasterChatView({
             : { width: "min(420px, 92vw)" },
         }}
       >
-        <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this master chat">
+        <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this conversation">
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
-            <Typography variant="h6" sx={{ flex: 1 }}>Agents in this master chat</Typography>
+            <Typography variant="h6" sx={{ flex: 1 }}>Agents in this conversation</Typography>
             <Chip size="small" label={threads.length} />
           </Stack>
           {threads.length === 0 ? (
@@ -890,7 +890,7 @@ export function MasterChatView({
         ) : null}
         {threads.length > 0 ? (
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
-            {conversation === "collaboration" ? (
+            {activeView === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
                 Agent #tags resolve to stable identities. Ambiguous names fail closed; #everyone is always explicit.
               </Typography>
@@ -902,15 +902,15 @@ export function MasterChatView({
           </Box>
         ) : null}
         <Composer
-          draftStorageKey={chatStateKey("draft", `master.${masterChatId}.${conversation}`)}
+          draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
           disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
           commands={commands}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={conversation === "collaboration" ? Boolean(replyTo?.authorThreadId) : engineReady}
+          allowUnmentionedSend={activeView === "collaboration" ? Boolean(replyTo?.authorThreadId) : engineReady}
           placeholder={
-            conversation === "collaboration"
+            activeView === "collaboration"
               ? replyTo?.authorThreadId ? `Reply to ${agentTitle(replyTo.authorThreadId)}` : "Tag #agent or #everyone"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
@@ -919,7 +919,7 @@ export function MasterChatView({
           onSend={submit}
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
-          projectId={masterChat.projectId}
+          projectId={conversation.projectId}
           onCancelReply={() => {
             clearReply();
           }}
@@ -927,7 +927,7 @@ export function MasterChatView({
       </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Rename master chat</DialogTitle>
+        <DialogTitle>Rename conversation</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
@@ -954,24 +954,24 @@ export function MasterChatView({
       <Dialog
         open={deleteOpen}
         onClose={() => {
-          if (!deleteMasterChat.isPending) setDeleteOpen(false);
+          if (!deleteConversation.isPending) setDeleteOpen(false);
         }}
         fullWidth
         maxWidth="xs"
       >
-        <DialogTitle>Delete master chat?</DialogTitle>
+        <DialogTitle>Delete conversation?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            This permanently deletes <Box component="strong">{masterChat.title}</Box> and its chat
+            This permanently deletes <Box component="strong">{conversation.title}</Box> and its chat
             history. Its agents are preserved in the Agents tab as unassigned agents. This cannot be undone.
           </Typography>
-          {deleteMasterChat.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>{String(deleteMasterChat.error)}</Alert>
+          {deleteConversation.isError ? (
+            <Alert severity="error" sx={{ mt: 1 }}>{String(deleteConversation.error)}</Alert>
           ) : null}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteOpen(false)} disabled={deleteMasterChat.isPending}>Cancel</Button>
-          <Button color="error" variant="contained" disabled={deleteMasterChat.isPending} onClick={() => deleteMasterChat.mutate()}>
+          <Button onClick={() => setDeleteOpen(false)} disabled={deleteConversation.isPending}>Cancel</Button>
+          <Button color="error" variant="contained" disabled={deleteConversation.isPending} onClick={() => deleteConversation.mutate()}>
             Delete
           </Button>
         </DialogActions>

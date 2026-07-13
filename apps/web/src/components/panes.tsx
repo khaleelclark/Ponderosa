@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, TaskDto, ThinkingEntryDto } from "@ponderosa/core";
+import type { AgentActivityDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, TaskDto, RunOutputDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -667,12 +667,12 @@ export function summarizeActivityText(value: string, maxLength: number): string 
   return normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…` : normalized;
 }
 
-export function ThinkingPane({ entries }: { entries: ThinkingEntryDto[] }): JSX.Element {
+export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Element {
   const ordered = [...entries].sort((a, b) => a.seq - b.seq);
   return (
-    <Stack spacing={1.25} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent thinking">
+    <Stack spacing={1.25} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent work log">
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Thinking</Typography>
+        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Work log</Typography>
         <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
       </Stack>
       {ordered.length === 0 ? <Alert severity="info">Ordinary agent output will appear here. Only explicitly sent messages appear in Chat.</Alert> : ordered.map((entry) => (
@@ -692,7 +692,7 @@ export function ThinkingPane({ entries }: { entries: ThinkingEntryDto[] }): JSX.
   );
 }
 
-export function TasksPane({
+export function RunsPane({
   tasks,
   timeline,
 }: {
@@ -703,7 +703,7 @@ export function TasksPane({
     <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
-          Tasks
+          Runs
         </Typography>
         {tasks.length > 0 ? (
           <Typography variant="caption" color="text.secondary">
@@ -712,7 +712,7 @@ export function TasksPane({
         ) : null}
       </Stack>
       {tasks.length === 0 ? (
-        <Alert severity="info">No execution tasks yet.</Alert>
+        <Alert severity="info">No runs yet.</Alert>
       ) : (
         <Box
           sx={{
@@ -1141,7 +1141,7 @@ export function ArtifactsPane({
   if (artifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="info">No artifacts yet. Diffs, test reports, and logs appear here.</Alert>
+        <Alert severity="info">No files or results yet. Diffs, test reports, and logs appear here.</Alert>
       </Box>
     );
   }
@@ -1484,7 +1484,7 @@ export function Composer({
                 : mentionedBusyHandles.length > 0
                 ? `${mentionedBusyHandles.map((handle) => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
-                  ? "Notifying every active agent in this master chat"
+                  ? "Notifying every active agent in this conversation"
                   : `Replying to ${mentionedHandles.map((handle) => `#${handle}`).join(", ")}`}
             </Typography>
           ) : null}

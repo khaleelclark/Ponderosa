@@ -1,7 +1,7 @@
-import type { MasterChatMessageDto, MessageDto } from "@ponderosa/core";
+import type { ConversationMessageDto, MessageDto } from "@ponderosa/core";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { MasterChatMessage } from "../src/components/MasterChatView";
+import { ConversationMessage } from "../src/components/ConversationView";
 import { ChatPane, UserMessageLabel } from "../src/components/panes";
 
 const createdAt = "2026-07-12T12:34:56.000Z";
@@ -18,10 +18,10 @@ function threadMessage(overrides: Partial<MessageDto>): MessageDto {
   };
 }
 
-function masterMessage(overrides: Partial<MasterChatMessageDto>): MasterChatMessageDto {
+function masterMessage(overrides: Partial<ConversationMessageDto>): ConversationMessageDto {
   return {
     id: "master-message-1",
-    masterChatId: "master-1",
+    conversationId: "master-1",
     role: "user",
     text: "Manager request",
     createdAt,
@@ -29,9 +29,9 @@ function masterMessage(overrides: Partial<MasterChatMessageDto>): MasterChatMess
   };
 }
 
-function renderMaster(message: MasterChatMessageDto, conversation: "main" | "collaboration" = "main"): string {
+function renderMaster(message: ConversationMessageDto, conversation: "main" | "collaboration" = "main"): string {
   return renderToStaticMarkup(
-    <MasterChatMessage
+    <ConversationMessage
       message={message}
       conversation={conversation}
       agentTitle={() => "Pinnacles"}

@@ -14,35 +14,35 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { MasterChatDto, ThreadDto } from "@ponderosa/core";
+import type { ConversationDto, ThreadDto } from "@ponderosa/core";
 import type { AgentStatus } from "../agents";
 
 export interface SidebarSelection {
-  masterChatId?: string;
+  conversationId?: string;
   agentsActive: boolean;
 }
 
 /**
- * Project navigation: a "Master Chats" section plus a single "Agents" item.
- * Master chats show a running dot when any of their agents is live; the Agents
+ * Project navigation: a "Conversations" section plus a single "Agents" item.
+ * Conversations show a running dot when any of their agents is live; the Agents
  * item shows the total agent count and a running count.
  */
 export function Sidebar({
-  masterChats,
+  conversations,
   agents,
   statusByAgentId,
   selection,
-  onSelectMasterChat,
+  onSelectConversation,
   onSelectAgents,
-  onCreateMasterChat,
+  onCreateConversation,
 }: {
-  masterChats: MasterChatDto[];
+  conversations: ConversationDto[];
   agents: ThreadDto[];
   statusByAgentId: Map<string, AgentStatus>;
   selection: SidebarSelection;
-  onSelectMasterChat(masterChatId: string): void;
+  onSelectConversation(conversationId: string): void;
   onSelectAgents(): void;
-  onCreateMasterChat(): void;
+  onCreateConversation(): void;
 }): JSX.Element {
   const runningAgentIds = new Set(
     agents.filter((agent) => {
@@ -52,34 +52,34 @@ export function Sidebar({
   );
   const runningCount = runningAgentIds.size;
 
-  const masterHasRunning = (masterChatId: string): boolean =>
-    agents.some((agent) => agent.masterChatId === masterChatId && runningAgentIds.has(agent.id));
+  const masterHasRunning = (conversationId: string): boolean =>
+    agents.some((agent) => agent.conversationId === conversationId && runningAgentIds.has(agent.id));
 
   return (
     <Box component="nav" aria-label="Project navigation" sx={{ minWidth: 0, py: 0.5, pb: "max(4px, env(safe-area-inset-bottom))" }}>
       <Stack direction="row" sx={{ alignItems: "center", px: 1, py: 0.5 }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1, px: 1 }}>
-          Master Chats
+          Conversations
         </Typography>
-        <Tooltip title="New master chat">
-          <IconButton size="small" onClick={onCreateMasterChat} aria-label="New master chat">
+        <Tooltip title="New conversation">
+          <IconButton size="small" onClick={onCreateConversation} aria-label="New conversation">
             <AddIcon fontSize="small" />
           </IconButton>
         </Tooltip>
       </Stack>
       <List dense disablePadding>
-        {masterChats.length === 0 ? (
+        {conversations.length === 0 ? (
           <Typography variant="body2" color="text.secondary" sx={{ px: 2, py: 0.5 }}>
-            No master chats yet.
+            No conversations yet.
           </Typography>
         ) : null}
-        {masterChats.map((master) => {
-          const count = agents.filter((agent) => agent.masterChatId === master.id).length;
+        {conversations.map((master) => {
+          const count = agents.filter((agent) => agent.conversationId === master.id).length;
           return (
             <ListItem key={master.id} disablePadding sx={{ mb: 0.5 }}>
               <ListItemButton
-                selected={selection.masterChatId === master.id}
-                onClick={() => onSelectMasterChat(master.id)}
+                selected={selection.conversationId === master.id}
+                onClick={() => onSelectConversation(master.id)}
                 sx={{ borderRadius: 1, mx: 1 }}
               >
                 <ChatBubbleOutlineIcon

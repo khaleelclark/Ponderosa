@@ -2,23 +2,23 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useAgentHealth, useAgentPresets, useMasterChats, useThreads } from "../hooks/queries";
+import { useAgentHealth, useAgentPresets, useConversations, useThreads } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
-import { CreateAgentDialog, type CreateAgentInput, CreateMasterChatDialog, type CreateMasterChatInput, PresetManagerDialog } from "./dialogs";
-import { MasterChatView } from "./MasterChatView";
+import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
+import { ConversationView } from "./ConversationView";
 import { Sidebar } from "./Sidebar";
 
 interface AgentDialogState {
   open: boolean;
-  fixedMasterChatId?: string;
+  fixedConversationId?: string;
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
@@ -41,9 +41,9 @@ export function ProjectShell({
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const queryClient = useQueryClient();
 
-  const masterChatsQuery = useMasterChats(projectId);
+  const conversationsQuery = useConversations(projectId);
   const threadsQuery = useThreads(projectId);
-  const masterChats = masterChatsQuery.data ?? [];
+  const conversations = conversationsQuery.data ?? [];
   const agents = threadsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
@@ -84,21 +84,21 @@ export function ProjectShell({
     [healthQuery.data],
   );
 
-  const createMasterChat = useMutation({
-    mutationFn: (input: CreateMasterChatInput) => api.createMasterChat(projectId, input),
+  const createConversation = useMutation({
+    mutationFn: (input: CreateConversationInput) => api.createConversation(projectId, input),
     onSuccess: (master) => {
-      queryClient.setQueryData<MasterChatDto[]>(["master-chats", projectId], (current = []) =>
+      queryClient.setQueryData<ConversationDto[]>(["conversations", projectId], (current = []) =>
         current.some((item) => item.id === master.id) ? current : [...current, master],
       );
-      void queryClient.invalidateQueries({ queryKey: ["master-chats", projectId] });
+      void queryClient.invalidateQueries({ queryKey: ["conversations", projectId] });
       setMasterDialogOpen(false);
-      navigate({ kind: "master-chat", projectId, masterChatId: master.id });
+      navigate({ kind: "conversation", projectId, conversationId: master.id });
     },
   });
 
   const createAgent = useMutation({
     mutationFn: (input: CreateAgentInput) =>
-      api.createAgent(projectId, input.masterChatId, {
+      api.createAgent(projectId, input.conversationId, {
         title: input.title,
         engine: input.engine,
         model: input.model,
@@ -112,8 +112,8 @@ export function ProjectShell({
         current.some((item) => item.id === agent.id) ? current : [...current, agent],
       );
       void queryClient.invalidateQueries({ queryKey: ["threads", projectId] });
-      if (agent.masterChatId) {
-        void queryClient.invalidateQueries({ queryKey: ["master-chat", agent.masterChatId] });
+      if (agent.conversationId) {
+        void queryClient.invalidateQueries({ queryKey: ["conversation", agent.conversationId] });
       }
       setAgentDialog({ open: false });
       navigate({ kind: "agent", projectId, agentId: agent.id });
@@ -122,10 +122,10 @@ export function ProjectShell({
 
   const suggestedName = () => pickAgentName(agents.map((agent) => agent.title));
 
-  const openNewAgentFromMaster = (master: MasterChatDto) =>
+  const openNewAgentFromMaster = (master: ConversationDto) =>
     setAgentDialog({
       open: true,
-      fixedMasterChatId: master.id,
+      fixedConversationId: master.id,
       defaultEngine: master.defaultEngine,
       defaultModel: master.defaultModel,
       defaultEffort: master.defaultEffort,
@@ -135,7 +135,7 @@ export function ProjectShell({
     const manager = agents.find((agent) => agent.id === managerAgentId);
     setAgentDialog({
       open: true,
-      fixedMasterChatId: manager?.masterChatId,
+      fixedConversationId: manager?.conversationId,
       defaultEngine: manager?.activeEngine,
       defaultName: suggestedName(),
       defaultManagerAgentId: managerAgentId,
@@ -143,37 +143,37 @@ export function ProjectShell({
   };
 
   const sidebarSelection = {
-    masterChatId: route.kind === "master-chat" ? route.masterChatId : undefined,
+    conversationId: route.kind === "conversation" ? route.conversationId : undefined,
     agentsActive: route.kind === "agents" || route.kind === "agent",
   };
 
   const sidebar = (
     <Sidebar
-      masterChats={masterChats}
+      conversations={conversations}
       agents={agents}
       statusByAgentId={statusByAgentId}
       selection={sidebarSelection}
-      onSelectMasterChat={(masterChatId) => navigate({ kind: "master-chat", projectId, masterChatId })}
+      onSelectConversation={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
       onSelectAgents={() => navigate({ kind: "agents", projectId })}
-      onCreateMasterChat={() => setMasterDialogOpen(true)}
+      onCreateConversation={() => setMasterDialogOpen(true)}
     />
   );
 
-  const loading = masterChatsQuery.isLoading || threadsQuery.isLoading;
+  const loading = conversationsQuery.isLoading || threadsQuery.isLoading;
 
   useEffect(() => {
     if (loading) return;
-    const missingMaster = route.kind === "master-chat" && !masterChats.some((master) => master.id === route.masterChatId);
+    const missingMaster = route.kind === "conversation" && !conversations.some((master) => master.id === route.conversationId);
     const missingAgent = route.kind === "agent" && !agents.some((agent) => agent.id === route.agentId);
     if (missingMaster || missingAgent) {
-      const fallback = masterChats[0];
+      const fallback = conversations[0];
       navigate(fallback
-        ? { kind: "master-chat", projectId, masterChatId: fallback.id }
+        ? { kind: "conversation", projectId, conversationId: fallback.id }
         : { kind: "agents", projectId }, { replace: true });
     }
-  }, [agents, loading, masterChats, navigate, projectId, route]);
+  }, [agents, loading, conversations, navigate, projectId, route]);
 
-  if (masterChatsQuery.isError || threadsQuery.isError) {
+  if (conversationsQuery.isError || threadsQuery.isError) {
     return (
       <Box sx={{ p: 2 }}>
         <Alert
@@ -183,7 +183,7 @@ export function ProjectShell({
               color="inherit"
               size="small"
               onClick={() => {
-                void masterChatsQuery.refetch();
+                void conversationsQuery.refetch();
                 void threadsQuery.refetch();
               }}
             >
@@ -198,11 +198,11 @@ export function ProjectShell({
   }
 
   let main: JSX.Element;
-  if (route.kind === "master-chat") {
+  if (route.kind === "conversation") {
     main = (
-      <MasterChatView
-        key={route.masterChatId}
-        masterChatId={route.masterChatId}
+      <ConversationView
+        key={route.conversationId}
+        conversationId={route.conversationId}
         engines={engines}
         engineCapabilities={engineCapabilities}
         statusByAgentId={statusByAgentId}
@@ -222,10 +222,10 @@ export function ProjectShell({
         projectedStatus={statusByAgentId.get(route.agentId)}
         projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}
-        masterChats={masterChats}
+        conversations={conversations}
         onBack={() => navigate({ kind: "agents", projectId })}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenMaster={(masterChatId) => navigate({ kind: "master-chat", projectId, masterChatId })}
+        onOpenMaster={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
         onNewSubagent={openNewSubagent}
         onDeleted={() => navigate({ kind: "agents", projectId })}
       />
@@ -234,7 +234,7 @@ export function ProjectShell({
     main = (
       <AgentsTab
         agents={agents}
-        masterChats={masterChats}
+        conversations={conversations}
         statusByAgentId={statusByAgentId}
         detailByAgentId={detailByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
@@ -247,7 +247,7 @@ export function ProjectShell({
     main = (
       <Box sx={{ p: 3 }}>
         <Alert severity="info">
-          Select a master chat or open the Agents view to get started.
+          Select a conversation or open the Agents view to get started.
         </Alert>
       </Box>
     );
@@ -255,21 +255,21 @@ export function ProjectShell({
 
   const dialogs = (
     <>
-      <CreateMasterChatDialog
+      <CreateConversationDialog
         open={masterDialogOpen}
         engines={engines}
-        pending={createMasterChat.isPending}
-        error={createMasterChat.isError ? String(createMasterChat.error) : undefined}
+        pending={createConversation.isPending}
+        error={createConversation.isError ? String(createConversation.error) : undefined}
         onClose={() => setMasterDialogOpen(false)}
-        onCreate={(input) => createMasterChat.mutate(input)}
+        onCreate={(input) => createConversation.mutate(input)}
       />
       <CreateAgentDialog
         open={agentDialog.open}
         engines={engines}
-        masterChats={masterChats}
+        conversations={conversations}
         presets={presets}
         agents={agents}
-        fixedMasterChatId={agentDialog.fixedMasterChatId}
+        fixedConversationId={agentDialog.fixedConversationId}
         defaultEngine={agentDialog.defaultEngine}
         defaultModel={agentDialog.defaultModel}
         defaultEffort={agentDialog.defaultEffort}

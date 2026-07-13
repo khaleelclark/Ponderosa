@@ -59,12 +59,12 @@ describe("V1 reliability safety net", () => {
       method: "POST", url: "/api/projects", payload: { label: "Fixture", hostPath: repoDir },
     })).json<{ id: string }>();
     const master = (await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/master-chats`, payload: { title: "Control room", defaultEngine: "codex" },
+      method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Control room", defaultEngine: "codex" },
     })).json<{ id: string }>();
     const thread = (await app.inject({
       method: "POST",
       url: `/api/projects/${project.id}/threads`,
-      payload: { title: "Reliability Agent", engine: "codex", masterChatId: master.id, initialMessage: "first turn" },
+      payload: { title: "Reliability Agent", engine: "codex", conversationId: master.id, initialMessage: "first turn" },
     })).json<{ id: string }>();
 
     await adapter.seedStarted.promise;
@@ -87,14 +87,14 @@ describe("V1 reliability safety net", () => {
 
     const detail = (await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{
       messages: Array<{ role: string; text: string }>;
-      thinking: Array<{ executionId: string; kind: string; text: string; completed: boolean }>;
+      runOutput: Array<{ executionId: string; kind: string; text: string; completed: boolean }>;
     }>();
     expect(detail.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "user", text: "first turn" }),
       expect.objectContaining({ role: "user", text: "second turn" }),
     ]));
     expect(detail.messages.some((message) => message.text === "queued turn completed")).toBe(false);
-    expect(detail.thinking).toEqual([
+    expect(detail.runOutput).toEqual([
       expect.objectContaining({
         executionId: expect.any(String), kind: "response", text: "queued turn completed", completed: true,
       }),
@@ -103,7 +103,7 @@ describe("V1 reliability safety net", () => {
       event.sender.kind === "agent" && event.text === "queued turn completed")).toBe(false);
     expect(store.readEvents(thread.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ event: expect.objectContaining({
-        type: "agent_output", executionId: detail.thinking[0]!.executionId, text: "queued turn completed",
+        type: "agent_output", executionId: detail.runOutput[0]!.executionId, text: "queued turn completed",
       }) }),
     ]));
     await app.close();

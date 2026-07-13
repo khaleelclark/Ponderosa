@@ -6,7 +6,7 @@ export interface ContextCursor {
   engine: string;
   model: string;
   sessionId: string;
-  masterChatId: string;
+  conversationId: string;
   channel: "main" | "collaboration";
   lastMessageId?: string;
   routingHash: string;
@@ -31,7 +31,7 @@ export class ContextCursorStore {
   }
 
   private static key(cursor: Omit<ContextCursor, "lastMessageId" | "routingHash" | "updatedAt">): string {
-    return [cursor.threadId, cursor.engine, cursor.model, cursor.sessionId, cursor.masterChatId, cursor.channel].join("\0");
+    return [cursor.threadId, cursor.engine, cursor.model, cursor.sessionId, cursor.conversationId, cursor.channel].join("\0");
   }
 
   get(scope: Omit<ContextCursor, "lastMessageId" | "routingHash" | "updatedAt">): ContextCursor | undefined {
