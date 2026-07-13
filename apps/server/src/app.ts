@@ -394,6 +394,9 @@ function agentMessagingPrompt(): string[] {
     "If anyone should receive information, you must explicitly use the messaging tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
     'curl -sS -X POST "$PONDEROSA_AGENT_MESSAGE_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}\'',
     'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
+    'For a long-form result, keep text as a concise summary and add document: {"title":"Useful title","content":"# Full Markdown...","mediaType":"text/markdown"}. Documents may be up to 256 KiB; do not truncate them into the 4,000-character summary.',
+    'A document inherits the message intent exactly. Broadcast documents are organizational; direct_to_user and collaboration documents remain private to that audience.',
+    'When context contains a document id, retrieve the full Markdown only when needed with: curl -sS "$PONDEROSA_DOCUMENT_URL/<document-id>" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
     "Agents cannot create reactions. A user emoji reaction arrives as a private notification with immutable reply context identifying the message they reacted to.",
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     "Broadcast completed answers and task results from a shared Master Chat request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
@@ -461,7 +464,8 @@ function masterChatPrompt(
           ? "Manager"
           : "Team";
       const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
-      return `${speaker}${quoted}: ${message.text} [message id: ${message.id}]`;
+      const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
+      return `${speaker}${quoted}: ${message.text}${document} [message id: ${message.id}]`;
     })
     .join("\n");
 
@@ -512,7 +516,8 @@ function collaborationChatPrompt(
           ? "Manager"
           : "Team";
       const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
-      return `${speaker}${quoted}: ${message.text} [message id: ${message.id}]`;
+      const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
+      return `${speaker}${quoted}: ${message.text}${document} [message id: ${message.id}]`;
     })
     .join("\n");
   const staticInstructions = incremental ? [] : [
@@ -1321,7 +1326,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
+    if ((request.url === "/api/agent-messages" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-delegations" || request.url === "/api/agent-delegation-outcomes" || request.url === "/api/agent-session/rollover") && provided && (agentMessageCapabilities.has(provided) || delegationCapabilities.has(provided))) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -1542,6 +1547,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     intents: MasterChatDeliveryIntent[],
   ): void {
     const orderKey = store.getMasterChatMessageDeliveryOrderKey(masterChatId, message.id);
+    const master = store.getMasterChat(masterChatId);
+    const communication = master && message.communicationEventId
+      ? store.getCommunicationEvent(master.projectId, message.communicationEventId)
+      : undefined;
+    const deliveryText = communication?.document
+      ? `${message.text}\n\nDocument: ${communication.document.title} (id: ${communication.document.id}). Retrieve it on demand with PONDEROSA_DOCUMENT_URL.`
+      : message.text;
     for (const intent of intents) {
       queueCollaborationDelivery({
         masterChatId,
@@ -1549,7 +1561,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         communicationEventId: message.communicationEventId,
         targetThreadId: intent.targetThreadId,
         authorThreadId,
-        text: message.text,
+        text: deliveryText,
         relayDepth: intent.relayDepth,
         mentionTrail: intent.mentionTrail,
         kind: intent.kind,
@@ -1704,6 +1716,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
+    const requestedDocument = request.body?.document;
+    if (requestedDocument && (requestedDocument.mediaType && requestedDocument.mediaType !== "text/markdown")) {
+      return reply.code(400).send({ error: "document mediaType must be text/markdown" });
+    }
+    const documentTitle = requestedDocument?.title?.trim();
+    const documentContent = requestedDocument?.content;
+    if (requestedDocument && (!documentTitle || !documentContent?.trim())) return reply.code(400).send({ error: "document title and content are required" });
+    if (documentTitle && documentTitle.length > 160) return reply.code(400).send({ error: "document title must be 160 characters or fewer" });
+    if (documentContent && Buffer.byteLength(documentContent, "utf8") > 256 * 1024) return reply.code(413).send({ error: "document must be 256 KiB or fewer" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
@@ -1716,6 +1737,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!currentAuthor || currentAuthor.archived) {
       return reply.code(409).send({ error: "agent is no longer available" });
     }
+    const document = documentTitle && documentContent ? {
+      id: randomUUID(), title: documentTitle, mediaType: "text/markdown" as const,
+      content: documentContent, byteLength: Buffer.byteLength(documentContent, "utf8"),
+      authorAgentId: capability.threadId, executionId: capability.runId,
+      ...(active.delegatedRunId ? { assignmentId: active.delegatedRunId } : {}),
+      createdAt: new Date().toISOString(),
+    } : undefined;
 
     if (intent === "direct_to_user") {
       const communication = recordCommunication({
@@ -1727,6 +1755,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: capability.threadId },
         text,
+        ...(document ? { document } : {}),
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       });
@@ -1801,6 +1830,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       intent,
       audience: { kind: "organization", organizationId: currentAuthor.projectId },
       text,
+      ...(document ? { document } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
@@ -1812,6 +1842,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       intent,
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetThreadId) as [string, ...string[]] },
       text,
+      ...(document ? { document } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
@@ -1832,6 +1863,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       appendBlockedMentionWarnings(capability.masterChatId, routing.blocked);
     }
     return { intent, eventId: communication?.eventId, messageId: message.id, replayed: false };
+  });
+
+  function agentCanReadDocument(event: CommunicationEvent, agentId: string): boolean {
+    const agent = store.getThread(agentId);
+    if (!agent || agent.projectId !== event.projectId || agent.archived) return false;
+    if (event.intent === "broadcast") return !event.masterChatId || agent.masterChatIds.includes(event.masterChatId);
+    if (event.schemaVersion === 2 && event.intent === "user_dm") {
+      return event.sender.kind === "agent" && event.sender.agentId === agentId;
+    }
+    if (event.intent === "collaboration") {
+      return event.audience.agentIds.includes(agentId) || (event.sender.kind === "agent" && event.sender.agentId === agentId);
+    }
+    return event.sender.kind === "agent" && event.sender.agentId === agentId;
+  }
+
+  app.get<{ Params: { documentId: string } }>("/api/agent-documents/:documentId", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.threadId) : undefined;
+    if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "invalid or expired agent document capability" });
+    }
+    const agent = store.getThread(capability.threadId);
+    const found = agent ? store.getCommunicationDocument(agent.projectId, request.params.documentId) : undefined;
+    if (!found || !agentCanReadDocument(found.event, capability.threadId)) return reply.code(404).send({ error: "document not found" });
+    return { ...found.document };
   });
 
   app.post("/api/agent-session/rollover", async (request, reply) => {
@@ -1928,6 +1985,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           effort: context.effort,
           environment: {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+            PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapabilityToken,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
@@ -3587,6 +3645,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
+            PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_DELEGATION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-delegations`,
@@ -3917,6 +3976,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!store.getThread(request.params.id)) return reply.code(404).send({ error: "thread not found" });
     return store.getArtifacts(request.params.id);
   });
+
+  app.get<{ Params: { projectId: string; documentId: string } }>(
+    "/api/projects/:projectId/communication-documents/:documentId",
+    async (request, reply) => {
+      const found = store.getCommunicationDocument(request.params.projectId, request.params.documentId);
+      if (!found) return reply.code(404).send({ error: "document not found" });
+      const { content, ...metadata } = found.document;
+      const root = `/api/projects/${encodeURIComponent(request.params.projectId)}/communication-documents/${encodeURIComponent(found.document.id)}`;
+      return { ...metadata, previewUrl: root, downloadUrl: `${root}/download`, content };
+    },
+  );
+
+  app.get<{ Params: { projectId: string; documentId: string } }>(
+    "/api/projects/:projectId/communication-documents/:documentId/download",
+    async (request, reply) => {
+      const found = store.getCommunicationDocument(request.params.projectId, request.params.documentId);
+      if (!found) return reply.code(404).send({ error: "document not found" });
+      return reply.type("text/markdown; charset=utf-8")
+        .header("Content-Disposition", contentDisposition(`${found.document.title}.md`))
+        .send(found.document.content);
+    },
+  );
 
   async function generatedPdf(
     projectId: string,

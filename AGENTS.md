@@ -174,6 +174,12 @@ Ordinary runtime output → execution-scoped Thinking
   Review may layer read-only, current Git working-tree state over that provenance;
   it never rewrites the event log or attributes unscoped changes to an agent.
   Generated PDF preview/download routes remain project- and thread-scoped.
+- Long-form Markdown documents are immutable payloads of one explicit
+  communication event. Chat and ordinary future context carry only the concise
+  summary plus document reference; full content is retrieved on demand. The
+  document inherits the event's audience exactly: Broadcast is organizational,
+  while Direct Message and Collaboration remain private. Document provenance
+  records the author agent, execution, and assignment when applicable.
 - Project folders are optional at creation. Ponderosa may create a managed empty
   workspace, but deleting a project removes Ponderosa-owned canonical data—not
   the selected source folder.

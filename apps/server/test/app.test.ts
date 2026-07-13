@@ -2046,6 +2046,47 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("delivers scoped Markdown documents as concise summaries with on-demand content", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Documents", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Private room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: master.id });
+    const reviewer = store.createThread(project.id, { title: "Reviewer", engine: "codex", masterChatId: master.id });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/threads/${author.id}/messages`, payload: { text: "Begin" } });
+    await waitForSeedCount(1);
+    const authorToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const full = `# Detailed review\n\n${"private analysis ".repeat(400)}`;
+    const sent = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Review complete; see the attached document.", document: { title: "Detailed Review", content: full, mediaType: "text/markdown" } },
+    });
+    expect(sent.statusCode).toBe(200);
+    await waitForSeedCount(2);
+    const event = store.getCommunicationEvent(project.id, sent.json<{ eventId: string }>().eventId)!;
+    expect(event.document).toMatchObject({ title: "Detailed Review", authorAgentId: author.id, executionId: expect.any(String) });
+    expect(store.getProjectedMasterChatMessages(master.id, "main")).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ document: expect.anything() })]),
+    );
+    const projected = store.getProjectedMasterChatMessages(master.id, "collaboration")[0]!;
+    expect(projected.text).toContain("Review complete");
+    expect(projected.text).not.toContain("private analysis");
+    expect(projected.document).toMatchObject({ title: "Detailed Review", previewUrl: expect.any(String), downloadUrl: expect.any(String) });
+    expect(adapter.seeds[1]!.prompt).toContain(`id: ${event.document!.id}`);
+    expect(adapter.seeds[1]!.prompt).not.toContain("private analysis");
+
+    const uiPreview = await app.inject({ method: "GET", url: projected.document!.previewUrl });
+    expect(uiPreview.statusCode).toBe(200);
+    expect(uiPreview.json()).toMatchObject({ content: full, title: "Detailed Review" });
+    const reviewerToken = adapter.seeds[1]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const agentPreview = await app.inject({ method: "GET", url: `/api/agent-documents/${event.document!.id}`, headers: { authorization: `Bearer ${reviewerToken}` } });
+    expect(agentPreview.statusCode).toBe(200);
+    expect(agentPreview.json()).toMatchObject({ content: full });
+    expect(adapter.seeds[1]!.environment!.PONDEROSA_DOCUMENT_URL).toContain("/api/agent-documents");
+    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
+    await app.close();
+  });
+
   it("rejects recipient-free and out-of-room collaboration intents before persistence", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });

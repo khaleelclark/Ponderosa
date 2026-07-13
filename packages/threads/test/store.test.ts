@@ -51,6 +51,29 @@ function seedThread(): { projectId: string; threadId: string } {
 }
 
 describe("ThreadStore — canonical communication events", () => {
+  it("keeps long-form documents canonical, scoped, and out of projected summary text", () => {
+    const project = store.createProject({ label: "Docs", hostPath: "/repo" });
+    const room = store.createMasterChat(project.id, { title: "Room" });
+    const author = store.createThread(project.id, { title: "Author", engine: "codex", masterChatId: room.id });
+    const recipient = store.createThread(project.id, { title: "Recipient", engine: "codex", masterChatId: room.id });
+    const event: CommunicationEvent = {
+      eventId: "doc-event", schemaVersion: 2, projectId: project.id, masterChatId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "run-1" },
+      intent: "collaboration", audience: { kind: "agents", agentIds: [recipient.id] },
+      text: "Concise review summary", createdAt: "2026-07-12T00:00:00.000Z",
+      document: { id: "doc-1", title: "Architecture Review", mediaType: "text/markdown", content: "# Full review\n\nPrivate detail.", byteLength: 30, authorAgentId: author.id, executionId: "run-1", assignmentId: "assignment-1", createdAt: "2026-07-12T00:00:00.000Z" },
+    };
+    event.document!.byteLength = Buffer.byteLength(event.document!.content, "utf8");
+    store.appendCommunicationEvent(event);
+    store.appendCommunicationProjection(project.id, { eventId: event.eventId, surface: "collaboration_chat", projectionKey: room.id, projectedAt: event.createdAt, message: { messageId: "m1", role: "assistant", createdAt: event.createdAt, authorAgentId: author.id } });
+    const message = store.readProjectedCommunicationMessages(project.id, "collaboration_chat", room.id)[0]!;
+    expect(message.text).toBe("Concise review summary");
+    expect(message.document).toMatchObject({ id: "doc-1", title: "Architecture Review", assignmentId: "assignment-1", previewUrl: expect.any(String) });
+    expect(message.document).not.toHaveProperty("content");
+    expect(store.getCommunicationDocument(project.id, "doc-1")?.document.content).toContain("Private detail");
+    expect(store.readContextClassifications(project.id)).toEqual([expect.objectContaining({ eventId: "doc-event", policy: "local_only" })]);
+  });
+
   it("persists one fsynced project event and makes exact retries idempotent", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const event: CommunicationEvent = {

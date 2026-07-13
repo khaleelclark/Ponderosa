@@ -56,6 +56,15 @@ diff/file inspection, Tasks for structured work state, and Artifacts for durable
 Sources remain attached to their message in a compact footer. Generated PDFs are
 previewable and downloadable as project-scoped artifacts.
 
+Long-form agent results use a concise chat summary with a titled Markdown
+document attached to the same communication. The document is previewable and
+downloadable, preserves its original Markdown, and records agent/execution/
+assignment provenance. Normal future context contains the summary and document
+reference, not the entire body; agents retrieve full content only when needed.
+Document scope is never independent: Broadcast documents are organizational,
+while Direct Message and Collaboration documents remain private to their
+immutable audiences.
+
 Engine processes may stay warm briefly for responsive steering and follow-up,
 but idle agents must not retain an unbounded process and MCP stack. Canonical
 provider session identity survives process teardown so a later turn can resume

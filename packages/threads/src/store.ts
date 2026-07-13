@@ -21,6 +21,8 @@ import type {
   ChangedFileDto,
   AgentOrganizationEvent,
   CommunicationEvent,
+  CommunicationDocumentRecord,
+  CommunicationDocumentReference,
   CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
@@ -50,6 +52,12 @@ import type {
   UpdateThreadRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
+
+function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
+  const { content: _content, ...metadata } = document;
+  const root = `/api/projects/${encodeURIComponent(projectId)}/communication-documents/${encodeURIComponent(document.id)}`;
+  return { ...metadata, previewUrl: root, downloadUrl: `${root}/download` };
+}
 import { openDb, type Db } from "./db.js";
 import type Database from "better-sqlite3";
 import { EventLog } from "./eventlog.js";
@@ -307,6 +315,14 @@ export class ThreadStore {
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
     if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
     if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
+    if (event.document) {
+      if (event.sender.kind !== "agent" || event.document.authorAgentId !== event.sender.agentId ||
+          event.document.executionId !== event.sender.executionId || event.document.mediaType !== "text/markdown" ||
+          !event.document.id || !event.document.title.trim() || !event.document.content.trim() ||
+          event.document.byteLength !== Buffer.byteLength(event.document.content, "utf8")) {
+        throw new Error("communication document provenance is invalid");
+      }
+    }
     if (event.intent === "collaboration" && event.audience.agentIds.length === 0) {
       throw new Error("collaboration requires at least one recipient");
     }
@@ -359,7 +375,7 @@ export class ThreadStore {
     if (idempotent) {
       const equivalent = idempotent.projectId === event.projectId && idempotent.masterChatId === event.masterChatId &&
         idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
-        idempotent.text === event.text;
+        idempotent.text === event.text && JSON.stringify(idempotent.document) === JSON.stringify(event.document);
       if (!equivalent) throw new Error("communication idempotency collision");
       this.appendContextClassification(event.projectId, {
         eventId: idempotent.eventId,
@@ -391,6 +407,11 @@ export class ThreadStore {
   getCommunicationEvent(projectId: string, eventId: string): CommunicationEvent | undefined {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return this.communicationIndex(projectId).byId.get(eventId);
+  }
+
+  getCommunicationDocument(projectId: string, documentId: string) {
+    const event = this.readCommunicationEvents(projectId).find((candidate) => candidate.document?.id === documentId);
+    return event?.document ? { event, document: event.document } : undefined;
   }
 
   private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
@@ -547,6 +568,7 @@ export class ThreadStore {
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+          ...(event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
         }];
       })
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.eventId.localeCompare(b.eventId));
@@ -1156,6 +1178,7 @@ export class ThreadStore {
         ...(message.authorAgentId ? { authorThreadId: message.authorAgentId } : {}),
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        ...(message.document ? { document: message.document } : {}),
       };
     });
   }
@@ -1532,6 +1555,7 @@ export class ThreadStore {
           createdAt: message.createdAt,
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+          ...(message.document ? { document: message.document } : {}),
         } satisfies MessageDto];
       });
   }
