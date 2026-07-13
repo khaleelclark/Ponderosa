@@ -45,7 +45,7 @@ import type {
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
 } from "@ponderosa/core";
-import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL } from "@ponderosa/core";
+import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore } from "@ponderosa/agents";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
@@ -444,7 +444,8 @@ function agentSpawnPrompt(): string[] {
   return [
     "When creating another agent under Ponderosa, never use an engine's internal spawn_agent, Task, or subagent mechanism; those agents are untracked and forbidden.",
     "Use only Ponderosa's managed-agent creation bridge. The new agent is a normal agent that reports directly to you:",
-    'curl -sS -X POST "$PONDEROSA_AGENT_SPAWN_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN" -H "Content-Type: application/json" --data \'{"displayName":"Safe name","initialMessage":"Optional task, role, or introduction","runtime":"codex","idempotencyKey":"stable-key"}\'',
+    "The tool is named ponderosa_spawn_agent in Codex and mcp__ponderosa__spawn_agent in Claude.",
+    'Example arguments: {"displayName":"Safe name","initialMessage":"Optional task, role, or introduction","runtime":"codex","idempotencyKey":"stable-key"}.',
     "initialMessage is optional. You may create an idle report and introduce or steer it later through ordinary Collaboration.",
     "Do not send managerAgentId, parentAgentId, agentId, conversationId, or execution ownership fields. Ponderosa derives the reporting line from your active capability.",
     "After asking a report to work, end your turn. Do not poll or sleep; its messages and failures return through the normal managed-agent delivery system.",
@@ -2748,6 +2749,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       const initialMessage = request.body.initialMessage?.trim();
+      if (initialMessage && request.body.managerAgentId && !request.body.conversationId) {
+        return reply.code(400).send({ error: "a managed agent opening message requires its manager to belong to a Project chat" });
+      }
       let agent;
       try {
         agent = store.createAgent(request.params.id, request.body);
@@ -2755,6 +2759,42 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "agent could not be created" });
       }
       if (initialMessage) {
+        if (agent.managerAgentId && agent.conversationId) {
+          const routing = resolveExplicitCollaborationIntents(
+            agent.conversationId,
+            "user:local-operator",
+            [agent.id],
+            initialMessage,
+            0,
+            [],
+          );
+          if (routing.error) {
+            store.deleteAgent(agent.id);
+            return reply.code(400).send({ error: routing.error });
+          }
+          const communication = recordCommunication({
+            eventId: randomUUID(), schemaVersion: 2, projectId: agent.projectId, conversationId: agent.conversationId,
+            sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+            audience: { kind: "agents", agentIds: [agent.id] }, text: initialMessage,
+            createdAt: new Date().toISOString(),
+            ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
+          });
+          const message = store.appendConversationMessage(
+            agent.conversationId,
+            { role: "user", text: routing.text },
+            undefined,
+            "collaboration",
+            routing.intents,
+            undefined,
+            communication.eventId,
+          );
+          if (!message) {
+            store.deleteAgent(agent.id);
+            return reply.code(409).send({ error: "managed agent opening message could not be recorded" });
+          }
+          queueRecordedCollaborationMessage(agent.conversationId, message, undefined, routing.intents);
+          return agent;
+        }
         let initialCommunicationEventId: string | undefined;
         if (agent.conversationId) {
           const communication = recordCommunication({
@@ -3429,14 +3469,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: request.body.model,
               effort: request.body.effort,
               environment,
-              dynamicTools: [PONDEROSA_SEND_MESSAGE_TOOL],
+              dynamicTools: [PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL],
               handleDynamicToolCall: async (call) => {
-                if (call.name !== PONDEROSA_SEND_MESSAGE_TOOL.name) {
+                const url = call.name === PONDEROSA_SEND_MESSAGE_TOOL.name
+                  ? "/api/agent-messages"
+                  : call.name === PONDEROSA_SPAWN_AGENT_TOOL.name
+                    ? "/api/agent-spawns"
+                    : undefined;
+                if (!url) {
                   return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
                 }
                 const response = await app.inject({
                   method: "POST",
-                  url: "/api/agent-messages",
+                  url,
                   headers: {
                     authorization: `Bearer ${messageCapability}`,
                     "content-type": "application/json",

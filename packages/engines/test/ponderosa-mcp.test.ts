@@ -14,15 +14,21 @@ afterEach(() => {
 
 describe("Ponderosa stdio MCP bridge", () => {
   it("keeps the capability out of argv and forwards an explicit message call", async () => {
-    let receivedAuthorization = "";
-    let receivedBody = "";
+    const received: Array<{ authorization: string; url: string; body: unknown }> = [];
     const http = createServer((request, response) => {
-      receivedAuthorization = request.headers.authorization ?? "";
+      let body = "";
       request.setEncoding("utf8");
-      request.on("data", (chunk) => { receivedBody += chunk; });
+      request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ messageId: "message-1" }));
+        received.push({
+          authorization: request.headers.authorization ?? "",
+          url: request.url ?? "",
+          body: JSON.parse(body),
+        });
+        response.writeHead(request.url === "/api/agent-spawns" ? 201 : 200, { "content-type": "application/json" });
+        response.end(JSON.stringify(request.url === "/api/agent-spawns"
+          ? { accepted: true, agent: { id: "child-1" } }
+          : { messageId: "message-1" }));
       });
     });
     await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
@@ -33,6 +39,7 @@ describe("Ponderosa stdio MCP bridge", () => {
       env: {
         ...process.env,
         PONDEROSA_AGENT_MESSAGE_URL: `http://127.0.0.1:${address.port}/api/agent-messages`,
+        PONDEROSA_AGENT_SPAWN_URL: `http://127.0.0.1:${address.port}/api/agent-spawns`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -51,12 +58,29 @@ describe("Ponderosa stdio MCP bridge", () => {
       method: "tools/call",
       params: { name: "send_message", arguments: { intent: "broadcast", text: "Managed result" } },
     })}\n`);
+    child.stdin!.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "spawn_agent", arguments: { displayName: "Research", initialMessage: "Investigate.", idempotencyKey: "research-1" } },
+    })}\n`);
 
-    await expect.poll(() => responses.length).toBe(3);
-    expect(responses[1]).toMatchObject({ result: { tools: [{ name: "send_message" }] } });
+    await expect.poll(() => responses.length).toBe(4);
+    expect(responses[1]).toMatchObject({ result: { tools: [{ name: "send_message" }, { name: "spawn_agent" }] } });
     expect(responses[2]).toMatchObject({ result: { isError: false } });
-    expect(receivedAuthorization).toBe("Bearer secret-run-token");
-    expect(JSON.parse(receivedBody)).toEqual({ intent: "broadcast", text: "Managed result" });
+    expect(responses[3]).toMatchObject({ result: { isError: false } });
+    expect(received).toEqual([
+      {
+        authorization: "Bearer secret-run-token",
+        url: "/api/agent-messages",
+        body: { intent: "broadcast", text: "Managed result" },
+      },
+      {
+        authorization: "Bearer secret-run-token",
+        url: "/api/agent-spawns",
+        body: { displayName: "Research", initialMessage: "Investigate.", idempotencyKey: "research-1" },
+      },
+    ]);
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });
 });
