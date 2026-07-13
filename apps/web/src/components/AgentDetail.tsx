@@ -39,7 +39,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, MasterChatDetailDto, MasterChatDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, AssignmentDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -114,7 +114,7 @@ export function AgentDetail({
   projectedHealth,
   agents,
   masterChats,
-  subagent,
+  assignment,
   onBack,
   onOpenAgent,
   onOpenMaster,
@@ -127,7 +127,7 @@ export function AgentDetail({
   projectedHealth?: AgentHealthDto;
   agents: ThreadDto[];
   masterChats: MasterChatDto[];
-  subagent?: SubagentRunDto;
+  assignment?: AssignmentDto;
   onBack(): void;
   onOpenAgent(agentId: string): void;
   onOpenMaster(masterChatId: string): void;
@@ -403,13 +403,13 @@ export function AgentDetail({
               aria-label={`${connectedMcps.length} of ${engineCapability?.mcpServers.length ?? 0} inherited MCP servers connected`}
             />
           </Tooltip>
-          {subagent ? (
+          {assignment ? (
             <Chip
               size="small"
               color="secondary"
-              label="Delegated"
-              onClick={subagent.parentThreadId ? () => onOpenAgent(subagent.parentThreadId!) : undefined}
-              clickable={Boolean(subagent.parentThreadId)}
+              label={`Assignment · ${assignment.status}`}
+              onClick={() => onOpenAgent(assignment.parentAgentId)}
+              clickable
               sx={{ minHeight: compactViewport ? 44 : undefined }}
             />
           ) : null}
@@ -531,6 +531,11 @@ export function AgentDetail({
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
         {runtimeActivity ? <RespondingIndicator agentName={detail.thread.title} startedAt={runtimeActivity.startedAt} /> : null}
+        {assignment ? <Box component="section" aria-label="Canonical assignment" sx={{ mt: 1.5, p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}><Typography fontWeight={700} sx={{ flex: 1 }}>{assignment.title}</Typography><Chip size="small" label={assignment.status} /></Stack>
+          <Typography component="pre" variant="body2" sx={{ whiteSpace: "pre-wrap", m: 0 }}>{assignment.taskBriefMarkdown}</Typography>
+          <Typography variant="caption" color="text.secondary">Assignment {assignment.id} · execution {assignment.childExecutionId}</Typography>
+        </Box> : null}
       </Box>
 
       <Tabs

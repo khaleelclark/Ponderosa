@@ -1384,6 +1384,7 @@ export class ThreadStore {
     if (!thread) return undefined;
     return {
       thread,
+      assignments: [],
       messages: this.getMessages(id),
       thinking: this.getThinkingEntries(id),
       activity: this.getActivity(id),

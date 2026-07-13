@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SubagentRunDto, ThreadDto } from "@ponderosa/core";
+import type { AssignmentDto, ThreadDto } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/threads";
 import { projectAgentHealth } from "../src/agent-health.js";
 
@@ -9,10 +9,10 @@ const thread = (id: string): ThreadDto => ({
   id, projectId: "project", masterChatId: "master", masterChatIds: ["master"],
   title: id, activeEngine: "codex", state: {}, createdAt: t0, updatedAt: t0, archived: false,
 });
-const delegation = (childThreadId: string, status: SubagentRunDto["status"], parentThreadId = "parent"): SubagentRunDto => ({
-  id: `run-${childThreadId}`, masterChatId: "master", parentThreadId, childThreadId,
-  parentRunId: "parent-run", rootRunId: "parent-run", contextSnapshotId: "snapshot",
-  depth: 1, version: 1, displayLabel: childThreadId, delegationSummary: childThreadId,
+const delegation = (childAgentId: string, status: AssignmentDto["status"], parentAgentId = "parent"): AssignmentDto => ({
+  id: `assignment-${childAgentId}`, projectId: "project", masterChatId: "master", parentAgentId, childAgentId,
+  parentExecutionId: "parent-execution", childExecutionId: `execution-${childAgentId}`, rootAssignmentId: `assignment-${childAgentId}`,
+  depth: 1, version: 1, title: childAgentId, taskBriefMarkdown: `# ${childAgentId}`,
   runtime: "codex", status, canCancel: status === "queued" || status === "running",
   createdAt: t0, updatedAt: t1, ...(status === "running" ? { startedAt: t1 } : {}),
   ...(["blocked", "cancelled", "completed", "failed"].includes(status) ? { finishedAt: t1 } : {}),
@@ -22,7 +22,7 @@ const event = (value: StoredLogEvent["event"], ts = t1): StoredLogEvent => ({ se
 
 function project(options: {
   threads?: ThreadDto[];
-  runs?: SubagentRunDto[];
+  runs?: AssignmentDto[];
   active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "interrupted" }>;
   compacting?: Map<string, string>;
   queued?: Record<string, Array<{ createdAt: string }>>;

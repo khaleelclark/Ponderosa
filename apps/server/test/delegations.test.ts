@@ -32,6 +32,7 @@ describe("DelegationStore concurrency", () => {
         },
         true,
         [],
+        { projectId: "project", parentAgentId: "parent", childAgentId: `child-${index + 1}` },
       );
       expect(result.run.status).toBe("queued");
     }
@@ -47,6 +48,7 @@ describe("DelegationStore concurrency", () => {
       },
       true,
       [],
+      { projectId: "project", parentAgentId: "parent", childAgentId: "child-101" },
     )).toThrowError(expect.objectContaining<Partial<DelegationError>>({
       code: "concurrency_limit_exceeded",
       statusCode: 409,
@@ -64,7 +66,7 @@ describe("DelegationStore concurrency", () => {
       delegationPrompt: "work",
       runtime: "codex",
       idempotencyKey: key,
-    }, true, []).run;
+    }, true, [], { projectId: "project", parentAgentId: "parent", childAgentId: `child-${key}` }).run;
 
     const blocked = spawn("blocked");
     store.claim(blocked.id);

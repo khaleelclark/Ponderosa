@@ -473,6 +473,8 @@ export interface ThinkingEntryDto {
  */
 export interface ThreadDetailDto {
   thread: ThreadDto;
+  /** Canonical delegated work owned by or assigned to this agent. */
+  assignments: AssignmentDto[];
   messages: MessageDto[];
   thinking: ThinkingEntryDto[];
   activity: AgentActivityDto[];
@@ -559,19 +561,19 @@ export interface CancelResponse {
   cancelled: boolean;
 }
 
-// ─── Subagent delegation ────────────────────────────────────────────────
+// ─── Assignments and delegation ─────────────────────────────────────────────
 
-export type SubagentStatus = "queued" | "running" | "awaiting_disposition" | "completed" | "blocked" | "failed" | "cancelled";
+export type AssignmentStatus = "queued" | "running" | "awaiting_disposition" | "completed" | "blocked" | "failed" | "cancelled";
 
-export interface SubagentFailureDto {
+export interface AssignmentFailureDto {
   code: string;
   message: string;
   retryable: boolean;
   occurredAt: string;
 }
 
-/** Server-recorded delivery state for the automatic parent completion notice. */
-export interface SubagentCompletionDeliveryDto {
+/** Server-recorded internal parent wake state. It is never a chat communication. */
+export interface AssignmentWakeDeliveryDto {
   status: "queued" | "delivered" | "acknowledged" | "failed";
   createdAt: string;
   deliveredAt?: string;
@@ -579,37 +581,39 @@ export interface SubagentCompletionDeliveryDto {
   failure?: string;
 }
 
-/** Public run shape. The raw delegation prompt is deliberately excluded. */
-export interface SubagentRunDto {
+/** Canonical, durable delegated task. IDs and the Markdown brief never change. */
+export interface AssignmentDto {
+  /** Stable assignment identity. */
   id: string;
+  projectId: string;
   masterChatId: string;
-  /** Server-derived owning agent thread. Never accepted from an agent delegation request. */
-  parentThreadId?: string;
-  /** First-class Ponderosa agent/thread created for this delegated child. */
-  childThreadId?: string;
-  parentRunId: string;
-  rootRunId: string;
-  contextSnapshotId: string;
+  parentAgentId: string;
+  childAgentId: string;
+  parentExecutionId: string;
+  childExecutionId: string;
+  parentAssignmentId?: string;
+  rootAssignmentId: string;
   depth: number;
   version: number;
-  displayLabel: string;
-  delegationSummary: string;
+  title: string;
+  /** Exact authored Markdown task brief, byte-for-byte after JSON decoding. */
+  taskBriefMarkdown: string;
   runtime: string;
-  status: SubagentStatus;
+  status: AssignmentStatus;
   canCancel: boolean;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
   updatedAt: string;
-  failure?: SubagentFailureDto;
+  failure?: AssignmentFailureDto;
   /** Authenticated child declaration of the delegated objective's outcome. */
   disposition?: {
     outcome: "completed" | "blocked";
     message?: string;
     declaredAt: string;
   };
-  /** Present after a terminal child run when its parent can receive a notice. */
-  completionDelivery?: SubagentCompletionDeliveryDto;
+  /** Internal state proving the parent was woken without synthesizing chat. */
+  parentWake?: AssignmentWakeDeliveryDto;
 }
 
 /** Agent-facing delegation input. Ownership is always resolved from its bearer capability. */
@@ -625,7 +629,7 @@ export interface AgentDelegationRequest {
 }
 
 export interface AgentDelegationResponse {
-  run: SubagentRunDto;
+  assignment: AssignmentDto;
   accepted: boolean;
   replayed: boolean;
 }
@@ -637,17 +641,17 @@ export interface AgentDelegationDispositionRequest {
   idempotencyKey: string;
 }
 
-export interface CancelSubagentRequest {
+export interface CancelAssignmentRequest {
   scope: "branch";
   idempotencyKey: string;
 }
 
-export interface CancelSubagentResponse {
-  requestedRunId: string;
+export interface CancelAssignmentResponse {
+  requestedAssignmentId: string;
   scope: "branch";
   affected: Array<{
-    runId: string;
-    status: SubagentStatus;
+    assignmentId: string;
+    status: AssignmentStatus;
     version: number;
     updatedAt: string;
   }>;
@@ -663,20 +667,20 @@ export type DelegationErrorCode =
   | "descendant_limit_exceeded"
   | "concurrency_limit_exceeded"
   | "idempotency_conflict"
-  | "subagent_not_found"
+  | "assignment_not_found"
   | "forbidden";
 
 export interface DelegationErrorDto {
   error: { code: DelegationErrorCode; message: string; retryable: boolean };
 }
 
-export interface SubagentEventEnvelope {
+export interface AssignmentEventEnvelope {
   masterChatId: string;
   seq: number;
   ts: string;
   event:
-    | { type: "subagent_spawned"; run: SubagentRunDto }
-    | { type: "subagent_updated"; run: SubagentRunDto };
+    | { type: "assignment_created"; assignment: AssignmentDto }
+    | { type: "assignment_updated"; assignment: AssignmentDto };
 }
 
 // ─── Engines ─────────────────────────────────────────────────────────────────

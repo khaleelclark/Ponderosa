@@ -25,7 +25,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { MasterChatDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { MasterChatDto, AssignmentDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
@@ -46,7 +46,7 @@ export function AgentsTab({
   masterChats,
   statusByAgentId,
   detailByAgentId,
-  subagents,
+  assignments,
   onOpenAgent,
   onNewAgent,
 }: {
@@ -54,7 +54,7 @@ export function AgentsTab({
   masterChats: MasterChatDto[];
   statusByAgentId: Map<string, AgentStatus>;
   detailByAgentId: Map<string, ThreadDetailDto | undefined>;
-  subagents: SubagentRunDto[];
+  assignments: AssignmentDto[];
   onOpenAgent(agentId: string): void;
   onNewAgent(): void;
 }): JSX.Element {
@@ -63,7 +63,7 @@ export function AgentsTab({
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
-  const delegationByChildId = new Map(subagents.flatMap((run) => run.childThreadId ? [[run.childThreadId, run] as const] : []));
+  const delegationByChildId = new Map(assignments.map((assignment) => [assignment.childAgentId, assignment] as const));
 
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteThread(agentId),

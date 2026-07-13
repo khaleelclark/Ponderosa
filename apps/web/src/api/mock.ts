@@ -442,13 +442,13 @@ export const mockApi: PonderosaApi = {
     ];
     return { message, audience: "mention", notifiedAgentIds: [...request.recipientAgentIds] };
   },
-  listSubagents() {
+  listAssignments() {
     return delay([]);
   },
-  cancelSubagent(runId) {
-    return delay({ requestedRunId: runId, scope: "branch" as const, affected: [], completed: true });
+  cancelAssignment(runId) {
+    return delay({ requestedAssignmentId: runId, scope: "branch" as const, affected: [], completed: true });
   },
-  subscribeSubagents(_masterChatId, _lastSeenSeq, handlers) {
+  subscribeAssignments(_masterChatId, _lastSeenSeq, handlers) {
     window.setTimeout(() => handlers.onOpen?.(), 0);
     return { close() {} };
   },
@@ -534,6 +534,7 @@ export const mockApi: PonderosaApi = {
 
     return delay({
       thread,
+      assignments: [],
       messages: messages[threadId] ?? [],
       thinking: [],
       activity: [],

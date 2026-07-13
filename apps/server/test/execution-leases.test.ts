@@ -213,15 +213,15 @@ describe("enforced execution leases", () => {
       method: "POST", url: "/api/agent-delegations", headers: { authorization: `Bearer ${token}` },
       payload: { displayLabel: "Hung child", delegationPrompt: "wait", runtime: "codex", idempotencyKey: "hung-child" },
     });
-    const delegated = response.json<{ run: { id: string; childThreadId: string } }>().run;
+    const delegated = response.json<{ assignment: { id: string; childAgentId: string } }>().assignment;
     await flush();
     await clock.advance(1_000);
     await flush();
 
-    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
+    expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/assignments` })).json()).toEqual([
       expect.objectContaining({ id: delegated.id, status: "failed", failure: expect.objectContaining({ message: "execution lease expired" }) }),
     ]);
-    expect(store.readEvents(delegated.childThreadId).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
+    expect(store.readEvents(delegated.childAgentId).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
     adapter.releaseAllLateEvents();
     await flush();
     await app.close();

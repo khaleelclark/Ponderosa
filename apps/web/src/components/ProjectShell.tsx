@@ -2,13 +2,13 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, AssignmentDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { isSubagentUiEnabled } from "../subagents";
+import { isAssignmentUiEnabled } from "../assignments";
 import { useAgentHealth, useAgentPresets, useMasterChats, useThreads } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -55,19 +55,19 @@ export function ProjectShell({
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const presets = presetsQuery.data ?? [];
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
-  const showSubagents = isSubagentUiEnabled(env);
+  const showAssignments = isAssignmentUiEnabled(env);
 
-  const subagentQueries = useQueries({
+  const assignmentQueries = useQueries({
     queries: masterChats.map((master) => ({
-      queryKey: ["subagents", master.id],
-      queryFn: () => api.listSubagents(master.id),
-      enabled: showSubagents,
+      queryKey: ["assignments", master.id],
+      queryFn: () => api.listAssignments(master.id),
+      enabled: showAssignments,
       refetchInterval: 5_000,
     })),
   });
-  const subagents = useMemo(
-    () => subagentQueries.flatMap((query) => query.data ?? []) as SubagentRunDto[],
-    [subagentQueries],
+  const assignments = useMemo(
+    () => assignmentQueries.flatMap((query) => query.data ?? []) as AssignmentDto[],
+    [assignmentQueries],
   );
 
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
@@ -227,7 +227,7 @@ export function ProjectShell({
         projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}
         masterChats={masterChats}
-        subagent={subagents.find((run) => run.childThreadId === route.agentId)}
+        assignment={assignments.find((run) => run.childAgentId === route.agentId)}
         onBack={() => navigate({ kind: "agents", projectId })}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenMaster={(masterChatId) => navigate({ kind: "master-chat", projectId, masterChatId })}
@@ -241,7 +241,7 @@ export function ProjectShell({
         masterChats={masterChats}
         statusByAgentId={statusByAgentId}
         detailByAgentId={detailByAgentId}
-        subagents={subagents}
+        assignments={assignments}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={() => setAgentDialog({ open: true, defaultName: suggestedName() })}
       />
