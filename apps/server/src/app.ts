@@ -16,6 +16,9 @@ import type {
   EngineAuthStatus,
   EngineDto,
   ProjectEngineCapabilitiesDto,
+  ProjectFolderOptionsDto,
+  CreateProjectRequest,
+  UpdateProjectRequest,
   FilesResponse,
   HealthDto,
   ReadinessDto,
@@ -642,6 +645,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineCapabilityCache = new Map<string, { expiresAt: number; value: Promise<ProjectEngineCapabilitiesDto> }>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
+  const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -1982,19 +1986,89 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/projects", async () => store.listProjects());
-  app.post<{ Body: { label: string; hostPath: string } }>("/api/projects", async (request, reply) => {
-    if (!request.body?.label || !request.body?.hostPath) {
-      return reply.code(400).send({ error: "label and hostPath are required" });
+  app.get("/api/project-folders", async (): Promise<ProjectFolderOptionsDto> => {
+    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
+    const registered = store.listProjects().map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const }));
+    const managedEntries = await fs.readdir(managedWorkspacesRoot, { withFileTypes: true });
+    const managed = managedEntries.filter((entry) => entry.isDirectory()).map((entry) => ({
+      hostPath: path.join(managedWorkspacesRoot, entry.name), name: entry.name, source: "managed" as const,
+    }));
+    const folders = new Map<string, ProjectFolderOptionsDto["folders"][number]>();
+    for (const folder of [...registered, ...managed]) if (!folders.has(folder.hostPath)) folders.set(folder.hostPath, folder);
+    return { managedRoot: managedWorkspacesRoot, folders: [...folders.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+  });
+
+  app.post<{ Body: CreateProjectRequest }>("/api/projects", async (request, reply) => {
+    const label = request.body?.label?.trim();
+    if (!label) return reply.code(400).send({ error: "label is required" });
+    if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
+    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
+    let hostPath: string;
+    if (request.body.hostPath) {
+      const candidate = path.resolve(request.body.hostPath);
+      try {
+        const stat = await fs.stat(candidate);
+        if (!stat.isDirectory()) return reply.code(400).send({ error: "hostPath must be a directory" });
+        hostPath = await fs.realpath(candidate);
+      } catch {
+        return reply.code(400).send({ error: "hostPath does not exist" });
+      }
+    } else {
+      const requestedName = request.body.createFolderName?.trim();
+      if (requestedName && (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) || requestedName === "." || requestedName === "..")) {
+        return reply.code(400).send({ error: "folder name must be a single safe name" });
+      }
+      const automaticName = `${label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "project"}-${randomUUID().slice(0, 8)}`;
+      hostPath = path.join(managedWorkspacesRoot, requestedName || automaticName);
+      try {
+        await fs.mkdir(hostPath, { recursive: false });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return reply.code(409).send({ error: "folder already exists" });
+        throw error;
+      }
     }
-    if (!(await pathExists(request.body.hostPath))) {
-      return reply.code(400).send({ error: "hostPath does not exist" });
-    }
-    return store.createProject(request.body);
+    return store.createProject({ label, hostPath });
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
     const project = store.getProject(request.params.id);
     return project ?? reply.code(404).send({ error: "project not found" });
+  });
+
+  app.patch<{ Params: { id: string }; Body: UpdateProjectRequest }>("/api/projects/:id", async (request, reply) => {
+    const label = request.body?.label?.trim();
+    if (!label) return reply.code(400).send({ error: "label is required" });
+    return store.updateProject(request.params.id, { label }) ?? reply.code(404).send({ error: "project not found" });
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const threads = store.listThreads(project.id);
+    const threadIds = new Set(threads.map((thread) => thread.id));
+    const masterChatIds = new Set(store.listMasterChats(project.id).map((master) => master.id));
+    for (const threadId of threadIds) {
+      const active = activeRuns.get(threadId);
+      if (active) {
+        if (active.leaseTimer) clearExecutionLeaseTimer(active.leaseTimer);
+        active.controller.abort();
+        activeRuns.delete(threadId);
+      }
+      const runtime = runtimeSessions.get(threadId);
+      if (runtime) await runtime.session.close().catch(() => undefined);
+      runtimeSessions.delete(threadId);
+      subscribers.delete(threadId);
+      dispatchingTurns.delete(threadId);
+      scheduledSessionRollovers.delete(threadId);
+    }
+    delegations.deleteProject(masterChatIds, threadIds);
+    collaborationDeliveries.deleteThreads(threadIds);
+    userReactions.deleteProject(project.id);
+    contextCursors.deleteThreads(threadIds);
+    runLedger.deleteThreads(threadIds);
+    store.deleteProject(project.id);
+    engineCapabilityCache.clear();
+    return { deleted: true };
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {

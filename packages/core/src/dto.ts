@@ -39,7 +39,27 @@ export type UpdateAgentPresetRequest = Partial<Omit<CreateAgentPresetRequest, "e
 /** POST /api/projects body. */
 export interface CreateProjectRequest {
   label: string;
+  /** Existing absolute host folder. Omit to use a new managed empty workspace. */
+  hostPath?: string;
+  /** Create a named empty folder below Ponderosa's managed workspace root. */
+  createFolderName?: string;
+}
+
+/** PATCH /api/projects/:id body. Project working folders are immutable after creation. */
+export interface UpdateProjectRequest {
+  label: string;
+}
+
+export interface ProjectFolderOptionDto {
   hostPath: string;
+  name: string;
+  source: "registered" | "managed";
+}
+
+/** GET /api/project-folders response. Never exposes arbitrary host directories. */
+export interface ProjectFolderOptionsDto {
+  managedRoot: string;
+  folders: ProjectFolderOptionDto[];
 }
 
 // ─── Master chats ────────────────────────────────────────────────────────────

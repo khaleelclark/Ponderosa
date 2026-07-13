@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThreadStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, collaborationChatMessagesPath, communicationEventsPath, masterChatMessagesPath } from "../src/paths.js";
+import { artifactContentPath, collaborationChatMessagesPath, communicationEventsPath, masterChatMessagesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: ThreadStore;
@@ -768,5 +768,38 @@ describe("agent presets", () => {
     store.rebuildProjections();
     expect(store.getAgentPreset(preset.id)).toBeUndefined();
     expect(store.getThread(thread.id)?.presetSnapshot?.name).toBe("Release");
+  });
+});
+
+describe("project lifecycle", () => {
+  it("renames canonically and rebuilds the renamed projection", () => {
+    const project = store.createProject({ label: "Before", hostPath: "/repo" });
+    expect(store.updateProject(project.id, { label: "After" })?.label).toBe("After");
+    expect(JSON.parse(readFileSync(projectJsonPath(dir, project.id), "utf8"))).toMatchObject({ label: "After", hostPath: "/repo" });
+    store.rebuildProjections();
+    expect(store.getProject(project.id)?.label).toBe("After");
+  });
+
+  it("permanently deletes one canonical project tree and all of its projections", () => {
+    const removed = store.createProject({ label: "Remove", hostPath: "/remove" });
+    const room = store.createMasterChat(removed.id, { title: "Room" });
+    const thread = store.createThread(removed.id, { title: "Agent", engine: "codex", masterChatId: room.id });
+    store.appendEvent(thread.id, { type: "user_message", text: "work" });
+    const retained = store.createProject({ label: "Keep", hostPath: "/keep" });
+    const retainedThread = store.createThread(retained.id, { title: "Keeper", engine: "codex" });
+
+    expect(store.deleteProject(removed.id)).toBe(true);
+    expect(existsSync(projectDir(dir, removed.id))).toBe(false);
+    expect(store.getProject(removed.id)).toBeUndefined();
+    for (const table of ["master_chats", "master_chat_messages", "threads", "messages", "tasks", "artifacts", "events"]) {
+      const projectRows = table === "master_chats" || table === "threads"
+        ? store.sqlite.prepare(`SELECT * FROM ${table} WHERE project_id = ?`).all(removed.id)
+        : [];
+      expect(projectRows).toEqual([]);
+    }
+    expect(store.getProject(retained.id)).toBeDefined();
+    expect(store.getThread(retainedThread.id)).toBeDefined();
+    store.rebuildProjections();
+    expect(store.getProject(removed.id)).toBeUndefined();
   });
 });

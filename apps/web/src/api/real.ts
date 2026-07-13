@@ -16,6 +16,8 @@ import type {
   EngineDto,
   ImageAttachmentDto,
   ProjectDto,
+  ProjectFolderOptionsDto,
+  UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
   SendMessageRequest,
@@ -70,6 +72,18 @@ export const realApi: PonderosaApi = {
       method: "POST",
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
+  },
+  getProjectFolders() {
+    return requestJson<ProjectFolderOptionsDto>("/api/project-folders");
+  },
+  updateProject(projectId, patch) {
+    return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch satisfies UpdateProjectRequest),
+    });
+  },
+  deleteProject(projectId) {
+    return requestJson<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
   },
   getAgentHealth(projectId) {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);

@@ -31,6 +31,10 @@ export function projectsDir(dataDir: string): string {
   return path.join(dataDir, "projects");
 }
 
+export function managedWorkspacesDir(dataDir: string): string {
+  return path.join(dataDir, "workspaces");
+}
+
 export function projectDir(dataDir: string, projectId: string): string {
   return path.join(projectsDir(dataDir), projectId);
 }

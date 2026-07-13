@@ -296,12 +296,26 @@ export const mockApi: PonderosaApi = {
     const project: ProjectDto = {
       id: `project-${Date.now()}`,
       label: request.label,
-      hostPath: request.hostPath,
+      hostPath: request.hostPath ?? `/tmp/ponderosa-workspaces/${request.createFolderName ?? `project-${Date.now()}`}`,
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
     };
     projects.push(project);
     return delay(project);
+  },
+  getProjectFolders() {
+    return delay({ managedRoot: "/tmp/ponderosa-workspaces", folders: projects.map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const })) });
+  },
+  updateProject(projectId, patch) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) return Promise.reject(new Error("Project not found"));
+    project.label = patch.label;
+    return delay(project);
+  },
+  deleteProject(projectId) {
+    const index = projects.findIndex((item) => item.id === projectId);
+    if (index >= 0) projects.splice(index, 1);
+    return delay(undefined);
   },
   getAgentHealth(projectId) {
     const generatedAt = new Date().toISOString();

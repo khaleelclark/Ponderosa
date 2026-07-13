@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -235,6 +235,57 @@ describe("generated artifact endpoints", () => {
     expect(download.headers["content-disposition"]).toContain("attachment");
     const foreign = artifact.previewUrl!.replace(`/projects/${project.id}/`, "/projects/not-the-owner/");
     expect((await app.inject({ method: "GET", url: foreign })).statusCode).toBe(404);
+    await app.close();
+  });
+});
+
+describe("project lifecycle API", () => {
+  it("creates a safe managed workspace when working folder selection is omitted", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const response = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Optional folder" } });
+    expect(response.statusCode).toBe(200);
+    const project = response.json<{ id: string; hostPath: string }>();
+    expect(project.hostPath.startsWith(path.join(dataDir, "workspaces") + path.sep)).toBe(true);
+    expect(statSync(project.hostPath).isDirectory()).toBe(true);
+    await app.close();
+  });
+
+  it("lists only registered and managed folders and creates a named empty managed folder", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    store.createProject({ label: "Registered", hostPath: repoDir });
+    const outside = mkdtempSync(path.join(tmpdir(), "pond-unregistered-"));
+    const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Created", createFolderName: "fresh-work" } });
+    expect(created.statusCode).toBe(200);
+    const createdProject = created.json<{ hostPath: string }>();
+    expect(createdProject.hostPath).toBe(path.join(dataDir, "workspaces", "fresh-work"));
+    expect(readdirSync(createdProject.hostPath)).toEqual([]);
+    const choices = await app.inject({ method: "GET", url: "/api/project-folders" });
+    const paths = choices.json<{ folders: Array<{ hostPath: string }> }>().folders.map((folder) => folder.hostPath);
+    expect(paths).toContain(repoDir);
+    expect(paths).toContain(createdProject.hostPath);
+    expect(paths).not.toContain(outside);
+    const collision = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Collision", createFolderName: "fresh-work" } });
+    expect(collision.statusCode).toBe(409);
+    rmSync(outside, { recursive: true, force: true });
+    await app.close();
+  });
+
+  it("renames and permanently deletes canonical project data without deleting source files", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Before", hostPath: repoDir });
+    const master = store.createMasterChat(project.id, { title: "Room" });
+    const thread = store.createThread(project.id, { title: "Agent", engine: "codex", masterChatId: master.id });
+    store.appendEvent(thread.id, { type: "user_message", text: "canonical execution input" });
+    const renamed = await app.inject({ method: "PATCH", url: `/api/projects/${project.id}`, payload: { label: "After" } });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({ id: project.id, label: "After", hostPath: repoDir });
+    const deleted = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(deleted.statusCode).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getThread(thread.id)).toBeUndefined();
+    expect(existsSync(path.join(dataDir, "projects", project.id))).toBe(false);
+    expect(existsSync(path.join(repoDir, "README.md"))).toBe(true);
+    expect((await app.inject({ method: "GET", url: `/api/files?projectId=${project.id}` })).statusCode).toBe(404);
     await app.close();
   });
 });

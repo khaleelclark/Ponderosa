@@ -23,6 +23,8 @@ import type {
   MultiAgentDirectMessageResponse,
   ImageAttachmentDto,
   ProjectDto,
+  ProjectFolderOptionsDto,
+  UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
   SendMessageRequest,
@@ -73,6 +75,9 @@ export class ApiRequestError extends Error {
 export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
+  getProjectFolders(): Promise<ProjectFolderOptionsDto>;
+  updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto>;
+  deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
   listMasterChats(projectId: string): Promise<MasterChatDto[]>;
   createMasterChat(projectId: string, request: CreateMasterChatRequest): Promise<MasterChatDto>;

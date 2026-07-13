@@ -43,6 +43,7 @@ import type {
   ThreadDto,
   ThreadState,
   ThinkingEntryDto,
+  UpdateProjectRequest,
   UpdateThreadMasterChatMembershipsRequest,
   UpdateMasterChatRequest,
   UpdateThreadRequest,
@@ -89,6 +90,7 @@ import {
   projectJsonPath,
   agentPresetsPath,
   projectsDir,
+  projectDir,
   threadDir,
   threadJsonPath,
   threadsDir,
@@ -692,7 +694,7 @@ export class ThreadStore {
 
   // ─── Projects ──────────────────────────────────────────────────────────────
 
-  createProject(input: CreateProjectRequest): ProjectDto {
+  createProject(input: CreateProjectRequest & { hostPath: string }): ProjectDto {
     const id = randomUUID();
     const now = new Date().toISOString();
     const record: ProjectJson = {
@@ -710,6 +712,34 @@ export class ThreadStore {
       .run();
     for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now };
+  }
+
+  updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
+    const current = this.getProject(id);
+    if (!current) return undefined;
+    const label = input.label.trim();
+    if (!label) throw new Error("project label is required");
+    const record: ProjectJson = { ...current, label };
+    writeJson(projectJsonPath(this.dataDir, id), record);
+    this.db.update(projects).set({ label }).where(eq(projects.id, id)).run();
+    return { ...current, label };
+  }
+
+  /** Permanently remove the canonical project tree and every rebuildable projection. */
+  deleteProject(id: string): boolean {
+    const current = this.getProject(id);
+    if (!current) return false;
+    const threadIds = this.listThreads(id).map((thread) => thread.id);
+    rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+    this.communicationEventCache.delete(id);
+    this.contextClassificationCache.delete(id);
+    this.communicationProjectionCache.delete(id);
+    for (const threadId of threadIds) {
+      this.logs.delete(threadId);
+      this.states.delete(threadId);
+    }
+    this.rebuildProjections();
+    return true;
   }
 
   listAgentPresets(projectId: string): AgentPresetDto[] {
