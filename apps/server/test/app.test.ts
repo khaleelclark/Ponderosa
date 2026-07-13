@@ -399,7 +399,10 @@ describe("persistent engine steering", () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
-    const app = createServer({ dataDir, store, engines, logger: false });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1 },
+    });
     const project = store.createProject({ label: "Persistent capabilities", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
     const agent = store.createAgent(project.id, { title: "Dinosaur", engine: "codex", conversationId: master.id });
@@ -443,6 +446,7 @@ describe("persistent engine steering", () => {
       dataDir, store, engines, logger: false,
       runtimeSessionScheduling: {
         idleTtlMs: 10,
+        maxIdleSessions: 1,
         setTimer: (callback) => {
           idleCallback = callback;
           return { unref() {} } as unknown as NodeJS.Timeout;
@@ -460,6 +464,22 @@ describe("persistent engine steering", () => {
     await vi.waitFor(() => expect(persistent.closed).toBe(1));
     await app.close();
     expect(persistent.closed).toBe(1);
+  });
+
+  it("closes idle persistent runtimes by default instead of retaining an implicit warm pool", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "No implicit warm pool", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Ephemeral", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "run" } });
+    await waitForRun(agent.id);
+
+    expect(persistent.opened).toBe(1);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await app.close();
   });
 
   it("bounds the global warm-idle runtime pool and resumes an evicted agent normally", async () => {

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
@@ -899,6 +899,35 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
       replyToMessageId: report.id,
       directReplyToAuthorAgentId: author.id,
     })).toThrow(/not an active agent/);
+  });
+
+  it("reconstructs delivery intents from durable dispatch snapshots without rescanning room timelines", () => {
+    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id });
+    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: master.id });
+    appendCanonicalConversationMessage(
+      master.id,
+      { text: "Direct" },
+      undefined,
+      "main",
+      [{ targetAgentId: first.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+    );
+    appendCanonicalConversationMessage(
+      master.id,
+      { text: "Collaborate" },
+      undefined,
+      "collaboration",
+      [
+        { targetAgentId: first.id, relayDepth: 0, mentionTrail: [], kind: "tag" },
+        { targetAgentId: second.id, relayDepth: 0, mentionTrail: [], kind: "tag" },
+      ],
+    );
+    const timelineReads = vi.spyOn(store, "getConversationMessages");
+
+    expect(store.getConversationDeliveryIntents(master.id)).toHaveLength(3);
+    expect(store.getConversationDeliveryIntents(master.id, "9999-01-01T00:00:00.000Z")).toEqual([]);
+    expect(timelineReads).not.toHaveBeenCalled();
   });
 });
 
