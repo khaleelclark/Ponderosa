@@ -55,6 +55,11 @@ file set, Tasks for structured work state, and Artifacts for durable outputs.
 Sources remain attached to their message in a compact footer. Generated PDFs are
 previewable and downloadable as project-scoped artifacts.
 
+Engine processes may stay warm briefly for responsive steering and follow-up,
+but idle agents must not retain an unbounded process and MCP stack. Canonical
+provider session identity survives process teardown so a later turn can resume
+without making runtime residency part of the product's memory model.
+
 ## Projects and agent organization
 
 Selecting an existing working folder when creating a project is optional. A
@@ -67,6 +72,11 @@ Delegation history and organization are different facts. Delegation provenance
 records how work originated and never changes. Organizational parentage controls
 where an agent appears now and can be promoted, demoted, or re-parented without
 rewriting execution history.
+
+Delegated work always settles. An explicit completed or blocked outcome is
+preferred. If a delegated runtime ends cleanly without declaring one, Ponderosa
+uses its durable completed response as the terminal result; if there is no
+result, it marks the objective blocked. The parent is notified in either case.
 
 ## The communication model
 

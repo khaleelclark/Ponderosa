@@ -1,5 +1,4 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArchiveOutlinedIcon from "@mui/icons-material/ArchiveOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
@@ -35,7 +34,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ThreadDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, MasterChatDto, MasterChatMessageDto, ProjectEngineCapabilitiesDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -44,7 +43,7 @@ import { activeCollaborationRecipients, allActiveRecipientIds, retainActiveRecip
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
-import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents } from "../mentions";
+import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isSubagentUiEnabled, type SubagentUiBinding } from "../subagents";
@@ -53,6 +52,28 @@ import { SubagentTreePanel } from "./SubagentTreePanel";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { useSubagents } from "../hooks/useSubagents";
+import { formatExecutionElapsed } from "./AgentDetail";
+
+function MasterRespondingIndicator({ agents, healthByAgentId }: {
+  agents: ThreadDto[];
+  healthByAgentId: Map<string, AgentHealthDto>;
+}): JSX.Element | null {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const responding = agents.flatMap((agent) => {
+    const activity = healthByAgentId.get(agent.id)?.runtimeActivity;
+    return activity ? [{ agent, activity }] : [];
+  });
+  if (responding.length === 0) return null;
+  const names = responding.map(({ agent }) => agent.title).join(", ");
+  const earliest = responding.map(({ activity }) => activity.startedAt).sort()[0]!;
+  return <Alert severity="info" role="status" aria-live="polite" sx={{ mb: 1.5 }}>
+    {names} {responding.length === 1 ? "is" : "are"} responding · {formatExecutionElapsed(earliest, now)}
+  </Alert>;
+}
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { MessageContextMenu } from "./MessageContextMenu";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
@@ -166,9 +187,9 @@ export function MasterChatView({
   engines,
   engineCapabilities,
   statusByAgentId,
+  healthByAgentId,
   onOpenAgent,
   onNewAgent,
-  onArchived,
   onDeleted,
   subagents,
 }: {
@@ -176,9 +197,9 @@ export function MasterChatView({
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   statusByAgentId: Map<string, AgentStatus>;
+  healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
   onNewAgent(master: MasterChatDto): void;
-  onArchived(): void;
   onDeleted(): void;
   /** Normalized UI binding; REST/SSE details stay in the future transport hook. */
   subagents?: SubagentUiBinding;
@@ -191,7 +212,6 @@ export function MasterChatView({
   );
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
-  const [archiveOpen, setArchiveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
@@ -441,15 +461,6 @@ export function MasterChatView({
     },
   });
 
-  const archive = useMutation({
-    mutationFn: () => api.updateMasterChat(masterChatId, { archived: true }),
-    onSuccess: () => {
-      invalidate();
-      setArchiveOpen(false);
-      onArchived();
-    },
-  });
-
   const deleteMasterChat = useMutation({
     mutationFn: () => api.deleteMasterChat(masterChatId),
     onSuccess: () => {
@@ -519,6 +530,7 @@ export function MasterChatView({
     ? undefined
     : [
         "broadcast",
+        "everyone",
         ...threads
           .filter((thread) => !thread.archived)
           .map((thread) => agentMentionHandle(thread.title))
@@ -546,7 +558,10 @@ export function MasterChatView({
       await broadcast.mutateAsync({ text: broadcastText, replyToMessageId: replyTo?.id });
       return;
     }
-    const targets = findMentioned(text);
+    const targets = hasEveryoneMention(text)
+      ? threads.filter((thread) => !thread.archived)
+      : findMentioned(text);
+    if (hasEveryoneMention(text) && targets.length === 0) throw new Error("There are no active agents to notify.");
     const route = resolveMasterChatSendRoute(directReplyTargetId, targets.map((target) => target.id));
     if (route.kind === "direct-reply") {
       if (!replyTo) throw new Error("The direct reply target is no longer available. Cancel the reply and try again.");
@@ -574,7 +589,7 @@ export function MasterChatView({
   };
 
   return (
-    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+    <Box data-testid="master-chat" data-master-chat-id={masterChatId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
@@ -600,11 +615,6 @@ export function MasterChatView({
               }}
             >
               <DriveFileRenameOutlineIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Archive">
-            <IconButton aria-label="Archive master chat" onClick={() => setArchiveOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
-              <ArchiveOutlinedIcon />
             </IconButton>
           </Tooltip>
           <Tooltip title="Delete">
@@ -757,7 +767,7 @@ export function MasterChatView({
             {conversation === "collaboration" ? (
               <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
             ) : (
-              <>This is your team's group chat. A plain message becomes shared project context and starts one fresh agent; <Box component="strong">#tag</Box> an agent to message it, or start with <Box component="strong">#broadcast</Box> to add shared context without starting an agent. Use <Box component="strong">@</Box> to reference a project file or folder.</>
+              <>Chat normally to start a fresh agent with the conversation’s shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file when you need them.</>
             )}
           </Alert>
           {conversation === "main" && !engineReady ? (
@@ -766,6 +776,7 @@ export function MasterChatView({
               host, or pick a signed-in engine, before spawning agents.
             </Alert>
           ) : null}
+          {conversation === "main" ? <MasterRespondingIndicator agents={threads} healthByAgentId={healthByAgentId} /> : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
             {conversation === "collaboration" && showSubagents && subagentBinding ? (
@@ -983,25 +994,6 @@ export function MasterChatView({
             onClick={() => rename.mutate(renameValue.trim())}
           >
             Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={archiveOpen} onClose={() => setArchiveOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Archive master chat?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            <Box component="strong">{masterChat.title}</Box> will be hidden from the sidebar. Its
-            agents keep running and remain visible in the Agents tab.
-          </Typography>
-          {archive.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(archive.error)}</Alert> : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setArchiveOpen(false)} disabled={archive.isPending}>
-            Cancel
-          </Button>
-          <Button color="warning" variant="contained" disabled={archive.isPending} onClick={() => archive.mutate()}>
-            Archive
           </Button>
         </DialogActions>
       </Dialog>

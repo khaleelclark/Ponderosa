@@ -597,8 +597,11 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   let body = "";
 
   if (event.type === "command") {
-    title = "Command";
-    body = event.command;
+    const internalCommunication = /PONDEROSA_(?:AGENT_MESSAGE|DELEGATION)|\/api\/agent-(?:messages|delegations)/u.test(event.command);
+    title = internalCommunication ? "Ponderosa communication" : "Command";
+    body = internalCommunication
+      ? "Sent a structured Ponderosa communication or delegation event."
+      : summarizeActivityText(event.command, 320);
   } else if (event.type === "file_change") {
     title = `File ${event.kind}`;
     body = event.path;
@@ -607,10 +610,10 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
     body = event.summary;
   } else if (event.type === "tool_call") {
     title = `Tool ${event.name}`;
-    body = JSON.stringify(event.input);
+    body = summarizeActivityText(JSON.stringify(event.input), 320);
   } else if (event.type === "tool_result") {
     title = event.isError ? "Tool error" : "Tool result";
-    body = event.output;
+    body = summarizeActivityText(event.output, 600);
   } else if (event.type === "error") {
     title = "Error";
     body = event.message;
@@ -627,6 +630,11 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
       </Typography>
     </Box>
   );
+}
+
+export function summarizeActivityText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…` : normalized;
 }
 
 export function ThinkingPane({ entries }: { entries: ThinkingEntryDto[] }): JSX.Element {
@@ -1312,7 +1320,7 @@ export function Composer({
                 : mentionedBusyHandles.length > 0
                 ? `${mentionedBusyHandles.map((handle) => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
-                  ? "Notifying every eligible agent in this collaboration room"
+                  ? "Notifying every active agent in this master chat"
                   : `Replying to ${mentionedHandles.map((handle) => `#${handle}`).join(", ")}`}
             </Typography>
           ) : null}
@@ -1345,7 +1353,7 @@ export function Composer({
                         ? `#${suggestion.handle}`
                         : suggestion.kind === "file"
                           ? <Box><Typography variant="body2">@{suggestion.entry.path}{suggestion.entry.kind === "dir" ? "/" : ""}</Typography><Typography variant="caption" color="text.secondary">{suggestion.entry.kind === "dir" ? "Folder" : "File"}</Typography></Box>
-                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.description}</Typography></Box>}
+                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.source} · {suggestion.command.description}</Typography></Box>}
                     </MenuItem>
                   ))}
                 </MenuList>

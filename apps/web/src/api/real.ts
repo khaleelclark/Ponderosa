@@ -50,7 +50,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   }
 
-  return (await response.json()) as T;
+  if (response.status === 204 || response.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+  const body = await response.text();
+  return (body ? JSON.parse(body) : undefined) as T;
 }
 
 function toQuery(params: Record<string, string | number | undefined>): string {

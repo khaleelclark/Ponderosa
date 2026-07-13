@@ -18,6 +18,7 @@ import {
   Paper,
   Select,
   Stack,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Tooltip,
@@ -38,7 +39,7 @@ import {
   type AgentStatus,
 } from "../agents";
 
-type StatusFilter = "all" | "running" | "waiting" | "completed" | "unassigned";
+type StatusFilter = "all" | "running" | "waiting" | "idle" | "unassigned";
 
 export function AgentsTab({
   agents,
@@ -60,6 +61,7 @@ export function AgentsTab({
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [masterFilter, setMasterFilter] = useState<string>("all");
+  const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const delegationByChildId = new Map(subagents.flatMap((run) => run.childThreadId ? [[run.childThreadId, run] as const] : []));
 
@@ -94,12 +96,13 @@ export function AgentsTab({
     if (statusFilter === "waiting" && status !== "waiting") {
       return false;
     }
-    if (statusFilter === "completed" && status !== "completed") {
+    if (statusFilter === "idle" && status !== "idle") {
       return false;
     }
     if (masterFilter !== "all" && !agentBelongsToMasterChat(agent, masterFilter)) {
       return false;
     }
+    if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
     return true;
   });
   const statusCounts = agents.reduce(
@@ -112,7 +115,7 @@ export function AgentsTab({
   );
 
   return (
-    <Box sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
+    <Box data-testid="agent-roster" sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
       <Stack
         direction="row"
         spacing={1}
@@ -143,10 +146,10 @@ export function AgentsTab({
           {statusCounts.stalled ? <Chip size="small" color="error" label={`${statusCounts.stalled} stalled`} /> : null}
           {statusCounts.interrupted ? <Chip size="small" color="error" label={`${statusCounts.interrupted} interrupted`} /> : null}
           <Chip size="small" color="warning" label={`${statusCounts.waiting} waiting`} />
+          <Chip size="small" label={`${statusCounts.idle} idle`} />
           {statusCounts.compacting ? <Chip size="small" color="info" label={`${statusCounts.compacting} compacting`} /> : null}
           {statusCounts.blocked ? <Chip size="small" color="error" label={`${statusCounts.blocked} blocked`} /> : null}
           {statusCounts.failed ? <Chip size="small" color="error" label={`${statusCounts.failed} failed`} /> : null}
-          <Chip size="small" color="success" label={`${statusCounts.completed} completed`} />
         </Stack>
         <Box sx={{ maxWidth: "100%", overflowX: "auto", pb: 0.25 }}>
           <ToggleButtonGroup
@@ -160,7 +163,7 @@ export function AgentsTab({
             <ToggleButton value="all">All</ToggleButton>
             <ToggleButton value="running">Running</ToggleButton>
             <ToggleButton value="waiting">Waiting</ToggleButton>
-            <ToggleButton value="completed">Completed</ToggleButton>
+            <ToggleButton value="idle">Idle</ToggleButton>
             <ToggleButton value="unassigned">Unassigned</ToggleButton>
           </ToggleButtonGroup>
         </Box>
@@ -180,6 +183,7 @@ export function AgentsTab({
             ))}
           </Select>
         </FormControl>
+        <TextField size="small" label="Search agents" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }} />
       </Stack>
 
       <Box sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>
@@ -187,13 +191,14 @@ export function AgentsTab({
           <Alert
             severity="info"
             action={
-              statusFilter !== "all" || masterFilter !== "all" ? (
+              statusFilter !== "all" || masterFilter !== "all" || search ? (
                 <Button
                   color="inherit"
                   size="small"
                   onClick={() => {
                     setStatusFilter("all");
                     setMasterFilter("all");
+                    setSearch("");
                   }}
                 >
                   Clear filters
