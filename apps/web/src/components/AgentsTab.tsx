@@ -234,6 +234,9 @@ export function AgentsTab({
                       </Typography>
                       <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
                     </Stack>
+                    <Typography variant="body2" color="text.secondary" noWrap>
+                      {agent.presetSnapshot?.name ?? "Generalist"} · {agent.presetSnapshot?.description ?? `General-purpose agent ${agent.title}`}
+                    </Typography>
                     <Stack
                       direction="row"
                       spacing={1}
@@ -264,7 +267,7 @@ export function AgentsTab({
                         sx={{ mt: 0.5, overflowWrap: "anywhere" }}
                         noWrap
                       >
-                        {activity}
+                        Current assignment: {activity}
                       </Typography>
                     ) : null}
                   </ButtonBase>

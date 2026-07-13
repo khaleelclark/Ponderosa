@@ -9,7 +9,6 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -39,11 +38,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
-import { activeCollaborationRecipients, allActiveRecipientIds, retainActiveRecipientIds } from "../collaborationRecipients";
 import { agentStatusColor, agentStatusLabel, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationChat, useMasterChat } from "../hooks/queries";
-import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
+import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveMasterChatSendRoute, uploadDirectReplyFiles } from "../masterChatReply";
 import { isAssignmentUiEnabled, type AssignmentUiBinding } from "../assignments";
@@ -218,7 +216,6 @@ export function MasterChatView({
   const [pendingDelete, setPendingDelete] = useState<ThreadDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MasterChatMessageDto | undefined>();
-  const [collaborationRecipientIds, setCollaborationRecipientIds] = useState<string[]>([]);
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
@@ -267,10 +264,6 @@ export function MasterChatView({
   const messages = compactDefined(detailQuery.data?.messages ?? []);
   const threads = compactDefined(detailQuery.data?.threads ?? []);
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
-  const activeRecipientKey = threads.filter((thread) => !thread.archived).map((thread) => thread.id).join("\0");
-  useEffect(() => {
-    setCollaborationRecipientIds((selected) => retainActiveRecipientIds(selected, threads));
-  }, [activeRecipientKey]);
   useLayoutEffect(() => {
     if (
       displayedMasterChatId.current !== masterChatId ||
@@ -526,9 +519,11 @@ export function MasterChatView({
   const agentTitle = (threadId: string | undefined): string =>
     threads.find((thread) => thread.id === threadId)?.title ?? "Agent";
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(threads, handle);
-  const activeCollaborationAgents = activeCollaborationRecipients(threads);
   const mentionHandles = conversation === "collaboration"
-    ? undefined
+    ? [
+        "everyone",
+        ...threads.filter((thread) => !thread.archived).map((thread) => agentMentionHandle(thread.title)),
+      ]
     : [
         "broadcast",
         "everyone",
@@ -547,9 +542,16 @@ export function MasterChatView({
   const submit = async (text: string, files: File[]) => {
     if (conversation === "collaboration") {
       if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
-      const recipientAgentIds = retainActiveRecipientIds(collaborationRecipientIds, threads);
-      if (recipientAgentIds.length === 0) throw new Error("Select at least one active recipient.");
-      await collaborate.mutateAsync({ text, recipientAgentIds: [...recipientAgentIds], replyToMessageId: replyTo?.id });
+      const activeThreads = threads.filter((thread) => !thread.archived);
+      let targets = hasEveryoneMention(text) ? activeThreads : findMentionedAgentsStrict(text, activeThreads);
+      if (targets.length === 0 && replyTo?.authorThreadId) {
+        const author = activeThreads.find((thread) => thread.id === replyTo.authorThreadId);
+        if (author) targets = [author];
+      }
+      if (targets.length === 0) throw new Error("Tag one unambiguous agent with #name, use #everyone, or reply to an agent message.");
+      const messageText = stripCollaborationRoutingTags(text, activeThreads);
+      if (!messageText) throw new Error("Add a message after the routing tag.");
+      await collaborate.mutateAsync({ text: messageText, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id });
       return;
     }
     const broadcastText = managerBroadcastText(text);
@@ -766,7 +768,7 @@ export function MasterChatView({
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {conversation === "collaboration" ? (
-              <>This is a separate, opt-in agent collaboration chat. Choose one or more active recipients before sending. “Everyone” selects the current active room members as an explicit audience.</>
+              <>This is a separate agent collaboration chat. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> for the current active room members.</>
             ) : (
               <>Chat normally to start a fresh agent with the conversation’s shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file when you need them.</>
             )}
@@ -791,7 +793,7 @@ export function MasterChatView({
             {(conversation === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {conversation === "collaboration"
-                  ? "No collaboration messages yet. Select recipients to give them this chat's context."
+                  ? "No collaboration messages yet. Tag an agent to give them this chat's context."
                   : "No messages yet. Send a task to spawn your first agent — it reports back here when it finishes or gets stuck."}
               </Typography>
             ) : null}
@@ -908,7 +910,7 @@ export function MasterChatView({
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             {conversation === "collaboration" ? (
               <Typography variant="caption" color="text.secondary">
-                Recipients are routed by stable identity. Agent #tags in message text are display-only.
+                Agent #tags resolve to stable identities. Ambiguous names fail closed; #everyone is always explicit.
               </Typography>
             ) : (
               <Typography variant="caption" color="text.secondary">
@@ -917,38 +919,6 @@ export function MasterChatView({
             )}
           </Box>
         ) : null}
-        {conversation === "collaboration" ? (
-          <FormControl fullWidth size="small" sx={{ px: { xs: 1, sm: 1.5 }, pt: 1 }}>
-            <InputLabel id="collaboration-recipients-label" sx={{ ml: { xs: 1, sm: 1.5 } }}>Recipients</InputLabel>
-            <Select
-              multiple
-              labelId="collaboration-recipients-label"
-              label="Recipients"
-              value={collaborationRecipientIds}
-              onChange={(event) => {
-                const selected = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
-                setCollaborationRecipientIds(selected.includes("__everyone__") ? allActiveRecipientIds(threads) : selected);
-              }}
-              renderValue={(selected) => selected.length === activeCollaborationAgents.length && selected.length > 0
-                ? `Everyone (${selected.length})`
-                : selected.map((id) => agentTitle(id)).join(", ")}
-            >
-              <MenuItem
-                value="__everyone__"
-                disabled={activeCollaborationAgents.length === 0}
-              >
-                <Checkbox checked={collaborationRecipientIds.length === activeCollaborationAgents.length && activeCollaborationAgents.length > 0} />
-                Everyone ({activeCollaborationAgents.length} active)
-              </MenuItem>
-              {activeCollaborationAgents.map((agent) => (
-                <MenuItem key={agent.id} value={agent.id}>
-                  <Checkbox checked={collaborationRecipientIds.includes(agent.id)} />
-                  {agent.title}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        ) : null}
         <Composer
           draftStorageKey={chatStateKey("draft", `master.${masterChatId}.${conversation}`)}
           disabled={busy}
@@ -956,10 +926,10 @@ export function MasterChatView({
           mentionHandles={mentionHandles}
           commands={commands}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={conversation === "collaboration" ? collaborationRecipientIds.length > 0 : engineReady}
+          allowUnmentionedSend={conversation === "collaboration" ? Boolean(replyTo?.authorThreadId) : engineReady}
           placeholder={
             conversation === "collaboration"
-              ? collaborationRecipientIds.length > 0 ? "Message selected recipients" : "Select at least one active recipient"
+              ? replyTo?.authorThreadId ? `Reply to ${agentTitle(replyTo.authorThreadId)}` : "Tag #agent or #everyone"
               : engineReady
                 ? `Describe a task — spawns an agent on ${activeEngine?.displayName ?? engine}`
                 : "#tag an agent or use #broadcast for shared context"

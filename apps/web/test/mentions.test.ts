@@ -1,6 +1,6 @@
 import type { ThreadDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedHandles, hasEveryoneMention } from "../src/mentions";
+import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgent, findMentionedAgents, findMentionedAgentsStrict, findMentionedHandles, hasEveryoneMention, stripCollaborationRoutingTags } from "../src/mentions";
 
 const thread = (title: string): ThreadDto => ({
   id: title,
@@ -75,5 +75,16 @@ describe("agent mentions", () => {
   it("resolves rendered agent tags to stable IDs without linking scope tags", () => {
     expect(agentIdForMentionHandle([thread("Cabrillo")], "cAbRiLlO")).toBe("Cabrillo");
     expect(agentIdForMentionHandle([thread("User")], "user")).toBeUndefined();
+  });
+
+  it("fails closed when a routing handle maps to more than one stable agent", () => {
+    const first = { ...thread("Reviewer"), id: "one" };
+    const second = { ...thread("Reviewer"), id: "two" };
+    expect(() => findMentionedAgentsStrict("#Reviewer inspect this", [first, second])).toThrow(/ambiguous/);
+    expect(findMentionedAgentsStrict("#Reviewer inspect this", [first])).toEqual([first]);
+  });
+
+  it("strips routing tags before canonical labels are rendered", () => {
+    expect(stripCollaborationRoutingTags("#Reviewer #everyone inspect this", [thread("Reviewer")])).toBe("inspect this");
   });
 });

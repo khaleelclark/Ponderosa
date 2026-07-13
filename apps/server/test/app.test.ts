@@ -540,6 +540,36 @@ describe("server chunk F", () => {
     expect(prompt).toContain("your execution id: execution-2");
   });
 
+  it("exposes and injects a structured Team Directory through run-bound discovery capabilities", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Directory", hostPath: repoDir });
+    const preset = store.listAgentPresets(project.id).find((item) => item.name === "Frontend")!;
+    const parent = store.createThread(project.id, { title: "Lead", engine: "codex", presetId: preset.id });
+    const child = store.createThread(project.id, { title: "Reviewer", engine: "codex" });
+    store.updateAgentOrganization(child.id, { parentAgentId: parent.id });
+    store.appendEvent(parent.id, { type: "task_update", taskId: "assignment", title: "Build directory", status: "running" });
+
+    await app.inject({ method: "POST", url: `/api/threads/${parent.id}/messages`, payload: { text: "Start" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const directory = await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } });
+    expect(directory.statusCode).toBe(200);
+    expect(directory.json()).toMatchObject({ projectId: project.id, agents: expect.arrayContaining([
+      expect.objectContaining({ agentId: parent.id, role: "Frontend", currentAssignment: "Active assignment", status: "running", childAgentIds: [child.id], engine: "codex" }),
+      expect.objectContaining({ agentId: child.id, parentAgentId: parent.id, role: "Generalist" }),
+    ]) });
+    expect((await app.inject({ method: "GET", url: `/api/agent-directory/${child.id}`, headers: { authorization: `Bearer ${token}` } })).json())
+      .toMatchObject({ agentId: child.id, parentAgentId: parent.id });
+    expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DIRECTORY_URL).toContain("/api/agent-directory");
+    expect(adapter.seeds[0]!.prompt).toContain("Current Team Directory");
+    expect(adapter.seeds[0]!.prompt).toContain(`\"agentId\":\"${child.id}\"`);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/team-directory` })).statusCode).toBe(200);
+    await cancelAndWait(app, parent.id);
+    expect((await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    await app.close();
+  });
+
   it("excludes hidden, generated, and credential-like project references", () => {
     expect(isProjectFileReferenceAllowed("src/app.ts")).toBe(true);
     for (const candidate of [".git/config", ".env.example", ".oauth_tokens.json", "node_modules/pkg/index.js", "config/credentials.json", "build/app.js"]) {
@@ -3324,7 +3354,12 @@ describe("server chunk F", () => {
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).toBeTruthy();
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN).not.toBe(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_TOKEN);
     expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_MESSAGE_URL).toBe("http://127.0.0.1:8787/api/agent-messages");
+    expect(adapter.seeds[1]!.environment?.PONDEROSA_AGENT_DIRECTORY_URL).toBe("http://127.0.0.1:8787/api/agent-directory");
     expect(adapter.seeds[1]!.environment?.PONDEROSA_DELEGATION_URL).toBe("http://127.0.0.1:8787/api/agent-delegations");
+    expect(adapter.seeds[1]!.prompt).toContain("Current Team Directory");
+    expect(adapter.seeds[1]!.prompt).toContain(`\"agentId\":\"${childId}\"`);
+    expect(adapter.seeds[1]!.prompt).toContain(`\"currentAssignment\":\"Safe review\"`);
+    expect(adapter.seeds[1]!.prompt).toContain(`\"status\":\"running\"`);
 
     const childCollaboration = await app.inject({
       method: "POST",

@@ -278,6 +278,25 @@ export interface ThreadDto {
   presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
 }
 
+export interface TeamDirectoryAgentDto {
+  agentId: string;
+  displayName: string;
+  role: string;
+  description: string;
+  status: AgentLifecycleStatus;
+  currentAssignment?: string;
+  parentAgentId?: string;
+  childAgentIds: string[];
+  engine: EngineId;
+  preset?: { id: string; name: string };
+}
+
+export interface TeamDirectoryDto {
+  projectId: string;
+  generatedAt: string;
+  agents: TeamDirectoryAgentDto[];
+}
+
 /** POST /api/projects/:id/threads body. */
 export interface CreateThreadRequest {
   title: string;
