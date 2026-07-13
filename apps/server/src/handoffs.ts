@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, 
 import path from "node:path";
 import type { MessageReferenceDto } from "@ponderosa/core";
 
-export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed";
+export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed" | "cancelled";
 
 export interface CollaborationDelivery {
   id: string;
@@ -33,6 +33,7 @@ export interface CollaborationDelivery {
   createdAt: string;
   deliveredAt?: string;
   acknowledgedAt?: string;
+  cancelledAt?: string;
   /** Number of recipient turns started for this delivery, including retries. */
   attempts?: number;
   /** Number of dispatcher claims rejected before a recipient turn could start. */
@@ -259,6 +260,13 @@ export class CollaborationDeliveryStore {
     });
   }
 
+  cancelBatch(ids: readonly string[], reason: string): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.cancel(id, reason);
+      return delivery ? [delivery] : [];
+    });
+  }
+
   failBatch(ids: readonly string[], failure: string): CollaborationDelivery[] {
     return ids.flatMap((id) => {
       const delivery = this.fail(id, failure);
@@ -282,6 +290,17 @@ export class CollaborationDeliveryStore {
     if (!delivery || delivery.status !== "delivered") return delivery;
     const { failure: _failure, ...succeeded } = delivery;
     return this.persist({ ...succeeded, status: "acknowledged", acknowledgedAt: new Date().toISOString() }, "replace");
+  }
+
+  cancel(id: string, reason: string): CollaborationDelivery | undefined {
+    const delivery = this.deliveries.get(id);
+    if (!delivery || delivery.status !== "delivered") return delivery;
+    return this.persist({
+      ...delivery,
+      status: "cancelled",
+      cancelledAt: new Date().toISOString(),
+      failure: reason,
+    }, "replace");
   }
 
   /**

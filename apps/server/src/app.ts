@@ -234,7 +234,10 @@ interface InboundMessageContext {
 
 type Subscriber = (stored: StoredLogEvent) => void;
 
-const MAX_AGENT_MENTION_RELAYS = 12;
+// Keep only a bounded replay-detection window. This is deliberately not a total
+// collaboration-hop limit: a healthy organization may have a long-running
+// exchange, while exact repeated handoffs still need cycle protection.
+const MAX_AGENT_MENTION_REPLAY_WINDOW = 64;
 const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
@@ -266,6 +269,10 @@ function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, t
     .update("\0")
     .update(text.trim().replace(/\s+/g, " ").toLocaleLowerCase())
     .digest("hex");
+}
+
+function advanceMentionTrail(mentionTrail: string[], fingerprint: string): string[] {
+  return [...mentionTrail, fingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
 }
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
@@ -1495,7 +1502,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     conversationId: string,
     authorAgentId: string,
     text: string,
-    relayDepth: number,
+    _relayDepth: number,
     mentionTrail: string[],
   ): { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } {
     const detail = collaborationViewDetail(conversationId);
@@ -1513,16 +1520,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const fingerprint = mentionRelayFingerprint(authorAgentId, target.id, text);
       const blockedReason = authorAgentId && mentionTrail.includes(fingerprint)
         ? "the same handoff already occurred in this collaboration chain"
-        : authorAgentId && relayDepth >= MAX_AGENT_MENTION_RELAYS
-          ? "the collaboration reached its 12-handoff safety limit"
-          : undefined;
+        : undefined;
       if (blockedReason) {
         blocked.push({ title: target.title, reason: blockedReason });
       } else {
+        const nextTrail = authorAgentId ? advanceMentionTrail(mentionTrail, fingerprint) : [];
         intents.push({
           targetAgentId: target.id,
-          relayDepth: authorAgentId ? relayDepth + 1 : 0,
-          mentionTrail: authorAgentId ? [...mentionTrail, fingerprint] : [],
+          relayDepth: nextTrail.length,
+          mentionTrail: nextTrail,
           kind: "tag",
           audience: hasEveryoneMention(text) ? "everyone" : "mention",
         });
@@ -1536,7 +1542,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     authorAgentId: string,
     recipientAgentIds: string[],
     text: string,
-    relayDepth: number,
+    _relayDepth: number,
     mentionTrail: string[],
   ): { text: string; intents: ConversationDeliveryIntent[]; error?: string } {
     const detail = store.getCollaborationViewDetail(conversationId);
@@ -1553,13 +1559,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (mentionTrail.includes(fingerprint)) {
         return { text, intents: [], error: "the same collaboration handoff already occurred in this delivery chain" };
       }
-      if (relayDepth >= MAX_AGENT_MENTION_RELAYS) {
-        return { text, intents: [], error: "the collaboration reached its 12-handoff safety limit" };
-      }
+      const nextTrail = advanceMentionTrail(mentionTrail, fingerprint);
       intents.push({
         targetAgentId: target!.id,
-        relayDepth: relayDepth + 1,
-        mentionTrail: [...mentionTrail, fingerprint],
+        relayDepth: nextTrail.length,
+        mentionTrail: nextTrail,
         kind: "tag",
         audience: "mention",
       });
@@ -2139,6 +2143,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (active.leaseTimer) clearExecutionLeaseTimer(active.leaseTimer);
         active.controller.abort();
         activeRuns.delete(agentId);
+        agentMessageCapabilities.delete(active.messageCapability);
       }
       const runtime = runtimeSessions.get(agentId);
       if (runtime) {
@@ -2919,7 +2924,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const run = activeRuns.get(agent.id);
       if (run) {
         run.controller.abort();
-        releaseActiveRun(agent.id, run, "cancelled");
+        if (releaseActiveRun(agent.id, run, "cancelled")) {
+          agentMessageCapabilities.delete(run.messageCapability);
+        }
       }
       const runtime = runtimeSessions.get(agent.id);
       if (runtime) {
@@ -2929,7 +2936,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const deleted = store.deleteAgent(id);
     if (!deleted) return reply.code(404).send({ error: "agent not found" });
-    collaborationDeliveries.deleteAgents(new Set(subtree.map((agent) => agent.id)));
+    const deletedAgentIds = new Set(subtree.map((agent) => agent.id));
+    for (const agentId of deletedAgentIds) {
+      subscribers.delete(agentId);
+      dispatchingTurns.delete(agentId);
+      scheduledSessionRollovers.delete(agentId);
+    }
+    collaborationDeliveries.deleteAgents(deletedAgentIds);
+    contextCursors.deleteAgents(deletedAgentIds);
+    runLedger.deleteAgents(deletedAgentIds);
     return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
   });
 
@@ -3171,14 +3186,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const mentionDepth = request.body.agentMentionDepth;
       if (
         mentionDepth !== undefined &&
-        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > MAX_AGENT_MENTION_RELAYS)
+        (!Number.isInteger(mentionDepth) || mentionDepth < 0 || mentionDepth > MAX_AGENT_MENTION_REPLAY_WINDOW)
       ) {
-        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 12" });
+        return reply.code(400).send({ error: "agentMentionDepth must be an integer from 0 to 64" });
       }
       const mentionTrail = request.body.agentMentionTrail ?? [];
       if (
         !Array.isArray(mentionTrail) ||
-        mentionTrail.length > MAX_AGENT_MENTION_RELAYS ||
+        mentionTrail.length > MAX_AGENT_MENTION_REPLAY_WINDOW ||
         mentionTrail.some((fingerprint) => !/^[a-f0-9]{64}$/.test(fingerprint)) ||
         mentionTrail.length !== (mentionDepth ?? 0)
       ) {
@@ -3777,6 +3792,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.post<{ Params: { id: string } }>("/api/agents/:id/cancel", async (request) => {
     const run = activeRuns.get(request.params.id);
     if (!run || !transitionRun(request.params.id, run, "cancelling")) return { cancelled: false };
+    if (run.deliveryIds?.length) collaborationDeliveries.cancelBatch(run.deliveryIds, "cancelled by user");
+    const released = releaseActiveRun(request.params.id, run, "cancelled");
+    if (released) {
+      agentMessageCapabilities.delete(run.messageCapability);
+      scheduledSessionRollovers.delete(request.params.id);
+    }
     run.controller.abort();
     const runtime = runtimeSessions.get(request.params.id);
     if (runtime) {
@@ -3788,6 +3809,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       executionId: run.executionId,
     });
     publish(request.params.id, lifecycle);
+    if (released) runDeliveryDispatch(request.params.id);
     return { cancelled: true };
   });
 
