@@ -3,12 +3,25 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
-import { CodexAppServerSession } from "../src/codex-app-server.js";
+import { CodexAppServerSession, mapCodexAppServerNotification } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
 
 describe("Codex app-server persistent runtime", () => {
+  it("separates completed response blocks in Work log output", () => {
+    const completed = (id: string, text: string) => mapCodexAppServerNotification({
+      jsonrpc: "2.0",
+      method: "item/completed",
+      params: { item: { id, type: "agentMessage", text } },
+    } as never, "/repo");
+
+    const text = [...completed("one", "Acadia."), ...completed("two", "The review is complete.")]
+      .flatMap((event) => event.type === "text" ? [event.delta] : [])
+      .join("");
+    expect(text).toBe("Acadia.\n\nThe review is complete.\n\n");
+  });
+
   it("starts one persistent thread and steers its active turn without spawning another", async () => {
     const controller = new AbortController();
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
@@ -37,7 +50,7 @@ describe("Codex app-server persistent runtime", () => {
     await collecting;
     expect(events).toEqual([
       { type: "session", sessionId: "codex-thread-v1" },
-      { type: "text", delta: "steered response" },
+      { type: "text", delta: "steered response\n\n" },
       { type: "command", command: "git status", cwd: "/repo" },
       { type: "tool_result", id: "c1", output: "clean" },
       { type: "turn_done" },
@@ -89,7 +102,7 @@ describe("Codex app-server persistent runtime", () => {
       input: { intent: "broadcast", text: "Managed result" },
     });
     expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", id: "tool-1" }));
-    expect(events).toContainEqual({ type: "text", delta: "Sent through Ponderosa." });
+    expect(events).toContainEqual({ type: "text", delta: "Sent through Ponderosa.\n\n" });
     await session.close();
   });
 });

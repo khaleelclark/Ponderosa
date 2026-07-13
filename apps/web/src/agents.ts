@@ -2,7 +2,7 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentLifecycleStatus, AgentRunDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentLifecycleStatus, AgentRunDto, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
   agent: AgentDto;
@@ -101,6 +101,23 @@ export function deriveAgentStatus(
   const latest = [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   if (latest && ["failed", "cancelled", "interrupted", "blocked", "stalled"].includes(latest.status)) return latest.status;
   return "idle";
+}
+
+/**
+ * Merge the canonical health projection with roster-backed detail. Health may
+ * contain a just-created managed agent before the roster query refreshes, so it
+ * must seed the map instead of merely decorating agents already in the roster.
+ */
+export function mergeAgentStatuses(
+  agents: AgentDto[],
+  health: AgentHealthDto[],
+  detailByAgentId: Map<string, AgentDetailDto | undefined>,
+): Map<string, AgentStatus> {
+  const statuses = new Map<string, AgentStatus>(health.map((agent) => [agent.agentId, agent.status]));
+  for (const agent of agents) {
+    if (!statuses.has(agent.id)) statuses.set(agent.id, deriveAgentStatus(detailByAgentId.get(agent.id)));
+  }
+  return statuses;
 }
 
 export function agentStatusLabel(status: AgentStatus): string {

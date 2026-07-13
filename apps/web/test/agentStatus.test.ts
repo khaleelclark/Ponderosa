@@ -1,6 +1,6 @@
-import type { AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentStatusLabel, deriveAgentStatus, orderedAgentOrganization } from "../src/agents";
+import { agentStatusLabel, deriveAgentStatus, mergeAgentStatuses, orderedAgentOrganization } from "../src/agents";
 import { eligibleOrganizationParents } from "../src/components/AgentDetail";
 
 const organizationAgent = (id: string, title: string, parent?: string): AgentDto => ({
@@ -29,6 +29,11 @@ describe("visible agent status", () => {
     const status = deriveAgentStatus(detailWith(["completed", "completed"]));
     expect(status).toBe("idle");
     expect(agentStatusLabel(status)).toBe("Idle");
+  });
+
+  it("keeps newly managed health identities visible before the roster refreshes", () => {
+    const health = [{ agentId: "new-child", status: "running" }] as AgentHealthDto[];
+    expect(mergeAgentStatuses([], health, new Map()).get("new-child")).toBe("running");
   });
 });
 

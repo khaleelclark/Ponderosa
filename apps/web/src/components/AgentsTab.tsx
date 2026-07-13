@@ -82,7 +82,7 @@ export function AgentsTab({
   });
 
   const masterName = (id: string | undefined): string =>
-    id ? (conversations.find((master) => master.id === id)?.title ?? "Unknown conversation") : "Unassigned";
+    id ? (conversations.find((master) => master.id === id)?.title ?? "Unknown Project chat") : "Unassigned";
 
   const filtered = orderedAgentOrganization(agents).filter(({ agent }) => {
     const status = statusByAgentId.get(agent.id) ?? "idle";
@@ -167,14 +167,14 @@ export function AgentsTab({
           </ToggleButtonGroup>
         </Box>
         <FormControl size="small" sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}>
-          <InputLabel id="agents-master-filter-label">Master chat</InputLabel>
+          <InputLabel id="agents-master-filter-label">Project chat</InputLabel>
           <Select
             labelId="agents-master-filter-label"
-            label="Master chat"
+            label="Project chat"
             value={masterFilter}
             onChange={(event: SelectChangeEvent) => setMasterFilter(event.target.value)}
           >
-            <MenuItem value="all">All conversations</MenuItem>
+            <MenuItem value="all">All Project chats</MenuItem>
             {conversations.map((master) => (
               <MenuItem key={master.id} value={master.id}>
                 {master.title}
@@ -251,7 +251,7 @@ export function AgentsTab({
                         label={masterName(agent.conversationId)}
                       />
                       {agent.conversationIds.length > 1 ? (
-                        <Chip size="small" variant="outlined" label={`+${agent.conversationIds.length - 1} chats`} />
+                        <Chip size="small" variant="outlined" label={`+${agent.conversationIds.length - 1} Project chats`} />
                       ) : null}
                       <Typography variant="caption" color="text.secondary">
                         updated {relativeTime(agent.updatedAt)}
@@ -321,7 +321,7 @@ export function AgentsTab({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its run history, work items, and artifacts. Any in-flight run is stopped.
+            its run history, work items, and files &amp; results. Any in-flight run is stopped.
             {pendingDelete && agentDescendants(pendingDelete.id, agents).length
               ? ` Its ${agentDescendants(pendingDelete.id, agents).length} direct and indirect reports will also be deleted unless promoted or reparented first.`
               : ""}

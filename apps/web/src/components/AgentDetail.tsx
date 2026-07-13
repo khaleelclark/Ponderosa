@@ -546,7 +546,7 @@ export function AgentDetail({
           <Typography component="pre" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", m: 0 }}>
             {detail.agent.spawnPrompt ?? "No initial message — this agent was created idle."}
           </Typography>
-          {detail.agent.spawnedByExecutionId ? <Typography variant="caption" color="text.secondary">Created during execution {detail.agent.spawnedByExecutionId}</Typography> : null}
+          {detail.agent.spawnedByExecutionId ? <Typography variant="caption" color="text.secondary">Created during run {detail.agent.spawnedByExecutionId}</Typography> : null}
         </Box> : null}
       </Box>
 
@@ -611,7 +611,7 @@ export function AgentDetail({
         <DialogContent>
           <Typography variant="body2">
             This permanently deletes <Box component="strong">{detail.agent.title}</Box>, including its
-            run history, work items, and artifacts.
+            run history, work items, and files &amp; results.
             {descendantCount ? ` Its ${descendantCount} direct and indirect report${descendantCount === 1 ? "" : "s"} will also be deleted unless promoted or reparented first.` : ""}
             {" "}This cannot be undone.
           </Typography>
@@ -655,16 +655,16 @@ export function AgentDetail({
       </Dialog>
 
       <Dialog open={membershipOpen} onClose={() => setMembershipOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Master chat membership</DialogTitle>
+        <DialogTitle>Project chat membership</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <FormControl fullWidth>
-              <InputLabel id="agent-memberships-label">Conversations</InputLabel>
+              <InputLabel id="agent-memberships-label">Project chats</InputLabel>
               <Select
                 labelId="agent-memberships-label"
                 multiple
                 value={membershipIds}
-                label="Conversations"
+                label="Project chats"
                 renderValue={(selected) => selected.map((id) => conversations.find((chat) => chat.id === id)?.title ?? id).join(", ")}
                 onChange={(event) => {
                   const ids = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
@@ -687,7 +687,7 @@ export function AgentDetail({
               </Select>
             </FormControl>
             <Typography variant="body2" color="text.secondary">
-              The home chat controls default routing and shared Broadcast context. Every membership shares this agent's single session and event log.
+              The home chat controls default routing and shared organizational context. Every membership uses this agent's single session and history.
             </Typography>
             {updateMemberships.isError ? <Alert severity="error">{String(updateMemberships.error)}</Alert> : null}
           </Stack>
@@ -717,7 +717,7 @@ export function AgentDetail({
             </Select>
           </FormControl>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            This changes the agent's direct manager. Its execution and communication history remain attached to the same agent.
+            This changes the agent's direct manager. Its run and message history remain attached to the same agent.
           </Typography>
           {updateOrganization.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateOrganization.error)}</Alert> : null}
         </DialogContent>
