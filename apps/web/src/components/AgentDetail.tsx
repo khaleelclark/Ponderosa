@@ -2,6 +2,8 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderCopyOutlinedIcon from "@mui/icons-material/FolderCopyOutlined";
+import TaskAltOutlinedIcon from "@mui/icons-material/TaskAltOutlined";
+import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
@@ -47,9 +49,9 @@ import { useThreadStream } from "../hooks/useThreadStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import { ActivityPane, ChangedFilesPane, ChatPane, Composer, ThinkingPane } from "./panes";
+import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, TasksPane, ThinkingPane } from "./panes";
 
-type AgentTab = "chat" | "thinking" | "activity" | "changed_files";
+type AgentTab = "chat" | "thinking" | "activity" | "changed_files" | "tasks" | "artifacts";
 
 export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
@@ -79,6 +81,8 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
   { value: "thinking", label: "Thinking", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
+  { value: "tasks", label: "Tasks", icon: <TaskAltOutlinedIcon /> },
+  { value: "artifacts", label: "Artifacts", icon: <Inventory2OutlinedIcon /> },
 ];
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
@@ -348,10 +352,12 @@ export function AgentDetail({
     thinking: <ThinkingPane entries={detail.thinking} />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
+    tasks: <TasksPane tasks={detail.tasks} timeline={stream.timeline} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} threadId={agentId} timeline={stream.timeline} />,
   };
 
   return (
-    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
       <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"

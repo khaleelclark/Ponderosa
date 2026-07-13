@@ -57,12 +57,22 @@ function ProjectTabs({
 }): JSX.Element {
   return (
     <Stack direction="row" sx={{ alignItems: "center", borderBottom: 1, borderColor: "divider" }}>
+      <FormControl size="small" sx={{ display: { xs: "flex", sm: "none" }, flex: 1, minWidth: 0, ml: 1 }}>
+        <Select
+          aria-label="Project"
+          value={projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : ""}
+          displayEmpty
+          onChange={(event) => onSelect(event.target.value)}
+        >
+          {projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
+        </Select>
+      </FormControl>
       <Tabs
         value={projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : false}
         onChange={(_event, value: string) => onSelect(value)}
         variant="scrollable"
         scrollButtons="auto"
-        sx={{ minHeight: 48, flex: 1, minWidth: 0 }}
+        sx={{ minHeight: 48, flex: 1, minWidth: 0, display: { xs: "none", sm: "flex" } }}
       >
         {projects.map((project) => (
           <Tab
@@ -136,6 +146,9 @@ export default function App({
     mutationFn: () =>
       api.createProject(createProjectRequest({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName })),
     onSuccess: (project) => {
+      queryClient.setQueryData<ProjectDto[]>(["projects"], (current = []) =>
+        current.some((item) => item.id === project.id) ? current : [...current, project],
+      );
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       setProjectDialogOpen(false);
       setProjectLabel("");
@@ -172,6 +185,7 @@ export default function App({
 
   return (
     <Box
+      data-testid="ponderosa-app"
       sx={{
         height: "100dvh",
         width: "100%",

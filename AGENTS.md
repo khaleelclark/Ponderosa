@@ -163,11 +163,21 @@ Ordinary runtime output → execution-scoped Thinking
 - Delegation lineage is immutable execution provenance. Mutable roster
   organization uses a separate organizational-parent projection; promoting or
   re-parenting an agent never rewrites how it was spawned.
+- A delegated runtime must always reach a terminal disposition. An explicit
+  outcome wins; if a clean turn ends without one, the server completes it from
+  durable ordinary output, or marks it blocked when no result exists, and wakes
+  the parent. `awaiting_disposition` is a bounded transition, never an idle sink.
+- Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
+  process does not erase the canonical provider session id; later turns may
+  resume it without retaining one process/MCP stack per idle agent indefinitely.
 - Activity and Changed Files are projections of canonical execution events.
   Generated PDF preview/download routes remain project- and thread-scoped.
 - Project folders are optional at creation. Ponderosa may create a managed empty
   workspace, but deleting a project removes Ponderosa-owned canonical data—not
   the selected source folder.
+- V1 Master Chats have two lifecycle states: active and deleted. Do not add an
+  archive state without a complete archive browser, restore flow, and retention
+  policy.
 
 ---
 

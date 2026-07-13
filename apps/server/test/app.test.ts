@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { ThreadStore } from "@ponderosa/threads";
-import { boundedSeedHistory, createServer, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 import { DelegationStore } from "../src/delegations.js";
 
@@ -129,6 +129,7 @@ class SteerableMockAdapter extends MockAdapter {
   readonly starts: RuntimeTurnInput[] = [];
   readonly steers: RuntimeTurnInput[] = [];
   opened = 0;
+  closed = 0;
   completeStartedTurns = false;
   onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
 
@@ -154,7 +155,7 @@ class SteerableMockAdapter extends MockAdapter {
         return { status: "accepted", turnId: "persistent-turn" };
       },
       interrupt: async () => undefined,
-      close: async () => undefined,
+      close: async () => { this.closed += 1; },
     };
   }
 }
@@ -390,6 +391,34 @@ describe("persistent engine steering", () => {
       .map((message) => message.text)).toEqual(["#user reply 1", "#user reply 2"]);
     await app.close();
   });
+
+  it("closes an idle persistent runtime after the bounded warm-session TTL", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    let idleCallback: (() => void) | undefined;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: {
+        idleTtlMs: 10,
+        setTimer: (callback) => {
+          idleCallback = callback;
+          return { unref() {} } as unknown as NodeJS.Timeout;
+        },
+        clearTimer: () => undefined,
+      },
+    });
+    const project = store.createProject({ label: "Runtime TTL", hostPath: repoDir });
+    const thread = store.createThread(project.id, { title: "Bounded", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/threads/${thread.id}/messages`, payload: { text: "run" } });
+    await waitForRun(thread.id);
+    expect(persistent.opened).toBe(1);
+    expect(persistent.closed).toBe(0);
+    idleCallback?.();
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await app.close();
+    expect(persistent.closed).toBe(1);
+  });
 });
 
 async function cancelAndWait(app: ReturnType<typeof createServer>, threadId: string): Promise<void> {
@@ -502,6 +531,21 @@ describe("server chunk F", () => {
     expect(bounded.at(-1)?.text.startsWith("79:")).toBe(true);
   });
 
+  it("binds every runtime turn to one stable agent and execution identity", () => {
+    const prompt = runtimeIdentityPrompt({ id: "agent-10", title: "Great Basin", projectId: "project-a" }, "execution-2");
+    expect(prompt).toContain("your agent id: agent-10");
+    expect(prompt).toContain("your display name: Great Basin");
+    expect(prompt).toContain("You are exactly Great Basin (agent-10)");
+    expect(prompt).toContain("your execution id: execution-2");
+  });
+
+  it("excludes hidden, generated, and credential-like project references", () => {
+    expect(isProjectFileReferenceAllowed("src/app.ts")).toBe(true);
+    for (const candidate of [".git/config", ".env.example", ".oauth_tokens.json", "node_modules/pkg/index.js", "config/credentials.json", "build/app.js"]) {
+      expect(isProjectFileReferenceAllowed(candidate), candidate).toBe(false);
+    }
+  });
+
   it("separates daemon liveness from work readiness", async () => {
     const app = createServer({ dataDir, store, engines, authToken: "operator-secret", logger: false });
 
@@ -539,6 +583,32 @@ describe("server chunk F", () => {
       runtimes: [{ id: "codex", authenticated: false, detail: "login required" }],
     });
     await unavailable.close();
+  });
+
+  it("keeps clean projects available when an older project has projection drift", async () => {
+    const project = store.createProject({ label: "Drifted legacy test", hostPath: repoDir });
+    vi.spyOn(store, "reconcileCommunicationEvents").mockReturnValue({
+      projectId: project.id,
+      canonicalEvents: 1,
+      linkedProjections: 0,
+      missingProjectionEventIds: ["legacy-event"],
+      duplicateProjectionEventIds: [],
+      orphanProjectionEventIds: [],
+      missingClassificationEventIds: [],
+      missingProjectionMetadataEventIds: [],
+      unlinkedLegacyMessageIds: [],
+      projectionReadMismatchMessageIds: [],
+      ok: false,
+    });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const ready = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({
+      status: "ready",
+      canAcceptWork: true,
+      checks: { communicationMigration: { ok: false, detail: expect.stringContaining("quarantined project") } },
+    });
+    await app.close();
   });
 
   it("validates preset options and snapshots server-resolved guidance into spawned agents", async () => {
@@ -708,7 +778,8 @@ describe("server chunk F", () => {
     store.appendEvent(oldAgent.id, { type: "session", sessionId: "old-provider-session" });
 
     const deleted = await app.inject({ method: "DELETE", url: `/api/master-chats/${oldMaster.id}` });
-    expect(deleted.statusCode).toBe(204);
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ deleted: true });
     const freshMaster = store.createMasterChat(project.id, { title: "Fresh room" });
     const created = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/threads`,
@@ -917,7 +988,8 @@ describe("server chunk F", () => {
     })).json<{ id: string }>();
 
     const deleteRes = await app.inject({ method: "DELETE", url: `/api/master-chats/${masterChat.id}` });
-    expect(deleteRes.statusCode).toBe(204);
+    expect(deleteRes.statusCode).toBe(200);
+    expect(deleteRes.json()).toEqual({ deleted: true });
     expect((await app.inject({ method: "GET", url: `/api/master-chats/${masterChat.id}` })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: `/api/threads/${thread.id}` })).json<{ thread: { masterChatId?: string } }>().thread.masterChatId).toBeUndefined();
     expect((await app.inject({ method: "DELETE", url: `/api/master-chats/${masterChat.id}` })).statusCode).toBe(404);
@@ -1010,6 +1082,8 @@ describe("server chunk F", () => {
     await waitForRun(thread.id, 2);
 
     expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.seeds[0]?.prompt).toContain(`your agent id: ${thread.id}`);
+    expect(adapter.seeds[0]?.prompt).toContain("your display name: Thread");
     expect(adapter.seeds[0]?.history).toEqual([]);
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.continues[0]?.resumeSessionId).toBe("sess-1");
@@ -2202,7 +2276,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("keeps a delegated objective awaiting disposition after turn_done without notifying its parent", async () => {
+  it("terminally completes delegated output and notifies its parent when the explicit callback is missed", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createMasterChat(project.id, { title: "Completion delivery" });
@@ -2222,13 +2296,20 @@ describe("server chunk F", () => {
     expect(delegated.statusCode).toBe(202);
     const run = delegated.json<{ run: { id: string; childThreadId: string } }>().run;
     await waitForRun(run.childThreadId);
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const state = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` }))
+        .json<Array<{ id: string; status: string }>>()
+        .find((item) => item.id === run.id)?.status;
+      if (state === "completed") break;
+      await sleep(10);
+    }
     expect((await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json()).toEqual([
-      expect.objectContaining({ id: run.id, status: "awaiting_disposition", canCancel: true }),
+      expect.objectContaining({ id: run.id, status: "completed", canCancel: false, disposition: expect.objectContaining({ message: "done" }) }),
     ]);
     const completionMessage = store.getCollaborationChatDetail(master.id)?.messages.find(
       (message) => message.text.includes("Delegated task “Research” completed"),
     );
-    expect(completionMessage).toBeUndefined();
+    expect(completionMessage).toBeDefined();
     expect(adapter.continues.filter((turn) => turn.threadId === parent.id)).toHaveLength(0);
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
     await app.close();
@@ -2737,7 +2818,7 @@ describe("server chunk F", () => {
     await waitForRun(queuedThread.id);
     const runs = (await app.inject({ method: "GET", url: `/api/master-chats/${master.id}/subagents` })).json<Array<{ id: string; status: string; failure?: { retryable: boolean } }>>();
     expect(runs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: queued.run.id, status: "awaiting_disposition" }),
+      expect.objectContaining({ id: queued.run.id, status: "completed" }),
       expect.objectContaining({ id: interrupted.run.id, status: "failed", failure: expect.objectContaining({ retryable: true }) }),
     ]));
     await app.close();

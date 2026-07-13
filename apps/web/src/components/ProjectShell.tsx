@@ -2,9 +2,9 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, MasterChatDto, ProjectEngineCapabilitiesDto, SubagentRunDto, ThreadDetailDto, ThreadDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { deriveAgentStatus, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
@@ -103,6 +103,9 @@ export function ProjectShell({
   const createMasterChat = useMutation({
     mutationFn: (input: CreateMasterChatInput) => api.createMasterChat(projectId, input),
     onSuccess: (master) => {
+      queryClient.setQueryData<MasterChatDto[]>(["master-chats", projectId], (current = []) =>
+        current.some((item) => item.id === master.id) ? current : [...current, master],
+      );
       void queryClient.invalidateQueries({ queryKey: ["master-chats", projectId] });
       setMasterDialogOpen(false);
       navigate({ kind: "master-chat", projectId, masterChatId: master.id });
@@ -119,6 +122,9 @@ export function ProjectShell({
         presetId: input.presetId,
       }),
     onSuccess: (agent) => {
+      queryClient.setQueryData<ThreadDto[]>(["threads", projectId], (current = []) =>
+        current.some((item) => item.id === agent.id) ? current : [...current, agent],
+      );
       void queryClient.invalidateQueries({ queryKey: ["threads", projectId] });
       if (agent.masterChatId) {
         void queryClient.invalidateQueries({ queryKey: ["master-chat", agent.masterChatId] });
@@ -159,6 +165,18 @@ export function ProjectShell({
 
   const loading = masterChatsQuery.isLoading || threadsQuery.isLoading;
 
+  useEffect(() => {
+    if (loading) return;
+    const missingMaster = route.kind === "master-chat" && !masterChats.some((master) => master.id === route.masterChatId);
+    const missingAgent = route.kind === "agent" && !agents.some((agent) => agent.id === route.agentId);
+    if (missingMaster || missingAgent) {
+      const fallback = masterChats[0];
+      navigate(fallback
+        ? { kind: "master-chat", projectId, masterChatId: fallback.id }
+        : { kind: "agents", projectId }, { replace: true });
+    }
+  }, [agents, loading, masterChats, navigate, projectId, route]);
+
   if (masterChatsQuery.isError || threadsQuery.isError) {
     return (
       <Box sx={{ p: 2 }}>
@@ -192,9 +210,9 @@ export function ProjectShell({
         engines={engines}
         engineCapabilities={engineCapabilities}
         statusByAgentId={statusByAgentId}
+        healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={openNewAgentFromMaster}
-        onArchived={() => navigate({ kind: "agents", projectId })}
         onDeleted={() => navigate({ kind: "agents", projectId })}
       />
     );
