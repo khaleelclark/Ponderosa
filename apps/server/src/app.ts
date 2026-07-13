@@ -206,6 +206,8 @@ interface AgentMessageCapability {
   runId: string;
   mentionDepth: number;
   mentionTrail: string[];
+  /** Completed Broadcasts answering a plain shared Master request render as ordinary chat prose. */
+  plainSharedReply?: boolean;
 }
 
 interface DelegationCapability {
@@ -431,7 +433,7 @@ function masterChatPrompt(
   const staticInstructions = incremental ? [] : [
     "You are handling a manager request that originated in Master Chat.",
     replyScope === "broadcast"
-      ? "The latest plain Master Chat request is shared work. Explicitly send a Broadcast when its completed answer or result should reach the manager and organization."
+      ? "The latest plain Master Chat request is shared work. Send its actual completed answer with intent broadcast, never direct_to_user. Reserve direct_to_user for a private question, private progress note, or a reply to an explicitly private manager message."
       : "The latest request is a Direct Message. Explicitly send direct_to_user to answer privately.",
     "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
     "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
@@ -520,7 +522,7 @@ function continuationPrompt(currentRequest: string, context: InboundMessageConte
   const channelRule = context.channel === "collaboration"
     ? "Explicitly send Collaboration to stable recipient IDs when another agent should receive this turn's result."
     : context.channel === "main"
-      ? "Explicitly use direct_to_user for a private answer or broadcast for durable organizational knowledge."
+      ? "A plain shared Master Chat request must receive its completed answer through broadcast, not direct_to_user. Use direct_to_user only for a private question or progress note."
       : "Explicitly use direct_to_user when the manager should receive an answer.";
   return [
     ...messageContextPrompt(context),
@@ -1567,7 +1569,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!currentAuthor.masterChatIds.includes(capability.masterChatId)) {
       return reply.code(409).send({ error: "agent is no longer an active member of this master chat" });
     }
-    let renderedText = intent === "broadcast" ? renderScopedMessage("broadcast", text) : text;
+    let renderedText = intent === "broadcast"
+      ? capability.plainSharedReply ? stripLeadingScopeTag(text, "broadcast") : renderScopedMessage("broadcast", text)
+      : text;
     let routing: { intents: MasterChatDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration" && !legacyChannel) {
       const recipientAgentIds = request.body.recipientAgentIds;
@@ -3249,6 +3253,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         runId,
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
+        ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
       });
       if (routingMasterChatId) {
         delegationCapabilities.set(delegationCapability, {
