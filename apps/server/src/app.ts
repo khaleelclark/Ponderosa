@@ -130,8 +130,6 @@ interface ActiveRun {
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
-  /** A managed Collaboration turn must explicitly hand off to this manager. */
-  requiredManagerReportAgentId?: string;
 }
 
 interface PersistentRuntime {
@@ -424,14 +422,19 @@ function agentMessagingPrompt(): string[] {
     "Agents cannot create reactions. A user emoji reaction arrives as a private notification with immutable reply context identifying the message they reacted to.",
     "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
     'Discover current teammates with GET "$PONDEROSA_AGENT_DIRECTORY_URL" or one stable identity with GET "$PONDEROSA_AGENT_DIRECTORY_URL/<agent-id>" using the same Bearer token.',
+    "The organization graph describes accountability and lifecycle ownership, not permitted communication paths.",
+    "Contact the smallest set of agents who need to act on the information. You may collaborate directly across reporting branches when another agent owns the affected work, has the needed expertise, requested the work, or will consume the result.",
+    "Reply directly to the agent who requested work. Send decisions to affected owners, deliverables to their consumers, and blockers to whoever can resolve them. Escalate to a manager only for priority conflicts, scope or ownership decisions, unresolved disagreements, resource needs, or outcomes that manager owns.",
+    "Managers are decision owners and synthesizers, not message relays. Do not send them routine peer coordination merely because they are above you in the organization.",
+    "Every Collaboration message must carry an actionable request, decision, handoff, evidence, blocker, or completion result. Do not send acknowledgments, greetings, thanks, duplicate updates, speculative status chatter, or FYI-only messages that wake an agent without requiring action.",
     "If you are a top-level agent, Broadcast completed answers and task results from a shared Conversation request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
     "Use Collaboration for agent-to-agent coordination. Use direct_to_user only for a question or private update the user themselves needs, never as an automatic completion receipt. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
-    "After asking another agent to work, end your turn. Do not poll, sleep, or remain active waiting for results. Managed agents run independently and report through Collaboration.",
+    "After asking another agent to work, end your turn. Do not poll, sleep, or remain active waiting for results. Agents run independently and return results through Collaboration to the recipients who need them.",
     "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
-    "Your direct reports are ordinary agents with their own chat, activity, files, and execution audit. Coordinate with them using stable agent IDs from the directory.",
-    "Accumulate results across those notification turns and update the manager once every expected task has reported.",
+    "Your direct reports are ordinary agents with their own chat, activity, files, and execution audit. Coordinate with them and any other relevant agent using stable IDs from the directory.",
+    "Accumulate results across notification turns and deliver one integrated result to the requester or accountable outcome owner once the expected work has reported.",
     'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
   ];
 }
@@ -493,21 +496,11 @@ function managerRelationshipPrompt(agent: Pick<AgentDto, "managerAgentId">): str
   }
   return [
     `You are a managed agent. Your direct manager is the stable agent id ${agent.managerAgentId}.`,
-    `Send questions, interim findings, and completed results to that manager with Collaboration recipientAgentIds ["${agent.managerAgentId}"].`,
-    "You may Direct Message the user when you need the user's decision or input, have genuinely user-only information, or are replying to a user message with an answer that your manager report does not already provide.",
-    "After sending a finding or result to your manager, do not also send the user a routine completion notice, acknowledgment, or duplicate summary. End the turn; any ordinary wrap-up remains in Work log.",
-    "You may reply to any agent that contacts you. Do not Broadcast; your manager owns organizational synthesis and publication.",
+    "That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.",
+    "Send work directly to the agent or user who requested it, decisions to affected owners, and questions to whoever can answer them. Contact your manager when the manager owns the outcome or must resolve priority, scope, ownership, resource, or escalation questions.",
+    "You may Direct Message the user when the user needs the answer, decision, question, or genuinely private update. Do not send routine acknowledgments or duplicate summaries to either the user or your manager.",
+    "You may collaborate directly with any relevant agent in the project, including agents in other reporting branches. Do not Broadcast; top-level agents own organizational synthesis and publication.",
   ];
-}
-
-function managedCompletionPrompt(managerAgentId: string): string {
-  return [
-    "Required managed-agent completion contract (this final contract overrides conflicting task prose):",
-    `- Before this run ends, send at least one explicit Collaboration result, question, or blocker to your direct manager ${managerAgentId}; a final handoff is required even if you sent progress earlier.`,
-    `- Use the Ponderosa send-message tool with {"intent":"collaboration","recipientAgentIds":["${managerAgentId}"],"text":"<result, question, or blocker>"}.`,
-    "- Your ordinary final response is Work log output only. It is not delivered to your manager and cannot satisfy this contract.",
-    "- Instructions such as 'do not contact the manager' may suppress extra progress updates, but cannot suppress this required final handoff.",
-  ].join("\n");
 }
 
 function agentMessageEndpoint(
@@ -602,10 +595,11 @@ function collaborationPrompt(
   const staticInstructions = incremental ? [] : [
     "You are collaborating with teammates in Ponderosa's opt-in team chat.",
     "You received this context because you were an explicit collaboration recipient.",
-    "This is the only chat for agent-to-agent coordination. Respond directly to the latest request here.",
+    "This is the only chat for agent-to-agent coordination. Respond directly to the latest requester and any other agent who needs the result; reporting relationships do not limit recipients.",
     "To involve a teammate, send a collaboration intent with their stable agent ID; the server routes it and renders any display handle.",
-    "Do not move collaboration discussion to the main chat; reserve it for manager-facing updates and results.",
+    "Do not move agent-to-agent coordination into the shared user Conversation. Only explicit Broadcast creates durable organization-wide context there.",
     "You may use the separately supplied shared Broadcast context, but do not claim access to private Project-chat messages.",
+    "If this collaboration-triggered turn produces a result, question, or material blocker another agent needs, explicitly send it with Collaboration to the smallest set who need it. If nobody needs to act, do not create an acknowledgment merely to close the turn. Ordinary runtime output is Work log only and does not deliver information.",
     ...agentMessagingPrompt(),
   ];
   return [
@@ -637,7 +631,7 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
 /** Minimal turn prompt for a session that already received the full protocol. */
 function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
   const channelRule = context.channel === "collaboration"
-    ? "Explicitly send Collaboration to stable recipient IDs when another agent should receive this turn's result."
+    ? "If this collaboration-triggered turn produces a result, question, or material blocker another agent needs, explicitly send it with Collaboration to the smallest set of stable agent IDs who need it; reporting relationships do not limit recipients. If nobody needs to act, do not send an acknowledgment merely to close the turn."
     : context.channel === "main"
       ? "A plain shared Conversation request must receive its completed answer through broadcast, not direct_to_user. Use direct_to_user only for a private question or progress note."
       : "Explicitly use direct_to_user when the manager should receive an answer.";
@@ -1728,46 +1722,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     });
   }
 
-  function hasManagedCompletionReport(
-    childAgentId: string,
-    executionId: string,
-    managerAgentId: string,
-  ): boolean {
-    const child = store.getAgent(childAgentId);
-    if (!child) return false;
-    return store.readCommunicationEvents(child.projectId).some((event) =>
-      event.intent === "collaboration" &&
-      event.sender.kind === "agent" &&
-      event.sender.agentId === childAgentId &&
-      event.sender.executionId === executionId &&
-      event.audience.agentIds.includes(managerAgentId));
-  }
-
-  function notifyManagerOfMissingReport(childAgentId: string, executionId: string): void {
-    if (closed) return;
-    const child = store.getAgent(childAgentId);
-    const manager = child?.managerAgentId ? store.getAgent(child.managerAgentId) : undefined;
-    if (!child || !manager || manager.archived) return;
-    const createdAt = new Date().toISOString();
-    queueCollaborationDelivery({
-      conversationId: child.conversationIds.find((id) => manager.conversationIds.includes(id)),
-      messageId: `managed-agent:${child.id}:${executionId}:missing-report`,
-      targetAgentId: manager.id,
-      authorAgentId: child.id,
-      text: [
-        "Internal managed-agent update (not a chat message).",
-        `${child.title} (${child.id}) completed execution ${executionId} without the required explicit Collaboration handoff to you.`,
-        "Its ordinary response remains only in the child's Work log and was not auto-delivered.",
-        "Ask the child to send an explicit Collaboration result before integrating the work.",
-      ].join("\n"),
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "manager_notification",
-      createdAt,
-      orderKey: store.nextDeliveryOrderKey(createdAt),
-    });
-  }
-
   app.get("/api/agent-directory", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
@@ -1809,7 +1763,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const currentAuthor = store.getAgent(capability.agentId);
     if (intent === "broadcast" && currentAuthor?.managerAgentId) {
       return reply.code(409).send({
-        error: "managed agents cannot broadcast; report to the direct manager with collaboration",
+        error: "managed agents cannot broadcast; use collaboration with the agents who need the information",
         managerAgentId: currentAuthor.managerAgentId,
       });
     }
@@ -3241,9 +3195,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const requestedDeliveryIds = collaborationDeliveryIds ?? (collaborationDeliveryId ? [collaborationDeliveryId] : []);
       const inboxDeliveries = requestedDeliveryIds.map((id) => collaborationDeliveries.get(id));
       const inboxDelivery = inboxDeliveries[0];
-      const requiredManagerReportAgentId = agent.managerAgentId && inboxDeliveries.some((delivery) => delivery?.kind !== "direct")
-        ? agent.managerAgentId
-        : undefined;
       if (
         requestedDeliveryIds.length > 0 &&
         (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
@@ -3363,14 +3314,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         if (activeRunDelivery === "steer" && existingRun.runtimeSession) {
           const steered = await existingRun.runtimeSession.steer({
-            prompt: `${runtimeIdentityPrompt(agent, existingRun.runId)}\n\nSteering update for the active turn:\n${text}${replyContext(pendingTurn.replyTo)}${requiredManagerReportAgentId ? `\n\n${managedCompletionPrompt(requiredManagerReportAgentId)}` : ""}`,
+            prompt: `${runtimeIdentityPrompt(agent, existingRun.runId)}\n\nSteering update for the active turn:\n${text}${replyContext(pendingTurn.replyTo)}`,
             kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
             model: request.body.model,
             effort: request.body.effort,
             clientMessageId: communicationEventId,
           });
           if (steered.status === "accepted") {
-            if (requiredManagerReportAgentId) existingRun.requiredManagerReportAgentId = requiredManagerReportAgentId;
             const stored = store.appendEvent(agent.id, {
               type: "user_message",
               text: auditText,
@@ -3560,7 +3510,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const completionContract = sharedTaskTurn
         ? sharedRequestCompletionPrompt()
         : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
-      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${requiredManagerReportAgentId ? `\n\n${managedCompletionPrompt(requiredManagerReportAgentId)}` : ""}`;
+      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
@@ -3620,7 +3570,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
         generation: durableClaim.generation,
         ownershipState: "running",
-        ...(requiredManagerReportAgentId ? { requiredManagerReportAgentId } : {}),
       };
       claimActiveRun(agent.id, activeRun);
       agentMessageCapabilities.set(messageCapability, {
@@ -3825,12 +3774,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runError = message;
         } finally {
           const owned = ownsActiveRun(agent.id, activeRun);
-          const missingManagerReport = Boolean(
-            owned &&
-            !runError &&
-            activeRun.requiredManagerReportAgentId &&
-            !hasManagedCompletionReport(agent.id, runId, activeRun.requiredManagerReportAgentId),
-          );
           if (owned && scheduledSessionRollovers.delete(agent.id)) {
             store.clearResumeSession(agent.id, "explicit_compaction");
           }
@@ -3847,13 +3790,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             }
             const terminal = store.appendEvent(agent.id, {
               type: "agent_lifecycle",
-              status: runError ? "failed" : missingManagerReport ? "blocked" : "completed",
-              reason: runError ? "runtime_error" : missingManagerReport ? "manager_report_missing" : "turn_completed",
+              status: runError ? "failed" : "completed",
+              reason: runError ? "runtime_error" : "turn_completed",
               executionId: runId,
             });
             publish(agent.id, terminal);
             if (runError) notifyManagerOfChildFailure(agent.id, runId, runError);
-            else if (missingManagerReport) notifyManagerOfMissingReport(agent.id, runId);
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
           if (released) {

@@ -962,7 +962,8 @@ describe("server chunk F", () => {
     }));
     const prompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
     expect(prompt).toContain(`Your direct manager is the stable agent id ${manager.id}`);
-    expect(prompt).toContain(`recipientAgentIds ["${manager.id}"]`);
+    expect(prompt).toContain("That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.");
+    expect(prompt).toContain("You may collaborate directly with any relevant agent in the project");
     expect(prompt).toContain("Latest message for you:\n#Specialist Investigate the usability risk and report to your manager.");
     expect(prompt).not.toContain("Required completion contract for this private user-to-agent request");
     await app.close();
@@ -1723,7 +1724,7 @@ describe("server chunk F", () => {
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
     expect(adapter.seeds[0]?.prompt).toContain("This is the only chat for agent-to-agent coordination.");
-    expect(adapter.seeds[0]?.prompt).toContain("Do not move collaboration discussion to the main chat");
+    expect(adapter.seeds[0]?.prompt).toContain("Do not move agent-to-agent coordination into the shared user Conversation");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n#Yosemite can you review this?");
     expect(store.getMessages(yosemite.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Yosemite can you review this?" })]),
@@ -2757,7 +2758,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("creates a normal managed agent, injects shared Broadcasts, and routes reporting to its manager", async () => {
+  it("creates a normal managed agent, injects shared Broadcasts, and permits direct need-to-know collaboration", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Child result delivery" });
@@ -2796,10 +2797,11 @@ describe("server chunk F", () => {
     const childToken = childSeed?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
     expect(childSeed?.prompt).toContain(`Your direct manager is the stable agent id ${parent.id}`);
-    expect(childSeed?.prompt).toContain(`recipientAgentIds ["${parent.id}"]`);
+    expect(childSeed?.prompt).toContain("That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.");
+    expect(childSeed?.prompt).toContain("Contact your manager when the manager owns the outcome");
+    expect(childSeed?.prompt).toContain("You may collaborate directly with any relevant agent in the project");
     expect(childSeed?.prompt).toContain("Do not Broadcast");
-    expect(childSeed?.prompt).toContain("do not also send the user a routine completion notice");
-    expect(childSeed?.prompt).toContain("ordinary wrap-up remains in Work log");
+    expect(childSeed?.prompt).toContain("Do not send routine acknowledgments or duplicate summaries");
     expect(childSeed?.prompt).toContain("Shared policy: verify claims before reporting.");
     expect(childSeed?.prompt).toContain("Research and report back.");
 
@@ -2816,7 +2818,7 @@ describe("server chunk F", () => {
     });
     expect(rejectedBroadcast.statusCode).toBe(409);
     expect(rejectedBroadcast.json()).toEqual({
-      error: "managed agents cannot broadcast; report to the direct manager with collaboration",
+      error: "managed agents cannot broadcast; use collaboration with the agents who need the information",
       managerAgentId: parent.id,
     });
     expect(store.readCommunicationEvents(project.id)).toEqual(eventsBeforeRejectedBroadcast);
@@ -2887,7 +2889,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("blocks a managed completion that omits its explicit manager handoff and wakes the manager without leaking output", async () => {
+  it("completes managed collaboration work without forcing a duplicate parent handoff", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Managed completion", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Completion supervision" });
@@ -2903,61 +2905,66 @@ describe("server chunk F", () => {
     adapter.mode = "normal";
     const assigned = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit, but do not contact the manager." },
+      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit. No other agent needs a delivery from this synthetic adapter." },
     });
     expect(assigned.statusCode).toBe(200);
     await waitForSeedCount(2);
     await waitForRun(child.id);
     await vi.waitFor(() => expect(store.readEvents(child.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: expect.objectContaining({ type: "agent_lifecycle", status: "blocked", reason: "manager_report_missing" }) }),
+      expect.objectContaining({ event: expect.objectContaining({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" }) }),
     ])));
 
     const childPrompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
-    expect(childPrompt).toContain("Required managed-agent completion contract");
-    expect(childPrompt.lastIndexOf("Required managed-agent completion contract"))
-      .toBeGreaterThan(childPrompt.indexOf("do not contact the manager"));
-    expect(childPrompt).toContain(`recipientAgentIds\":[\"${manager.id}\"]`);
+    expect(childPrompt).toContain("The organization graph describes accountability and lifecycle ownership, not permitted communication paths.");
+    expect(childPrompt).toContain("If this collaboration-triggered turn produces a result, question, or material blocker another agent needs");
+    expect(childPrompt).not.toContain("Required managed-agent completion contract");
     const childRun = (await app.inject({ method: "GET", url: `/api/agents/${child.id}` }))
       .json<{ runs: Array<{ status: string; reason: string }> }>().runs.at(-1);
-    expect(childRun).toMatchObject({ status: "blocked", reason: "manager_report_missing" });
+    expect(childRun).toMatchObject({ status: "completed", reason: "turn_completed" });
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.intent === "collaboration" && event.sender.kind === "agent" && event.sender.agentId === child.id)).toBe(false);
 
     await app.inject({ method: "POST", url: `/api/agents/${manager.id}/cancel` });
-    await vi.waitFor(() => expect([...adapter.seeds, ...adapter.continues].some((turn) =>
-      turn.agentId === manager.id && turn.prompt.includes("without the required explicit Collaboration handoff"))).toBe(true));
-    const managerFollowUp = [...adapter.seeds, ...adapter.continues].find((turn) =>
-      turn.agentId === manager.id && turn.prompt.includes("without the required explicit Collaboration handoff"));
-    expect(managerFollowUp?.prompt).toContain("ordinary response remains only in the child's Work log");
-    expect(managerFollowUp?.prompt).not.toContain("#Manager done");
+    expect([...adapter.seeds, ...adapter.continues].some((turn) =>
+      turn.agentId === manager.id && turn.prompt.includes("without the required explicit Collaboration handoff"))).toBe(false);
     await app.close();
   });
 
-  it("accepts an explicit execution-scoped Collaboration report as managed completion", async () => {
+  it("lets a managed agent deliver directly to a needed agent in another reporting branch", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Managed completion", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Completion supervision" });
-    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const project = store.createProject({ label: "Direct collaboration", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Cross-branch work" });
+    const director = store.createAgent(project.id, { title: "Director", engine: "codex", conversationId: master.id });
+    const firstManager = store.createAgent(project.id, {
+      title: "First manager", engine: "codex", conversationId: master.id, managerAgentId: director.id,
+    });
+    const secondManager = store.createAgent(project.id, {
+      title: "Second manager", engine: "codex", conversationId: master.id, managerAgentId: director.id,
+    });
     const child = store.createAgent(project.id, {
-      title: "Reporting worker", engine: "codex", conversationId: master.id, managerAgentId: manager.id,
+      title: "Reporting worker", engine: "codex", conversationId: master.id, managerAgentId: firstManager.id,
+    });
+    const consumer = store.createAgent(project.id, {
+      title: "Result consumer", engine: "codex", conversationId: master.id, managerAgentId: secondManager.id,
     });
 
     adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/messages`, payload: { text: "Supervise this work." } });
+    await app.inject({ method: "POST", url: `/api/agents/${firstManager.id}/messages`, payload: { text: "Coordinate the first branch." } });
     await waitForSeedCount(1);
     const managerToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
     adapter.mode = "normal";
     adapter.beforeResponse = async (opts) => {
+      if (opts.agentId !== child.id) return;
       const report = await app.inject({
         method: "POST", url: "/api/agent-messages",
         headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [manager.id], text: "Audit complete: all checks passed." },
+        payload: { intent: "collaboration", recipientAgentIds: [consumer.id], text: "Schema contract ready for your integration." },
       });
       expect(report.statusCode).toBe(200);
     };
     await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit." },
+      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Prepare the schema contract for the other branch's consumer." },
     });
     await waitForSeedCount(2);
     await waitForRun(child.id);
@@ -2972,12 +2979,18 @@ describe("server chunk F", () => {
       expect.objectContaining({
         intent: "collaboration",
         sender: { kind: "agent", agentId: child.id, executionId: childRun.id },
-        audience: { kind: "agents", agentIds: [manager.id] },
-        text: "Audit complete: all checks passed.",
+        audience: { kind: "agents", agentIds: [consumer.id] },
+        text: "Schema contract ready for your integration.",
       }),
     ]));
-    expect(store.readEvents(child.id).some((item) =>
-      item.event.type === "agent_lifecycle" && item.event.reason === "manager_report_missing")).toBe(false);
+    expect(store.readCommunicationEvents(project.id).some((event) =>
+      event.intent === "collaboration" &&
+      event.sender.kind === "agent" &&
+      event.sender.agentId === child.id &&
+      event.audience.agentIds.includes(firstManager.id))).toBe(false);
+    const childPrompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
+    expect(childPrompt).toContain("You may collaborate directly with any relevant agent in the project, including agents in other reporting branches.");
+    await app.inject({ method: "POST", url: `/api/agents/${firstManager.id}/cancel` });
     await app.close();
   });
 

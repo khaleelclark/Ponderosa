@@ -92,10 +92,14 @@ message remain inspectable.
 
 A newly created agent receives the current Project chat's Broadcast context, never
 its manager's private messages, Collaboration history, Work log, or provider
-session. Managed agents report questions, findings, and results to their direct
-manager through ordinary Collaboration. They may Direct Message the user and
-reply to agents that contact them, but only top-level agents Broadcast durable
-organizational synthesis.
+session. Managed agents use ordinary Collaboration to send questions, findings,
+decisions, and results directly to the agents who need them, including across
+reporting branches. The manager relationship defines accountability, escalation,
+creation, and lifecycle ownership—not a mandatory communication route. Agents
+return requested work to its requester or consumer and involve the manager when
+the manager owns the outcome or must resolve priority, scope, ownership, resource,
+or unresolved-risk questions. They may Direct Message the user, but only top-level
+agents Broadcast durable organizational synthesis.
 
 The reporting chain may be recursive. Runtime crashes wake the direct manager
 without manufacturing a chat message. Deleting a manager recursively deletes its
