@@ -29,7 +29,7 @@ export const PONDEROSA_SEND_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_SPAWN_AGENT_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_spawn_agent",
-  description: "Create one tracked Ponderosa agent that reports directly to the calling agent. Manager identity and conversation ownership are derived from the active runtime capability.",
+  description: "Create one tracked Ponderosa agent that reports directly to the calling agent. Model and effort are durable defaults for its turns; omitted values inherit the caller's current selection. Manager identity and conversation ownership are server-derived.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -42,6 +42,22 @@ export const PONDEROSA_SPAWN_AGENT_TOOL: RuntimeDynamicToolSpec = {
       effort: { type: "string" },
       presetId: { type: "string" },
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+    },
+  },
+};
+
+export const PONDEROSA_WAIT_FOR_REPORTS_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_wait_for_reports",
+  description: "Park after requesting work. Matching collaboration reports are persisted without waking this agent until all, any, or a quorum of the expected stable agent IDs have replied. User messages and managed-agent failures wake immediately.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["mode", "expectedAgentIds"],
+    properties: {
+      mode: { type: "string", enum: ["all", "any", "quorum"] },
+      expectedAgentIds: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } },
+      quorum: { type: "integer", minimum: 1, maximum: 100 },
+      deadline: { type: "string", description: "Optional future ISO-8601 timestamp that wakes the agent with the reports received so far." },
     },
   },
 };

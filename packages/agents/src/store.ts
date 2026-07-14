@@ -128,6 +128,8 @@ interface AgentJson {
   conversationIds?: string[];
   title: string;
   activeEngine: string;
+  model?: string;
+  effort?: string;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -1258,6 +1260,8 @@ export class AgentStore {
     const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
     if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
+    const model = preset?.model ?? input.model;
+    const effort = preset?.effort ?? input.effort;
     const record: AgentJson = {
       id,
       projectId,
@@ -1265,6 +1269,8 @@ export class AgentStore {
       conversationIds: input.conversationId ? [input.conversationId] : [],
       title: input.title,
       activeEngine: input.engine,
+      model,
+      effort,
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -1286,6 +1292,8 @@ export class AgentStore {
         conversationId: input.conversationId ?? null,
         title: input.title,
         activeEngine: input.engine,
+        model: model ?? null,
+        effort: effort ?? null,
         createdAt: now,
         updatedAt: now,
         archived: 0,
@@ -1924,6 +1932,8 @@ export class AgentStore {
             conversationId: primaryConversationId ?? null,
             title: t.title,
             activeEngine: t.activeEngine,
+            model: t.model ?? null,
+            effort: t.effort ?? null,
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
             archived: t.archived ? 1 : 0,
@@ -2141,6 +2151,8 @@ export class AgentStore {
         .orderBy(asc(agentConversationMemberships.position)).all().map((membership) => membership.conversationId),
       title: row.title,
       activeEngine: row.activeEngine,
+      model: row.model ?? undefined,
+      effort: row.effort ?? undefined,
       state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

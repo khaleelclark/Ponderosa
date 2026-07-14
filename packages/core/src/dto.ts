@@ -268,6 +268,10 @@ export interface AgentDto {
   title: string;
   /** The engine currently bound to this agent. */
   activeEngine: EngineId;
+  /** Durable provider selection used when a turn does not override it. */
+  model?: string;
+  /** Durable reasoning-effort selection used when a turn does not override it. */
+  effort?: string;
   state: AgentState;
   createdAt: string;
   updatedAt: string;
@@ -332,6 +336,25 @@ export interface AgentSpawnRequest {
 export interface AgentSpawnResponse {
   agent: AgentDto;
   accepted: boolean;
+  replayed: boolean;
+}
+
+export type AgentWaitMode = "all" | "any" | "quorum";
+
+/** Agent-facing durable wait registration. Ownership comes from the bearer capability. */
+export interface AgentWaitRequest {
+  mode: AgentWaitMode;
+  expectedAgentIds: string[];
+  quorum?: number;
+  deadline?: string;
+}
+
+export interface AgentWaitResponse {
+  waitId: string;
+  mode: AgentWaitMode;
+  expectedAgentIds: string[];
+  quorum: number;
+  deadline?: string;
   replayed: boolean;
 }
 

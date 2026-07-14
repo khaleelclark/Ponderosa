@@ -2175,6 +2175,7 @@ describe("server chunk F", () => {
     const opened = persistent.openedOptions[0]!;
     expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_send_message" }));
     expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_spawn_agent" }));
+    expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_wait_for_reports" }));
 
     const result = await opened.handleDynamicToolCall!({
       name: "ponderosa_send_message",
@@ -2201,7 +2202,8 @@ describe("server chunk F", () => {
       },
     });
     expect(spawned.success, spawned.text).toBe(true);
-    expect(JSON.parse(spawned.text)).toMatchObject({
+    const spawnedBody = JSON.parse(spawned.text);
+    expect(spawnedBody).toMatchObject({
       accepted: true,
       replayed: false,
       agent: {
@@ -2210,6 +2212,12 @@ describe("server chunk F", () => {
         spawnedByAgentId: agent.id,
       },
     });
+    const wait = await opened.handleDynamicToolCall!({
+      name: "ponderosa_wait_for_reports",
+      arguments: { mode: "all", expectedAgentIds: [spawnedBody.agent.id] },
+    });
+    expect(wait.success, wait.text).toBe(true);
+    expect(JSON.parse(wait.text)).toMatchObject({ mode: "all", quorum: 1, replayed: false });
     await app.close();
   });
 
@@ -2786,11 +2794,57 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("parks a manager until all expected reports arrive, then resumes once with the batch", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Durable wait" });
+    const parent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id, managerAgentId: parent.id });
+    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: master.id, managerAgentId: parent.id });
+    adapter.mode = "hang";
+
+    await Promise.all([parent, first, second].map((agent) => app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Begin." },
+    })));
+    await waitForSeedCount(3);
+    const tokenFor = (agentId: string) => adapter.seeds.find((turn) => turn.agentId === agentId)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const parentToken = tokenFor(parent.id)!;
+    const firstToken = tokenFor(first.id)!;
+    const secondToken = tokenFor(second.id)!;
+    const registered = await app.inject({
+      method: "POST", url: "/api/agent-waits", headers: { authorization: `Bearer ${parentToken}` },
+      payload: { mode: "all", expectedAgentIds: [first.id, second.id] },
+    });
+    expect(registered.statusCode).toBe(200);
+    expect(registered.json()).toMatchObject({ mode: "all", quorum: 2, replayed: false });
+    await cancelAndWait(app, parent.id);
+
+    const sendReport = (token: string, text: string) => app.inject({
+      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
+      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text },
+    });
+    expect((await sendReport(firstToken, "First report.")).statusCode).toBe(200);
+    await sleep(40);
+    const parentTurns = () => [...adapter.seeds, ...adapter.continues].filter((turn) => turn.agentId === parent.id);
+    expect(parentTurns()).toHaveLength(1);
+
+    expect((await sendReport(secondToken, "Second report.")).statusCode).toBe(200);
+    await vi.waitFor(() => expect(parentTurns()).toHaveLength(2));
+    expect(parentTurns()[1]?.prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
+    expect(parentTurns()[1]?.prompt).toContain("First report.");
+    expect(parentTurns()[1]?.prompt).toContain("Second report.");
+
+    await Promise.all([parent, first, second].map((agent) => cancelAndWait(app, agent.id)));
+    await app.close();
+  });
+
   it("creates a normal managed agent, injects shared Broadcasts, and permits direct need-to-know collaboration", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Child result delivery" });
-    const parent = store.createAgent(project.id, { title: "Cedar Breaks", engine: "codex", conversationId: master.id });
+    const parent = store.createAgent(project.id, {
+      title: "Cedar Breaks", engine: "codex", conversationId: master.id, model: "mock-model", effort: "high",
+    });
 
     adapter.mode = "hang";
     await app.inject({
@@ -2814,6 +2868,8 @@ describe("server chunk F", () => {
       spawnedByAgentId: parent.id,
       spawnedByExecutionId: expect.any(String),
       spawnPrompt: "Research and report back.",
+      model: "mock-model",
+      effort: "high",
     });
     const replay = await app.inject({
       method: "POST", url: "/api/agent-spawns", headers: { authorization: `Bearer ${parentToken}` },
@@ -2824,6 +2880,8 @@ describe("server chunk F", () => {
     const childSeed = adapter.seeds.find((seed) => seed.agentId === child.id);
     const childToken = childSeed?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
+    expect(childSeed).toMatchObject({ model: "mock-model", effort: "high" });
+    expect(childSeed?.environment?.PONDEROSA_AGENT_WAIT_URL).toBe("http://127.0.0.1:8787/api/agent-waits");
     expect(childSeed?.prompt).toContain(`Your direct manager is the stable agent id ${parent.id}`);
     expect(childSeed?.prompt).toContain("That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.");
     expect(childSeed?.prompt).toContain("Contact your manager when the manager owns the outcome");

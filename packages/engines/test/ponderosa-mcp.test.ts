@@ -40,6 +40,7 @@ describe("Ponderosa stdio MCP bridge", () => {
         ...process.env,
         PONDEROSA_AGENT_MESSAGE_URL: `http://127.0.0.1:${address.port}/api/agent-messages`,
         PONDEROSA_AGENT_SPAWN_URL: `http://127.0.0.1:${address.port}/api/agent-spawns`,
+        PONDEROSA_AGENT_WAIT_URL: `http://127.0.0.1:${address.port}/api/agent-waits`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -64,11 +65,18 @@ describe("Ponderosa stdio MCP bridge", () => {
       method: "tools/call",
       params: { name: "spawn_agent", arguments: { displayName: "Research", initialMessage: "Investigate.", idempotencyKey: "research-1" } },
     })}\n`);
+    child.stdin!.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: { name: "wait_for_reports", arguments: { mode: "all", expectedAgentIds: ["child-1"] } },
+    })}\n`);
 
-    await expect.poll(() => responses.length).toBe(4);
-    expect(responses[1]).toMatchObject({ result: { tools: [{ name: "send_message" }, { name: "spawn_agent" }] } });
+    await expect.poll(() => responses.length).toBe(5);
+    expect(responses[1]).toMatchObject({ result: { tools: [{ name: "send_message" }, { name: "spawn_agent" }, { name: "wait_for_reports" }] } });
     expect(responses[2]).toMatchObject({ result: { isError: false } });
     expect(responses[3]).toMatchObject({ result: { isError: false } });
+    expect(responses[4]).toMatchObject({ result: { isError: false } });
     expect(received).toEqual([
       {
         authorization: "Bearer secret-run-token",
@@ -79,6 +87,11 @@ describe("Ponderosa stdio MCP bridge", () => {
         authorization: "Bearer secret-run-token",
         url: "/api/agent-spawns",
         body: { displayName: "Research", initialMessage: "Investigate.", idempotencyKey: "research-1" },
+      },
+      {
+        authorization: "Bearer secret-run-token",
+        url: "/api/agent-waits",
+        body: { mode: "all", expectedAgentIds: ["child-1"] },
       },
     ]);
     await new Promise<void>((resolve) => http.close(() => resolve()));

@@ -1035,6 +1035,18 @@ describe("agent organizational hierarchy", () => {
     store.rebuildProjections();
     expect(store.getAgent(child.id)).toMatchObject({ spawnedByAgentId: manager.id, spawnPrompt: "Study the evidence." });
   });
+
+  it("persists and rebuilds durable agent model and effort defaults", () => {
+    const project = store.createProject({ label: "Runtime defaults", hostPath: dir });
+    const agent = store.createAgent(project.id, {
+      title: "Specialist", engine: "codex", model: "gpt-specialist", effort: "medium",
+    });
+    expect(agent).toMatchObject({ model: "gpt-specialist", effort: "medium" });
+
+    store.rebuildProjections();
+
+    expect(store.getAgent(agent.id)).toMatchObject({ model: "gpt-specialist", effort: "medium" });
+  });
 });
 
 describe("agent presets", () => {

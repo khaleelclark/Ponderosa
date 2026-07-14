@@ -25,6 +25,8 @@ export const agents = sqliteTable("agents", {
   conversationId: text("conversation_id"),
   title: text("title").notNull(),
   activeEngine: text("active_engine").notNull(),
+  model: text("model"),
+  effort: text("effort"),
   activeSessionId: text("active_session_id"),
   stateBranch: text("state_branch"),
   stateCommit: text("state_commit"),
