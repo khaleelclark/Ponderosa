@@ -152,6 +152,16 @@ export class CollaborationDeliveryStore {
     return this.pendingByTarget.get(agentId)?.size ?? 0;
   }
 
+  /** Stable append-order watermark used by durable wait registrations. */
+  watermark(): number {
+    return this.nextInsertionOrder;
+  }
+
+  /** Zero-based stable append position, reconstructed identically after restart. */
+  position(id: string): number {
+    return this.insertionOrder.get(id) ?? -1;
+  }
+
   /** Persist retry evidence before scheduling another dispatcher claim. */
   retryDispatchBatch(ids: readonly string[], failure: string, nextDispatchAt: string, maxAttempts: number): CollaborationDelivery[] {
     return ids.flatMap((id) => {

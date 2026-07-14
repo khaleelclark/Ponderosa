@@ -8,6 +8,8 @@ import type {
   Adapter,
   ApiPriceProfile,
   AgentSpawnRequest,
+  AgentWaitRequest,
+  AgentWaitResponse,
   AgentMessageChannel,
   AgentEvent,
   CommunicationEvent,
@@ -48,7 +50,7 @@ import type {
   TokenUsage,
   TokenUsageSummaryDto,
 } from "@ponderosa/core";
-import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL } from "@ponderosa/core";
+import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore } from "@ponderosa/agents";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
@@ -62,6 +64,7 @@ import {
   type CollaborationDeliveryBatch,
 } from "./handoffs.js";
 import { UserReactionStore } from "./user-reactions.js";
+import { AgentWaitStore, type AgentWaitCondition } from "./agent-waits.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -434,7 +437,8 @@ function agentMessagingPrompt(): string[] {
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
     "Use Collaboration for agent-to-agent coordination. Use direct_to_user only for a question or private update the user themselves needs, never as an automatic completion receipt. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
-    "After asking another agent to work, end your turn. Do not poll, sleep, or remain active waiting for results. Agents run independently and return results through Collaboration to the recipients who need them.",
+    "After asking another agent to work, register a durable wait when your next action depends on one or more reports, then end your turn. Do not poll, sleep, or remain active. Agents run independently and return results through Collaboration.",
+    "The wait tool is ponderosa_wait_for_reports in Codex and mcp__ponderosa__wait_for_reports in Claude. Supply stable expectedAgentIds and mode all, any, or quorum. Matching reports persist without waking you until the condition is satisfied; a user message or managed-agent failure wakes you immediately.",
     "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
     "Your direct reports are ordinary agents with their own chat, activity, files, and execution audit. Coordinate with them and any other relevant agent using stable IDs from the directory.",
     "Accumulate results across notification turns and deliver one integrated result to the requester or accountable outcome owner once the expected work has reported.",
@@ -486,10 +490,11 @@ function agentSpawnPrompt(): string[] {
     "When creating another agent under Ponderosa, never use an engine's internal spawn_agent, Task, or subagent mechanism; those agents are untracked and forbidden.",
     "Use only Ponderosa's managed-agent creation bridge. The new agent is a normal agent that reports directly to you:",
     "The tool is named ponderosa_spawn_agent in Codex and mcp__ponderosa__spawn_agent in Claude.",
-    'Example arguments: {"displayName":"Safe name","initialMessage":"Optional task, role, or introduction","runtime":"codex","idempotencyKey":"stable-key"}.',
+    'Example arguments: {"displayName":"Safe name","initialMessage":"Optional task, role, or introduction","runtime":"codex","model":"gpt-5.6-luna","effort":"high","idempotencyKey":"stable-key"}.',
+    "Set model and effort when the report should use a different tier. If omitted, the child inherits your current model and effort as durable defaults.",
     "initialMessage is optional. You may create an idle report and introduce or steer it later through ordinary Collaboration.",
     "Do not send managerAgentId, parentAgentId, agentId, conversationId, or execution ownership fields. Ponderosa derives the reporting line from your active capability.",
-    "After asking a report to work, end your turn. Do not poll or sleep; its messages and failures return through the normal managed-agent delivery system.",
+    "After asking reports to work, register a durable wait for the expected stable agent IDs when synthesis depends on their replies, then end your turn. Do not poll or sleep.",
   ];
 }
 
@@ -945,6 +950,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const runtimeSessions = new Map<string, PersistentRuntime>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
+  const agentWaits = new AgentWaitStore(opts.dataDir);
   const userReactions = new UserReactionStore(opts.dataDir);
   const runLedger = new RunLedger(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
@@ -957,6 +963,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const scheduledSessionRollovers = new Map<string, string>();
   const dispatchingTurns = new Set<string>();
   const deliveryRetryTimers = new Map<string, NodeJS.Timeout>();
+  const waitDeadlineTimers = new Map<string, NodeJS.Timeout>();
   const deliveryDispatches = new Set<Promise<void>>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct agent request.
@@ -1326,6 +1333,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return Math.max(0, Math.round(exponential + jitter));
   }
 
+  function clearWaitDeadline(agentId: string): void {
+    const timer = waitDeadlineTimers.get(agentId);
+    if (timer) clearTimeout(timer);
+    waitDeadlineTimers.delete(agentId);
+  }
+
+  function scheduleWaitDeadline(wait: AgentWaitCondition): void {
+    clearWaitDeadline(wait.agentId);
+    if (!wait.deadline || wait.status !== "active") return;
+    const delay = Math.max(0, Date.parse(wait.deadline) - deliveryNow());
+    const timer = setDeliveryTimer(() => {
+      waitDeadlineTimers.delete(wait.agentId);
+      const active = agentWaits.active(wait.agentId);
+      if (!active || active.id !== wait.id) return;
+      const evaluation = agentWaits.evaluate(wait.agentId, collaborationDeliveries.pending(wait.agentId), collaborationDeliveries, deliveryNow());
+      if (evaluation.wait?.status !== "expired") return;
+      queueCollaborationDelivery({
+        messageId: `wait-deadline:${wait.id}`,
+        targetAgentId: wait.agentId,
+        text: `Durable wait deadline reached. Continue with the reports received so far and explicitly identify any missing reporters from: ${wait.expectedAgentIds.join(", ")}.`,
+        relayDepth: 0,
+        mentionTrail: [],
+        kind: "manager_notification",
+      });
+    }, delay);
+    timer.unref?.();
+    waitDeadlineTimers.set(wait.agentId, timer);
+  }
+
   function scheduleDeliveryDispatch(agentId: string, delayMs = 0): void {
     if (closed || activeRuns.has(agentId) || deliveryRetryTimers.has(agentId)) return;
     const timer = setDeliveryTimer(() => {
@@ -1369,11 +1405,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   async function dispatchNextTurn(agentId: string): Promise<void> {
     if (closed) return;
     if (activeRuns.has(agentId)) return;
-    if (dispatchingTurns.has(agentId)) return;
+    if (dispatchingTurns.has(agentId)) {
+      scheduleDeliveryDispatch(agentId);
+      return;
+    }
     dispatchingTurns.add(agentId);
     let retryScheduled = false;
+    let waitHeld = false;
     try {
     const pending = collaborationDeliveries.pending(agentId);
+    const waitEvaluation = agentWaits.evaluate(agentId, pending, collaborationDeliveries, deliveryNow());
+    if (waitEvaluation.wait?.status !== "active") clearWaitDeadline(agentId);
+    if (waitEvaluation.hold) {
+      waitHeld = true;
+      return;
+    }
     const delivery = pending[0];
     if (!delivery) return;
     const eligibleAt = delivery.nextDispatchAt ? Date.parse(delivery.nextDispatchAt) : 0;
@@ -1451,7 +1497,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     } finally {
       dispatchingTurns.delete(agentId);
-      if (!closed && !retryScheduled && !activeRuns.has(agentId) && collaborationDeliveries.pendingCount(agentId) > 0) {
+      if (!closed && !retryScheduled && !waitHeld && !activeRuns.has(agentId) && collaborationDeliveries.pendingCount(agentId) > 0) {
         scheduleDeliveryDispatch(agentId);
       }
     }
@@ -1496,7 +1542,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-spawns" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-spawns" || request.url === "/api/agent-waits" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -1536,6 +1582,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       .flatMap((claim) => claim.deliveryIds ?? []));
     const recipients = new Set(collaborationDeliveries.recoverUnacknowledged(interruptedDeliveryIds));
     for (const agentId of reconcileCanonicalInbox()) recipients.add(agentId);
+    for (const wait of agentWaits.allActive()) scheduleWaitDeadline(wait);
     for (const agentId of recipients) {
       scheduleDeliveryDispatch(agentId);
     }
@@ -1556,6 +1603,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     closed = true;
     for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
     deliveryRetryTimers.clear();
+    for (const timer of waitDeadlineTimers.values()) clearTimeout(timer);
+    waitDeadlineTimers.clear();
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
       clearRunLeaseTimer(run);
@@ -2021,6 +2070,56 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { scheduled: true, afterRunId: capability.runId };
   });
 
+  app.post<{ Body: AgentWaitRequest }>("/api/agent-waits", async (request, reply): Promise<AgentWaitResponse | unknown> => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const agent = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token || !agent) {
+      return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    const mode = request.body?.mode;
+    const expectedAgentIds = Array.isArray(request.body?.expectedAgentIds)
+      ? [...new Set(request.body.expectedAgentIds.map((id) => id?.trim()).filter(Boolean))]
+      : [];
+    if (!(mode === "all" || mode === "any" || mode === "quorum")) {
+      return reply.code(400).send({ error: "mode must be all, any, or quorum" });
+    }
+    if (expectedAgentIds.length === 0 || expectedAgentIds.length > 100 || expectedAgentIds.length !== request.body.expectedAgentIds.length) {
+      return reply.code(400).send({ error: "expectedAgentIds must contain 1 to 100 unique stable agent IDs" });
+    }
+    const expectedAgents = expectedAgentIds.map((id) => store.getAgent(id));
+    if (expectedAgents.some((candidate) => !candidate || candidate.archived || candidate.projectId !== agent.projectId || candidate.id === agent.id)) {
+      return reply.code(400).send({ error: "every expected reporter must be another active agent in this project" });
+    }
+    const quorum = mode === "all" ? expectedAgentIds.length : mode === "any" ? 1 : request.body.quorum;
+    if (!Number.isInteger(quorum) || quorum! < 1 || quorum! > expectedAgentIds.length) {
+      return reply.code(400).send({ error: "quorum must be an integer between 1 and the number of expected reporters" });
+    }
+    const deadline = request.body.deadline?.trim();
+    if (deadline && (!Number.isFinite(Date.parse(deadline)) || Date.parse(deadline) <= deliveryNow())) {
+      return reply.code(400).send({ error: "deadline must be a future ISO-8601 timestamp" });
+    }
+    const registered = agentWaits.register({
+      agentId: agent.id,
+      executionId: capability.runId,
+      mode,
+      expectedAgentIds,
+      quorum: quorum!,
+      deliveryWatermark: collaborationDeliveries.watermark(),
+      ...(deadline ? { deadline } : {}),
+    });
+    scheduleWaitDeadline(registered.wait);
+    return {
+      waitId: registered.wait.id,
+      mode: registered.wait.mode,
+      expectedAgentIds: registered.wait.expectedAgentIds,
+      quorum: registered.wait.quorum,
+      ...(registered.wait.deadline ? { deadline: registered.wait.deadline } : {}),
+      replayed: registered.replayed,
+    };
+  });
+
   app.post<{ Body: AgentSpawnRequest & Record<string, unknown> }>(
     "/api/agent-spawns",
     async (request, reply) => {
@@ -2057,11 +2156,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "preset is unavailable for this project" });
       }
       const runtime = preset?.engine ?? input.runtime?.trim() ?? parent.activeEngine;
-      if (!engines.has(runtime)) return reply.code(400).send({ error: "runtime is not configured" });
+      const configuredRuntime = engines.get(runtime);
+      if (!configuredRuntime) return reply.code(400).send({ error: "runtime is not configured" });
+      const parentRuns = store.getRuns(parent.id);
+      const latestParentRun = [...parentRuns].reverse().find((run) => run.engine === runtime && (run.model || run.effort));
+      const inheritParentSelection = runtime === parent.activeEngine;
+      const requestedModel = input.model?.trim() || undefined;
+      const requestedEffort = input.effort?.trim() || undefined;
+      const model = preset?.model ?? requestedModel ?? (inheritParentSelection ? parent.model ?? latestParentRun?.model ?? parent.presetSnapshot?.model : undefined);
+      const effort = preset?.effort ?? requestedEffort ?? (inheritParentSelection ? parent.effort ?? latestParentRun?.effort ?? parent.presetSnapshot?.effort : undefined);
+      if (model && !configuredRuntime.adapter.listModels().some((option) => option.id === model)) {
+        return reply.code(400).send({ error: "model is not available for runtime" });
+      }
+      if (effort && !configuredRuntime.adapter.listEfforts().some((option) => option.id === effort)) {
+        return reply.code(400).send({ error: "effort is not available for runtime" });
+      }
 
       const replay = store.findAgentSpawn(parent.id, capability.runId, idempotencyKey);
       if (replay) {
-        if (replay.title !== displayName || replay.spawnPrompt !== initialMessage || replay.activeEngine !== runtime) {
+        if (replay.title !== displayName || replay.spawnPrompt !== initialMessage || replay.activeEngine !== runtime ||
+          replay.model !== model || replay.effort !== effort || replay.presetSnapshot?.id !== preset?.id) {
           return reply.code(409).send({ error: "idempotencyKey was already used with different agent creation fields" });
         }
         return { agent: replay, accepted: true, replayed: true };
@@ -2073,8 +2187,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           title: displayName,
           engine: runtime,
           conversationId: roomId,
-          model: preset?.model ?? input.model,
-          effort: preset?.effort ?? input.effort,
+          model,
+          effort,
           presetId: preset?.id,
           managerAgentId: parent.id,
         }, {
@@ -2279,8 +2393,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       subscribers.delete(agentId);
       dispatchingTurns.delete(agentId);
       scheduledSessionRollovers.delete(agentId);
+      clearWaitDeadline(agentId);
     }
     collaborationDeliveries.deleteAgents(agentIds);
+    agentWaits.deleteAgents(agentIds);
     userReactions.deleteProject(project.id);
     contextCursors.deleteAgents(agentIds);
     runLedger.deleteAgents(agentIds);
@@ -3084,8 +3200,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       subscribers.delete(agentId);
       dispatchingTurns.delete(agentId);
       scheduledSessionRollovers.delete(agentId);
+      clearWaitDeadline(agentId);
     }
     collaborationDeliveries.deleteAgents(deletedAgentIds);
+    agentWaits.deleteAgents(deletedAgentIds);
     contextCursors.deleteAgents(deletedAgentIds);
     runLedger.deleteAgents(deletedAgentIds);
     for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
@@ -3367,6 +3485,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : undefined),
       };
       const auditText = text;
+      if (requestedDeliveryIds.length === 0) {
+        if (agentWaits.cancel(agent.id, "user message override")) clearWaitDeadline(agent.id);
+      }
       const existingRun = activeRuns.get(agent.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
@@ -3463,8 +3584,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // latest explicit selection so collaboration wake-ups and restarts remain
       // priceable even though they do not repeat UI controls in every delivery.
       const priorRuns = store.getRuns(agent.id);
-      const effectiveModel = request.body.model ?? [...priorRuns].reverse().find((run) => run.model)?.model ?? agent.presetSnapshot?.model;
-      const effectiveEffort = request.body.effort ?? [...priorRuns].reverse().find((run) => run.effort)?.effort ?? agent.presetSnapshot?.effort;
+      const effectiveModel = request.body.model ?? [...priorRuns].reverse().find((run) => run.model)?.model ?? agent.model ?? agent.presetSnapshot?.model;
+      const effectiveEffort = request.body.effort ?? [...priorRuns].reverse().find((run) => run.effort)?.effort ?? agent.effort ?? agent.presetSnapshot?.effort;
 
       // Project-chat turns receive the user-facing conversation. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
@@ -3683,6 +3804,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
             PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
             PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawns`,
+            PONDEROSA_AGENT_WAIT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-waits`,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -3697,12 +3819,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: [PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL],
+              dynamicTools: [PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL],
               handleDynamicToolCall: async (call) => {
                 const url = call.name === PONDEROSA_SEND_MESSAGE_TOOL.name
                   ? "/api/agent-messages"
                   : call.name === PONDEROSA_SPAWN_AGENT_TOOL.name
                     ? "/api/agent-spawns"
+                    : call.name === PONDEROSA_WAIT_FOR_REPORTS_TOOL.name
+                      ? "/api/agent-waits"
                     : undefined;
                 if (!url) {
                   return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };

@@ -20,13 +20,13 @@ A retained provider session already contains its organization envelope. Ponderos
 
 This reduces repeated input as the organization grows without changing delivery behavior or relying on rendered text heuristics.
 
-## Next architectural slice: durable waiting
+## Durable waiting
 
 An agent identity should be durable, while a provider turn is temporary and an OS process is an evictable cache:
 
 `runnable -> running -> waiting(condition) -> runnable -> running -> idle`
 
-Agents need an explicit, durable wait latch supporting:
+Agents have an explicit, durable wait latch supporting:
 
 - all expected reports;
 - any response;
@@ -35,9 +35,9 @@ Agents need an explicit, durable wait latch supporting:
 - immediate user or blocker override; and
 - informational delivery without waking.
 
-Registering a wait must atomically include the expected stable agent IDs, condition, deadline, and the current delivery watermark. Each inbound communication is persisted normally, but only the transition that satisfies the condition may claim the next execution. Compare-and-swap activation prevents duplicate synthesis turns after concurrent reports.
+Registering a wait atomically includes the expected stable agent IDs, condition, optional deadline, and the current delivery watermark. Each inbound communication is persisted normally, but only the transition that satisfies the condition may claim the next execution. User/direct signals and managed-agent failures override the latch, and deadlines resume with the reports received so far.
 
-This is the highest-confidence runtime saving found in the architecture review: a manager can park after delegating, accumulate three reports without running three times, and synthesize once. It belongs in its own PR because it changes scheduling, restart recovery, and race semantics.
+This lets a manager park after delegating, accumulate three reports without running three times, and synthesize once. The latch is append-only and restart-safe; reporter identities are counted once after the registration watermark.
 
 ## Further strategies
 

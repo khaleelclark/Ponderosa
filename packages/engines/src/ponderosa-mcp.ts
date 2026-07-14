@@ -1,10 +1,11 @@
 import { createInterface } from "node:readline";
-import { PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL } from "@ponderosa/core";
+import { PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
 const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
+const waitUrl = process.env.PONDEROSA_AGENT_WAIT_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
 function send(value: unknown): void {
@@ -41,6 +42,11 @@ async function handle(request: RpcRequest): Promise<void> {
             description: PONDEROSA_SPAWN_AGENT_TOOL.description,
             inputSchema: PONDEROSA_SPAWN_AGENT_TOOL.inputSchema,
           },
+          {
+            name: "wait_for_reports",
+            description: PONDEROSA_WAIT_FOR_REPORTS_TOOL.description,
+            inputSchema: PONDEROSA_WAIT_FOR_REPORTS_TOOL.inputSchema,
+          },
         ],
       },
     });
@@ -52,6 +58,8 @@ async function handle(request: RpcRequest): Promise<void> {
       ? messageUrl
       : params?.name === "spawn_agent"
         ? spawnUrl
+        : params?.name === "wait_for_reports"
+          ? waitUrl
         : undefined;
     if (!targetUrl || !messageToken) {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable." }] } });
