@@ -11,6 +11,8 @@ export const projects = sqliteTable("projects", {
   hostPath: text("host_path").notNull(),
   createdAt: text("created_at").notNull(),
   lastUsedAt: text("last_used_at"),
+  defaultEngine: text("default_engine").notNull(),
+  lastConversationId: text("last_conversation_id"),
 });
 export const agentPresets = sqliteTable("agent_presets", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), name: text("name").notNull(),

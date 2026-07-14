@@ -98,7 +98,7 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
       >
         {data?.projectedApiCost ? formatUsd(data.projectedApiCost.usd) : "Cost"}
       </Button>}
-    <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="xs" aria-labelledby={`${scope}-usage-title`}>
+    <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="md" aria-labelledby={`${scope}-usage-title`} PaperProps={{ sx: { width: { xs: "calc(100% - 16px)", sm: 720 }, maxHeight: "calc(100dvh - 16px)", m: { xs: 1, sm: 4 } } }}>
       <DialogTitle id={`${scope}-usage-title`}>{label} cost</DialogTitle>
       <DialogContent>
         {usage.isError ? <Alert severity="error">Cost could not be loaded.</Alert> : !data ? <LinearProgress /> : <TokenUsageDetails data={data} />}

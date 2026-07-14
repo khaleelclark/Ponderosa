@@ -609,6 +609,7 @@ export function AgentDetail({
           commands={commands}
           projectId={detail.agent.projectId}
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
+          conversationDraftId={`agent:${agentId}`}
           disabled={sendMessage.isPending}
           running={false}
           placeholder={runtimeActivity ? "Steer this agent's active response" : "Message this agent directly"}

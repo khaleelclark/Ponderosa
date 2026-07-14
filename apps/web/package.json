@@ -13,10 +13,12 @@
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
+    "@fontsource-variable/inter": "^5.2.8",
     "@mui/icons-material": "^6.5.0",
     "@mui/material": "^6.3.0",
     "@ponderosa/core": "workspace:*",
     "@tanstack/react-query": "^5.101.2",
+    "frimousse": "^0.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",

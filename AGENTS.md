@@ -224,9 +224,11 @@ Ordinary runtime output → execution-scoped Work log
   document inherits the event's audience exactly: Broadcast is organizational,
   while Direct Message and Collaboration remain private. Document provenance
   records the author agent and execution.
-- Project folders are optional at creation. Ponderosa may create a managed empty
-  workspace, but deleting a project removes Ponderosa-owned canonical data—not
-  the selected source folder.
+- Project creation requires a validated host folder (which may be a newly created
+  managed workspace) and a default subscription-backed engine, and atomically
+  creates its initial Project chat. The pre-registration folder picker is scoped
+  to explicitly configured canonical roots; deleting a project removes
+  Ponderosa-owned canonical data—not the selected source folder.
 - V1 Project chats have two lifecycle states: active and deleted. Do not add an
   archive state without a complete archive browser, restore flow, and retention
   policy.

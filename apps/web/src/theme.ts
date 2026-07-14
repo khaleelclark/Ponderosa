@@ -48,7 +48,7 @@ export function createPonderosaTheme(mode: ColorMode) {
     },
     typography: {
       fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        'var(--ponderosa-font-family, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif)',
       h1: { letterSpacing: 0 },
       h2: { letterSpacing: 0 },
       h3: { letterSpacing: 0 },
@@ -56,6 +56,8 @@ export function createPonderosaTheme(mode: ColorMode) {
       h5: { letterSpacing: 0 },
       h6: { letterSpacing: 0 },
       button: { textTransform: "none", fontWeight: 700, letterSpacing: 0 },
+      body1: { fontSize: 14, lineHeight: "20px" },
+      body2: { fontSize: 13, lineHeight: "19px" },
     },
     components: {
       MuiButtonBase: {

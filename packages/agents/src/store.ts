@@ -10,6 +10,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -119,6 +120,8 @@ interface ProjectJson {
   hostPath: string;
   createdAt: string;
   lastUsedAt?: string;
+  defaultEngine: string;
+  lastConversationId?: string;
 }
 
 interface AgentJson {
@@ -731,10 +734,13 @@ export class AgentStore {
           ...(message.orderKey ? { orderKey: message.orderKey } : {}),
           ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
           ...(canonicalAuthorAgentId ? { authorAgentId: canonicalAuthorAgentId } : {}),
+          ...(event.sender.kind === "agent" ? { executionId: event.sender.executionId } : {}),
+          ...(event.correctionOfEventId ? { correctionOfEventId: event.correctionOfEventId } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
+          ...(event.citations?.length ? { citations: event.citations } : {}),
         }];
       })
       .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
@@ -863,24 +869,43 @@ export class AgentStore {
 
   // ─── Projects ──────────────────────────────────────────────────────────────
 
-  createProject(input: CreateProjectRequest & { hostPath: string }): ProjectDto {
+  createProject(input: Omit<CreateProjectRequest, "defaultEngine"> & { hostPath: string; defaultEngine?: CreateProjectRequest["defaultEngine"] }): ProjectDto {
     const id = randomUUID();
+    const conversationId = randomUUID();
     const now = new Date().toISOString();
+    const defaultEngine = input.defaultEngine ?? "codex";
     const record: ProjectJson = {
       id,
       label: input.label,
       hostPath: input.hostPath,
       createdAt: now,
+      lastUsedAt: now,
+      defaultEngine,
+      lastConversationId: conversationId,
     };
-    writeJson(projectJsonPath(this.dataDir, id), record);
-    mkdirSync(conversationsDir(this.dataDir, id), { recursive: true });
-    mkdirSync(agentsDir(this.dataDir, id), { recursive: true });
-    this.db
-      .insert(projects)
-      .values({ id, label: input.label, hostPath: input.hostPath, createdAt: now })
-      .run();
+    const conversation: ConversationJson = {
+      id: conversationId, projectId: id, title: "New chat", defaultEngine,
+      createdAt: now, updatedAt: now, archived: false,
+    };
+    const stagingId = `.${id}.creating`;
+    const stagingRoot = projectDir(this.dataDir, stagingId);
+    try {
+      writeJson(projectJsonPath(this.dataDir, stagingId), record);
+      mkdirSync(conversationDir(this.dataDir, stagingId, conversationId), { recursive: true });
+      writeJson(conversationJsonPath(this.dataDir, stagingId, conversationId), conversation);
+      mkdirSync(agentsDir(this.dataDir, stagingId), { recursive: true });
+      renameSync(stagingRoot, projectDir(this.dataDir, id));
+      this.db.transaction((tx) => {
+        tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, lastConversationId: conversationId }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New chat", defaultEngine, defaultModel: null, defaultEffort: null, createdAt: now, updatedAt: now, archived: 0 }).run();
+      });
+    } catch (error) {
+      rmSync(stagingRoot, { recursive: true, force: true });
+      rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+      throw error;
+    }
     for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
-    return { id, label: input.label, hostPath: input.hostPath, createdAt: now };
+    return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, lastConversationId: conversationId };
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -950,6 +975,8 @@ export class AgentStore {
         hostPath: r.hostPath,
         createdAt: r.createdAt,
         lastUsedAt: r.lastUsedAt ?? undefined,
+        defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
+        lastConversationId: r.lastConversationId ?? undefined,
       }));
   }
 
@@ -962,20 +989,37 @@ export class AgentStore {
       hostPath: r.hostPath,
       createdAt: r.createdAt,
       lastUsedAt: r.lastUsedAt ?? undefined,
+      defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
+      lastConversationId: r.lastConversationId ?? undefined,
     };
+  }
+
+  markProjectUsed(projectId: string, conversationId?: string): ProjectDto | undefined {
+    const project = this.getProject(projectId);
+    if (!project) return undefined;
+    if (conversationId) {
+      const conversation = this.getConversation(conversationId);
+      if (!conversation || conversation.projectId !== projectId || conversation.archived) throw new Error("conversation is unavailable");
+    }
+    const lastUsedAt = new Date().toISOString();
+    const next = { ...project, lastUsedAt, lastConversationId: conversationId ?? project.lastConversationId };
+    writeJson(projectJsonPath(this.dataDir, projectId), next);
+    this.db.update(projects).set({ lastUsedAt, ...(conversationId ? { lastConversationId: conversationId } : {}) }).where(eq(projects.id, projectId)).run();
+    return next;
   }
 
   // ─── Conversations ─────────────────────────────────────────────────────────
 
   createConversation(projectId: string, input: CreateConversationRequest): ConversationDto {
-    if (!this.getProject(projectId)) throw new Error(`unknown project: ${projectId}`);
+    const project = this.getProject(projectId);
+    if (!project) throw new Error(`unknown project: ${projectId}`);
     const id = randomUUID();
     const now = new Date().toISOString();
     const record: ConversationJson = {
       id,
       projectId,
-      title: input.title,
-      defaultEngine: input.defaultEngine,
+      title: input.title || "New chat",
+      defaultEngine: input.defaultEngine ?? project.defaultEngine,
       defaultModel: input.defaultModel,
       defaultEffort: input.defaultEffort,
       createdAt: now,
@@ -989,8 +1033,8 @@ export class AgentStore {
       .values({
         id,
         projectId,
-        title: input.title,
-        defaultEngine: input.defaultEngine ?? null,
+        title: input.title || "New chat",
+        defaultEngine: input.defaultEngine ?? project.defaultEngine,
         defaultModel: input.defaultModel ?? null,
         defaultEffort: input.defaultEffort ?? null,
         createdAt: now,
@@ -998,6 +1042,7 @@ export class AgentStore {
         archived: 0,
       })
       .run();
+    this.markProjectUsed(projectId, id);
     return this.conversationRowToDto(
       this.db.select().from(conversations).where(eq(conversations.id, id)).get()!,
     );
@@ -1246,7 +1291,9 @@ export class AgentStore {
     const master = this.getConversation(conversationId);
     if (!master) return [];
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
-    return this.readProjectedCommunicationMessages(master.projectId, surface, conversationId).map((message) => {
+    const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId);
+    const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
+    return projected.map((message) => {
       return {
         id: message.messageId,
         communicationEventId: message.eventId,
@@ -1258,6 +1305,11 @@ export class AgentStore {
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.document ? { document: message.document } : {}),
+        ...(message.citations?.length ? { citations: message.citations } : {}),
+        ...(message.executionId ? { executionId: message.executionId } : {}),
+        ...(message.authorAgentId && message.executionId ? { fileActivity: this.getChangedFiles(message.authorAgentId).filter((file) => file.executionIds.includes(message.executionId!)).map((file) => ({ path: file.path, kind: file.kind, status: "completed" as const })) } : {}),
+        ...(message.correctionOfEventId ? { correctionOfMessageId: message.correctionOfEventId } : {}),
+        ...(correctedBy.has(message.eventId) ? { correctedByMessageId: correctedBy.get(message.eventId) } : {}),
       };
     });
   }
@@ -1629,6 +1681,7 @@ export class AgentStore {
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(message.document ? { document: message.document } : {}),
+          ...(message.citations?.length ? { citations: message.citations } : {}),
         } satisfies MessageDto];
       });
   }
@@ -1889,6 +1942,10 @@ export class AgentStore {
     if (!existsSync(root)) return;
 
     for (const projectId of readdirSync(root)) {
+      if (projectId.startsWith(".") || projectId.endsWith(".creating")) {
+        rmSync(projectDir(this.dataDir, projectId), { recursive: true, force: true });
+        continue;
+      }
       const pj = projectJsonPath(this.dataDir, projectId);
       if (!existsSync(pj)) continue;
       const p = readJson<ProjectJson>(pj);
@@ -1900,6 +1957,8 @@ export class AgentStore {
           hostPath: p.hostPath,
           createdAt: p.createdAt,
           lastUsedAt: p.lastUsedAt ?? null,
+          defaultEngine: p.defaultEngine ?? "codex",
+          lastConversationId: p.lastConversationId ?? null,
         })
         .run();
       const resolved = new Map<string, AgentPresetDto>();

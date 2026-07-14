@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
-import { AgentStore } from "@ponderosa/agents";
-import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
+import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, runtimeIdentityPrompt, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,6 +61,42 @@ function appendCanonicalMessage(
     conversationId, input, authorAgentId, channel, deliveryIntents, messageReceiptKey, eventId,
   );
 }
+
+describe("workspace synchronization policy", () => {
+  it("keeps high-frequency execution deltas off the global workspace log", () => {
+    expect(workspaceAgentEventCategory({ type: "text", delta: "chunk", executionId: "run" })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "reasoning", delta: "thought", executionId: "run" })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "agent_output", executionId: "run", text: "done", sourceSeqStart: 1, sourceSeqEnd: 2 })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "turn_done" })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "agent_lifecycle", executionId: "run", status: "running", reason: "user_message" })).toBe("lifecycle");
+    expect(workspaceAgentEventCategory({ type: "file_change", path: "src/app.ts", kind: "edit" })).toBe("file");
+  });
+
+  it("routes notifications from structural communication intent only", () => {
+    const base = { eventId: "event", schemaVersion: 2 as const, projectId: "project", conversationId: "chat", sender: { kind: "agent" as const, agentId: "agent" }, text: "Done", createdAt: new Date(0).toISOString() };
+    const broadcast = { ...base, intent: "broadcast" as const, audience: { kind: "organization" as const, organizationId: "project" } };
+    const collaboration = { ...base, intent: "collaboration" as const, audience: { kind: "agents" as const, agentIds: ["peer"] } };
+    expect(notificationKindForCommunication(broadcast)).toBe("broadcasts");
+    expect(notificationPreferenceMatches("project_responses", broadcast, "broadcasts")).toBe(true);
+    expect(notificationKindForCommunication(collaboration)).toBe("collaboration");
+    expect(notificationPreferenceMatches("project_responses", collaboration, "collaboration")).toBe(false);
+    expect(notificationPreferenceMatches("mentions", collaboration, "collaboration")).toBe(false);
+    expect(notificationPreferenceMatches("all_messages", collaboration, "collaboration")).toBe(true);
+  });
+
+  it("derives a bounded local title without routing labels", () => {
+    expect(conciseConversationTitle("#broadcast #Agent fix the flaky cache invalidation please today")).toBe("fix the flaky cache invalidation please");
+    expect(conciseConversationTitle("hello")).toBeUndefined();
+  });
+
+  it("normalizes explicit external sources and rejects local or credentialed URLs", () => {
+    expect(normalizeExternalCitations([{ url: "https://example.com/docs#part", title: "  Product   docs " }], "2026-01-01T00:00:00.000Z")).toEqual([
+      { url: "https://example.com/docs", title: "Product docs", verifiedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    expect(() => normalizeExternalCitations([{ url: "http://127.0.0.1/private", title: "Private" }])).toThrow(/external/);
+    expect(() => normalizeExternalCitations([{ url: "https://user:secret@example.com", title: "Credentials" }])).toThrow(/external/);
+  });
+});
 
 class MockAdapter implements Adapter {
   id = "codex";
@@ -221,6 +257,7 @@ let engines: EngineRegistration[];
 beforeEach(() => {
   dataDir = mkdtempSync(path.join(tmpdir(), "pond-server-data-"));
   repoDir = mkdtempSync(path.join(tmpdir(), "pond-server-repo-"));
+  process.env.PONDEROSA_BROWSE_ROOTS = repoDir;
   writeFileSync(path.join(repoDir, "README.md"), "# demo\n", "utf8");
   store = new AgentStore(dataDir);
   adapter = new MockAdapter();
@@ -228,6 +265,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env.PONDEROSA_BROWSE_ROOTS;
   store.close();
   rmSync(dataDir, { recursive: true, force: true });
   rmSync(repoDir, { recursive: true, force: true });
@@ -238,7 +276,7 @@ async function createProjectAndAgent() {
   const projectRes = await app.inject({
     method: "POST",
     url: "/api/projects",
-    payload: { label: "Demo", hostPath: repoDir },
+    payload: { label: "Demo", hostPath: repoDir, defaultEngine: "codex" },
   });
   const project = projectRes.json<{ id: string }>();
   const agentRes = await app.inject({
@@ -328,13 +366,98 @@ describe("token usage API", () => {
 });
 
 describe("project lifecycle API", () => {
-  it("creates a safe managed workspace when working folder selection is omitted", async () => {
+  it("persists staged draft attachments and restores them after a server restart", async () => {
+    let app = createServer({ dataDir, store, engines, logger: false });
+    const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Drafts", hostPath: repoDir, defaultEngine: "codex" } });
+    const project = created.json<{ id: string }>();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/draft-attachments`,
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "text/plain", "x-ponderosa-filename": "notes.txt" },
+      payload: Buffer.from("durable draft file"),
+    });
+    expect(upload.statusCode).toBe(201);
+    const attachment = upload.json<{ id: string; downloadUrl: string }>();
+    const saved = await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { text: "keep this", attachmentIds: [attachment.id], expectedRevision: 0, clientId: "tab-a" } });
+    expect(saved.json()).toMatchObject({ text: "keep this", attachmentIds: [attachment.id], attachments: [{ id: attachment.id, name: "notes.txt" }] });
+    expect((await app.inject({ method: "GET", url: attachment.downloadUrl })).rawPayload.toString()).toBe("durable draft file");
+
+    await app.close();
+    store = new AgentStore(dataDir);
+    app = createServer({ dataDir, store, engines, logger: false });
+    const restored = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft` });
+    expect(restored.json()).toMatchObject({ revision: 1, text: "keep this", attachments: [{ id: attachment.id }] });
+    expect((await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { text: "stale", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" } })).statusCode).toBe(409);
+    await app.close();
+  });
+
+  it("persists independent drafts for Project, Collaboration, and Agent chats", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    const surfaces = [conversationId, `collaboration:${conversationId}`, `agent:${agent.id}`];
+    for (const [index, surface] of surfaces.entries()) {
+      const saved = await app.inject({
+        method: "PUT",
+        url: `/api/conversations/${encodeURIComponent(surface)}/draft`,
+        payload: { text: `draft-${index}`, attachmentIds: [], expectedRevision: 0, clientId: "tab-a" },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({ conversationId: surface, text: `draft-${index}`, revision: 1 });
+    }
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${encodeURIComponent(`agent:${agent.id}`)}/draft` })).json()).toMatchObject({ text: "draft-2" });
+    await app.close();
+  });
+
+  it("projects normalized agent citations into the message Sources contract", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
-    const response = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Optional folder" } });
-    expect(response.statusCode).toBe(200);
-    const project = response.json<{ id: string; hostPath: string }>();
-    expect(project.hostPath.startsWith(path.join(dataDir, "workspaces") + path.sep)).toBe(true);
-    expect(statSync(project.hostPath).isDirectory()).toBe(true);
+    const project = store.createProject({ label: "Sources", hostPath: repoDir, defaultEngine: "codex" });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, { title: "Researcher", engine: "codex", conversationId });
+    const eventId = randomUUID();
+    const citations = normalizeExternalCitations([{ url: "https://example.com/reference", title: "Reference" }], "2026-01-01T00:00:00.000Z");
+    store.appendCommunicationEvent({
+      eventId, schemaVersion: 2, projectId: project.id, conversationId,
+      sender: { kind: "agent", agentId: agent.id, executionId: "run" },
+      intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+      text: "Verified finding", citations, createdAt: new Date().toISOString(),
+    });
+    store.appendConversationMessage(conversationId, { role: "assistant", text: "Verified finding" }, agent.id, "main", undefined, undefined, eventId);
+    const detail = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}` });
+    expect(detail.json<{ messages: Array<{ citations?: unknown }> }>().messages[0]?.citations).toEqual(citations);
+    await app.close();
+  });
+
+  it("bridges runtime lifecycle, task, file, and completion events into the workspace cursor", async () => {
+    const { app, agent } = await createProjectAndAgent();
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Run with workspace updates" } });
+    await waitForRun(agent.id);
+    const events = new WorkspaceStore(dataDir).readSince(0).map((item) => item.event).filter((event) => event.type === "agent_event");
+    expect(events.map((event) => event.type === "agent_event" ? event.category : undefined)).toEqual(expect.arrayContaining(["lifecycle", "task", "file"]));
+    expect(events.some((event) => event.type === "agent_event" && ["text", "reasoning", "agent_output", "turn_done"].includes(event.eventType))).toBe(false);
+    expect(events.every((event) => event.type !== "agent_event" || event.agentId === agent.id)).toBe(true);
+    await app.close();
+  });
+
+  it("generates a concise New chat title locally without spending an agent run", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Titles", hostPath: repoDir, defaultEngine: "codex" });
+    const conversationId = project.lastConversationId!;
+    appendCanonicalMessage(store, project.id, conversationId, { text: "Track down the flaky cache invalidation" });
+    appendCanonicalMessage(store, project.id, conversationId, { text: "I found the stale cursor path" }, "agent-title");
+    const generated = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` });
+    expect(generated.json()).toEqual({ title: "Track down the flaky cache invalidation", generated: true });
+    expect(store.getConversation(conversationId)?.title).toBe("Track down the flaky cache invalidation");
+    expect(adapter.seeds).toHaveLength(0);
+    expect((await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` })).json()).toEqual({ title: "Track down the flaky cache invalidation", generated: false });
+    await app.close();
+  });
+
+  it("requires an explicit validated working-folder choice", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const response = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Missing folder", defaultEngine: "codex" } });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "a validated host folder is required" });
     await app.close();
   });
 
@@ -342,7 +465,7 @@ describe("project lifecycle API", () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     store.createProject({ label: "Registered", hostPath: repoDir });
     const outside = mkdtempSync(path.join(tmpdir(), "pond-unregistered-"));
-    const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Created", createFolderName: "fresh-work" } });
+    const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Created", createFolderName: "fresh-work", defaultEngine: "codex" } });
     expect(created.statusCode).toBe(200);
     const createdProject = created.json<{ hostPath: string }>();
     expect(createdProject.hostPath).toBe(path.join(dataDir, "workspaces", "fresh-work"));
@@ -352,8 +475,22 @@ describe("project lifecycle API", () => {
     expect(paths).toContain(repoDir);
     expect(paths).toContain(createdProject.hostPath);
     expect(paths).not.toContain(outside);
-    const collision = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Collision", createFolderName: "fresh-work" } });
+    const collision = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Collision", createFolderName: "fresh-work", defaultEngine: "codex" } });
     expect(collision.statusCode).toBe(409);
+    rmSync(outside, { recursive: true, force: true });
+    await app.close();
+  });
+
+  it("browses only configured host roots and rejects symlink traversal", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    mkdirSync(path.join(repoDir, "inside"));
+    const outside = mkdtempSync(path.join(tmpdir(), "pond-browse-outside-"));
+    symlinkSync(outside, path.join(repoDir, "escape"));
+    const listed = await app.inject({ method: "GET", url: `/api/project-folders/browse?path=${encodeURIComponent(repoDir)}` });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json<{ folders: Array<{ name: string }> }>().folders.map((item) => item.name)).toEqual(["inside"]);
+    expect((await app.inject({ method: "GET", url: `/api/project-folders/browse?path=${encodeURIComponent(path.join(repoDir, "escape"))}` })).statusCode).toBe(400);
+    expect((await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Escape", hostPath: outside, defaultEngine: "codex" } })).statusCode).toBe(400);
     rmSync(outside, { recursive: true, force: true });
     await app.close();
   });
@@ -851,7 +988,7 @@ describe("server chunk F", () => {
 
   it("validates preset options and snapshots server-resolved guidance into spawned agents", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
-    const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
+    const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir, defaultEngine: "codex" } })).json<{ id: string }>();
     const invalid = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review", guidance: "Review carefully", engine: "codex", model: "not-real" } });
     expect(invalid.statusCode).toBe(400);
     const invalidEffort = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review", guidance: "Review carefully", engine: "codex", model: "mock-model", effort: "minimal" } });
@@ -885,7 +1022,7 @@ describe("server chunk F", () => {
       payload: { title: "Invalid", defaultEngine: "codex", defaultModel: "mock-model", defaultEffort: "minimal" },
     });
     expect(invalidConversation.statusCode).toBe(400);
-    expect(store.listConversations(project.id)).toHaveLength(0);
+    expect(store.listConversations(project.id)).toHaveLength(1);
 
     const conversation = (await app.inject({
       method: "POST",
@@ -966,7 +1103,7 @@ describe("server chunk F", () => {
     const projectRes = await app.inject({
       method: "POST",
       url: "/api/projects",
-      payload: { label: "Demo", hostPath: repoDir },
+      payload: { label: "Demo", hostPath: repoDir, defaultEngine: "codex" },
     });
     const project = projectRes.json<{ id: string }>();
 
@@ -1393,7 +1530,7 @@ describe("server chunk F", () => {
     const project = (await app.inject({
       method: "POST",
       url: "/api/projects",
-      payload: { label: "Delete demo", hostPath: repoDir },
+      payload: { label: "Delete demo", hostPath: repoDir, defaultEngine: "codex" },
     })).json<{ id: string }>();
     const conversation = (await app.inject({
       method: "POST",
@@ -1421,12 +1558,12 @@ describe("server chunk F", () => {
     const firstProjectRes = await app.inject({
       method: "POST",
       url: "/api/projects",
-      payload: { label: "One", hostPath: repoDir },
+      payload: { label: "One", hostPath: repoDir, defaultEngine: "codex" },
     });
     const secondProjectRes = await app.inject({
       method: "POST",
       url: "/api/projects",
-      payload: { label: "Two", hostPath: repoDir },
+      payload: { label: "Two", hostPath: repoDir, defaultEngine: "codex" },
     });
     const firstProject = firstProjectRes.json<{ id: string }>();
     const secondProject = secondProjectRes.json<{ id: string }>();
@@ -1450,7 +1587,7 @@ describe("server chunk F", () => {
 
   it("authorizes membership changes and routes a secondary-chat turn", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
-    const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
+    const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir, defaultEngine: "codex" } })).json<{ id: string }>();
     const first = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Home" } })).json<{ id: string }>();
     const second = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Review" } })).json<{ id: string }>();
     const agent = (await app.inject({ method: "POST", url: `/api/projects/${project.id}/agents`, payload: { title: "Agent", engine: "codex", conversationId: first.id } })).json<{ id: string }>();
@@ -3926,13 +4063,13 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/projects",
       headers: { host: "ponderosa.test", origin: "https://evil.test" },
-      payload: { label: "Demo", hostPath: repoDir },
+      payload: { label: "Demo", hostPath: repoDir, defaultEngine: "codex" },
     });
     const accepted = await app.inject({
       method: "POST",
       url: "/api/projects",
       headers: { host: "ponderosa.test", origin: "https://ponderosa.test" },
-      payload: { label: "Demo", hostPath: repoDir },
+      payload: { label: "Demo", hostPath: repoDir, defaultEngine: "codex" },
     });
     expect(rejected.statusCode).toBe(403);
     expect(accepted.statusCode).toBe(200);
@@ -4289,6 +4426,27 @@ describe("server chunk F", () => {
     await app.close();
   }, 10000);
 
+  it("resets an ahead workspace cursor and replays from the canonical beginning", async () => {
+    const { app } = await createProjectAndAgent();
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("no server address");
+    const abort = new AbortController();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/workspace/stream?lastEventId=999999`, { signal: abort.signal });
+    const reader = response.body!.getReader();
+    let chunk = "";
+    for (let index = 0; index < 10 && !chunk.includes("id: 1"); index += 1) {
+      const read = await reader.read();
+      chunk += new TextDecoder().decode(read.value);
+    }
+    abort.abort();
+    expect(chunk).toContain("event: workspace_status");
+    expect(chunk).toContain('"reset":true');
+    expect(chunk).toContain('"instanceId":');
+    expect(chunk).toContain("id: 1");
+    await app.close();
+  }, 10000);
+
   it("validates individual reply targets and sends compact quoted context", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Original question" } });
@@ -4464,6 +4622,93 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
     for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
     expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
+    await app.close();
+  });
+
+  it("cancels an operator-owned queued Project message idempotently and never dispatches it", async () => {
+    const { app, project } = await createProjectAndAgent();
+    const master = store.createConversation(project.id, { title: "Cancellation room" });
+    const author = store.createAgent(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
+    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Working" }, author.id)!;
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
+    await waitForSeedCount(1);
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${master.id}/direct-replies`,
+      payload: { text: "Cancel me", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "cancel-send", activeRunDelivery: "queue" },
+    });
+    const deliveryId = sent.json<{ deliveryId: string }>().deliveryId;
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${master.id}/queued-messages` })).json())
+      .toEqual([expect.objectContaining({ deliveryId, status: "queued", position: 1 })]);
+
+    const cancelled = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/queued-messages/${deliveryId}/cancel`, payload: { idempotencyKey: "cancel-action" } });
+    const replay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/queued-messages/${deliveryId}/cancel`, payload: { idempotencyKey: "cancel-action" } });
+    expect(cancelled.json()).toMatchObject({ cancelled: true, replayed: false, status: "cancelled" });
+    expect(replay.json()).toMatchObject({ cancelled: true, replayed: true, status: "cancelled" });
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${master.id}/queued-messages` })).json()).toEqual([]);
+    expect(new CollaborationDeliveryStore(dataDir).get(deliveryId)?.status).toBe("cancelled");
+
+    adapter.mode = "normal";
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
+    await sleep(30);
+    expect(store.getMessages(author.id).some((message) => message.text === "Cancel me")).toBe(false);
+    await app.close();
+  });
+
+  it("uses the same safe-boundary Steer semantics in Project and Agent chat", async () => {
+    const persistent = new SteerableMockAdapter();
+    adapter = persistent;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true, detail: "test" }) }];
+    const { app, project, agent } = await createProjectAndAgent();
+    const masterId = store.getProject(project.id)!.lastConversationId!;
+    await app.inject({ method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`, payload: { conversationIds: [masterId], primaryConversationId: masterId } });
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Active turn" } })).statusCode).toBe(200);
+    await expect.poll(() => persistent.starts.length).toBe(1);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${masterId}/direct-messages`,
+      payload: { text: "Steer from Project chat", recipients: [{ agentId: agent.id }], idempotencyKey: "project-steer", activeRunDelivery: "steer" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ recipients: [{ agentId: agent.id, queued: false, state: "steered" }] });
+    expect(persistent.steers).toHaveLength(1);
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${masterId}/queued-messages` })).json()).toEqual([]);
+    await app.close();
+  });
+
+  it("appends one immutable correction and dispatches exactly one idempotent follow-up turn", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const masterId = store.getProject(project.id)!.lastConversationId!;
+    await app.inject({ method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`, payload: { conversationIds: [masterId], primaryConversationId: masterId } });
+    const originalSend = await app.inject({
+      method: "POST", url: `/api/conversations/${masterId}/direct-messages`,
+      payload: { text: "Original request", recipients: [{ agentId: agent.id }], idempotencyKey: "original-request" },
+    });
+    const originalMessageId = originalSend.json<{ messageId: string }>().messageId;
+    await waitForRun(agent.id);
+
+    const refusedSteer = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`,
+      payload: { text: "Wrong delivery mode", idempotencyKey: "correction-steer", activeRunDelivery: "steer" },
+    });
+    expect(refusedSteer.statusCode).toBe(400);
+    expect(refusedSteer.json()).toEqual({ error: "corrections always queue a new turn" });
+    const correctionPayload = { text: "Corrected request", idempotencyKey: "correction-once" };
+    const corrected = await app.inject({ method: "POST", url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`, payload: correctionPayload });
+    const replay = await app.inject({ method: "POST", url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`, payload: correctionPayload });
+    expect(corrected.json()).toMatchObject({ originalMessageId, replayed: false });
+    expect(replay.json()).toMatchObject({ originalMessageId, replayed: true, correctionMessageId: corrected.json<{ correctionMessageId: string }>().correctionMessageId });
+    await waitForRun(agent.id, 2);
+
+    const timeline = store.getConversationMessages(masterId);
+    expect(timeline.find((message) => message.id === originalMessageId)?.text).toBe("Original request");
+    expect(timeline.find((message) => message.id === originalMessageId)?.correctedByMessageId).toBe(corrected.json<{ correctionMessageId: string }>().correctionMessageId);
+    expect(timeline.filter((message) => message.correctionOfMessageId === originalMessageId)).toHaveLength(1);
+    expect(store.readRunTriggers(project.id).filter((trigger) => trigger.communicationEventId === corrected.json<{ correctionMessageId: string }>().correctionMessageId)).toHaveLength(1);
     await app.close();
   });
 

@@ -13,13 +13,10 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import type { MessageReactionDto } from "@ponderosa/core";
 
-const COMMON_EMOJIS = [
-  "👍", "👎", "❤️", "🎉", "😂", "😊", "🙏", "👏",
-  "🔥", "🚀", "👀", "🤔", "✅", "💯", "😮", "😢",
-] as const;
+const EmojiPalette = lazy(() => import("./EmojiPalette"));
 
 export function userReactionMessage(emoji: string): string {
   return `the user reacted with ${emoji}`;
@@ -98,15 +95,10 @@ export function EmojiReactionPicker({
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
             This adds the emoji to the message and privately notifies {recipientName} with the original message attached.
           </Typography>
-          <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.5} sx={{ mb: 2 }}>
-            {COMMON_EMOJIS.map((emoji) => (
-              <Button key={emoji} aria-label={`React with ${emoji}`} disabled={sending} onClick={() => void send(emoji)} sx={{ minWidth: 44, minHeight: 44, fontSize: "1.25rem" }}>
-                {emoji}
-              </Button>
-            ))}
-          </Stack>
+          <Suspense fallback={<Typography sx={{ py: 4, textAlign: "center" }}>Loading emoji…</Typography>}>
+            <EmojiPalette onSelect={(emoji) => void send(emoji)} />
+          </Suspense>
           <TextField
-            autoFocus
             fullWidth
             label="Any emoji"
             value={customEmoji}

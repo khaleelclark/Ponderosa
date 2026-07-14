@@ -60,6 +60,8 @@ export default defineConfig({
         workboxOptions: {
           cleanupOutdatedCaches: true,
           navigateFallback: "/index.html",
+          importScripts: ["/push-handler.js"],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           runtimeCaching: [],
         },
       },

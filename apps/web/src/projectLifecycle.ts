@@ -1,6 +1,6 @@
 import type { CreateProjectRequest, ProjectDto } from "@ponderosa/core";
 
-export type ProjectFolderMode = "automatic" | "existing" | "create";
+export type ProjectFolderMode = "existing" | "create";
 
 export function projectCreationDisabled(input: {
   label: string;
@@ -8,8 +8,9 @@ export function projectCreationDisabled(input: {
   existingPath: string;
   newFolderName: string;
   pending: boolean;
+  defaultEngine: string;
 }): boolean {
-  return input.pending || !input.label.trim() ||
+  return input.pending || !input.label.trim() || !input.defaultEngine ||
     (input.mode === "existing" && !input.existingPath.trim()) ||
     (input.mode === "create" && !input.newFolderName.trim());
 }
@@ -19,11 +20,12 @@ export function createProjectRequest(input: {
   mode: ProjectFolderMode;
   existingPath: string;
   newFolderName: string;
+  defaultEngine: CreateProjectRequest["defaultEngine"];
 }): CreateProjectRequest {
   return {
     label: input.label.trim(),
-    ...(input.mode === "existing" ? { hostPath: input.existingPath.trim() } : {}),
-    ...(input.mode === "create" ? { createFolderName: input.newFolderName.trim() } : {}),
+    defaultEngine: input.defaultEngine,
+    ...(input.mode === "existing" ? { hostPath: input.existingPath.trim() } : { createFolderName: input.newFolderName.trim() }),
   };
 }
 

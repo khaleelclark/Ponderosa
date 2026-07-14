@@ -8,6 +8,14 @@ export function useProjects() {
   });
 }
 
+export function useWorkspacePreferences() {
+  return useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
+}
+
+export function useNotifications() {
+  return useQuery({ queryKey: ["notifications"], queryFn: () => api.listNotifications() });
+}
+
 export function useProjectFolders(open: boolean) {
   return useQuery({
     queryKey: ["project-folders"],

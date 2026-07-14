@@ -1,26 +1,26 @@
 import AddIcon from "@mui/icons-material/Add";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
-import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import LightModeIcon from "@mui/icons-material/LightMode";
-import SettingsIcon from "@mui/icons-material/Settings";
+import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
+import MenuIcon from "@mui/icons-material/Menu";
 import {
   Alert,
   AppBar,
   Box,
+  Badge,
   Button,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  Drawer,
   IconButton,
   FormControl,
   InputLabel,
   MenuItem,
   Select,
   Stack,
-  Tab,
-  Tabs,
   TextField,
   Toolbar,
   Tooltip,
@@ -32,7 +32,10 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
 import { TokenUsageButton } from "./components/TokenUsageButton";
-import { useEngines, useProjectFolders, useProjects } from "./hooks/queries";
+import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { HostFolderPicker } from "./components/HostFolderPicker";
+import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
+import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
   routeProjectId,
@@ -42,60 +45,7 @@ import {
 } from "./routing";
 import type { ColorMode } from "./theme";
 import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
-
-function ProjectTabs({
-  projects,
-  selectedProjectId,
-  onSelect,
-  onCreate,
-  onManage,
-}: {
-  projects: ProjectDto[];
-  selectedProjectId: string | undefined;
-  onSelect(projectId: string): void;
-  onCreate(): void;
-  onManage(): void;
-}): JSX.Element {
-  return (
-    <Stack direction="row" sx={{ alignItems: "center", borderBottom: 1, borderColor: "divider" }}>
-      <FormControl size="small" sx={{ display: { xs: "flex", sm: "none" }, flex: 1, minWidth: 0, ml: 1 }}>
-        <Select
-          aria-label="Project"
-          value={projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : ""}
-          displayEmpty
-          onChange={(event) => onSelect(event.target.value)}
-        >
-          {projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
-        </Select>
-      </FormControl>
-      <Tabs
-        value={projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : false}
-        onChange={(_event, value: string) => onSelect(value)}
-        variant="scrollable"
-        scrollButtons="auto"
-        sx={{ minHeight: 48, flex: 1, minWidth: 0, display: { xs: "none", sm: "flex" } }}
-      >
-        {projects.map((project) => (
-          <Tab
-            key={project.id}
-            value={project.id}
-            icon={<FolderOpenIcon />}
-            iconPosition="start"
-            label={project.label}
-            sx={{ minHeight: 48 }}
-          />
-        ))}
-      </Tabs>
-      {selectedProjectId ? <TokenUsageButton scope="project" scopeId={selectedProjectId} label="Project" /> : null}
-      <Tooltip title="New project">
-        <IconButton onClick={onCreate} aria-label="New project" sx={{ mx: 1 }}>
-          <AddIcon />
-        </IconButton>
-      </Tooltip>
-      {selectedProjectId ? <Tooltip title="Project settings"><IconButton onClick={onManage} aria-label="Project settings" sx={{ mr: 1 }}><SettingsIcon /></IconButton></Tooltip> : null}
-    </Stack>
-  );
-}
+import { disableWebPush, syncWebPush } from "./pushNotifications";
 
 export default function App({
   colorMode,
@@ -105,21 +55,54 @@ export default function App({
   onToggleColorMode(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  useWorkspaceStream();
   const { route, navigate } = useRoute();
   const projectsQuery = useProjects();
   const enginesQuery = useEngines();
-  const projects = projectsQuery.data ?? [];
+  const preferencesQuery = useWorkspacePreferences();
+  const notificationsQuery = useNotifications();
+  const projectOrder = preferencesQuery.data?.projectOrder ?? [];
+  const projects = [...(projectsQuery.data ?? [])].sort((a, b) => {
+    if (preferencesQuery.data?.projectSort === "alphabetical") return a.label.localeCompare(b.label);
+    if (preferencesQuery.data?.projectSort === "custom") {
+      const ai = projectOrder.indexOf(a.id);
+      const bi = projectOrder.indexOf(b.id);
+      if (ai >= 0 || bi >= 0) return (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) - (bi < 0 ? Number.MAX_SAFE_INTEGER : bi);
+    }
+    return (b.lastUsedAt ?? b.createdAt).localeCompare(a.lastUsedAt ?? a.createdAt) || a.id.localeCompare(b.id);
+  });
   const engines = enginesQuery.data ?? [];
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectLabel, setProjectLabel] = useState("");
   const [projectPath, setProjectPath] = useState("");
-  const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("automatic");
+  const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("existing");
   const [projectFolderName, setProjectFolderName] = useState("");
+  const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
+  const [pushStatus, setPushStatus] = useState<string>();
+  const [pushBusy, setPushBusy] = useState(false);
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [settingsProjectId, setSettingsProjectId] = useState<string>();
   const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
+
+  useEffect(() => {
+    if (route.kind !== "conversation") return;
+    const conversationId = route.conversationId;
+    queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(["notifications"], (current = []) =>
+      current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt: new Date().toISOString() } : item));
+    void api.clearConversationNotifications(conversationId).then(() => queryClient.invalidateQueries({ queryKey: ["notifications"] }));
+  }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, queryClient]);
+
+  useEffect(() => {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    void syncWebPush(false).then(setPushStatus).catch((error: unknown) => setPushStatus(error instanceof Error ? error.message : "Push registration failed."));
+  }, []);
 
   const routedProjectId = routeProjectId(route);
   const selectedProjectId =
@@ -133,20 +116,27 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (selectedProjectId) {
-      saveLastProjectId(selectedProjectId);
-      return;
-    }
-    const preferred = loadLastProjectId();
+    if (["conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
+    const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
-    if (target) {
-      navigate({ kind: "project", projectId: target.id }, { replace: true });
-    }
-  }, [projects, selectedProjectId, navigate]);
+    if (!target) return;
+    let cancelled = false;
+    void api.listConversations(target.id).then((items) => {
+      if (cancelled) return;
+      const active = items.filter((item) => !item.archived);
+      const conversation = active.find((item) => item.id === target.lastConversationId) ?? active[0];
+      saveLastProjectId(target.id);
+      if (conversation) {
+        void api.markProjectUsed(target.id, conversation.id);
+        navigate({ kind: "conversation", projectId: target.id, conversationId: conversation.id }, { replace: true });
+      } else navigate({ kind: "agents", projectId: target.id }, { replace: true });
+    });
+    return () => { cancelled = true; };
+  }, [projects, selectedProjectId, navigate, route.kind]);
 
   const createProject = useMutation({
     mutationFn: () =>
-      api.createProject(createProjectRequest({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName })),
+      api.createProject(createProjectRequest({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName, defaultEngine: projectDefaultEngine as ProjectDto["defaultEngine"] })),
     onSuccess: (project) => {
       queryClient.setQueryData<ProjectDto[]>(["projects"], (current = []) =>
         current.some((item) => item.id === project.id) ? current : [...current, project],
@@ -156,20 +146,21 @@ export default function App({
       setProjectLabel("");
       setProjectPath("");
       setProjectFolderName("");
-      setProjectFolderMode("automatic");
-      navigate({ kind: "project", projectId: project.id });
+      setProjectFolderMode("existing");
+      setProjectDefaultEngine("");
+      navigate(project.lastConversationId ? { kind: "conversation", projectId: project.id, conversationId: project.lastConversationId } : { kind: "project", projectId: project.id });
     },
   });
 
   const updateProject = useMutation({
-    mutationFn: () => api.updateProject(selectedProjectId!, { label: renamedProjectLabel.trim() }),
+    mutationFn: () => api.updateProject(settingsProjectId!, { label: renamedProjectLabel.trim() }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["projects"] }); setProjectSettingsOpen(false); },
   });
 
   const deleteProject = useMutation({
-    mutationFn: () => api.deleteProject(selectedProjectId!),
+    mutationFn: () => api.deleteProject(settingsProjectId!),
     onSuccess: () => {
-      const next = nextProjectAfterDelete(projects, selectedProjectId!);
+      const next = nextProjectAfterDelete(projects, settingsProjectId!);
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       setDeleteConfirmationOpen(false);
       setProjectSettingsOpen(false);
@@ -178,10 +169,20 @@ export default function App({
     },
   });
 
-  const selectProject = (projectId: string) => {
-    saveLastProjectId(projectId);
-    navigate({ kind: "project", projectId });
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages" as const, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
+  const savePreferences = (patch: Partial<typeof preferences>) => {
+    queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
+    void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
   };
+
+  useEffect(() => {
+    const families = {
+      inter: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      system: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      sans: 'Arial, Helvetica, sans-serif',
+    } as const;
+    document.documentElement.style.setProperty("--ponderosa-font-family", families[preferences.fontFamily]);
+  }, [preferences.fontFamily]);
 
   const goHome = (next: Route) => navigate(next);
 
@@ -202,6 +203,8 @@ export default function App({
     >
       <AppBar position="static" color="inherit" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
+          <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.5 }}><MenuIcon /></IconButton>
+          <Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 28, height: 28, mr: 1 }} />
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
             Ponderosa
           </Typography>
@@ -212,6 +215,8 @@ export default function App({
             variant="outlined"
             sx={{ maxWidth: { xs: 132, sm: "none" } }}
           />
+          <Tooltip title="Notifications"><IconButton aria-label="Notification settings" onClick={() => setNotificationSettingsOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
+          <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
           </Box>
@@ -228,19 +233,21 @@ export default function App({
             </IconButton>
           </Tooltip>
         </Toolbar>
-        <ProjectTabs
-          projects={projects}
-          selectedProjectId={selectedProjectId}
-          onCreate={() => setProjectDialogOpen(true)}
-          onSelect={selectProject}
-          onManage={() => {
-            const selected = projects.find((project) => project.id === selectedProjectId);
-            setRenamedProjectLabel(selected?.label ?? "");
-            setProjectSettingsOpen(true);
-          }}
-        />
       </AppBar>
 
+      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
+        <Box sx={{ display: { xs: "none", md: "block" }, minHeight: 0 }}>
+          <WorkspaceSidebar
+            projects={projects}
+            route={route}
+            preferences={preferences}
+            notifications={notificationsQuery.data ?? []}
+            onNavigate={goHome}
+            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
+            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+            onPreferences={savePreferences}
+          />
+        </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
@@ -277,6 +284,20 @@ export default function App({
           <Box />
         )}
       </Box>
+      </Box>
+
+      <Drawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} PaperProps={{ sx: { width: "min(88vw, 360px)" } }}>
+        <WorkspaceSidebar
+          projects={projects}
+          route={route}
+          preferences={{ ...preferences, sidebarCollapsed: false, sidebarWidth: Math.min(360, preferences.sidebarWidth) }}
+          notifications={notificationsQuery.data ?? []}
+          onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
+          onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
+          onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+          onPreferences={savePreferences}
+        />
+      </Drawer>
 
       <Dialog open={projectDialogOpen} onClose={() => setProjectDialogOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>New Project</DialogTitle>
@@ -289,8 +310,10 @@ export default function App({
               autoFocus
               fullWidth
             />
+            <FormControl fullWidth><InputLabel id="project-default-engine-label">Default engine</InputLabel><Select labelId="project-default-engine-label" label="Default engine" value={projectDefaultEngine} onChange={(event) => setProjectDefaultEngine(event.target.value)}>
+              {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engine.authenticated}>{engine.displayName}{engine.authenticated ? "" : " — not signed in"}</MenuItem>)}
+            </Select></FormControl>
             <FormControl fullWidth><InputLabel id="project-folder-mode-label">Working folder</InputLabel><Select labelId="project-folder-mode-label" label="Working folder" value={projectFolderMode} onChange={(event) => setProjectFolderMode(event.target.value as typeof projectFolderMode)}>
-              <MenuItem value="automatic">Optional — create a managed folder automatically</MenuItem>
               <MenuItem value="existing">Choose an existing folder</MenuItem>
               <MenuItem value="create">Create a named empty folder</MenuItem>
             </Select></FormControl>
@@ -299,6 +322,7 @@ export default function App({
                 {(projectFoldersQuery.data?.folders ?? []).map((folder) => <MenuItem key={folder.hostPath} value={folder.hostPath}>{folder.name} — {folder.hostPath}</MenuItem>)}
               </Select></FormControl>
               <TextField label="Or enter an existing absolute path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="/Users/you/Projects/app" fullWidth />
+              <Button variant="outlined" onClick={() => setFolderPickerOpen(true)}>Browse folders on host…</Button>
             </> : null}
             {projectFolderMode === "create" ? <TextField label="New folder name" value={projectFolderName} onChange={(event) => setProjectFolderName(event.target.value)} helperText={`Created inside ${projectFoldersQuery.data?.managedRoot ?? "the managed workspace"}`} fullWidth /> : null}
             {createProject.isError ? <Alert severity="error">{String(createProject.error)}</Alert> : null}
@@ -308,12 +332,52 @@ export default function App({
           <Button onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={projectCreationDisabled({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName, pending: createProject.isPending })}
+            disabled={projectCreationDisabled({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName, defaultEngine: projectDefaultEngine, pending: createProject.isPending })}
             onClick={() => createProject.mutate()}
           >
             Create
           </Button>
         </DialogActions>
+      </Dialog>
+      <HostFolderPicker open={folderPickerOpen} initialPath={projectPath || undefined} onClose={() => setFolderPickerOpen(false)} onChoose={(hostPath) => { setProjectPath(hostPath); setFolderPickerOpen(false); }} />
+      <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Notifications</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <FormControl fullWidth>
+              <InputLabel id="notification-preference-label">Notify me about</InputLabel>
+              <Select labelId="notification-preference-label" label="Notify me about" value={preferences.notifications} onChange={(event) => savePreferences({ notifications: event.target.value as typeof preferences.notifications })}>
+                <MenuItem value="direct_responses">Direct responses</MenuItem><MenuItem value="project_responses">Project-chat responses</MenuItem><MenuItem value="mentions">Mentions</MenuItem><MenuItem value="all_messages">All messages</MenuItem><MenuItem value="everyone">#everyone messages</MenuItem><MenuItem value="broadcasts">Broadcasts</MenuItem><MenuItem value="none">None</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl fullWidth>
+              <InputLabel id="font-preference-label">Font</InputLabel>
+              <Select labelId="font-preference-label" label="Font" value={preferences.fontFamily} onChange={(event) => savePreferences({ fontFamily: event.target.value as typeof preferences.fontFamily })}>
+                <MenuItem value="inter">Inter</MenuItem><MenuItem value="system">System</MenuItem><MenuItem value="sans">Classic sans</MenuItem>
+              </Select>
+            </FormControl>
+            <Alert severity={notificationPermission === "granted" ? "success" : notificationPermission === "denied" ? "warning" : "info"}>
+              In-app notifications remain available. Browser push permission: {notificationPermission}.
+              {pushStatus ? ` ${pushStatus}` : ""}
+            </Alert>
+            {notificationPermission !== "unsupported" && notificationPermission !== "denied" ? (
+              <Button variant="outlined" disabled={pushBusy} onClick={() => {
+                setPushBusy(true);
+                void syncWebPush(true).then((message) => { setPushStatus(message); setNotificationPermission(Notification.permission); })
+                  .catch((error: unknown) => { setPushStatus(error instanceof Error ? error.message : "Push registration failed."); setNotificationPermission(Notification.permission); })
+                  .finally(() => setPushBusy(false));
+              }}>Enable browser push</Button>
+            ) : null}
+            {notificationPermission === "granted" ? (
+              <Button color="inherit" disabled={pushBusy} onClick={() => {
+                setPushBusy(true);
+                void disableWebPush().then(setPushStatus).catch((error: unknown) => setPushStatus(error instanceof Error ? error.message : "Push removal failed."))
+                  .finally(() => setPushBusy(false));
+              }}>Disable on this device</Button>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Done</Button></DialogActions>
       </Dialog>
 
       <Dialog open={projectSettingsOpen} onClose={() => setProjectSettingsOpen(false)} fullWidth maxWidth="sm">

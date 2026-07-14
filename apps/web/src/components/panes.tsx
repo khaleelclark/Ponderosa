@@ -32,21 +32,22 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import type { AgentActivityDto, AgentRunDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { copyText } from "../clipboard";
 import { readChatState, readScrollPosition, writeChatState } from "../chatState";
 import type { ExecutionItem } from "../hooks/useAgentStream";
 import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
-import { MessageContextMenu } from "./MessageContextMenu";
 
 export function workItemStatusLabel(status: WorkItemDto["status"]): string {
   if (status === "waiting_approval") {
@@ -143,6 +144,7 @@ type ComposerAttachmentState = { files: File[]; error?: string };
 type ComposerAttachmentAction =
   | { type: "add"; candidates: File[] }
   | { type: "remove"; index: number }
+  | { type: "replace"; files: File[]; error?: string }
   | { type: "clear" };
 
 export function composerAttachmentReducer(
@@ -151,6 +153,7 @@ export function composerAttachmentReducer(
 ): ComposerAttachmentState {
   if (action.type === "clear") return { files: [] };
   if (action.type === "remove") return { files: state.files.filter((_, index) => index !== action.index) };
+  if (action.type === "replace") return { files: action.files, ...(action.error ? { error: action.error } : {}) };
   const selection = selectComposerFiles(state.files, action.candidates);
   return {
     files: selection.accepted.length > 0 ? [...state.files, ...selection.accepted] : state.files,
@@ -274,7 +277,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
 
   async function copyCode(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(codeBlockText(children).replace(/\n$/, ""));
+      await copyText(codeBlockText(children).replace(/\n$/, ""));
       setCopyState("copied");
     } catch {
       setCopyState("error");
@@ -367,7 +370,9 @@ export function ChatMarkdown({
         whiteSpace: "pre-wrap",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
-        "& p": { my: 0.75 },
+        fontSize: 14,
+        lineHeight: "20px",
+        "& p": { my: 0.5 },
         "& h1, & h2, & h3, & h4": { mt: 1.5, mb: 0.75, lineHeight: 1.25 },
         "& h1": { fontSize: "1.35rem" },
         "& h2": { fontSize: "1.2rem" },
@@ -404,28 +409,12 @@ export function ChatMarkdown({
   );
 }
 
-export function splitMessageSources(text: string): { body: string; sources?: string } {
-  const matches = [...text.matchAll(/(?:^|\n)(#{1,6})\s+(Sources?|Citations?)\s*\n/gi)];
-  const match = matches.at(-1);
-  if (match?.index === undefined || match.index === 0) return { body: text };
-  return {
-    body: text.slice(0, match.index).trimEnd(),
-    sources: text.slice(match.index + (match[0].startsWith("\n") ? 1 : 0)).trim(),
-  };
-}
-
 export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
 }): JSX.Element {
-  const { body, sources } = splitMessageSources(text);
-  return <>
-    <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{body}</ChatMarkdown>
-    {sources ? <Box component="aside" aria-label="Sources" sx={{ mt: 1.25, pt: 1, borderTop: 1, borderColor: "divider", color: "text.secondary", "& h1, & h2, & h3, & h4, & h5, & h6": { fontSize: "0.78rem", textTransform: "uppercase", letterSpacing: ".06em" }, "& p, & li": { fontSize: "0.82rem" } }}>
-      <ChatMarkdown>{sources}</ChatMarkdown>
-    </Box> : null}
-  </>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
@@ -451,8 +440,9 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, agentIdForHandle, onOpenAgent }: {
+export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent }: {
   text: string;
+  citations?: VerifiedCitationDto[];
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
 }): JSX.Element {
@@ -481,6 +471,7 @@ export function ChatMessageBody({ text, agentIdForHandle, onOpenAgent }: {
           {expanded ? "Show less" : "Show full message"}
         </Button>
       ) : null}
+      {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><a href={citation.url} target="_blank" rel="noreferrer">{citation.title}</a></Typography>)}</Box> : null}
     </Box>
   );
 }
@@ -575,10 +566,6 @@ export function ChatPane({
           }}
         >
           {message.role === "user" ? <UserMessageLabel /> : null}
-          <MessageContextMenu
-            text={message.text}
-            onReply={onReply ? () => onReply(message) : undefined}
-          >
           <Box
             data-message-bubble="true"
             sx={{
@@ -607,7 +594,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMessageBody text={message.text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
@@ -617,15 +604,15 @@ export function ChatPane({
               </Box>)}
             </Stack> : null}
             <MessageReactions reactions={message.reactions} />
-            <MessageActionsAndTimestamp
-              value={message.createdAt}
-              actions={message.role === "assistant" || onReply ? <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
-                {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
-                {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit" }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
-              </Stack> : undefined}
-            />
           </Box>
-          </MessageContextMenu>
+          <MessageActionsAndTimestamp
+            value={message.createdAt}
+            actions={<>
+              {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
+              <CopyMessageButton text={message.text} />
+              {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+            </>}
+          />
         </Box>
         );
       })}
@@ -1261,6 +1248,8 @@ export function Composer({
   onCancelReply,
   replyLabel,
   draftStorageKey,
+  conversationDraftId,
+  controls,
 }: {
   disabled: boolean;
   running: boolean;
@@ -1286,13 +1275,26 @@ export function Composer({
   replyLabel?: string;
   /** Stable surface key used to preserve an unsent draft across tabs and refreshes. */
   draftStorageKey?: string;
+  /** Enables server-authoritative, revisioned draft persistence for this chat surface. */
+  conversationDraftId?: string;
+  /** Compact engine/model/effort controls rendered in the bottom action row. */
+  controls?: ReactNode;
 }): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
   const files = attachments.files;
+  const queryClient = useQueryClient();
   const [sendError, setSendError] = useState<string>();
   const fileInput = useRef<HTMLInputElement | null>(null);
   const previousDraftStorageKey = useRef(draftStorageKey);
+  const previousConversationDraftId = useRef(conversationDraftId);
+  const draftRevision = useRef(0);
+  const draftReady = useRef(false);
+  const draftClientId = useRef<string>();
+  const draftAttachmentIds = useRef(new Map<File, string>());
+  const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
+  const draftGeneration = useRef(0);
+  const [draftAttachmentVersion, setDraftAttachmentVersion] = useState(0);
   const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
@@ -1313,6 +1315,12 @@ export function Composer({
   });
   const canSend = textCanSend || (!disabled && !running && allowUnmentionedSend && files.length > 0);
   const canCancel = running && Boolean(onCancel);
+  const draftQuery = useQuery({
+    queryKey: ["conversation-draft", conversationDraftId],
+    queryFn: () => api.getConversationDraft(conversationDraftId!),
+    enabled: Boolean(conversationDraftId),
+    staleTime: 0,
+  });
 
   const update = (next: string) => {
     setText(next);
@@ -1326,11 +1334,111 @@ export function Composer({
   }, [draftStorageKey]);
 
   useEffect(() => {
+    const changed = previousConversationDraftId.current !== conversationDraftId;
+    previousConversationDraftId.current = conversationDraftId;
+    if (changed) {
+      draftReady.current = false;
+      draftRevision.current = 0;
+      draftAttachmentIds.current.clear();
+      dispatchAttachments({ type: "clear" });
+    }
+    if (!conversationDraftId) return;
+    const key = "ponderosa.draft.client.v1";
+    let clientId = window.sessionStorage.getItem(key);
+    if (!clientId) {
+      clientId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      window.sessionStorage.setItem(key, clientId);
+    }
+    draftClientId.current = clientId;
+  }, [conversationDraftId]);
+
+  useEffect(() => {
+    const draft = draftQuery.data;
+    if (!conversationDraftId || !draft || (draftReady.current && draft.revision <= draftRevision.current)) return;
+    let cancelled = false;
+    const apply = async () => {
+      const restored = await Promise.all((draft.attachments ?? []).map(async (attachment: DraftAttachmentDto) => ({
+        attachment,
+        file: await api.downloadDraftAttachment(attachment),
+      })));
+      if (cancelled || draft.revision < draftRevision.current) return;
+      draftAttachmentIds.current = new Map(restored.map(({ attachment, file }) => [file, attachment.id]));
+      dispatchAttachments({ type: "replace", files: restored.map(({ file }) => file) });
+      setDraftAttachmentVersion((value) => value + 1);
+      draftRevision.current = draft.revision;
+      const local = draftStorageKey ? readChatState(draftStorageKey) ?? "" : "";
+      const nextText = draft.revision === 0 && local && !draft.text ? local : draft.text;
+      setText(nextText);
+      if (draftStorageKey) writeChatState(draftStorageKey, nextText);
+      draftReady.current = true;
+    };
+    void apply().catch(() => {
+      if (!cancelled) {
+        draftRevision.current = draft.revision;
+        setText(draft.text);
+        dispatchAttachments({ type: "replace", files: [], error: "Some staged draft attachments could not be restored." });
+        draftReady.current = true;
+      }
+    });
+    return () => { cancelled = true; };
+  }, [conversationDraftId, draftQuery.data, draftStorageKey]);
+
+  useEffect(() => {
     if (draftStorageKey) writeChatState(draftStorageKey, text);
   }, [draftStorageKey, text]);
 
+  useEffect(() => {
+    if (!conversationDraftId || !draftReady.current || !draftClientId.current) return;
+    const timer = window.setTimeout(() => {
+      const generation = draftGeneration.current;
+      const attachmentIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
+      const clientId = draftClientId.current!;
+      draftWriteChain.current = draftWriteChain.current.then(async () => {
+        if (generation !== draftGeneration.current) return;
+        try {
+          const draft = await api.putConversationDraft(conversationDraftId, { text, attachmentIds, expectedRevision: draftRevision.current, clientId });
+          if (generation !== draftGeneration.current) return;
+          draftRevision.current = draft.revision;
+          queryClient.setQueryData(["conversation-draft", conversationDraftId], draft);
+        } catch {
+          const current = await api.getConversationDraft(conversationDraftId);
+          draftGeneration.current += 1;
+          draftRevision.current = current.revision;
+          queryClient.setQueryData(["conversation-draft", conversationDraftId], current);
+        }
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [conversationDraftId, draftAttachmentVersion, files, queryClient, text]);
+
   const addFiles = (candidates: File[]) => {
+    const selection = selectComposerFiles(files, candidates);
     dispatchAttachments({ type: "add", candidates });
+    if (!conversationDraftId || selection.accepted.length === 0) return;
+    void Promise.allSettled(selection.accepted.map(async (file) => ({ file, staged: await api.uploadDraftAttachment(conversationDraftId, file) })))
+      .then((results) => {
+        const staged = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (!failure) {
+          for (const { file, staged: attachment } of staged) draftAttachmentIds.current.set(file, attachment.id);
+          setDraftAttachmentVersion((value) => value + 1);
+          return;
+        }
+        for (const { staged: attachment } of staged) void api.deleteDraftAttachment(conversationDraftId, attachment.id).catch(() => undefined);
+        const rejected = new Set(selection.accepted);
+        const error = failure.reason as unknown;
+        dispatchAttachments({ type: "replace", files: files.filter((file) => !rejected.has(file)), error: error instanceof Error ? error.message : "Draft attachment upload failed." });
+      });
+  };
+
+  const removeFile = (index: number) => {
+    const file = files[index];
+    if (!file) return;
+    const id = draftAttachmentIds.current.get(file);
+    draftAttachmentIds.current.delete(file);
+    dispatchAttachments({ type: "remove", index });
+    setDraftAttachmentVersion((value) => value + 1);
+    if (conversationDraftId && id) void api.deleteDraftAttachment(conversationDraftId, id).catch(() => undefined);
   };
 
   // Agent routing uses #; @ is reserved for project file/folder references.
@@ -1429,9 +1537,13 @@ export function Composer({
     if (sendingRef.current || !canSend) return;
     sendingRef.current = true;
     setSendError(undefined);
+    const stagedIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
     void Promise.resolve(handler(text.trim(), files)).then(() => {
       update("");
       dispatchAttachments({ type: "clear" });
+      draftAttachmentIds.current.clear();
+      setDraftAttachmentVersion((value) => value + 1);
+      if (conversationDraftId) for (const id of stagedIds) void api.deleteDraftAttachment(conversationDraftId, id).catch(() => undefined);
       setCaret(0);
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
       .finally(() => { sendingRef.current = false; });
@@ -1441,7 +1553,11 @@ export function Composer({
     if (!onQueue || files.length > 0) return;
     submit(onQueue);
   };
-  const showQueue = Boolean(onQueue) && shouldShowQueueControl({ text, agentResponding, disabled });
+  const showQueue = Boolean(onQueue) && shouldShowQueueControl({
+    text,
+    agentResponding: agentResponding || mentionedBusyHandles.length > 0,
+    disabled,
+  });
 
   return (
     <Paper
@@ -1473,22 +1589,26 @@ export function Composer({
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-        {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => dispatchAttachments({ type: "remove", index })} />)}
+        {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => removeFile(index)} />)}
       </Stack> : null}
       {(attachments.error ?? sendError) ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {attachments.error ?? sendError}</Alert> : null}
-      <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} sx={{ alignItems: "flex-end" }}>
+      <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} useFlexGap sx={{ alignItems: "flex-end", flexWrap: "wrap" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
           addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
         }} />
         <Tooltip title="Attach or paste assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= COMPOSER_MAX_FILES} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
-        <Box ref={anchorRef} sx={{ flex: 1, minWidth: 0 }}>
+        {controls ? <Box sx={{ minWidth: 0, flex: "1 1 auto", overflowX: "auto" }}>{controls}</Box> : null}
+        <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <TextField
             fullWidth
             multiline
             minRows={1}
             maxRows={5}
-            sx={{ "& .MuiInputBase-root": { alignItems: "flex-end" } }}
+            sx={{
+              "& .MuiInputBase-root": { alignItems: "flex-end", borderRadius: 2, bgcolor: "background.paper" },
+              "& textarea": { fontSize: 14, lineHeight: "20px" },
+            }}
             value={text}
             inputRef={inputRef}
             disabled={disabled || running}

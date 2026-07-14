@@ -4,7 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TokenUsage, WorkItemStatus } from "./events.js";
-import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord } from "./communication.js";
+import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord, VerifiedCitationRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -16,6 +16,10 @@ export interface ProjectDto {
   hostPath: string;
   createdAt: string;
   lastUsedAt?: string;
+  /** Server-authoritative default for every newly created Project chat. */
+  defaultEngine: EngineId;
+  /** Most recently opened non-deleted Project chat. */
+  lastConversationId?: string;
 }
 
 export interface AgentPresetDto {
@@ -39,10 +43,110 @@ export type UpdateAgentPresetRequest = Partial<Omit<CreateAgentPresetRequest, "e
 /** POST /api/projects body. */
 export interface CreateProjectRequest {
   label: string;
+  defaultEngine: EngineId;
   /** Existing absolute host folder. Omit to use a new managed empty workspace. */
   hostPath?: string;
   /** Create a named empty folder below Ponderosa's managed workspace root. */
   createFolderName?: string;
+}
+
+export type ProjectSort = "last_used" | "alphabetical" | "custom";
+export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
+
+export interface WorkspacePreferencesDto {
+  projectSort: ProjectSort;
+  /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
+  projectOrder: string[];
+  sidebarCollapsed: boolean;
+  sidebarWidth: number;
+  notifications: NotificationPreference;
+  fontFamily: "inter" | "system" | "sans";
+  updatedAt: string;
+}
+
+export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "updatedAt">>;
+
+export interface DraftAttachmentDto {
+  id: string;
+  conversationId: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  createdAt: string;
+  downloadUrl: string;
+}
+
+export interface ConversationDraftDto {
+  conversationId: string;
+  text: string;
+  /** Stable staged asset IDs; a draft is never represented as a chat event. */
+  attachmentIds: string[];
+  /** Metadata for staged files still referenced by this draft. */
+  attachments?: DraftAttachmentDto[];
+  revision: number;
+  updatedAt: string;
+  clientId: string;
+}
+
+export interface PutConversationDraftRequest {
+  text: string;
+  attachmentIds: string[];
+  expectedRevision: number;
+  clientId: string;
+}
+
+export interface GenerateConversationTitleResponse {
+  title: string;
+  generated: boolean;
+}
+
+export interface WorkspaceNotificationDto {
+  id: string;
+  projectId: string;
+  conversationId?: string;
+  communicationEventId?: string;
+  kind: Exclude<NotificationPreference, "none"> | "collaboration";
+  title: string;
+  body: string;
+  createdAt: string;
+  readAt?: string;
+}
+
+export type WorkspaceEvent =
+  | { type: "preferences_updated"; preferences: WorkspacePreferencesDto }
+  | { type: "project_changed"; projectId: string; action: "created" | "updated" | "deleted" | "used" }
+  | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
+  | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
+  | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" }
+  | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
+  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state"; executionId?: string }
+  | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" };
+
+export interface WebPushSubscriptionDto {
+  deviceId: string;
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: { p256dh: string; auth: string };
+  updatedAt: string;
+}
+
+export interface WebPushStatusDto {
+  configured: boolean;
+  publicKey?: string;
+}
+
+export interface WorkspaceEventEnvelope {
+  id: number;
+  ts: string;
+  event: WorkspaceEvent;
+  replayed?: boolean;
+}
+
+/** Stream identity and high-water mark, sent before replay on every connection. */
+export interface WorkspaceStreamStatusDto {
+  instanceId: string;
+  cursor: number;
+  reset: boolean;
 }
 
 /** PATCH /api/projects/:id body. Project working folders are immutable after creation. */
@@ -60,6 +164,13 @@ export interface ProjectFolderOptionDto {
 export interface ProjectFolderOptionsDto {
   managedRoot: string;
   folders: ProjectFolderOptionDto[];
+}
+
+export interface HostFolderBrowseDto {
+  path: string;
+  root: string;
+  parentPath?: string;
+  folders: Array<{ name: string; hostPath: string }>;
 }
 
 /** Current Git-backed workspace state. Execution events remain the provenance trail. */
@@ -147,7 +258,15 @@ export interface ConversationMessageDto {
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];
   document?: CommunicationDocumentReference;
+  citations?: VerifiedCitationDto[];
+  executionId?: string;
+  fileActivity?: Array<{ path: string; kind: "create" | "edit" | "delete"; status: "completed" }>;
+  correctionOfMessageId?: string;
+  correctedByMessageId?: string;
 }
+
+/** Engine-agnostic citation metadata emitted only after edge normalization/verification. */
+export type VerifiedCitationDto = VerifiedCitationRecord;
 
 /** User-authored emoji state projected onto one canonical agent communication. */
 export interface MessageReactionDto {
@@ -226,6 +345,7 @@ export interface CreateDirectReplyRequest {
   attachmentIds?: string[];
   /** Stable across retries; the server applies both durable effects once. */
   idempotencyKey: string;
+  activeRunDelivery?: "steer" | "queue";
 }
 
 export interface DirectReplyResponse {
@@ -233,6 +353,8 @@ export interface DirectReplyResponse {
   targetAuthorAgentId: string;
   replayed: boolean;
   queued: boolean;
+  deliveryId?: string;
+  state?: "queued" | "steered" | "started";
 }
 
 export interface CreateMultiAgentDirectMessageRequest {
@@ -241,12 +363,50 @@ export interface CreateMultiAgentDirectMessageRequest {
   replyToMessageId?: string;
   /** Stable across retries; one user action creates one message and N deliveries. */
   idempotencyKey: string;
+  activeRunDelivery?: "steer" | "queue";
 }
 
 export interface MultiAgentDirectMessageResponse {
   messageId: string;
   replayed: boolean;
-  recipients: Array<{ agentId: string; queued: boolean }>;
+  recipients: Array<{ agentId: string; queued: boolean; deliveryId?: string; state?: "queued" | "steered" | "started" }>;
+}
+
+export interface QueuedConversationMessageDto {
+  deliveryId: string;
+  messageId: string;
+  conversationId: string;
+  targetAgentId: string;
+  text: string;
+  position: number;
+  createdAt: string;
+  status: "queued" | "cancelled";
+  cancelledAt?: string;
+}
+
+export interface CancelQueuedMessageRequest {
+  /** Stable across retries so a repeated cancellation returns the same outcome. */
+  idempotencyKey: string;
+}
+
+export interface CancelQueuedMessageResponse {
+  cancelled: boolean;
+  replayed: boolean;
+  status: "cancelled" | "delivery_started";
+}
+
+export interface CorrectConversationMessageRequest {
+  text: string;
+  idempotencyKey: string;
+  /** Corrections are immutable follow-up turns and therefore can only queue. */
+  activeRunDelivery?: "queue";
+}
+
+export interface CorrectConversationMessageResponse {
+  originalMessageId: string;
+  correctionMessageId: string;
+  replayed: boolean;
+  queued: boolean;
 }
 
 // ─── Agents ─────────────────────────────────────────────────────────────────
@@ -430,6 +590,7 @@ export interface MessageDto {
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];
   document?: CommunicationDocumentReference;
+  citations?: VerifiedCitationDto[];
 }
 
 export type AssetMediaType =
@@ -700,6 +861,8 @@ interface AgentMessageRequestBase {
   text: string;
   /** Optional long-form Markdown; `text` remains the concise scoped summary. */
   document?: { title: string; content: string; mediaType?: "text/markdown" };
+  /** External sources are normalized into canonical citation metadata at the server edge. */
+  citations?: Array<{ url: string; title: string }>;
   /** Stable across a transport retry so every durable effect occurs once. */
   idempotencyKey?: string;
 }

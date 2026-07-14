@@ -1,4 +1,4 @@
-import { Typography } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 
 export interface FormattedTimestamp {
@@ -57,7 +57,7 @@ export function MessageTimestamp({ value }: { value: string }): JSX.Element | nu
         display: "block",
         color: "inherit",
         maxWidth: "100%",
-        mt: 0.5,
+        mt: 0,
         overflowWrap: "anywhere",
         textAlign: "end",
       }}
@@ -75,10 +75,9 @@ export function MessageActionsAndTimestamp({
   actions?: ReactNode;
   value: string;
 }): JSX.Element {
-  return (
-    <>
-      {actions}
-      <MessageTimestamp value={value} />
-    </>
-  );
+  return <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", mt: 0.5, minHeight: 32 }}>
+    {actions}
+    <Box sx={{ flex: 1 }} />
+    <MessageTimestamp value={value} />
+  </Stack>;
 }

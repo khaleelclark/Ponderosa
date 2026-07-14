@@ -23,11 +23,28 @@ import type {
   EngineDto,
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
+  QueuedConversationMessageDto,
+  CancelQueuedMessageRequest,
+  CancelQueuedMessageResponse,
+  CorrectConversationMessageRequest,
+  CorrectConversationMessageResponse,
   ImageAttachmentDto,
   ProjectDto,
   ProjectFolderOptionsDto,
   WorkspaceFileReviewDto,
   WorkspaceStatusDto,
+  WorkspacePreferencesDto,
+  UpdateWorkspacePreferencesRequest,
+  ConversationDraftDto,
+  DraftAttachmentDto,
+  PutConversationDraftRequest,
+  GenerateConversationTitleResponse,
+  WorkspaceNotificationDto,
+  WorkspaceEventEnvelope,
+  WorkspaceStreamStatusDto,
+  HostFolderBrowseDto,
+  WebPushSubscriptionDto,
+  WebPushStatusDto,
   UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
@@ -63,6 +80,13 @@ export interface StreamHandlers {
   onError?(error: unknown): void;
 }
 
+export interface WorkspaceStreamHandlers {
+  onEvent(envelope: WorkspaceEventEnvelope): void;
+  onStatus?(status: WorkspaceStreamStatusDto): void;
+  onOpen?(): void;
+  onError?(error: unknown): void;
+}
+
 export class ApiRequestError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -73,6 +97,8 @@ export interface PonderosaApi {
   listProjects(): Promise<ProjectDto[]>;
   createProject(request: CreateProjectRequest): Promise<ProjectDto>;
   getProjectFolders(): Promise<ProjectFolderOptionsDto>;
+  browseProjectFolders(path?: string): Promise<HostFolderBrowseDto>;
+  markProjectUsed(projectId: string, conversationId?: string): Promise<ProjectDto>;
   updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto>;
   deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
@@ -84,9 +110,25 @@ export interface PonderosaApi {
   updateConversation(conversationId: string, patch: UpdateConversationRequest): Promise<ConversationDto>;
   deleteConversation(conversationId: string): Promise<void>;
   sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void>;
+  getConversationDraft(conversationId: string): Promise<ConversationDraftDto>;
+  putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto>;
+  uploadDraftAttachment(conversationId: string, file: File): Promise<DraftAttachmentDto>;
+  downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File>;
+  deleteDraftAttachment(conversationId: string, attachmentId: string): Promise<void>;
+  generateConversationTitle(conversationId: string): Promise<GenerateConversationTitleResponse>;
+  getWorkspacePreferences(): Promise<WorkspacePreferencesDto>;
+  updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto>;
+  listNotifications(): Promise<WorkspaceNotificationDto[]>;
+  clearConversationNotifications(conversationId: string): Promise<void>;
+  getWebPushStatus(): Promise<WebPushStatusDto>;
+  upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void>;
+  deleteWebPushSubscription(deviceId: string): Promise<void>;
   sendCollaborationMessage(conversationId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;
   sendDirectReply(conversationId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse>;
   sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
+  listQueuedConversationMessages(conversationId: string): Promise<QueuedConversationMessageDto[]>;
+  cancelQueuedConversationMessage(conversationId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse>;
+  correctConversationMessage(conversationId: string, messageId: string, request: CorrectConversationMessageRequest): Promise<CorrectConversationMessageResponse>;
   sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;
   listAgents(projectId: string): Promise<AgentDto[]>;
   listAgentPresets(projectId: string): Promise<AgentPresetDto[]>;
@@ -114,4 +156,5 @@ export interface PonderosaApi {
   cancelRun(agentId: string): Promise<void>;
   compactSession(agentId: string): Promise<{ compacted: boolean }>;
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
+  subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription;
 }

@@ -28,12 +28,16 @@ const projects: ProjectDto[] = [
     hostPath: "/Users/khaleel/Projects/Ponderosa",
     createdAt: now,
     lastUsedAt: now,
+    defaultEngine: "codex",
+    lastConversationId: "master-release",
   },
   {
     id: "mobile",
     label: "Mobile App",
     hostPath: "/home/khaleel/projects/mobile",
     createdAt: now,
+    defaultEngine: "codex",
+    lastConversationId: "master-mobile",
   },
 ];
 
@@ -48,6 +52,9 @@ const masterMessages: Record<string, ConversationMessageDto[]> = {
 };
 const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const agentPresets: AgentPresetDto[] = [];
+const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
+const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
+let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages", fontFamily: "inter", updatedAt: now };
 
 const agents: AgentDto[] = [
   {
@@ -303,12 +310,23 @@ export const mockApi: PonderosaApi = {
       hostPath: request.hostPath ?? `/tmp/ponderosa-workspaces/${request.createFolderName ?? `project-${Date.now()}`}`,
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
+      defaultEngine: request.defaultEngine,
     };
     projects.push(project);
     return delay(project);
   },
   getProjectFolders() {
     return delay({ managedRoot: "/tmp/ponderosa-workspaces", folders: projects.map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const })) });
+  },
+  browseProjectFolders(path) {
+    const root = "/tmp/ponderosa-workspaces";
+    return delay({ path: path ?? root, root, folders: [] });
+  },
+  markProjectUsed(projectId, conversationId) {
+    const project = projects.find((item) => item.id === projectId)!;
+    project.lastUsedAt = new Date().toISOString();
+    if (conversationId) project.lastConversationId = conversationId;
+    return delay(project);
   },
   updateProject(projectId, patch) {
     const project = projects.find((item) => item.id === projectId);
@@ -404,6 +422,44 @@ export const mockApi: PonderosaApi = {
     masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), { id: "master-message-" + Date.now(), conversationId, role: request.role ?? "user", text: `#broadcast ${text}`, createdAt: new Date().toISOString() }];
     await delay(undefined, 80);
   },
+  getConversationDraft(conversationId) {
+    const draft = drafts.get(conversationId) ?? { conversationId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
+    return delay({ ...draft, attachments: draft.attachmentIds.map((id) => draftAttachments.get(id)?.dto).filter((item): item is import("@ponderosa/core").DraftAttachmentDto => Boolean(item)) });
+  },
+  putConversationDraft(conversationId, request) {
+    const current = drafts.get(conversationId);
+    if ((current?.revision ?? 0) !== request.expectedRevision) return Promise.reject(new Error("draft revision conflict"));
+    const draft = { conversationId, text: request.text, attachmentIds: request.attachmentIds, attachments: request.attachmentIds.map((id) => draftAttachments.get(id)?.dto).filter((item): item is import("@ponderosa/core").DraftAttachmentDto => Boolean(item)), revision: request.expectedRevision + 1, updatedAt: new Date().toISOString(), clientId: request.clientId };
+    drafts.set(conversationId, draft);
+    return delay(draft);
+  },
+  uploadDraftAttachment(conversationId, file) {
+    const id = `draft-${Date.now()}-${Math.random()}`;
+    const dto = { id, conversationId, name: file.name, mediaType: file.type, size: file.size, createdAt: new Date().toISOString(), downloadUrl: `mock:${id}` };
+    draftAttachments.set(id, { dto, file });
+    return delay(dto);
+  },
+  downloadDraftAttachment(attachment) {
+    const stored = draftAttachments.get(attachment.id);
+    return stored ? delay(stored.file) : Promise.reject(new Error("Draft attachment not found"));
+  },
+  deleteDraftAttachment(_conversationId, attachmentId) {
+    draftAttachments.delete(attachmentId);
+    return Promise.resolve();
+  },
+  generateConversationTitle(conversationId) {
+    const conversation = conversations.find((item) => item.id === conversationId);
+    if (!conversation || conversation.title !== "New chat") return delay({ title: conversation?.title ?? "New chat", generated: false });
+    conversation.title = "Generated chat title";
+    return delay({ title: conversation.title, generated: true });
+  },
+  getWorkspacePreferences() { return delay(workspacePreferences); },
+  updateWorkspacePreferences(request) { workspacePreferences = { ...workspacePreferences, ...request, updatedAt: new Date().toISOString() }; return delay(workspacePreferences); },
+  listNotifications() { return delay([]); },
+  clearConversationNotifications() { return delay(undefined); },
+  getWebPushStatus() { return delay({ configured: false }); },
+  upsertWebPushSubscription() { return delay(undefined); },
+  deleteWebPushSubscription() { return delay(undefined); },
   async sendDirectReply(conversationId, request) {
     const target = agents.find((agent) => agent.id === request.targetAuthorAgentId);
     if (!target) throw new Error("Agent not found");
@@ -432,6 +488,15 @@ export const mockApi: PonderosaApi = {
       replayed: false,
       recipients: request.recipients.map((recipient) => ({ agentId: recipient.agentId, queued: false })),
     };
+  },
+  listQueuedConversationMessages() { return delay([]); },
+  cancelQueuedConversationMessage() { return delay({ cancelled: true, replayed: false, status: "cancelled" }); },
+  correctConversationMessage(conversationId, messageId, request) {
+    const correctionMessageId = request.idempotencyKey;
+    masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), {
+      id: correctionMessageId, conversationId, role: "user", text: request.text, createdAt: new Date().toISOString(), correctionOfMessageId: messageId,
+    }];
+    return delay({ originalMessageId: messageId, correctionMessageId, replayed: false, queued: false });
   },
   async sendUserReaction(request) {
     const reaction = { emoji: request.emoji, count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" as const }] };
@@ -634,5 +699,9 @@ export const mockApi: PonderosaApi = {
         handlersForAgent.delete(handlers);
       },
     };
+  },
+  subscribeWorkspace(_lastSeenId, handlers): StreamSubscription {
+    queueMicrotask(() => handlers.onOpen?.());
+    return { close() {} };
   },
 };
