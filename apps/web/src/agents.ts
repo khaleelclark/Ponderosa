@@ -171,7 +171,7 @@ export function agentStatusColor(
   }
 }
 
-/** Short current-run or latest-activity line for an agent row. */
+/** Short current-run or waiting-approval line for an agent row. */
 export function agentActivity(detail: AgentDetailDto | undefined): string | undefined {
   if (!detail) {
     return undefined;
@@ -182,12 +182,8 @@ export function agentActivity(detail: AgentDetailDto | undefined): string | unde
   if (activeRun) {
     return activeRun.title;
   }
-  const lastRun = [...detail.runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  if (lastRun) {
-    return lastRun.title;
-  }
-  const lastMessage = detail.messages.at(-1);
-  return lastMessage?.text.slice(0, 80);
+  const waitingItem = detail.workItems.find((item) => item.status === "waiting_approval");
+  return waitingItem?.title;
 }
 
 /**

@@ -50,7 +50,7 @@ import type {
   TokenUsage,
   TokenUsageSummaryDto,
 } from "@ponderosa/core";
-import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
+import { agentRoleProfile, deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore } from "@ponderosa/agents";
 import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
@@ -1250,10 +1250,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return {
       projectId, generatedAt: health.generatedAt,
       agents: agents.map((agent) => {
+        const profile = agentRoleProfile(agent);
         return {
           agentId: agent.id, displayName: agent.title,
-          role: agent.presetSnapshot?.name ?? "Generalist",
-          description: agent.presetSnapshot?.description ?? `General-purpose agent ${agent.title}`,
+          role: profile.role,
+          description: profile.description,
           status: healthById.get(agent.id)?.status ?? "idle",
           ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}),
           childAgentIds: agents.filter((candidate) => candidate.managerAgentId === agent.id).map((candidate) => candidate.id).sort(),
@@ -1334,6 +1335,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveryId: undefined,
       collaborationDeliveryIds: deliveries.map((delivery) => delivery.id),
     };
+  }
+
+  function pendingTurnTriggerEventIds(pendingTurn: PendingTurn): string[] {
+    const deliveryEventIds = (pendingTurn.collaborationDeliveryIds ?? (pendingTurn.collaborationDeliveryId
+      ? [pendingTurn.collaborationDeliveryId]
+      : []))
+      .map((id) => collaborationDeliveries.get(id)?.communicationEventId)
+      .filter((id): id is string => Boolean(id));
+    return [...new Set([pendingTurn.communicationEventId, ...deliveryEventIds]
+      .filter((id): id is string => Boolean(id)))];
   }
 
   function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
@@ -3586,9 +3597,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const existingRun = activeRuns.get(agent.id);
       if (existingRun) {
         if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
-        if (communicationEventId) {
+        const triggerEventIds = pendingTurnTriggerEventIds(pendingTurn);
+        if (triggerEventIds.length > 0) {
           try {
-            store.recordRunTrigger(project.id, communicationEventId, agent.id);
+            store.recordRunTriggers(project.id, triggerEventIds, agent.id);
           } catch (error) {
             return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });
           }
@@ -3834,9 +3846,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(404).send({ error: "agent not found" });
       }
 
-      if (pendingTurn.communicationEventId) {
+      const triggerEventIds = pendingTurnTriggerEventIds(pendingTurn);
+      if (triggerEventIds.length > 0) {
         try {
-          store.recordRunTrigger(project.id, pendingTurn.communicationEventId, agent.id);
+          store.recordRunTriggers(project.id, triggerEventIds, agent.id);
         } catch (error) {
           runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
           return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });

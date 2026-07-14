@@ -335,9 +335,22 @@ describe("AgentStore — canonical communication events", () => {
     expect(store.getProjectedAgentMessages(other.id)).toHaveLength(0);
     expect(readFileSync(runTriggersPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
 
+    const { event: direct } = store.appendCommunicationEvent({
+      eventId: "direct-trigger", schemaVersion: 2, projectId: project.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: responsible.id },
+      text: "Follow up", createdAt: "2026-07-13T00:01:00.000Z",
+    });
+    const batch = store.recordRunTriggers(project.id, [request.eventId, direct.eventId], responsible.id, direct.createdAt);
+    expect(batch).toEqual([
+      { trigger: first.trigger, replayed: true },
+      { trigger: expect.objectContaining({ communicationEventId: direct.eventId, source: "direct_message" }), replayed: false },
+    ]);
+    expect(readFileSync(runTriggersPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(2);
+
     store.close();
     store = new AgentStore(dir);
-    expect(store.readRunTriggers(project.id, responsible.id)).toEqual([first.trigger]);
+    expect(store.readRunTriggers(project.id, responsible.id)).toEqual([first.trigger, batch[1]!.trigger]);
     expect(store.hasRunTrigger(project.id, request.eventId, responsible.id)).toBe(true);
   });
 

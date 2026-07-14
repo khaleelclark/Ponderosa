@@ -26,6 +26,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
+import { agentRoleProfile } from "@ponderosa/core";
 import type { ConversationDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -212,6 +213,7 @@ export function AgentsTab({
             {filtered.map(({ agent, depth }) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const activity = agentActivity(detailByAgentId.get(agent.id));
+              const profile = agentRoleProfile(agent);
               const organizationParent = agent.managerAgentId
                 ? agents.find((candidate) => candidate.id === agent.managerAgentId)
                 : undefined;
@@ -233,7 +235,7 @@ export function AgentsTab({
                       <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
                     </Stack>
                     <Typography variant="body2" color="text.secondary" noWrap>
-                      {agent.presetSnapshot?.name ?? "Generalist"} · {agent.presetSnapshot?.description ?? `General-purpose agent ${agent.title}`}
+                      {profile.role} · {profile.description}
                     </Typography>
                     <Stack
                       direction="row"
