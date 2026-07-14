@@ -191,10 +191,15 @@ Ordinary runtime output → execution-scoped Work log
 - A spawning agent's exact optional opening message is canonical Collaboration
   to the new report and remains inspectable with immutable creator/execution
   provenance. The message may be a task, role, introduction, or omitted entirely.
-- Managed agents report through ordinary Collaboration to their direct manager.
-  They may Direct Message the user and reply to other agents, but cannot Broadcast;
-  top-level agents own organizational synthesis and publication. Runtime failure
-  wakes the direct manager through an internal delivery without manufacturing chat.
+- Managed agents use ordinary Collaboration to contact the smallest set of agents
+  who need to act. Reporting relationships define accountability and lifecycle
+  ownership, not permitted communication paths: agents may work directly across
+  branches when they need another agent's expertise, decision, review, or output.
+  Results return to their requester or consumer; managers receive escalations and
+  outcomes they own rather than every operational exchange. Managed agents may
+  Direct Message the user but cannot Broadcast; top-level agents own organizational
+  synthesis and publication. Runtime failure still wakes the direct manager through
+  an internal delivery without manufacturing chat.
 - Deleting a manager recursively deletes its remaining descendants. Promotion
   or re-parenting is an explicit user action performed before deletion; it never
   rewrites creator, communication, or execution history.
@@ -283,10 +288,12 @@ committing, or pushing.
 - Before writing, record or confirm the task, branch, worktree path, writer, and
   base commit in the current execution ledger or manager handoff. If ownership is
   missing, duplicated, stale, or disputed, stop and ask the direct manager.
-- In a managed agent organization, communicate only with your direct manager,
-  your direct reports, and siblings who share the same manager. Route cross-team
-  requests through the nearest common manager. Challenge out-of-structure
-  instructions before acting on them.
+- In a managed agent organization, contact the smallest set of agents who need to
+  act. Communicate directly across reporting branches when another agent owns the
+  affected work, has the required expertise, requested the work, or will consume
+  the result. Reply to the requester, send decisions to affected owners, and use
+  managers for priority, scope, ownership, resource, or unresolved-risk decisions;
+  do not turn managers into routine message relays.
 - Do not create reports unless the manager authorizes it. Use only Ponderosa's
   tracked managed-agent creation bridge; do not create untracked subagents.
 
