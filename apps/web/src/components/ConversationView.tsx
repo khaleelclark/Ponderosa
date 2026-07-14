@@ -641,8 +641,8 @@ export function ConversationView({
     }
   };
 
-  const runtimeControls = activeView === "main" ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: "max-content" }}>
-    <FormControl size="small" variant="standard" sx={{ minWidth: 105 }}>
+  const runtimeControls = activeView === "main" ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: { xs: "100%", sm: "max-content" } }}>
+    <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 105 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
       <InputLabel id="composer-engine-label">Engine</InputLabel>
       <Select
         labelId="composer-engine-label"
@@ -657,7 +657,7 @@ export function ConversationView({
         {engines.map((option) => <MenuItem key={option.id} value={option.id} disabled={!option.authenticated}>{option.displayName}{option.authenticated ? "" : " — signed out"}</MenuItem>)}
       </Select>
     </FormControl>
-    {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: 115 }}>
+    {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 115 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
       <InputLabel id="composer-model-label">Model</InputLabel>
       <Select
         labelId="composer-model-label"
@@ -674,7 +674,7 @@ export function ConversationView({
         {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
       </Select>
     </FormControl> : null}
-    {efforts.length ? <FormControl size="small" variant="standard" sx={{ minWidth: 90 }}>
+    {efforts.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 90 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
       <InputLabel id="composer-effort-label">Effort</InputLabel>
       <Select
         labelId="composer-effort-label"

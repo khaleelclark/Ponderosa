@@ -73,18 +73,18 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
     onPreferences({ projectSort: "custom", projectOrder: order });
   };
 
-  if (preferences.sidebarCollapsed) return <Box component="nav" aria-label="Workspace navigation" sx={{ width: 56, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", pt: 1 }}>
+  if (preferences.sidebarCollapsed) return <Box component="nav" aria-label="Workspace navigation" sx={{ width: 56, height: "100%", minHeight: 0, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", pt: 1, overflowY: "auto", overscrollBehavior: "contain" }}>
     <Tooltip title="Expand sidebar" placement="right"><IconButton aria-label="Expand sidebar" onClick={() => onPreferences({ sidebarCollapsed: false })}><ChevronRightIcon /></IconButton></Tooltip>
     {projects.map((project) => <Tooltip key={project.id} title={project.label} placement="right"><IconButton aria-label={`Open ${project.label}`} onClick={() => onNavigate({ kind: "project", projectId: project.id })}><FolderOutlinedIcon /></IconButton></Tooltip>)}
   </Box>;
 
-  return <Box component="nav" aria-label="Workspace navigation" sx={{ position: "relative", width: draftWidth, minWidth: 220, maxWidth: 520, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+  return <Box component="nav" aria-label="Workspace navigation" sx={{ position: "relative", width: draftWidth, height: "100%", minHeight: 0, minWidth: 220, maxWidth: 520, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
     <Stack direction="row" sx={{ alignItems: "center", px: 1, py: .5 }}>
       <Typography variant="overline" sx={{ flex: 1, px: 1 }}>Projects</Typography>
       <Tooltip title="New project"><IconButton size="small" aria-label="New project" onClick={onCreateProject}><AddIcon fontSize="small" /></IconButton></Tooltip>
       <Tooltip title="Collapse sidebar"><IconButton size="small" aria-label="Collapse sidebar" onClick={() => onPreferences({ sidebarCollapsed: true })}><ChevronLeftIcon fontSize="small" /></IconButton></Tooltip>
     </Stack>
-    <Box sx={{ overflowY: "auto", minHeight: 0 }}>
+    <Box sx={{ overflowY: "auto", minHeight: 0, overscrollBehavior: "contain" }}>
       <List dense disablePadding>
         {projects.map((project, index) => {
           const conversations = (conversationsQueries[index]?.data ?? []).filter((item) => !item.archived);
@@ -101,10 +101,6 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
                 {running ? <Chip size="small" color="info" label={running} aria-label={`${running} agents running`} /> : null}
               </ListItemButton>
               <IconButton size="small" aria-label={`Project settings for ${project.label}`} onClick={() => onManageProject(project)}><MoreHorizIcon fontSize="small" /></IconButton>
-              {preferences.projectSort === "custom" ? <>
-                <IconButton size="small" disabled={index === 0} aria-label={`Move ${project.label} up`} onClick={() => moveProject(project.id, -1)}><ArrowUpwardIcon fontSize="inherit" /></IconButton>
-                <IconButton size="small" disabled={index === projects.length - 1} aria-label={`Move ${project.label} down`} onClick={() => moveProject(project.id, 1)}><ArrowDownwardIcon fontSize="inherit" /></IconButton>
-              </> : null}
             </Stack>
             <Collapse in={open} unmountOnExit>
               <List dense disablePadding>
@@ -131,13 +127,21 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
         })}</List></Collapse>
       </Box> : null}
     </Box>
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", borderTop: 1, borderColor: "divider", p: 1 }}>
-      <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Sort projects</Typography>
+    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", borderTop: 1, borderColor: "divider", p: 1 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ flex: 1, display: preferences.projectSort === "custom" ? "none" : "block" }}>Sort projects</Typography>
       <TextField select size="small" value={preferences.projectSort} onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"], ...(event.target.value === "custom" ? { projectOrder: projects.map((project) => project.id) } : {}) })} sx={{ minWidth: 112 }}>
         <MenuItem value="last_used">Last used</MenuItem>
         <MenuItem value="alphabetical">Alphabetical</MenuItem>
         <MenuItem value="custom">Custom</MenuItem>
       </TextField>
+      {preferences.projectSort === "custom" ? <>
+        <Tooltip title={selectedProject ? `Move ${selectedProject.label} up` : "Select a project to move it"}>
+          <span><IconButton size="small" disabled={!selectedProject || selectedProjectIndex === 0} aria-label="Move selected project up" onClick={() => selectedProject && moveProject(selectedProject.id, -1)}><ArrowUpwardIcon fontSize="inherit" /></IconButton></span>
+        </Tooltip>
+        <Tooltip title={selectedProject ? `Move ${selectedProject.label} down` : "Select a project to move it"}>
+          <span><IconButton size="small" disabled={!selectedProject || selectedProjectIndex === projects.length - 1} aria-label="Move selected project down" onClick={() => selectedProject && moveProject(selectedProject.id, 1)}><ArrowDownwardIcon fontSize="inherit" /></IconButton></span>
+        </Tooltip>
+      </> : null}
     </Stack>
     <Box role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") onPreferences({ sidebarWidth: preferences.sidebarWidth - 16 }); if (event.key === "ArrowRight") onPreferences({ sidebarWidth: preferences.sidebarWidth + 16 }); }} onPointerDown={(event) => { resizing.current = true; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (resizing.current) setDraftWidth(Math.max(220, Math.min(520, event.clientX))); }} onPointerUp={(event) => { resizing.current = false; event.currentTarget.releasePointerCapture(event.pointerId); onPreferences({ sidebarWidth: draftWidth }); }} sx={{ position: "absolute", right: -3, top: 0, bottom: 0, width: 7, cursor: "col-resize", zIndex: 4, "&:focus": { bgcolor: "primary.main" } }} />
     <Menu anchorEl={menu?.anchor} open={Boolean(menu)} onClose={() => setMenu(undefined)}><MenuItem onClick={() => { if (menu) { setRename(menu.conversation); setRenameText(menu.conversation.title); } setMenu(undefined); }}>Rename</MenuItem><MenuItem sx={{ color: "error.main" }} onClick={() => { setDeleting(menu?.conversation); setMenu(undefined); }}>Delete</MenuItem></Menu>

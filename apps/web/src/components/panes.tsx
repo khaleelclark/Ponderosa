@@ -1598,7 +1598,7 @@ export function Composer({
           event.target.value = "";
         }} />
         <Tooltip title="Attach or paste assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= COMPOSER_MAX_FILES} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
-        {controls ? <Box sx={{ minWidth: 0, flex: "1 1 auto", overflowX: "auto" }}>{controls}</Box> : null}
+        {controls ? <Box sx={{ minWidth: 0, flex: "1 1 0", overflowX: "auto" }}>{controls}</Box> : null}
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <TextField
             fullWidth
