@@ -61,9 +61,16 @@ export default function App({
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
   const notificationsQuery = useNotifications();
-  const projects = [...(projectsQuery.data ?? [])].sort((a, b) => preferencesQuery.data?.projectSort === "alphabetical"
-    ? a.label.localeCompare(b.label)
-    : (b.lastUsedAt ?? b.createdAt).localeCompare(a.lastUsedAt ?? a.createdAt) || a.id.localeCompare(b.id));
+  const projectOrder = preferencesQuery.data?.projectOrder ?? [];
+  const projects = [...(projectsQuery.data ?? [])].sort((a, b) => {
+    if (preferencesQuery.data?.projectSort === "alphabetical") return a.label.localeCompare(b.label);
+    if (preferencesQuery.data?.projectSort === "custom") {
+      const ai = projectOrder.indexOf(a.id);
+      const bi = projectOrder.indexOf(b.id);
+      if (ai >= 0 || bi >= 0) return (ai < 0 ? Number.MAX_SAFE_INTEGER : ai) - (bi < 0 ? Number.MAX_SAFE_INTEGER : bi);
+    }
+    return (b.lastUsedAt ?? b.createdAt).localeCompare(a.lastUsedAt ?? a.createdAt) || a.id.localeCompare(b.id);
+  });
   const engines = enginesQuery.data ?? [];
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
@@ -162,7 +169,7 @@ export default function App({
     },
   });
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages" as const, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages" as const, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));

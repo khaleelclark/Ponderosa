@@ -349,6 +349,7 @@ export const realApi: PonderosaApi = {
     source.onopen = () => handlers.onOpen?.();
     source.onerror = (event) => handlers.onError?.(event);
     source.addEventListener("message", (event) => handlers.onEvent(JSON.parse(event.data as string) as WorkspaceEventEnvelope));
+    source.addEventListener("workspace_status", (event) => handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").WorkspaceStreamStatusDto));
     return { close: () => source.close() };
   },
 };

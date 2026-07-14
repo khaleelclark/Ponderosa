@@ -604,15 +604,15 @@ export function ChatPane({
               </Box>)}
             </Stack> : null}
             <MessageReactions reactions={message.reactions} />
-            <MessageActionsAndTimestamp
-              value={message.createdAt}
-              actions={<>
-                {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
-                <CopyMessageButton text={message.text} />
-                {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)} sx={{ color: "inherit" }}><ReplyIcon fontSize="inherit" /></IconButton> : null}
-              </>}
-            />
           </Box>
+          <MessageActionsAndTimestamp
+            value={message.createdAt}
+            actions={<>
+              {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
+              <CopyMessageButton text={message.text} />
+              {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton> : null}
+            </>}
+          />
         </Box>
         );
       })}
@@ -1275,7 +1275,7 @@ export function Composer({
   replyLabel?: string;
   /** Stable surface key used to preserve an unsent draft across tabs and refreshes. */
   draftStorageKey?: string;
-  /** Enables server-authoritative, revisioned draft persistence for Project chats. */
+  /** Enables server-authoritative, revisioned draft persistence for this chat surface. */
   conversationDraftId?: string;
   /** Compact engine/model/effort controls rendered in the bottom action row. */
   controls?: ReactNode;
@@ -1415,13 +1415,18 @@ export function Composer({
     const selection = selectComposerFiles(files, candidates);
     dispatchAttachments({ type: "add", candidates });
     if (!conversationDraftId || selection.accepted.length === 0) return;
-    void Promise.all(selection.accepted.map(async (file) => ({ file, staged: await api.uploadDraftAttachment(conversationDraftId, file) })))
-      .then((staged) => {
-        for (const { file, staged: attachment } of staged) draftAttachmentIds.current.set(file, attachment.id);
-        setDraftAttachmentVersion((value) => value + 1);
-      })
-      .catch((error: unknown) => {
+    void Promise.allSettled(selection.accepted.map(async (file) => ({ file, staged: await api.uploadDraftAttachment(conversationDraftId, file) })))
+      .then((results) => {
+        const staged = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (!failure) {
+          for (const { file, staged: attachment } of staged) draftAttachmentIds.current.set(file, attachment.id);
+          setDraftAttachmentVersion((value) => value + 1);
+          return;
+        }
+        for (const { staged: attachment } of staged) void api.deleteDraftAttachment(conversationDraftId, attachment.id).catch(() => undefined);
         const rejected = new Set(selection.accepted);
+        const error = failure.reason as unknown;
         dispatchAttachments({ type: "replace", files: files.filter((file) => !rejected.has(file)), error: error instanceof Error ? error.message : "Draft attachment upload failed." });
       });
   };

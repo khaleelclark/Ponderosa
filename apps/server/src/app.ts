@@ -61,6 +61,9 @@ import type {
   DraftAttachmentDto,
   UpdateWorkspacePreferencesRequest,
   WorkspaceEventEnvelope,
+  WorkspaceEvent,
+  WorkspaceNotificationDto,
+  VerifiedCitationDto,
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
 import { agentRoleProfile, deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
@@ -957,6 +960,83 @@ function serializedCostComponents(components: RawCostComponents): ProjectedApiCo
   }])) as unknown as ProjectedApiCostComponentsDto;
 }
 
+/**
+ * The workspace stream is a coarse invalidation bus, not a second copy of every
+ * agent's execution stream. High-frequency output stays on the per-agent SSE
+ * channel and in the canonical agent log.
+ */
+export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
+  switch (event.type) {
+    case "agent_lifecycle": return "lifecycle";
+    case "file_change": return "file";
+    case "command":
+    case "work_item_update":
+    case "test_result": return "task";
+    case "session":
+    case "session_reset": return "state";
+    case "communication_projection": return "message";
+    default: return undefined;
+  }
+}
+
+export function notificationKindForCommunication(event: CommunicationEvent): WorkspaceNotificationDto["kind"] | undefined {
+  if (event.sender.kind !== "agent") return undefined;
+  if (event.intent === "broadcast") return "broadcasts";
+  if (event.schemaVersion === 2 && event.intent === "user_dm") return "direct_responses";
+  if (event.audienceSelector === "everyone") return "everyone";
+  if (event.intent === "collaboration") return "collaboration";
+  return undefined;
+}
+
+export function notificationPreferenceMatches(
+  preference: import("@ponderosa/core").NotificationPreference,
+  event: CommunicationEvent,
+  kind: WorkspaceNotificationDto["kind"],
+): boolean {
+  if (preference === "none") return false;
+  if (preference === "all_messages") return true;
+  if (preference === "project_responses") return event.intent === "broadcast" && Boolean(event.conversationId);
+  // #user is represented structurally as an agent-to-user DM, never inferred
+  // from rendered text. It is the only current communication that mentions the operator.
+  if (preference === "mentions") return kind === "direct_responses";
+  return preference === kind;
+}
+
+export function conciseConversationTitle(text: string): string | undefined {
+  const normalized = text
+    .replace(/^\s*(?:#(?:broadcast|everyone|user|[\w-]+)\s+)+/i, "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[`*_#>\[\](){}]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return undefined;
+  const words = normalized.split(" ").filter(Boolean).slice(0, 6);
+  if (words.length < 2) return undefined;
+  return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 72).trim() || undefined;
+}
+
+export function normalizeExternalCitations(value: unknown, verifiedAt = new Date().toISOString()): VerifiedCitationDto[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 10) throw new Error("citations must be an array of at most 10 sources");
+  const result = new Map<string, VerifiedCitationDto>();
+  for (const item of value) {
+    const source = item as { url?: unknown; title?: unknown };
+    const title = typeof source?.title === "string" ? source.title.trim().replace(/\s+/g, " ") : "";
+    if (!title || title.length > 240 || typeof source?.url !== "string" || source.url.length > 2048) {
+      throw new Error("each citation requires a URL and a title of at most 240 characters");
+    }
+    let url: URL;
+    try { url = new URL(source.url); } catch { throw new Error("citation URL is invalid"); }
+    const hostname = url.hostname.toLowerCase();
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || hostname === "localhost" || hostname.endsWith(".local") || /^(?:127\.|10\.|192\.168\.|169\.254\.|0\.|::1$|fc|fd)/i.test(hostname)) {
+      throw new Error("citation URL must be an external HTTP(S) address without credentials");
+    }
+    url.hash = "";
+    result.set(url.toString(), { url: url.toString(), title, verifiedAt });
+  }
+  return [...result.values()];
+}
+
 function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): { usd: number; components: RawCostComponents } | undefined {
   if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
   const cached = usage.cachedInputTokens ?? 0;
@@ -1083,7 +1163,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const draftAttachmentsRoot = path.resolve(opts.dataDir, "draft-attachments");
   const draftAttachmentId = /^[a-f0-9-]{36}$/i;
   const draftAttachmentTypes = new Set<string>(ASSET_LIMITS.acceptedMediaTypes);
-  const draftAttachmentDir = (conversationId: string) => path.join(draftAttachmentsRoot, conversationId);
+  const draftAttachmentDir = (draftId: string) => path.join(draftAttachmentsRoot, createHash("sha256").update(draftId).digest("hex"));
   const draftAttachmentFiles = (conversationId: string, id: string) => ({
     body: path.join(draftAttachmentDir(conversationId), `${id}.bin`),
     metadata: path.join(draftAttachmentDir(conversationId), `${id}.json`),
@@ -1105,6 +1185,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const attachments = (await Promise.all(draft.attachmentIds.map((id) => readDraftAttachment(conversationId, id))))
       .filter((item): item is DraftAttachmentDto => Boolean(item));
     return { ...draft, attachments };
+  };
+  const validDraftId = (draftId: string): boolean => {
+    if (store.getConversation(draftId)) return true;
+    const separator = draftId.indexOf(":");
+    if (separator < 1) return false;
+    const kind = draftId.slice(0, separator);
+    const id = draftId.slice(separator + 1);
+    if (!id || id.includes(":")) return false;
+    if (kind === "collaboration") return Boolean(store.getConversation(id));
+    if (kind === "agent") return Boolean(store.getAgent(id));
+    return false;
   };
   const configuredBrowseRoots = (opts.allowedBrowseRoots ?? (process.env.PONDEROSA_BROWSE_ROOTS ?? "").split(path.delimiter))
     .map((root) => root.trim()).filter(Boolean).map((root) => path.resolve(root));
@@ -1153,20 +1244,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const subscribers = new Map<string, Set<Subscriber>>();
   const directReplyClaims = new Set<string>();
   const deletingAgentIds = new Set<string>();
-  const titleGenerations = new Map<string, Promise<{ title: string; generated: boolean }>>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent => {
     const stored = store.appendCommunicationEvent(event);
     if (!stored.replayed && stored.event.sender.kind === "agent") {
       const preference = workspace.getPreferences().notifications;
-      const kind = stored.event.intent === "broadcast" ? "broadcasts" as const
-        : stored.event.schemaVersion === 2 && stored.event.intent === "user_dm" ? "direct_responses" as const
-          : stored.event.audienceSelector === "everyone" ? "everyone" as const
-            : "mentions" as const;
-      const matches = preference === "all_messages" || preference === kind ||
-        (preference === "project_responses" && Boolean(stored.event.conversationId));
-      if (matches) {
+      const kind = notificationKindForCommunication(stored.event);
+      if (kind && notificationPreferenceMatches(preference, stored.event, kind)) {
         const cursor = workspace.cursor();
         const notification = workspace.createNotification({
           projectId: stored.event.projectId,
@@ -1184,55 +1269,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return stored.event;
   };
 
-  const generateConversationTitle = (conversationId: string): Promise<{ title: string; generated: boolean }> => {
-    const currentGeneration = titleGenerations.get(conversationId);
-    if (currentGeneration) return currentGeneration;
-    const generation = (async () => {
-      const conversation = store.getConversation(conversationId);
-      if (!conversation || conversation.title !== "New chat") return { title: conversation?.title ?? "New chat", generated: false };
-      const project = store.getProject(conversation.projectId);
-      const registration = project ? engines.get(conversation.defaultEngine ?? project.defaultEngine) : undefined;
-      if (!project || !registration) return { title: conversation.title, generated: false };
-      try {
-        const auth = await registration.authStatus?.();
-        if (auth && !auth.authenticated) return { title: conversation.title, generated: false };
-        const early = store.getConversationMessages(conversationId, "main").slice(0, 8)
-          .map((message) => `${message.role === "user" ? "Operator" : "Agent"}: ${message.text.slice(0, 700)}`)
-          .join("\n");
-        if (!early.trim()) return { title: conversation.title, generated: false };
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30_000);
-        let output = "";
-        try {
-          for await (const event of registration.adapter.seed({
-            agentId: `conversation-title-${conversationId}`,
-            cwd: project.hostPath,
-            prompt: `Create a concise 2-6 word title for this coding conversation. Return only the title, without quotes, Markdown, or punctuation at the end.\n\n${early}`,
-            history: [],
-            ...(conversation.defaultModel ? { model: conversation.defaultModel } : {}),
-            ...(conversation.defaultEffort ? { effort: conversation.defaultEffort } : {}),
-            signal: controller.signal,
-          })) if (event.type === "text") output += event.delta;
-        } finally {
-          clearTimeout(timeout);
-        }
-        const title = output.trim().split(/\r?\n/, 1)[0]?.replace(/^[\s"'`#*_-]+|[\s"'`#*_.:;!?-]+$/g, "").replace(/\s+/g, " ").slice(0, 72).trim();
-        if (!title) return { title: conversation.title, generated: false };
-        const latest = store.getConversation(conversationId);
-        if (!latest || latest.title !== "New chat") return { title: latest?.title ?? conversation.title, generated: false };
-        const updated = store.updateConversation(conversationId, { title });
-        if (!updated) return { title: conversation.title, generated: false };
-        appendWorkspace({ type: "conversation_changed", projectId: updated.projectId, conversationId, action: "updated" });
-        return { title: updated.title, generated: true };
-      } catch {
-        return { title: conversation.title, generated: false };
-      }
-    })();
-    titleGenerations.set(conversationId, generation);
-    void generation.finally(() => {
-      if (titleGenerations.get(conversationId) === generation) titleGenerations.delete(conversationId);
-    });
-    return generation;
+  const generateConversationTitle = async (conversationId: string): Promise<{ title: string; generated: boolean }> => {
+    const conversation = store.getConversation(conversationId);
+    if (!conversation || conversation.title !== "New chat") return { title: conversation?.title ?? "New chat", generated: false };
+    const firstOperatorMessage = store.getConversationMessages(conversationId, "main")
+      .find((message) => message.role === "user" && !message.authorAgentId);
+    const title = firstOperatorMessage ? conciseConversationTitle(firstOperatorMessage.text) : undefined;
+    if (!title) return { title: conversation.title, generated: false };
+    const latest = store.getConversation(conversationId);
+    if (!latest || latest.title !== "New chat") return { title: latest?.title ?? conversation.title, generated: false };
+    const updated = store.updateConversation(conversationId, { title });
+    if (!updated) return { title: conversation.title, generated: false };
+    appendWorkspace({ type: "conversation_changed", projectId: updated.projectId, conversationId, action: "updated" });
+    return { title: updated.title, generated: true };
   };
   const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
   const executionHeartbeatMs = opts.executionLeaseScheduling?.heartbeatMs ?? Math.max(1, Math.floor(executionLeaseMs / 3));
@@ -1951,12 +2000,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const agent = store.getAgent(agentId);
     if (!agent) return;
     const event = stored.event;
-    const category = event.type === "agent_lifecycle" ? "lifecycle"
-      : event.type === "file_change" ? "file"
-        : event.type === "command" || event.type === "work_item_update" || event.type === "test_result" ? "task"
-          : event.type === "tool_result" ? "artifact"
-            : event.type === "session" || event.type === "session_reset" ? "state"
-              : "message";
+    const category = workspaceAgentEventCategory(event);
+    if (!category) return;
     appendWorkspace({
       type: "agent_event",
       projectId: agent.projectId,
@@ -2238,6 +2283,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (requestedDocument && (!documentTitle || !documentContent?.trim())) return reply.code(400).send({ error: "document title and content are required" });
     if (documentTitle && documentTitle.length > 160) return reply.code(400).send({ error: "document title must be 160 characters or fewer" });
     if (documentContent && Buffer.byteLength(documentContent, "utf8") > 256 * 1024) return reply.code(413).send({ error: "document must be 256 KiB or fewer" });
+    let citations: VerifiedCitationDto[];
+    try { citations = normalizeExternalCitations(request.body?.citations); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid citations" }); }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
@@ -2267,6 +2315,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         audience: { kind: "user_agent", userId: "local-operator", agentId: capability.agentId },
         text,
         ...(document ? { document } : {}),
+        ...(citations.length ? { citations } : {}),
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       });
@@ -2332,6 +2381,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       audience: { kind: "organization", organizationId: currentAuthor.projectId },
       text: scopedText,
       ...(document ? { document } : {}),
+      ...(citations.length ? { citations } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
@@ -2345,6 +2395,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
       text,
       ...(document ? { document } : {}),
+      ...(citations.length ? { citations } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     });
@@ -2930,7 +2981,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
     }
     const deleted = store.deleteConversation(request.params.id);
-    if (deleted && current) appendWorkspace({ type: "conversation_changed", projectId: current.projectId, conversationId: current.id, action: "deleted" });
+    if (deleted && current) {
+      const cursor = workspace.cursor();
+      workspace.deleteDraft(current.id);
+      workspace.deleteDraft(`collaboration:${current.id}`);
+      await Promise.allSettled([
+        fs.rm(draftAttachmentDir(current.id), { recursive: true, force: true }),
+        fs.rm(draftAttachmentDir(`collaboration:${current.id}`), { recursive: true, force: true }),
+      ]);
+      workspace.append({ type: "conversation_changed", projectId: current.projectId, conversationId: current.id, action: "deleted" });
+      publishWorkspaceSince(cursor);
+    }
     return deleted ? { deleted: true } : reply.code(404).send({ error: "conversation not found" });
   });
 
@@ -3413,10 +3474,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>("/api/conversations/:id/messages/:messageId/corrections", async (request, reply) => {
     const text = request.body?.text?.trim() ?? "";
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-    const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+    const activeRunDelivery = "queue" as const;
     if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "correction text is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+    if (request.body?.activeRunDelivery && request.body.activeRunDelivery !== "queue") return reply.code(400).send({ error: "corrections always queue a new turn" });
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
     const receiptKey = `correction:${conversation.id}:${idempotencyKey}`;
@@ -3787,16 +3848,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(404).send({ error: "agent not found" });
     }
     const deletedAgentIds = new Set(subtree.map((agent) => agent.id));
+    const workspaceCursor = workspace.cursor();
     for (const agentId of deletedAgentIds) {
       subscribers.delete(agentId);
       dispatchingTurns.delete(agentId);
       scheduledSessionRollovers.delete(agentId);
       clearWaitDeadline(agentId);
+      workspace.deleteDraft(`agent:${agentId}`);
+      await fs.rm(draftAttachmentDir(`agent:${agentId}`), { recursive: true, force: true });
     }
     collaborationDeliveries.deleteAgents(deletedAgentIds);
     agentWaits.deleteAgents(deletedAgentIds);
     contextCursors.deleteAgents(deletedAgentIds);
     runLedger.deleteAgents(deletedAgentIds);
+    publishWorkspaceSince(workspaceCursor);
     for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
     return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
   });
@@ -4674,7 +4739,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
-    if (patch.projectSort && !["last_used", "alphabetical"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
+    if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
+    if (patch.projectOrder && (patch.projectOrder.length > 10_000 || patch.projectOrder.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.projectOrder).size !== patch.projectOrder.length)) {
+      return reply.code(400).send({ error: "invalid custom project order" });
+    }
     if (patch.notifications && !["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts", "none"].includes(patch.notifications)) return reply.code(400).send({ error: "invalid notification preference" });
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
@@ -4683,12 +4751,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get<{ Params: { id: string } }>("/api/conversations/:id/draft", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
+    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
     return hydrateDraft(request.params.id);
   });
 
   app.put<{ Params: { id: string }; Body: PutConversationDraftRequest }>("/api/conversations/:id/draft", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
+    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
     if (!request.body?.clientId || !Number.isSafeInteger(request.body.expectedRevision) || !Array.isArray(request.body.attachmentIds)) return reply.code(400).send({ error: "invalid draft update" });
     if (request.body.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(request.body.attachmentIds).size !== request.body.attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique draft attachments are allowed" });
     const referenced = await Promise.all(request.body.attachmentIds.map((id) => readDraftAttachment(request.params.id, id)));
@@ -4705,7 +4773,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/conversations/:id/draft-attachments", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
+    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
     if (!Buffer.isBuffer(request.body) || request.body.length === 0) return reply.code(400).send({ error: "attachment body is required" });
     if (request.body.length > ASSET_LIMITS.maxFileBytes) return reply.code(413).send({ error: "draft attachment exceeds 8 MiB" });
     const mediaType = String(request.headers["x-ponderosa-media-type"] ?? "").toLowerCase();
@@ -4731,7 +4799,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get<{ Params: { id: string; attachmentId: string } }>("/api/conversations/:id/draft-attachments/:attachmentId", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "draft attachment not found" });
+    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft attachment not found" });
     const attachment = await readDraftAttachment(request.params.id, request.params.attachmentId);
     if (!attachment) return reply.code(404).send({ error: "draft attachment not found" });
     const body = await fs.readFile(draftAttachmentFiles(request.params.id, attachment.id).body);
@@ -4743,7 +4811,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.delete<{ Params: { id: string; attachmentId: string } }>("/api/conversations/:id/draft-attachments/:attachmentId", async (request, reply) => {
-    if (!store.getConversation(request.params.id) || !await readDraftAttachment(request.params.id, request.params.attachmentId)) return reply.code(404).send({ error: "draft attachment not found" });
+    if (!validDraftId(request.params.id) || !await readDraftAttachment(request.params.id, request.params.attachmentId)) return reply.code(404).send({ error: "draft attachment not found" });
     const files = draftAttachmentFiles(request.params.id, request.params.attachmentId);
     await Promise.all([fs.rm(files.body, { force: true }), fs.rm(files.metadata, { force: true })]);
     return reply.code(204).send();
@@ -4798,11 +4866,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get<{ Querystring: { lastEventId?: string } }>("/api/workspace/stream", async (request, reply) => {
+    if (workspaceSubscribers.size >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
+      return reply.code(429).send({ error: "too many stream subscribers" });
+    }
     const lastEventId = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
     const parsed = Number(Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
-    const replayFrom = Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+    const requestedCursor = Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+    const highWaterMark = workspace.cursor();
+    const reset = requestedCursor > highWaterMark;
+    const replayFrom = reset ? 0 : requestedCursor;
     reply.hijack();
     reply.raw.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
+    writeSse(reply.raw, "workspace_status", undefined, {
+      instanceId: workspace.instanceId(),
+      cursor: highWaterMark,
+      reset,
+    } satisfies import("@ponderosa/core").WorkspaceStreamStatusDto);
     writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
     let cursor = replayFrom;
     let replaying = true;

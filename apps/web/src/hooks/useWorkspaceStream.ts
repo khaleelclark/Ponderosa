@@ -3,7 +3,8 @@ import { useEffect, useRef } from "react";
 import type { WorkspaceEventEnvelope } from "@ponderosa/core";
 import { api } from "../api";
 
-const CURSOR_KEY = "ponderosa.workspace.cursor.v1";
+const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
+const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
 
 function initialCursor(): number {
   const value = Number(window.localStorage.getItem(CURSOR_KEY) ?? 0);
@@ -44,12 +45,10 @@ export function useWorkspaceStream(): void {
         void queryClient.invalidateQueries({ queryKey: ["conversation", event.conversationId] });
       }
       else if (event.type === "agent_event") {
-        void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
-        void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
-        for (const conversationId of event.conversationIds) {
-          void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
-          void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
+        if (event.category === "lifecycle") {
+          void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
+          void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
           void queryClient.invalidateQueries({ queryKey: ["workspace-status", event.projectId] });
@@ -58,7 +57,19 @@ export function useWorkspaceStream(): void {
       }
       else void queryClient.invalidateQueries({ queryKey: ["notifications"] });
     };
-    const subscription = api.subscribeWorkspace(cursor.current, { onEvent: apply, onError: () => undefined });
+    const subscription = api.subscribeWorkspace(cursor.current, {
+      onEvent: apply,
+      onStatus: (status) => {
+        const previousInstance = window.localStorage.getItem(INSTANCE_KEY);
+        if (status.reset || (previousInstance && previousInstance !== status.instanceId) || cursor.current > status.cursor) {
+          cursor.current = 0;
+          window.localStorage.setItem(CURSOR_KEY, "0");
+          invalidateAll();
+        }
+        window.localStorage.setItem(INSTANCE_KEY, status.instanceId);
+      },
+      onError: () => undefined,
+    });
     const onVisible = () => { if (document.visibilityState === "visible") invalidateAll(); };
     document.addEventListener("visibilitychange", onVisible);
     return () => { subscription.close(); document.removeEventListener("visibilitychange", onVisible); };

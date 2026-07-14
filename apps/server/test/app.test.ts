@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
-import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, runtimeIdentityPrompt, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,6 +61,42 @@ function appendCanonicalMessage(
     conversationId, input, authorAgentId, channel, deliveryIntents, messageReceiptKey, eventId,
   );
 }
+
+describe("workspace synchronization policy", () => {
+  it("keeps high-frequency execution deltas off the global workspace log", () => {
+    expect(workspaceAgentEventCategory({ type: "text", delta: "chunk", executionId: "run" })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "reasoning", delta: "thought", executionId: "run" })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "agent_output", executionId: "run", text: "done", sourceSeqStart: 1, sourceSeqEnd: 2 })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "turn_done" })).toBeUndefined();
+    expect(workspaceAgentEventCategory({ type: "agent_lifecycle", executionId: "run", status: "running", reason: "user_message" })).toBe("lifecycle");
+    expect(workspaceAgentEventCategory({ type: "file_change", path: "src/app.ts", kind: "edit" })).toBe("file");
+  });
+
+  it("routes notifications from structural communication intent only", () => {
+    const base = { eventId: "event", schemaVersion: 2 as const, projectId: "project", conversationId: "chat", sender: { kind: "agent" as const, agentId: "agent" }, text: "Done", createdAt: new Date(0).toISOString() };
+    const broadcast = { ...base, intent: "broadcast" as const, audience: { kind: "organization" as const, organizationId: "project" } };
+    const collaboration = { ...base, intent: "collaboration" as const, audience: { kind: "agents" as const, agentIds: ["peer"] } };
+    expect(notificationKindForCommunication(broadcast)).toBe("broadcasts");
+    expect(notificationPreferenceMatches("project_responses", broadcast, "broadcasts")).toBe(true);
+    expect(notificationKindForCommunication(collaboration)).toBe("collaboration");
+    expect(notificationPreferenceMatches("project_responses", collaboration, "collaboration")).toBe(false);
+    expect(notificationPreferenceMatches("mentions", collaboration, "collaboration")).toBe(false);
+    expect(notificationPreferenceMatches("all_messages", collaboration, "collaboration")).toBe(true);
+  });
+
+  it("derives a bounded local title without routing labels", () => {
+    expect(conciseConversationTitle("#broadcast #Agent fix the flaky cache invalidation please today")).toBe("fix the flaky cache invalidation please");
+    expect(conciseConversationTitle("hello")).toBeUndefined();
+  });
+
+  it("normalizes explicit external sources and rejects local or credentialed URLs", () => {
+    expect(normalizeExternalCitations([{ url: "https://example.com/docs#part", title: "  Product   docs " }], "2026-01-01T00:00:00.000Z")).toEqual([
+      { url: "https://example.com/docs", title: "Product docs", verifiedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    expect(() => normalizeExternalCitations([{ url: "http://127.0.0.1/private", title: "Private" }])).toThrow(/external/);
+    expect(() => normalizeExternalCitations([{ url: "https://user:secret@example.com", title: "Credentials" }])).toThrow(/external/);
+  });
+});
 
 class MockAdapter implements Adapter {
   id = "codex";
@@ -356,29 +392,64 @@ describe("project lifecycle API", () => {
     await app.close();
   });
 
+  it("persists independent drafts for Project, Collaboration, and Agent chats", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    const surfaces = [conversationId, `collaboration:${conversationId}`, `agent:${agent.id}`];
+    for (const [index, surface] of surfaces.entries()) {
+      const saved = await app.inject({
+        method: "PUT",
+        url: `/api/conversations/${encodeURIComponent(surface)}/draft`,
+        payload: { text: `draft-${index}`, attachmentIds: [], expectedRevision: 0, clientId: "tab-a" },
+      });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toMatchObject({ conversationId: surface, text: `draft-${index}`, revision: 1 });
+    }
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${encodeURIComponent(`agent:${agent.id}`)}/draft` })).json()).toMatchObject({ text: "draft-2" });
+    await app.close();
+  });
+
+  it("projects normalized agent citations into the message Sources contract", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Sources", hostPath: repoDir, defaultEngine: "codex" });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, { title: "Researcher", engine: "codex", conversationId });
+    const eventId = randomUUID();
+    const citations = normalizeExternalCitations([{ url: "https://example.com/reference", title: "Reference" }], "2026-01-01T00:00:00.000Z");
+    store.appendCommunicationEvent({
+      eventId, schemaVersion: 2, projectId: project.id, conversationId,
+      sender: { kind: "agent", agentId: agent.id, executionId: "run" },
+      intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
+      text: "Verified finding", citations, createdAt: new Date().toISOString(),
+    });
+    store.appendConversationMessage(conversationId, { role: "assistant", text: "Verified finding" }, agent.id, "main", undefined, undefined, eventId);
+    const detail = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}` });
+    expect(detail.json<{ messages: Array<{ citations?: unknown }> }>().messages[0]?.citations).toEqual(citations);
+    await app.close();
+  });
+
   it("bridges runtime lifecycle, task, file, and completion events into the workspace cursor", async () => {
     const { app, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Run with workspace updates" } });
     await waitForRun(agent.id);
     const events = new WorkspaceStore(dataDir).readSince(0).map((item) => item.event).filter((event) => event.type === "agent_event");
-    expect(events.map((event) => event.type === "agent_event" ? event.category : undefined)).toEqual(expect.arrayContaining(["lifecycle", "task", "file", "message"]));
+    expect(events.map((event) => event.type === "agent_event" ? event.category : undefined)).toEqual(expect.arrayContaining(["lifecycle", "task", "file"]));
+    expect(events.some((event) => event.type === "agent_event" && ["text", "reasoning", "agent_output", "turn_done"].includes(event.eventType))).toBe(false);
     expect(events.every((event) => event.type !== "agent_event" || event.agentId === agent.id)).toBe(true);
     await app.close();
   });
 
-  it("generates a concise New chat title through the subscription-backed adapter and leaves failures usable", async () => {
+  it("generates a concise New chat title locally without spending an agent run", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Titles", hostPath: repoDir, defaultEngine: "codex" });
     const conversationId = project.lastConversationId!;
     appendCanonicalMessage(store, project.id, conversationId, { text: "Track down the flaky cache invalidation" });
     appendCanonicalMessage(store, project.id, conversationId, { text: "I found the stale cursor path" }, "agent-title");
-    adapter.responseText = "Fix cache invalidation";
     const generated = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` });
-    expect(generated.json()).toEqual({ title: "Fix cache invalidation", generated: true });
-    expect(store.getConversation(conversationId)?.title).toBe("Fix cache invalidation");
-    expect(adapter.seeds[0]?.cwd).toBe(repoDir);
-    expect(adapter.seeds[0]?.prompt).toContain("Return only the title");
-    expect((await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` })).json()).toEqual({ title: "Fix cache invalidation", generated: false });
+    expect(generated.json()).toEqual({ title: "Track down the flaky cache invalidation", generated: true });
+    expect(store.getConversation(conversationId)?.title).toBe("Track down the flaky cache invalidation");
+    expect(adapter.seeds).toHaveLength(0);
+    expect((await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` })).json()).toEqual({ title: "Track down the flaky cache invalidation", generated: false });
     await app.close();
   });
 
@@ -4355,6 +4426,27 @@ describe("server chunk F", () => {
     await app.close();
   }, 10000);
 
+  it("resets an ahead workspace cursor and replays from the canonical beginning", async () => {
+    const { app } = await createProjectAndAgent();
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("no server address");
+    const abort = new AbortController();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/workspace/stream?lastEventId=999999`, { signal: abort.signal });
+    const reader = response.body!.getReader();
+    let chunk = "";
+    for (let index = 0; index < 10 && !chunk.includes("id: 1"); index += 1) {
+      const read = await reader.read();
+      chunk += new TextDecoder().decode(read.value);
+    }
+    abort.abort();
+    expect(chunk).toContain("event: workspace_status");
+    expect(chunk).toContain('"reset":true');
+    expect(chunk).toContain('"instanceId":');
+    expect(chunk).toContain("id: 1");
+    await app.close();
+  }, 10000);
+
   it("validates individual reply targets and sends compact quoted context", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Original question" } });
@@ -4598,6 +4690,13 @@ describe("server chunk F", () => {
     const originalMessageId = originalSend.json<{ messageId: string }>().messageId;
     await waitForRun(agent.id);
 
+    const refusedSteer = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`,
+      payload: { text: "Wrong delivery mode", idempotencyKey: "correction-steer", activeRunDelivery: "steer" },
+    });
+    expect(refusedSteer.statusCode).toBe(400);
+    expect(refusedSteer.json()).toEqual({ error: "corrections always queue a new turn" });
     const correctionPayload = { text: "Corrected request", idempotencyKey: "correction-once" };
     const corrected = await app.inject({ method: "POST", url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`, payload: correctionPayload });
     const replay = await app.inject({ method: "POST", url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`, payload: correctionPayload });

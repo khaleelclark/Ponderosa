@@ -5,7 +5,7 @@ const DEVICE_KEY = "ponderosa.push.device.v1";
 function deviceId(): string {
   const existing = window.localStorage.getItem(DEVICE_KEY);
   if (existing) return existing;
-  const created = globalThis.crypto.randomUUID();
+  const created = globalThis.crypto?.randomUUID?.() ?? `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   window.localStorage.setItem(DEVICE_KEY, created);
   return created;
 }

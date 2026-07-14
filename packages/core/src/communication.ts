@@ -26,6 +26,13 @@ export type CommunicationDocumentReference = Omit<CommunicationDocumentRecord, "
   downloadUrl: string;
 };
 
+/** Citation metadata accepted only after server-side URL/title normalization. */
+export interface VerifiedCitationRecord {
+  url: string;
+  title: string;
+  verifiedAt: string;
+}
+
 interface CommunicationEventBase {
   eventId: string;
   schemaVersion: 1;
@@ -35,6 +42,7 @@ interface CommunicationEventBase {
   sender: CommunicationActor;
   text: string;
   document?: CommunicationDocumentRecord;
+  citations?: VerifiedCitationRecord[];
   createdAt: string;
   correlationId?: string;
   causationId?: string;
@@ -255,6 +263,7 @@ export interface ProjectedCommunicationMessage {
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   document?: CommunicationDocumentReference;
+  citations?: VerifiedCitationRecord[];
   executionId?: string;
   correctionOfEventId?: string;
 }

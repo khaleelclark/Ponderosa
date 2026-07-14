@@ -4,6 +4,8 @@ import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Badge, Box, Button, Chip, Collapse, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -62,6 +64,15 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
     onNavigate({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
   };
 
+  const moveProject = (projectId: string, offset: -1 | 1) => {
+    const order = projects.map((project) => project.id);
+    const from = order.indexOf(projectId);
+    const to = from + offset;
+    if (from < 0 || to < 0 || to >= order.length) return;
+    [order[from], order[to]] = [order[to]!, order[from]!];
+    onPreferences({ projectSort: "custom", projectOrder: order });
+  };
+
   if (preferences.sidebarCollapsed) return <Box component="nav" aria-label="Workspace navigation" sx={{ width: 56, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", pt: 1 }}>
     <Tooltip title="Expand sidebar" placement="right"><IconButton aria-label="Expand sidebar" onClick={() => onPreferences({ sidebarCollapsed: false })}><ChevronRightIcon /></IconButton></Tooltip>
     {projects.map((project) => <Tooltip key={project.id} title={project.label} placement="right"><IconButton aria-label={`Open ${project.label}`} onClick={() => onNavigate({ kind: "project", projectId: project.id })}><FolderOutlinedIcon /></IconButton></Tooltip>)}
@@ -90,10 +101,14 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
                 {running ? <Chip size="small" color="info" label={running} aria-label={`${running} agents running`} /> : null}
               </ListItemButton>
               <IconButton size="small" aria-label={`Project settings for ${project.label}`} onClick={() => onManageProject(project)}><MoreHorizIcon fontSize="small" /></IconButton>
+              {preferences.projectSort === "custom" ? <>
+                <IconButton size="small" disabled={index === 0} aria-label={`Move ${project.label} up`} onClick={() => moveProject(project.id, -1)}><ArrowUpwardIcon fontSize="inherit" /></IconButton>
+                <IconButton size="small" disabled={index === projects.length - 1} aria-label={`Move ${project.label} down`} onClick={() => moveProject(project.id, 1)}><ArrowDownwardIcon fontSize="inherit" /></IconButton>
+              </> : null}
             </Stack>
             <Collapse in={open} unmountOnExit>
               <List dense disablePadding>
-                {conversations.map((conversation) => <Stack key={conversation.id} direction="row" sx={{ pl: 3.5, pr: .5 }}>
+                {conversations.map((conversation) => <Stack key={conversation.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, conversation }); }} sx={{ pl: 3.5, pr: .5 }}>
                   <ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => { void api.markProjectUsed(project.id, conversation.id); void api.clearConversationNotifications(conversation.id); onNavigate({ kind: "conversation", projectId: project.id, conversationId: conversation.id }); }} sx={{ borderRadius: 1, minWidth: 0, minHeight: 40 }}>
                     <ListItemText primary={conversation.title} primaryTypographyProps={{ noWrap: true, fontSize: 13 }} />
                     {unreadByConversation.get(conversation.id) ? <Badge color="primary" badgeContent={unreadByConversation.get(conversation.id)} sx={{ mr: 1 }} /> : null}
@@ -118,7 +133,11 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
     </Box>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center", borderTop: 1, borderColor: "divider", p: 1 }}>
       <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Sort projects</Typography>
-      <Button size="small" onClick={() => onPreferences({ projectSort: preferences.projectSort === "last_used" ? "alphabetical" : "last_used" })}>{preferences.projectSort === "last_used" ? "Last used" : "Alphabetical"}</Button>
+      <TextField select size="small" value={preferences.projectSort} onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"], ...(event.target.value === "custom" ? { projectOrder: projects.map((project) => project.id) } : {}) })} sx={{ minWidth: 112 }}>
+        <MenuItem value="last_used">Last used</MenuItem>
+        <MenuItem value="alphabetical">Alphabetical</MenuItem>
+        <MenuItem value="custom">Custom</MenuItem>
+      </TextField>
     </Stack>
     <Box role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") onPreferences({ sidebarWidth: preferences.sidebarWidth - 16 }); if (event.key === "ArrowRight") onPreferences({ sidebarWidth: preferences.sidebarWidth + 16 }); }} onPointerDown={(event) => { resizing.current = true; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (resizing.current) setDraftWidth(Math.max(220, Math.min(520, event.clientX))); }} onPointerUp={(event) => { resizing.current = false; event.currentTarget.releasePointerCapture(event.pointerId); onPreferences({ sidebarWidth: draftWidth }); }} sx={{ position: "absolute", right: -3, top: 0, bottom: 0, width: 7, cursor: "col-resize", zIndex: 4, "&:focus": { bgcolor: "primary.main" } }} />
     <Menu anchorEl={menu?.anchor} open={Boolean(menu)} onClose={() => setMenu(undefined)}><MenuItem onClick={() => { if (menu) { setRename(menu.conversation); setRenameText(menu.conversation.title); } setMenu(undefined); }}>Rename</MenuItem><MenuItem sx={{ color: "error.main" }} onClick={() => { setDeleting(menu?.conversation); setMenu(undefined); }}>Delete</MenuItem></Menu>

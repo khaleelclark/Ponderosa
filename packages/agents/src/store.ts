@@ -740,6 +740,7 @@ export class AgentStore {
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
+          ...(event.citations?.length ? { citations: event.citations } : {}),
         }];
       })
       .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
@@ -1304,6 +1305,7 @@ export class AgentStore {
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.document ? { document: message.document } : {}),
+        ...(message.citations?.length ? { citations: message.citations } : {}),
         ...(message.executionId ? { executionId: message.executionId } : {}),
         ...(message.authorAgentId && message.executionId ? { fileActivity: this.getChangedFiles(message.authorAgentId).filter((file) => file.executionIds.includes(message.executionId!)).map((file) => ({ path: file.path, kind: file.kind, status: "completed" as const })) } : {}),
         ...(message.correctionOfEventId ? { correctionOfMessageId: message.correctionOfEventId } : {}),
@@ -1679,6 +1681,7 @@ export class AgentStore {
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(message.document ? { document: message.document } : {}),
+          ...(message.citations?.length ? { citations: message.citations } : {}),
         } satisfies MessageDto];
       });
   }

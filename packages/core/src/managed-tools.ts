@@ -23,6 +23,19 @@ export const PONDEROSA_SEND_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
           mediaType: { type: "string", enum: ["text/markdown"] },
         },
       },
+      citations: {
+        type: "array",
+        maxItems: 10,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["url", "title"],
+          properties: {
+            url: { type: "string", minLength: 1, maxLength: 2048 },
+            title: { type: "string", minLength: 1, maxLength: 240 },
+          },
+        },
+      },
     },
   },
 };

@@ -41,6 +41,7 @@ import type {
   GenerateConversationTitleResponse,
   WorkspaceNotificationDto,
   WorkspaceEventEnvelope,
+  WorkspaceStreamStatusDto,
   HostFolderBrowseDto,
   WebPushSubscriptionDto,
   WebPushStatusDto,
@@ -81,6 +82,7 @@ export interface StreamHandlers {
 
 export interface WorkspaceStreamHandlers {
   onEvent(envelope: WorkspaceEventEnvelope): void;
+  onStatus?(status: WorkspaceStreamStatusDto): void;
   onOpen?(): void;
   onError?(error: unknown): void;
 }

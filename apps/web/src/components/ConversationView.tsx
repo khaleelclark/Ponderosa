@@ -165,24 +165,23 @@ export function ConversationMessage({
           </Box>)}
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
-        <MessageActionsAndTimestamp value={message.createdAt} actions={<>
-          {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
-          <CopyMessageButton text={visibleText} />
-          <Tooltip title="Reply"><IconButton size="small" color="inherit" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip>
-          {onEdit ? <Tooltip title="Correct latest message"><IconButton size="small" color="inherit" aria-label="Correct latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-          {conversation === "main" && message.authorAgentId ? (
-            <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
-              size="small"
-              color="inherit"
-              aria-label={`Reply directly to ${agentTitle(message.authorAgentId)}`}
-              onClick={() => onDirectReply(message)}
-              sx={{ minHeight: compactViewport ? 44 : undefined }}
-            >
-              <QuickreplyIcon fontSize="inherit" />
-            </IconButton></Tooltip>
-          ) : null}
-        </>} />
       </Box>
+      <MessageActionsAndTimestamp value={message.createdAt} actions={<>
+        {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
+        <CopyMessageButton text={visibleText} />
+        <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip>
+        {onEdit ? <Tooltip title="Correct latest message"><IconButton size="small" aria-label="Correct latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" && message.authorAgentId ? (
+          <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
+            size="small"
+            aria-label={`Reply directly to ${agentTitle(message.authorAgentId)}`}
+            onClick={() => onDirectReply(message)}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
+          >
+            <QuickreplyIcon fontSize="inherit" />
+          </IconButton></Tooltip>
+        ) : null}
+      </>} />
     </Box>
   );
 }
@@ -228,7 +227,6 @@ export function ConversationView({
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
-  const [correctionRequestId, setCorrectionRequestId] = useState("");
   const clearReply = () => {
     if (directReplyRequestId && directReplyTargetId) {
       const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
@@ -447,7 +445,7 @@ export function ConversationView({
 
   const cancelQueued = useMutation({
     mutationFn: (deliveryId: string) => api.cancelQueuedConversationMessage(conversationId, deliveryId, {
-      idempotencyKey: correctionRequestId,
+      idempotencyKey: `cancel:${deliveryId}`,
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] });
@@ -457,12 +455,11 @@ export function ConversationView({
     mutationFn: (message: ConversationMessageDto) => api.correctConversationMessage(conversationId, message.id, {
       text: correctionText.trim(),
       idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
-      activeRunDelivery: "steer",
+      activeRunDelivery: "queue",
     }),
     onSuccess: () => {
       setEditingMessage(undefined);
       setCorrectionText("");
-      setCorrectionRequestId("");
       invalidate();
     },
   });
@@ -845,7 +842,7 @@ export function ConversationView({
                   requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
                 }).then(() => undefined)}
                 onEdit={activeView === "main" && message.id === messages.filter((candidate) => candidate.role === "user" && !candidate.authorAgentId).at(-1)?.id && !message.correctedByMessageId
-                  ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); setCorrectionRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`); }
+                  ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); }
                   : undefined}
               />
             ))}
@@ -957,7 +954,7 @@ export function ConversationView({
         ) : null}
         <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
-          conversationDraftId={activeView === "main" ? conversationId : undefined}
+          conversationDraftId={activeView === "main" ? conversationId : `collaboration:${conversationId}`}
           controls={runtimeControls}
           disabled={busy}
           running={false}

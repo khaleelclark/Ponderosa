@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
   ConversationDraftDto,
@@ -12,11 +12,12 @@ import type {
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
-import { workspaceEventsPath } from "./paths.js";
+import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
 
 type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
     | { kind: "draft"; draft: ConversationDraftDto }
+    | { kind: "draft_deleted"; draftId: string }
     | { kind: "notification"; notification: WorkspaceNotificationDto }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string };
@@ -24,6 +25,7 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
 
 const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   projectSort: "last_used",
+  projectOrder: [],
   sidebarCollapsed: false,
   sidebarWidth: 288,
   notifications: "all_messages",
@@ -34,6 +36,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
 /** Canonical workspace/user event log with rebuildable in-memory projections. */
 export class WorkspaceStore {
   private readonly file: string;
+  private readonly instance: string;
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
@@ -42,7 +45,11 @@ export class WorkspaceStore {
 
   constructor(dataDir: string) {
     this.file = workspaceEventsPath(dataDir);
+    const instanceFile = workspaceInstancePath(dataDir);
     mkdirSync(dirname(this.file), { recursive: true });
+    if (!existsSync(instanceFile)) writeFileSync(instanceFile, `${randomUUID()}\n`, { mode: 0o600, flag: "wx" });
+    chmodSync(instanceFile, 0o600);
+    this.instance = readFileSync(instanceFile, "utf8").trim();
     if (!existsSync(this.file)) closeSync(openSync(this.file, "a", 0o600));
     chmodSync(this.file, 0o600);
     this.events = readRepairableJsonl<CanonicalWorkspaceEvent>(this.file, "workspace event log", true);
@@ -50,8 +57,13 @@ export class WorkspaceStore {
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
-    if (record.event.type === "preferences_updated") this.preferences = record.event.preferences;
+    if (record.event.type === "preferences_updated") this.preferences = {
+      ...DEFAULT_PREFERENCES,
+      ...record.event.preferences,
+      projectOrder: record.event.preferences.projectOrder ?? [],
+    };
     if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
+    if (record.mutation?.kind === "draft_deleted") this.drafts.delete(record.mutation.draftId);
     if (record.mutation?.kind === "notification") this.notifications.set(record.mutation.notification.id, record.mutation.notification);
     if (record.mutation?.kind === "notifications_read") {
       for (const [id, item] of this.notifications) {
@@ -85,6 +97,8 @@ export class WorkspaceStore {
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }
 
+  instanceId(): string { return this.instance; }
+
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
 
   updatePreferences(patch: UpdateWorkspacePreferencesRequest): WorkspacePreferencesDto {
@@ -93,6 +107,7 @@ export class WorkspaceStore {
       ...this.preferences,
       ...patch,
       notifications,
+      projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
       sidebarWidth: Math.max(220, Math.min(520, Math.round(patch.sidebarWidth ?? this.preferences.sidebarWidth))),
       updatedAt: new Date().toISOString(),
     };
@@ -110,6 +125,12 @@ export class WorkspaceStore {
     const draft: ConversationDraftDto = { conversationId, text: input.text, attachmentIds: [...new Set(input.attachmentIds)], revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
     this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 }, { kind: "draft", draft });
     return draft;
+  }
+
+  deleteDraft(draftId: string): void {
+    const current = this.drafts.get(draftId);
+    if (!current) return;
+    this.append({ type: "draft_changed", conversationId: draftId, revision: current.revision + 1, cleared: true }, { kind: "draft_deleted", draftId });
   }
 
   createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">): WorkspaceNotificationDto {

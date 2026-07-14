@@ -33,6 +33,10 @@ export function workspaceEventsPath(dataDir: string): string {
   return path.join(dataDir, "workspace-events.jsonl");
 }
 
+export function workspaceInstancePath(dataDir: string): string {
+  return path.join(dataDir, "workspace-instance-id");
+}
+
 export function projectsDir(dataDir: string): string {
   return path.join(dataDir, "projects");
 }

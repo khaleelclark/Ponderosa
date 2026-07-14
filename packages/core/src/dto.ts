@@ -4,7 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TokenUsage, WorkItemStatus } from "./events.js";
-import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord } from "./communication.js";
+import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord, VerifiedCitationRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -50,11 +50,13 @@ export interface CreateProjectRequest {
   createFolderName?: string;
 }
 
-export type ProjectSort = "last_used" | "alphabetical";
+export type ProjectSort = "last_used" | "alphabetical" | "custom";
 export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
 
 export interface WorkspacePreferencesDto {
   projectSort: ProjectSort;
+  /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
+  projectOrder: string[];
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   notifications: NotificationPreference;
@@ -103,7 +105,7 @@ export interface WorkspaceNotificationDto {
   projectId: string;
   conversationId?: string;
   communicationEventId?: string;
-  kind: Exclude<NotificationPreference, "none">;
+  kind: Exclude<NotificationPreference, "none"> | "collaboration";
   title: string;
   body: string;
   createdAt: string;
@@ -138,6 +140,13 @@ export interface WorkspaceEventEnvelope {
   ts: string;
   event: WorkspaceEvent;
   replayed?: boolean;
+}
+
+/** Stream identity and high-water mark, sent before replay on every connection. */
+export interface WorkspaceStreamStatusDto {
+  instanceId: string;
+  cursor: number;
+  reset: boolean;
 }
 
 /** PATCH /api/projects/:id body. Project working folders are immutable after creation. */
@@ -257,11 +266,7 @@ export interface ConversationMessageDto {
 }
 
 /** Engine-agnostic citation metadata emitted only after edge normalization/verification. */
-export interface VerifiedCitationDto {
-  url: string;
-  title: string;
-  verifiedAt: string;
-}
+export type VerifiedCitationDto = VerifiedCitationRecord;
 
 /** User-authored emoji state projected onto one canonical agent communication. */
 export interface MessageReactionDto {
@@ -393,7 +398,8 @@ export interface CancelQueuedMessageResponse {
 export interface CorrectConversationMessageRequest {
   text: string;
   idempotencyKey: string;
-  activeRunDelivery?: "steer" | "queue";
+  /** Corrections are immutable follow-up turns and therefore can only queue. */
+  activeRunDelivery?: "queue";
 }
 
 export interface CorrectConversationMessageResponse {
@@ -855,6 +861,8 @@ interface AgentMessageRequestBase {
   text: string;
   /** Optional long-form Markdown; `text` remains the concise scoped summary. */
   document?: { title: string; content: string; mediaType?: "text/markdown" };
+  /** External sources are normalized into canonical citation metadata at the server edge. */
+  citations?: Array<{ url: string; title: string }>;
   /** Stable across a transport retry so every durable effect occurs once. */
   idempotencyKey?: string;
 }

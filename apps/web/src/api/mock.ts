@@ -54,7 +54,7 @@ const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const agentPresets: AgentPresetDto[] = [];
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
-let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages", fontFamily: "inter", updatedAt: now };
+let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages", fontFamily: "inter", updatedAt: now };
 
 const agents: AgentDto[] = [
   {
