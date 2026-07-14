@@ -6,6 +6,7 @@ import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type {
   Adapter,
+  ApiPriceProfile,
   AgentSpawnRequest,
   AgentMessageChannel,
   AgentEvent,
@@ -44,6 +45,8 @@ import type {
   RuntimeSession,
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
+  TokenUsage,
+  TokenUsageSummaryDto,
 } from "@ponderosa/core";
 import { deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore } from "@ponderosa/agents";
@@ -872,11 +875,72 @@ async function workspaceFile(projectId: string, root: string, input: string | un
   return { projectId, path: relativePath, exists, ...(content !== undefined ? { content } : {}), diff, stagedDiff, unstagedDiff, truncated };
 }
 
+function roundedUsd(value: number): number {
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+}
+
+function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): number | undefined {
+  if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
+  const cached = usage.cachedInputTokens ?? 0;
+  const cacheWrite = usage.cacheWriteInputTokens ?? 0;
+  const uncached = usage.inputTokens - cached - cacheWrite;
+  if ([usage.inputTokens, usage.outputTokens, cached, cacheWrite, uncached].some((value) => !Number.isSafeInteger(value) || value < 0)) return undefined;
+  const long = profile.longContext && usage.inputTokens > profile.longContext.inputTokenThreshold
+    ? profile.longContext : undefined;
+  const inputMultiplier = long?.inputMultiplier ?? 1;
+  const outputMultiplier = long?.outputMultiplier ?? 1;
+  const cacheWriteRate = profile.cacheWriteInputUsdPerMillion ?? profile.inputUsdPerMillion;
+  return (
+    uncached * profile.inputUsdPerMillion * inputMultiplier +
+    cached * profile.cachedInputUsdPerMillion * inputMultiplier +
+    cacheWrite * cacheWriteRate * inputMultiplier +
+    usage.outputTokens * profile.outputUsdPerMillion * outputMultiplier
+  ) / 1_000_000;
+}
+
 export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   store.recoverInterruptedExecutions();
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
+  const projectedUsage = (scope: { type: "overall" } | { type: "project" | "agent"; id: string }): TokenUsageSummaryDto => {
+    const summary = store.getTokenUsage(scope);
+    const grouped = new Map<string, { engine: string; requestedModel?: string; profile: ApiPriceProfile; runs: number; usd: number }>();
+    let pricedRuns = 0;
+    for (const run of store.getMeteredRuns(scope)) {
+      const profile = engines.get(run.engine)?.adapter.apiPriceProfile?.(run.model);
+      const usd = profile ? projectedRunCost(run.usage, profile) : undefined;
+      if (usd === undefined || !profile) continue;
+      pricedRuns += 1;
+      const key = `${run.engine}\0${run.model ?? ""}\0${profile.pricingModel}`;
+      const current = grouped.get(key) ?? { engine: run.engine, requestedModel: run.model, profile, runs: 0, usd: 0 };
+      current.runs += 1;
+      current.usd += usd;
+      grouped.set(key, current);
+    }
+    const breakdown = [...grouped.values()].map((item) => ({
+      engine: item.engine,
+      ...(item.requestedModel ? { requestedModel: item.requestedModel } : {}),
+      pricingModel: item.profile.pricingModel,
+      proxy: Boolean(item.profile.proxy),
+      runs: item.runs,
+      usd: roundedUsd(item.usd),
+    })).sort((a, b) => b.usd - a.usd);
+    const catalogVersion = [...grouped.values()].map((item) => item.profile.catalogVersion).sort().at(-1) ?? "2026-07-13";
+    return {
+      ...summary,
+      projectedApiCost: {
+        currency: "USD",
+        usd: roundedUsd(breakdown.reduce((total, item) => total + item.usd, 0)),
+        basis: "api_list_price_proxy",
+        catalogVersion,
+        pricedRuns,
+        unpricedRuns: summary.finalizedRuns - pricedRuns,
+        coverage: summary.finalizedRuns ? pricedRuns / summary.finalizedRuns : null,
+        breakdown,
+      },
+    };
+  };
   const activeRuns = new Map<string, ActiveRun>();
   const runtimeSessions = new Map<string, PersistentRuntime>();
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
@@ -2240,11 +2304,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
   });
 
-  app.get("/api/usage", async () => store.getTokenUsage({ type: "overall" }));
+  app.get("/api/usage", async () => projectedUsage({ type: "overall" }));
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/usage", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return store.getTokenUsage({ type: "project", id: request.params.id });
+    return projectedUsage({ type: "project", id: request.params.id });
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
@@ -2948,7 +3012,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.get<{ Params: { id: string } }>("/api/agents/:id/usage", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    return store.getTokenUsage({ type: "agent", id: request.params.id });
+    return projectedUsage({ type: "agent", id: request.params.id });
   });
 
   app.patch<{ Params: { id: string }; Body: { title?: string; archived?: boolean } }>(
@@ -3393,6 +3457,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const resumeSessionId = store.resumeSessionId(agent.id);
       const mode = resumeSessionId ? "continue" : "seed";
       const history = boundedSeedHistory(fullHistory);
+      // An omitted model/effort means "keep this agent's current provider
+      // identity", not "forget how this run should be attributed". Recover the
+      // latest explicit selection so collaboration wake-ups and restarts remain
+      // priceable even though they do not repeat UI controls in every delivery.
+      const priorRuns = store.getRuns(agent.id);
+      const effectiveModel = request.body.model ?? [...priorRuns].reverse().find((run) => run.model)?.model ?? agent.presetSnapshot?.model;
+      const effectiveEffort = request.body.effort ?? [...priorRuns].reverse().find((run) => run.effort)?.effort ?? agent.presetSnapshot?.effort;
 
       // Project-chat turns receive the user-facing conversation. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
@@ -3416,7 +3487,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextAgents, agent.id);
       const cursorChannel = sourceChannel === "main" || sourceChannel === "collaboration" ? sourceChannel : undefined;
       const cursorConversationId = cursorChannel ? routingConversationId : undefined;
-      const cursorModel = request.body.model ?? "(default)";
+      const cursorModel = effectiveModel ?? "(default)";
       const routingMetadata = cursorConversationId && cursorChannel
         ? [
             "Current room routing and membership:",
@@ -3510,7 +3581,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const completionContract = sharedTaskTurn
         ? sharedRequestCompletionPrompt()
         : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
-      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${teamDirectoryPrompt(directoryForTurn)}\n\n${managerRelationshipPrompt(agent).join("\n")}\n\n${agentSpawnPrompt().join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      // The provider session already retains the static directory and spawn
+      // contract. Repeating them on every continuation scales prompt input with
+      // team size and weakens cache locality. A fresh/rolled-over session gets
+      // the complete envelope; every turn still gets authoritative identity,
+      // current manager state, request context, and its completion contract.
+      const sessionEnvelope = resumeSessionId ? "" : `${teamDirectoryPrompt(directoryForTurn)}\n\n${agentSpawnPrompt().join("\n")}\n\n`;
+      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${managerRelationshipPrompt(agent).join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
@@ -3563,6 +3640,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const startedAt = new Date().toISOString();
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
+        ...(effectiveModel ? { model: effectiveModel } : {}),
+        ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       });
       publish(agent.id, runningLifecycle);
       const activeRun: ActiveRun = {
@@ -3605,8 +3684,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               cwd: project.hostPath,
               resumeSessionId,
               history,
-              model: request.body.model,
-              effort: request.body.effort,
+              model: effectiveModel,
+              effort: effectiveEffort,
               environment,
               dynamicTools: [PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL],
               handleDynamicToolCall: async (call) => {
@@ -3654,8 +3733,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                       await persistentRuntime!.session.startTurn({
                         prompt,
                         kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
-                        model: request.body.model,
-                        effort: request.body.effort,
+                        model: effectiveModel,
+                        effort: effectiveEffort,
                         clientMessageId: communicationEventId,
                       });
                       persistentTurnStarted = true;
@@ -3677,8 +3756,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   cwd: project.hostPath,
                   prompt,
                   resumeSessionId: sessionId,
-                  model: request.body.model,
-                  effort: request.body.effort,
+                  model: effectiveModel,
+                  effort: effectiveEffort,
                   environment,
                   signal: controller.signal,
                 })
@@ -3689,8 +3768,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                       await persistentRuntime!.session.startTurn({
                         prompt,
                         kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
-                        model: request.body.model,
-                        effort: request.body.effort,
+                        model: effectiveModel,
+                        effort: effectiveEffort,
                         clientMessageId: communicationEventId,
                       });
                       persistentTurnStarted = true;
@@ -3712,8 +3791,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   cwd: project.hostPath,
                   prompt,
                   history,
-                  model: request.body.model,
-                  effort: request.body.effort,
+                  model: effectiveModel,
+                  effort: effectiveEffort,
                   environment,
                   signal: controller.signal,
                 });

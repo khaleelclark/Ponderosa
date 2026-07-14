@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
-import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage } from "../src/codex-app-server.js";
+import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, subtractUsage } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
@@ -12,6 +12,16 @@ describe("Codex app-server persistent runtime", () => {
   it("normalizes the per-turn usage breakdown without double-counting cached tokens", () => {
     expect(mapCodexTokenUsage({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 }))
       .toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });
+  });
+  it("derives one execution from compatible absolute thread checkpoints and rejects resets", () => {
+    expect(subtractUsage(
+      { totalTokens: 999, inputTokens: 800, cachedInputTokens: 400, outputTokens: 199, reasoningOutputTokens: 100 },
+      { totalTokens: 981, inputTokens: 785, cachedInputTokens: 396, outputTokens: 196, reasoningOutputTokens: 98 },
+    )).toEqual({ totalTokens: 18, inputTokens: 15, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2 });
+    expect(subtractUsage(
+      { totalTokens: 10, inputTokens: 8, outputTokens: 2 },
+      { totalTokens: 20, inputTokens: 16, outputTokens: 4 },
+    )).toBeUndefined();
   });
   it("separates completed response blocks in Work log output", () => {
     const completed = (id: string, text: string) => mapCodexAppServerNotification({
@@ -57,7 +67,7 @@ describe("Codex app-server persistent runtime", () => {
       { type: "text", delta: "steered response\n\n" },
       { type: "command", command: "git status", cwd: "/repo" },
       { type: "tool_result", id: "c1", output: "clean" },
-      { type: "turn_done", usage: { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 } },
+      { type: "turn_done", usage: { totalTokens: 999, inputTokens: 812, cachedInputTokens: 404, outputTokens: 187, reasoningOutputTokens: 92 } },
     ]);
     await session.close();
   });

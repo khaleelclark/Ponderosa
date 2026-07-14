@@ -125,7 +125,7 @@ describe("mapClaudeEvent — per event type", () => {
         result: "done",
         usage: { input_tokens: 10, cache_read_input_tokens: 5, cache_creation_input_tokens: 2, output_tokens: 4 },
       }),
-    ).toEqual([{ type: "turn_done", usage: { inputTokens: 17, cachedInputTokens: 5, outputTokens: 4, totalTokens: 21 } }]);
+    ).toEqual([{ type: "turn_done", usage: { inputTokens: 17, cachedInputTokens: 5, cacheWriteInputTokens: 2, outputTokens: 4, totalTokens: 21 } }]);
   });
 
   it("result error → error then turn_done", () => {

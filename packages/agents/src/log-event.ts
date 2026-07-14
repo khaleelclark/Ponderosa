@@ -40,6 +40,9 @@ export interface AgentLifecycleEvent {
   status: AgentRunStatus;
   reason: AgentLifecycleReason;
   executionId: string;
+  /** Requested runtime identity captured when the run starts. */
+  model?: string;
+  effort?: string;
 }
 
 /** Runtime completion enriched by the server with its canonical execution id. */

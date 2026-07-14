@@ -15,6 +15,8 @@ export interface TokenUsage {
   inputTokens?: number;
   /** Input tokens served from a provider cache; included in inputTokens. */
   cachedInputTokens?: number;
+  /** Input tokens written to a provider cache; included in inputTokens. */
+  cacheWriteInputTokens?: number;
   outputTokens?: number;
   /** Reasoning tokens reported by providers that expose them; included in outputTokens. */
   reasoningOutputTokens?: number;

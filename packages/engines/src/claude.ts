@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type {
   Adapter,
+  ApiPriceProfile,
   AgentEvent,
   ContinueOptions,
   EngineCapabilities,
@@ -19,6 +20,7 @@ import type {
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
+import { claudeApiPriceProfile } from "./api-pricing.js";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./codex.js";
 import { streamProcess, type SpawnFn } from "./process.js";
@@ -81,6 +83,10 @@ export class ClaudeAdapter implements Adapter {
 
   listEfforts(): EffortOption[] {
     return DEFAULT_EFFORTS;
+  }
+
+  apiPriceProfile(model?: string): ApiPriceProfile | undefined {
+    return claudeApiPriceProfile(model);
   }
 
   async capabilities(cwd: string): Promise<EngineCapabilities> {
