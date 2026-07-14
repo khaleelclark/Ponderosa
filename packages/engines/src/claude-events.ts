@@ -65,6 +65,7 @@ const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "Updat
 function mapUsage(u: RawClaudeEvent["usage"]): TokenUsage | undefined {
   if (!u) return undefined;
   const cachedInputTokens = u.cache_read_input_tokens;
+  const cacheWriteInputTokens = u.cache_creation_input_tokens;
   const inputTokens = u.input_tokens !== undefined || cachedInputTokens !== undefined || u.cache_creation_input_tokens !== undefined
     ? (u.input_tokens ?? 0) + (cachedInputTokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
     : undefined;
@@ -72,6 +73,7 @@ function mapUsage(u: RawClaudeEvent["usage"]): TokenUsage | undefined {
   const usage: TokenUsage = {};
   if (inputTokens !== undefined) usage.inputTokens = inputTokens;
   if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
+  if (cacheWriteInputTokens !== undefined) usage.cacheWriteInputTokens = cacheWriteInputTokens;
   if (outputTokens !== undefined) usage.outputTokens = outputTokens;
   if (inputTokens !== undefined || outputTokens !== undefined) {
     usage.totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0);

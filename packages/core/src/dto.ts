@@ -432,6 +432,8 @@ export interface AgentRunDto {
   status: AgentRunStatus;
   reason: AgentLifecycleReason;
   engine: EngineId;
+  model?: string;
+  effort?: string;
   communicationEventId?: string;
   /** Provider-reported usage. Missing means the run was not metered, never zero. */
   usage?: TokenUsage;
@@ -451,6 +453,28 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   unreportedRuns: number;
   /** 0..1; null when the scope has no finalized runs. */
   coverage: number | null;
+  projectedApiCost?: ProjectedApiCostDto;
+}
+
+export interface ProjectedApiCostBreakdownDto {
+  engine: EngineId;
+  requestedModel?: string;
+  pricingModel: string;
+  proxy: boolean;
+  runs: number;
+  usd: number;
+}
+
+/** Informational API-equivalent list-price estimate; never a subscription bill. */
+export interface ProjectedApiCostDto {
+  currency: "USD";
+  usd: number;
+  basis: "api_list_price_proxy";
+  catalogVersion: string;
+  pricedRuns: number;
+  unpricedRuns: number;
+  coverage: number | null;
+  breakdown: ProjectedApiCostBreakdownDto[];
 }
 
 /** Optional engine-reported progress inside a Run; never a Run itself. */

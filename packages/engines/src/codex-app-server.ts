@@ -29,13 +29,17 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
 export class CodexAppServerSession implements RuntimeSession {
   private activeTurnId?: string;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
+  private baselineTotal?: TokenUsage;
+  private latestTotal?: TokenUsage;
   readonly events: AsyncIterable<AgentEvent>;
 
   private constructor(
     readonly engineAgentId: string,
     private readonly rpc: JsonRpcProcess,
     private readonly cwd: string,
+    fresh: boolean,
   ) {
+    if (fresh) this.baselineTotal = zeroUsage();
     this.events = this.eventStream();
   }
 
@@ -76,7 +80,6 @@ export class CodexAppServerSession implements RuntimeSession {
           model: opts.model || null,
           approvalPolicy: "never",
           sandbox: opts.sandboxMode,
-          excludeTurns: true,
         })
       : await rpc.request<ThreadResponse>("thread/start", {
           cwd: opts.cwd,
@@ -92,7 +95,7 @@ export class CodexAppServerSession implements RuntimeSession {
             inputSchema: tool.inputSchema,
           })) ?? null,
         });
-    return new CodexAppServerSession(response.thread.id, rpc, opts.cwd);
+    return new CodexAppServerSession(response.thread.id, rpc, opts.cwd, !opts.resumeSessionId);
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
@@ -149,10 +152,22 @@ export class CodexAppServerSession implements RuntimeSession {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
       if (notification.method === "thread/tokenUsage/updated") {
-        const params = notification.params as { turnId?: unknown; tokenUsage?: { last?: unknown } } | undefined;
+        const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {
-          const usage = mapCodexTokenUsage(params.tokenUsage?.last);
-          if (usage) this.usageByTurnId.set(params.turnId, usage);
+          const total = mapCodexTokenUsage(params.tokenUsage?.total);
+          if (total) {
+            // A resumed thread replays its prior cumulative total before the new
+            // turn's events. That checkpoint is the durable interval baseline.
+            if (params.turnId !== this.activeTurnId) {
+              this.baselineTotal = total;
+              this.latestTotal = total;
+            } else {
+              const usage = this.baselineTotal ? subtractUsage(total, this.baselineTotal) : undefined;
+              if (usage) this.usageByTurnId.set(params.turnId, usage);
+              else this.usageByTurnId.delete(params.turnId);
+              this.latestTotal = total;
+            }
+          }
         }
         continue;
       }
@@ -169,9 +184,41 @@ export class CodexAppServerSession implements RuntimeSession {
         this.cwd,
         typeof completedTurnId === "string" ? this.usageByTurnId.get(completedTurnId) : undefined,
       );
-      if (typeof completedTurnId === "string") this.usageByTurnId.delete(completedTurnId);
+      if (typeof completedTurnId === "string") {
+        this.usageByTurnId.delete(completedTurnId);
+        if (this.latestTotal) this.baselineTotal = this.latestTotal;
+      }
     }
   }
+}
+
+function zeroUsage(): TokenUsage {
+  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
+}
+
+/** Delta compatible absolute thread checkpoints; any reset fails closed. */
+export function subtractUsage(total: TokenUsage, baseline: TokenUsage): TokenUsage | undefined {
+  const delta = (key: keyof TokenUsage): number | undefined => {
+    const end = total[key];
+    const start = baseline[key];
+    if (typeof end !== "number" || typeof start !== "number" || end < start) return undefined;
+    return end - start;
+  };
+  const inputTokens = delta("inputTokens");
+  const cachedInputTokens = delta("cachedInputTokens");
+  const outputTokens = delta("outputTokens");
+  const reasoningOutputTokens = delta("reasoningOutputTokens");
+  const totalTokens = delta("totalTokens");
+  if (totalTokens === undefined || inputTokens === undefined || outputTokens === undefined) return undefined;
+  if (cachedInputTokens !== undefined && cachedInputTokens > inputTokens) return undefined;
+  if (reasoningOutputTokens !== undefined && reasoningOutputTokens > outputTokens) return undefined;
+  return {
+    inputTokens,
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    outputTokens,
+    ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
+    totalTokens,
+  };
 }
 
 export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {

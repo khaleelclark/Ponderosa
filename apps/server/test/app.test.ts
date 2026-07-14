@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore } from "@ponderosa/agents";
 import { boundedSeedHistory, createServer, isProjectFileReferenceAllowed, parseGitStatus, runtimeIdentityPrompt, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
@@ -73,7 +73,7 @@ class MockAdapter implements Adapter {
   beforeResponse?: (opts: SeedOptions) => Promise<void>;
   failuresRemaining = 0;
   failNextTurn = false;
-  turnUsage?: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
+  turnUsage?: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
 
   listModels(): ModelOption[] {
     return [{ id: "mock-model", label: "Mock Model" }];
@@ -81,6 +81,14 @@ class MockAdapter implements Adapter {
 
   listEfforts(): EffortOption[] {
     return [{ id: "high", label: "High" }];
+  }
+
+  apiPriceProfile(): ApiPriceProfile {
+    return {
+      id: "mock-model", pricingModel: "mock-model", catalogVersion: "test", effectiveAt: "2026-01-01",
+      sourceUrl: "https://example.test/pricing", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1,
+      cacheWriteInputUsdPerMillion: 1.25, outputUsdPerMillion: 5,
+    };
   }
 
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
@@ -287,13 +295,14 @@ describe("generated artifact endpoints", () => {
 describe("token usage API", () => {
   it("reports provider usage at agent, project, and overall scopes after a real run", async () => {
     const { app, project, agent } = await createProjectAndAgent();
-    adapter.turnUsage = { inputTokens: 120, cachedInputTokens: 40, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 150 };
+    adapter.turnUsage = { inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 150 };
     expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Meter this run" } })).statusCode).toBe(200);
     await waitForRun(agent.id);
     await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("completed");
 
     const agentUsage = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}/usage` })).json();
-    expect(agentUsage).toMatchObject({ scope: "agent", scopeId: agent.id, inputTokens: 120, cachedInputTokens: 40, outputTokens: 30, totalTokens: 150, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
+    expect(agentUsage).toMatchObject({ scope: "agent", scopeId: agent.id, inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, totalTokens: 150, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
+    expect(agentUsage.projectedApiCost).toMatchObject({ usd: 0.000239, basis: "api_list_price_proxy", pricedRuns: 1, unpricedRuns: 0, coverage: 1 });
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/usage` })).json()).toMatchObject({ scope: "project", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/usage" })).json()).toMatchObject({ scope: "overall", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/agents/missing/usage" })).statusCode).toBe(404);
@@ -1376,6 +1385,11 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]?.history).toEqual([]);
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.continues[0]?.resumeSessionId).toBe("sess-1");
+    expect(adapter.continues[0]).toMatchObject({ model: "mock-model", effort: "high" });
+    expect(store.getRuns(agent.id)).toEqual([
+      expect.objectContaining({ model: "mock-model", effort: "high" }),
+      expect.objectContaining({ model: "mock-model", effort: "high" }),
+    ]);
     const artifacts = store.getArtifacts(agent.id);
     const artifactRes = await app.inject({
       method: "GET",
@@ -1386,6 +1400,16 @@ describe("server chunk F", () => {
       content: "diff --git a/a.ts b/a.ts\n",
       contentType: "diff",
     });
+
+    store.createAgent(agent.projectId, { title: "New Specialist", engine: "codex" });
+    await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "third" },
+    });
+    await waitForRun(agent.id, 3);
+    expect(adapter.continues[1]?.prompt).toContain("Current Team Directory");
+    expect(adapter.continues[1]?.prompt).toContain("New Specialist");
     await app.close();
   });
 
@@ -1409,6 +1433,8 @@ describe("server chunk F", () => {
 
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
+    expect(adapter.seeds[1]?.prompt).toContain("Current Team Directory");
     expect(adapter.seeds[1]?.history.map((message) => message.text)).toContain("first");
     expect(store.readEvents(agent.id).filter((item) => item.event.type === "session_reset"))
       .toHaveLength(1);
@@ -1524,6 +1550,8 @@ describe("server chunk F", () => {
     expect(adapter.continues[0]?.prompt).toContain("Manager: #Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).not.toContain("Communication scope is immutable");
     expect(adapter.continues[0]?.prompt).not.toContain("PONDEROSA_DELEGATION_URL");
+    expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
+    expect(adapter.continues[0]?.prompt).not.toContain("managed-agent creation bridge");
     expect(adapter.continues[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=20");
     expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n#Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("- tagged agents: #Aspen");

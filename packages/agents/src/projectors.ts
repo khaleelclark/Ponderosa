@@ -35,7 +35,7 @@ export type ProjectionOp =
   | { kind: "insert_message"; row: MessageRow }
   | { kind: "insert_run"; row: RunRow }
   | { kind: "update_run"; id: string; status: AgentRunStatus; reason: AgentLifecycleReason; updatedAt: string; completedAt?: string }
-  | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number }
+  | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number }
   | { kind: "insert_work_item"; row: WorkItemRow }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
@@ -161,9 +161,12 @@ export function projectEvent(
             status: event.status,
             reason: event.reason,
             engine: next.activeEngine,
+            model: event.model ?? null,
+            effort: event.effort ?? null,
             communicationEventId: next.pendingCommunicationEventId ?? null,
             inputTokens: null,
             cachedInputTokens: null,
+            cacheWriteInputTokens: null,
             outputTokens: null,
             reasoningOutputTokens: null,
             totalTokens: null,
