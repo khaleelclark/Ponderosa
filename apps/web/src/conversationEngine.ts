@@ -13,3 +13,11 @@ export function resolveConversationEngine(
   if (defaultEngine && engines.some((engine) => engine.id === defaultEngine)) return defaultEngine;
   return engines.find((engine) => engine.authenticated)?.id ?? engines[0]?.id;
 }
+
+/** Keep Project-chat runtime controls attached to both creation and first dispatch. */
+export function selectedRunConfig(model: string, effort: string): { model?: string; effort?: string } {
+  return {
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+  };
+}

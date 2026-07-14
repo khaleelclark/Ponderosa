@@ -41,7 +41,7 @@ import { compactDefined } from "../collections";
 import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
-import { resolveConversationEngine } from "../conversationEngine";
+import { resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
@@ -323,11 +323,11 @@ export function ConversationView({
       }
       // Record the message in the shared pool, spawn a park-named agent on the
       // selected engine, and hand it the message as its first turn.
+      const runConfig = selectedRunConfig(model, effort);
       const agent = await api.createAgent(conversation.projectId, conversationId, {
         title: pickAgentName((detailQuery.data?.agents ?? []).map((agent) => agent.title)),
         engine,
-        model: model || undefined,
-        effort: effort || undefined,
+        ...runConfig,
       });
       try {
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agent.id, file)));
@@ -338,6 +338,7 @@ export function ConversationView({
           shareWithOrganization: true,
           sourceConversationId: conversationId,
           replyToMessageId: replyTo?.id,
+          ...runConfig,
         });
       } catch (error) {
         await api.deleteAgent(agent.id).catch(() => undefined);

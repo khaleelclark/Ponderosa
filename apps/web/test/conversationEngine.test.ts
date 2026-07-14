@@ -1,6 +1,6 @@
 import type { EngineDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { resolveConversationEngine } from "../src/conversationEngine";
+import { resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
 
 const engine = (id: string, authenticated: boolean): EngineDto => ({
   id,
@@ -20,5 +20,13 @@ describe("Project chat engine initialization", () => {
     const engines = [engine("codex", true), engine("claude", false)];
     expect(resolveConversationEngine("claude", engines)).toBe("claude");
     expect(resolveConversationEngine("removed", engines)).toBe("codex");
+  });
+
+  it("forwards the selected model and effort to the first Project-chat run", () => {
+    expect(selectedRunConfig("gpt-5.6-luna", "high")).toEqual({
+      model: "gpt-5.6-luna",
+      effort: "high",
+    });
+    expect(selectedRunConfig("", "")).toEqual({});
   });
 });
