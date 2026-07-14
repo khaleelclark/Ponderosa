@@ -3,12 +3,18 @@ body,
 #root {
   height: 100%;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   margin: 0;
 }
 
 body {
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+#root {
+  overflow: hidden;
 }
 
 * {
