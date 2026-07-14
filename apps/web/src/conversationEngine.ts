@@ -1,4 +1,4 @@
-import type { EngineDto } from "@ponderosa/core";
+import type { EffortOption, EngineDto } from "@ponderosa/core";
 
 /**
  * Resolve a Project chat's engine only after the live engine roster arrives.
@@ -20,4 +20,22 @@ export function selectedRunConfig(model: string, effort: string): { model?: stri
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
   };
+}
+
+/** Prefer the provider's exact effort roster for a selected model. */
+export function effortOptionsForModel(engine: EngineDto | undefined, model: string): EffortOption[] {
+  if (!engine) return [];
+  return engine.models.find((option) => option.id === model)?.efforts ?? engine.efforts;
+}
+
+export function modelSelectionIsCompatible(engine: EngineDto | undefined, model: string): boolean {
+  return !model || engine?.modelCatalogKnown === false || Boolean(engine?.models.some((option) => option.id === model));
+}
+
+export function effortSelectionIsCompatible(engine: EngineDto | undefined, model: string, effort: string): boolean {
+  if (!effort) return true;
+  if (model && engine?.modelCatalogKnown === false && !engine.models.some((option) => option.id === model)) return true;
+  const selectedModel = model ? engine?.models.find((option) => option.id === model) : undefined;
+  if (selectedModel && selectedModel.efforts === undefined) return true;
+  return effortOptionsForModel(engine, model).some((option) => option.id === effort);
 }

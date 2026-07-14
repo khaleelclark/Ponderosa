@@ -831,12 +831,110 @@ describe("server chunk F", () => {
     const project = (await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Demo", hostPath: repoDir } })).json<{ id: string }>();
     const invalid = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review", guidance: "Review carefully", engine: "codex", model: "not-real" } });
     expect(invalid.statusCode).toBe(400);
+    const invalidEffort = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review", guidance: "Review carefully", engine: "codex", model: "mock-model", effort: "minimal" } });
+    expect(invalidEffort.statusCode).toBe(400);
     const created = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agent-presets`, payload: { name: "Security", description: "Review trust boundaries", guidance: "Review trust boundaries and capability checks.", engine: "codex", model: "mock-model", effort: "high" } });
     expect(created.statusCode).toBe(201);
     const preset = created.json<{ id: string }>();
     const spawned = await app.inject({ method: "POST", url: `/api/projects/${project.id}/agents`, payload: { title: "Audit", engine: "spoofed", presetId: preset.id } });
     expect(spawned.statusCode).toBe(200);
     expect(spawned.json<{ activeEngine: string; presetSnapshot: { guidance: string } }>()).toMatchObject({ activeEngine: "codex", presetSnapshot: { guidance: "Review trust boundaries and capability checks." } });
+    await app.close();
+  });
+
+  it("reports model-specific efforts and rejects incompatible selections before side effects", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Runtime compatibility", hostPath: repoDir });
+
+    const roster = await app.inject({ method: "GET", url: "/api/engines" });
+    expect(roster.statusCode).toBe(200);
+    expect(roster.json()).toContainEqual(expect.objectContaining({
+      id: "codex",
+      models: [expect.objectContaining({
+        id: "mock-model",
+        efforts: [{ id: "high", label: "High" }],
+      })],
+    }));
+
+    const invalidConversation = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations`,
+      payload: { title: "Invalid", defaultEngine: "codex", defaultModel: "mock-model", defaultEffort: "minimal" },
+    });
+    expect(invalidConversation.statusCode).toBe(400);
+    expect(store.listConversations(project.id)).toHaveLength(0);
+
+    const conversation = (await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations`,
+      payload: { title: "Valid", defaultEngine: "codex", defaultModel: "mock-model", defaultEffort: "high" },
+    })).json<{ id: string }>();
+    const agent = (await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Compatible", engine: "codex", model: "mock-model", effort: "high", conversationId: conversation.id },
+    })).json<{ id: string }>();
+
+    const invalidMessage = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "This must not be persisted.", model: "mock-model", effort: "minimal" },
+    });
+    expect(invalidMessage.statusCode).toBe(400);
+    expect(invalidMessage.json()).toEqual({ error: "effort is not available for model" });
+    expect(store.getRuns(agent.id)).toHaveLength(0);
+    expect(store.getProjectedAgentMessages(agent.id)).toHaveLength(0);
+
+    const models = vi.spyOn(adapter, "listModels").mockReturnValue([
+      { id: "mock-model", label: "Mock Model", efforts: [{ id: "high", label: "High" }] },
+      { id: "alternate", label: "Alternate", efforts: [{ id: "low", label: "Low" }] },
+    ]);
+    const efforts = vi.spyOn(adapter, "listEfforts").mockImplementation((model) =>
+      model === "alternate" ? [{ id: "low", label: "Low" }] : [{ id: "high", label: "High" }],
+    );
+    const changedModel = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Use the new model default.", model: "alternate" },
+    });
+    expect(changedModel.statusCode, changedModel.body).toBe(200);
+    await waitForRun(agent.id, 1);
+    expect(adapter.seeds.at(-1)).toMatchObject({ model: "alternate", effort: undefined });
+
+    const resetDefaults = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Return to provider defaults.", model: "", effort: "" },
+    });
+    expect(resetDefaults.statusCode, resetDefaults.body).toBe(200);
+    await waitForRun(agent.id, 2);
+    expect(adapter.continues.at(-1)).toMatchObject({ model: undefined, effort: undefined });
+
+    models.mockReturnValue([{ id: "", label: "Codex default" }]);
+    const unknownCache = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Continue while provider metadata is unavailable." },
+    });
+    expect(unknownCache.statusCode, unknownCache.body).toBe(200);
+    await waitForRun(agent.id, 3);
+    expect(adapter.continues.at(-1)).toMatchObject({ model: undefined, effort: undefined });
+    models.mockRestore();
+    efforts.mockRestore();
+    await app.close();
+  });
+
+  it("fails closed without crashing when a stored conversation engine is no longer configured", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Stale engine", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Stale", defaultEngine: "removed" });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/conversations/${conversation.id}`,
+      payload: { title: "Still stale" },
+    });
+    expect(updated.statusCode).toBe(400);
+    expect(updated.json()).toEqual({ error: "unknown engine" });
     await app.close();
   });
 
@@ -2888,6 +2986,8 @@ describe("server chunk F", () => {
     expect(childSeed?.prompt).toContain("You may collaborate directly with any relevant agent in the project");
     expect(childSeed?.prompt).toContain("Do not Broadcast");
     expect(childSeed?.prompt).toContain("Do not send routine acknowledgments or duplicate summaries");
+    expect(childSeed?.prompt).toContain("Registering a wait is execution control, not a communication event");
+    expect(childSeed?.prompt).toContain("Never include your own stable agent ID in Collaboration recipients");
     expect(childSeed?.prompt).toContain("Shared policy: verify claims before reporting.");
     expect(childSeed?.prompt).toContain("Research and report back.");
 

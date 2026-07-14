@@ -1,6 +1,6 @@
 import type { EngineDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
 
 const engine = (id: string, authenticated: boolean): EngineDto => ({
   id,
@@ -28,5 +28,37 @@ describe("Project chat engine initialization", () => {
       effort: "high",
     });
     expect(selectedRunConfig("", "")).toEqual({});
+  });
+
+  it("uses the exact provider effort roster for the selected model", () => {
+    const configured: EngineDto = {
+      ...engine("codex", true),
+      models: [
+        { id: "sol", label: "Sol", efforts: [{ id: "ultra", label: "Ultra" }] },
+        { id: "luna", label: "Luna", efforts: [{ id: "high", label: "High" }] },
+      ],
+      efforts: [{ id: "high", label: "High" }, { id: "ultra", label: "Ultra" }],
+    };
+    expect(effortOptionsForModel(configured, "luna").map((option) => option.id)).toEqual(["high"]);
+    expect(effortOptionsForModel(configured, "sol").map((option) => option.id)).toEqual(["ultra"]);
+    expect(effortOptionsForModel(configured, "").map((option) => option.id)).toEqual(["high", "ultra"]);
+  });
+
+  it("preserves saved selections while provider catalog metadata is unknown", () => {
+    const unknown: EngineDto = { ...engine("codex", true), modelCatalogKnown: false };
+    expect(modelSelectionIsCompatible(unknown, "saved-model")).toBe(true);
+    expect(effortSelectionIsCompatible(unknown, "saved-model", "ultra")).toBe(true);
+
+    const known: EngineDto = { ...unknown, modelCatalogKnown: true };
+    expect(modelSelectionIsCompatible(known, "saved-model")).toBe(false);
+    expect(effortSelectionIsCompatible(known, "", "ultra")).toBe(false);
+
+    const partial: EngineDto = {
+      ...known,
+      models: [{ id: "known-model", label: "Known model" }],
+      efforts: [{ id: "high", label: "High" }],
+    };
+    expect(modelSelectionIsCompatible(partial, "known-model")).toBe(true);
+    expect(effortSelectionIsCompatible(partial, "known-model", "saved-effort")).toBe(true);
   });
 });

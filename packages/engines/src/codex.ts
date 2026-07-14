@@ -61,6 +61,12 @@ interface CodexCachedModel {
   slug?: unknown;
   display_name?: unknown;
   visibility?: unknown;
+  default_reasoning_level?: unknown;
+  supported_reasoning_levels?: unknown;
+}
+
+interface CodexCachedReasoningLevel {
+  effort?: unknown;
 }
 
 interface CodexModelsCache {
@@ -83,12 +89,24 @@ export function readCodexModels(cachePath: string): ModelOption[] {
         return [];
       }
       seen.add(model.slug);
+      const hasEffortMetadata = Array.isArray(model.supported_reasoning_levels);
+      const efforts = hasEffortMetadata
+        ? (model.supported_reasoning_levels as CodexCachedReasoningLevel[]).reduce<EffortOption[]>((options, level) => {
+            if (typeof level.effort !== "string" || !level.effort.trim() || options.some((option) => option.id === level.effort)) return options;
+            options.push({ id: level.effort, label: effortLabel(level.effort) });
+            return options;
+          }, [])
+        : [];
       return [{
         id: model.slug,
         label:
           typeof model.display_name === "string" && model.display_name.trim() !== ""
             ? model.display_name
             : model.slug,
+        ...(hasEffortMetadata ? { efforts } : {}),
+        ...(typeof model.default_reasoning_level === "string" && efforts.some((option) => option.id === model.default_reasoning_level)
+          ? { defaultEffort: model.default_reasoning_level }
+          : {}),
       }];
     });
 
@@ -98,8 +116,12 @@ export function readCodexModels(cachePath: string): ModelOption[] {
   }
 }
 
+function effortLabel(effort: string): string {
+  if (effort === "xhigh") return "Extra high";
+  return `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`;
+}
+
 const DEFAULT_EFFORTS: EffortOption[] = [
-  { id: "minimal", label: "Minimal" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
@@ -126,6 +148,7 @@ export function renderSeedPrompt(history: ChatMessage[], prompt: string): string
 export class CodexAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Codex";
+  readonly modelSpecificEfforts = true;
 
   private readonly bin: string;
   private readonly spawnFn: SpawnFn;
@@ -149,8 +172,18 @@ export class CodexAdapter implements Adapter {
     return readCodexModels(this.modelsCachePath);
   }
 
-  listEfforts(): EffortOption[] {
-    return DEFAULT_EFFORTS;
+  listEfforts(model?: string): EffortOption[] {
+    const models = this.listModels();
+    if (model) return models.find((option) => option.id === model)?.efforts ?? DEFAULT_EFFORTS;
+    const concreteModels = models.filter((option) => option.id);
+    const reportedModels = concreteModels.filter((option) => option.efforts !== undefined);
+    if (reportedModels.length === 0) return DEFAULT_EFFORTS;
+    const candidates = reportedModels.length === concreteModels.length
+      ? reportedModels[0]!.efforts!
+      : DEFAULT_EFFORTS;
+    return candidates.filter((candidate) =>
+      reportedModels.every((option) => option.efforts!.some((effort) => effort.id === candidate.id)),
+    );
   }
 
   apiPriceProfile(model?: string): ApiPriceProfile | undefined {

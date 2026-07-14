@@ -31,6 +31,10 @@ export interface ChatMessage {
 export interface ModelOption {
   id: string;
   label: string;
+  /** Provider-reported effort levels supported by this exact model. */
+  efforts?: EffortOption[];
+  /** Provider-reported default effort for this exact model. */
+  defaultEffort?: string;
 }
 
 /** A selectable reasoning-effort level (e.g. low|medium|high|xhigh|max). */
@@ -184,8 +188,10 @@ export interface EngineCapabilities {
 export interface Adapter {
   id: EngineId; // "codex" | "claude"
   displayName: string;
+  /** True when effort compatibility varies by model and missing metadata means unknown. */
+  readonly modelSpecificEfforts?: boolean;
   listModels(): ModelOption[];
-  listEfforts(): EffortOption[];
+  listEfforts(model?: string): EffortOption[];
 
   /** API list-price proxy only; Ponderosa never calls a provider billing API. */
   apiPriceProfile?(model?: string): ApiPriceProfile | undefined;

@@ -41,7 +41,7 @@ import { compactDefined } from "../collections";
 import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
-import { resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
@@ -323,7 +323,10 @@ export function ConversationView({
       }
       // Record the message in the shared pool, spawn a park-named agent on the
       // selected engine, and hand it the message as its first turn.
-      const runConfig = selectedRunConfig(model, effort);
+      const selectedEngine = engines.find((candidate) => candidate.id === engine);
+      const compatibleModel = modelSelectionIsCompatible(selectedEngine, model) ? model : "";
+      const compatibleEffort = effortSelectionIsCompatible(selectedEngine, compatibleModel, effort) ? effort : "";
+      const runConfig = selectedRunConfig(compatibleModel, compatibleEffort);
       const agent = await api.createAgent(conversation.projectId, conversationId, {
         title: pickAgentName((detailQuery.data?.agents ?? []).map((agent) => agent.title)),
         engine,
@@ -506,8 +509,14 @@ export function ConversationView({
   const commands: EngineCommand[] = [
     ...(engineCapabilities.find((item) => item.engineId === activeEngine?.id)?.commands ?? []),
   ];
-  const models = activeEngine?.models ?? [];
-  const efforts = activeEngine?.efforts ?? [];
+  const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
+  const models = activeEngine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
+    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
+    : advertisedModels;
+  const advertisedEfforts = effortOptionsForModel(activeEngine, model);
+  const efforts = effort && effortSelectionIsCompatible(activeEngine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
+    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
+    : advertisedEfforts;
   const engineReady = Boolean(activeEngine?.authenticated);
 
   const agentTitle = (agentId: string | undefined): string =>
@@ -708,8 +717,13 @@ export function ConversationView({
                 value={models.some((o) => o.id === model) ? model : ""}
                 onChange={(event: SelectChangeEvent) => {
                   const next = event.target.value;
+                  const effortRemainsValid = effortSelectionIsCompatible(activeEngine, next, effort);
                   setModel(next);
-                  persistDefaults.mutate({ defaultModel: next || null });
+                  if (!effortRemainsValid) setEffort("");
+                  persistDefaults.mutate({
+                    defaultModel: next || null,
+                    ...(!effortRemainsValid ? { defaultEffort: null } : {}),
+                  });
                 }}
               >
                 <MenuItem value="">Engine default</MenuItem>
