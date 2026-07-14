@@ -49,6 +49,7 @@ import type {
   TeamDirectoryDto,
   TokenUsage,
   TokenUsageSummaryDto,
+  ProjectedApiCostComponentsDto,
 } from "@ponderosa/core";
 import { agentRoleProfile, deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore } from "@ponderosa/agents";
@@ -915,7 +916,34 @@ function roundedUsd(value: number): number {
   return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
-function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): number | undefined {
+type RawCostComponents = {
+  [Key in keyof ProjectedApiCostComponentsDto]: { tokens: number; usd: number };
+};
+
+function emptyCostComponents(): RawCostComponents {
+  return {
+    uncachedInput: { tokens: 0, usd: 0 },
+    cachedInput: { tokens: 0, usd: 0 },
+    cacheWriteInput: { tokens: 0, usd: 0 },
+    output: { tokens: 0, usd: 0 },
+  };
+}
+
+function addCostComponents(target: RawCostComponents, source: RawCostComponents): void {
+  for (const key of Object.keys(target) as Array<keyof RawCostComponents>) {
+    target[key].tokens += source[key].tokens;
+    target[key].usd += source[key].usd;
+  }
+}
+
+function serializedCostComponents(components: RawCostComponents): ProjectedApiCostComponentsDto {
+  return Object.fromEntries(Object.entries(components).map(([key, value]) => [key, {
+    tokens: value.tokens,
+    usd: roundedUsd(value.usd),
+  }])) as unknown as ProjectedApiCostComponentsDto;
+}
+
+function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): { usd: number; components: RawCostComponents } | undefined {
   if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
   const cached = usage.cachedInputTokens ?? 0;
   const cacheWrite = usage.cacheWriteInputTokens ?? 0;
@@ -926,12 +954,13 @@ function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): number |
   const inputMultiplier = long?.inputMultiplier ?? 1;
   const outputMultiplier = long?.outputMultiplier ?? 1;
   const cacheWriteRate = profile.cacheWriteInputUsdPerMillion ?? profile.inputUsdPerMillion;
-  return (
-    uncached * profile.inputUsdPerMillion * inputMultiplier +
-    cached * profile.cachedInputUsdPerMillion * inputMultiplier +
-    cacheWrite * cacheWriteRate * inputMultiplier +
-    usage.outputTokens * profile.outputUsdPerMillion * outputMultiplier
-  ) / 1_000_000;
+  const components: RawCostComponents = {
+    uncachedInput: { tokens: uncached, usd: uncached * profile.inputUsdPerMillion * inputMultiplier / 1_000_000 },
+    cachedInput: { tokens: cached, usd: cached * profile.cachedInputUsdPerMillion * inputMultiplier / 1_000_000 },
+    cacheWriteInput: { tokens: cacheWrite, usd: cacheWrite * cacheWriteRate * inputMultiplier / 1_000_000 },
+    output: { tokens: usage.outputTokens, usd: usage.outputTokens * profile.outputUsdPerMillion * outputMultiplier / 1_000_000 },
+  };
+  return { usd: Object.values(components).reduce((total, item) => total + item.usd, 0), components };
 }
 
 export function createServer(opts: CreateServerOptions): FastifyInstance {
@@ -941,17 +970,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const projectedUsage = (scope: { type: "overall" } | { type: "project" | "agent"; id: string }): TokenUsageSummaryDto => {
     const summary = store.getTokenUsage(scope);
-    const grouped = new Map<string, { engine: string; requestedModel?: string; profile: ApiPriceProfile; runs: number; usd: number }>();
+    const grouped = new Map<string, { engine: string; requestedModel?: string; profile: ApiPriceProfile; runs: number; usd: number; components: RawCostComponents }>();
+    const components = emptyCostComponents();
     let pricedRuns = 0;
     for (const run of store.getMeteredRuns(scope)) {
       const profile = engines.get(run.engine)?.adapter.apiPriceProfile?.(run.model);
-      const usd = profile ? projectedRunCost(run.usage, profile) : undefined;
-      if (usd === undefined || !profile) continue;
+      const cost = profile ? projectedRunCost(run.usage, profile) : undefined;
+      if (!cost || !profile) continue;
       pricedRuns += 1;
       const key = `${run.engine}\0${run.model ?? ""}\0${profile.pricingModel}`;
-      const current = grouped.get(key) ?? { engine: run.engine, requestedModel: run.model, profile, runs: 0, usd: 0 };
+      const current = grouped.get(key) ?? { engine: run.engine, requestedModel: run.model, profile, runs: 0, usd: 0, components: emptyCostComponents() };
       current.runs += 1;
-      current.usd += usd;
+      current.usd += cost.usd;
+      addCostComponents(current.components, cost.components);
+      addCostComponents(components, cost.components);
       grouped.set(key, current);
     }
     const breakdown = [...grouped.values()].map((item) => ({
@@ -961,6 +993,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       proxy: Boolean(item.profile.proxy),
       runs: item.runs,
       usd: roundedUsd(item.usd),
+      components: serializedCostComponents(item.components),
     })).sort((a, b) => b.usd - a.usd);
     const catalogVersion = [...grouped.values()].map((item) => item.profile.catalogVersion).sort().at(-1) ?? "2026-07-13";
     return {
@@ -973,6 +1006,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         pricedRuns,
         unpricedRuns: summary.finalizedRuns - pricedRuns,
         coverage: summary.finalizedRuns ? pricedRuns / summary.finalizedRuns : null,
+        components: serializedCostComponents(components),
         breakdown,
       },
     };

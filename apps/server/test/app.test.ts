@@ -302,7 +302,24 @@ describe("token usage API", () => {
 
     const agentUsage = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}/usage` })).json();
     expect(agentUsage).toMatchObject({ scope: "agent", scopeId: agent.id, inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, totalTokens: 150, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
-    expect(agentUsage.projectedApiCost).toMatchObject({ usd: 0.000239, basis: "api_list_price_proxy", pricedRuns: 1, unpricedRuns: 0, coverage: 1 });
+    expect(agentUsage.projectedApiCost).toMatchObject({
+      usd: 0.000239, basis: "api_list_price_proxy", pricedRuns: 1, unpricedRuns: 0, coverage: 1,
+      components: {
+        uncachedInput: { tokens: 60, usd: 0.00006 },
+        cachedInput: { tokens: 40, usd: 0.000004 },
+        cacheWriteInput: { tokens: 20, usd: 0.000025 },
+        output: { tokens: 30, usd: 0.00015 },
+      },
+      breakdown: [{
+        pricingModel: "mock-model",
+        components: {
+          uncachedInput: { tokens: 60, usd: 0.00006 },
+          cachedInput: { tokens: 40, usd: 0.000004 },
+          cacheWriteInput: { tokens: 20, usd: 0.000025 },
+          output: { tokens: 30, usd: 0.00015 },
+        },
+      }],
+    });
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/usage` })).json()).toMatchObject({ scope: "project", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/usage" })).json()).toMatchObject({ scope: "overall", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/agents/missing/usage" })).statusCode).toBe(404);
