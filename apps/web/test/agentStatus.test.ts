@@ -1,6 +1,7 @@
 import type { AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
+import { agentRoleProfile } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { agentRosterIndent, agentStatusLabel, deriveAgentStatus, mergeAgentStatuses, orderedAgentOrganization } from "../src/agents";
+import { agentActivity, agentRosterIndent, agentStatusLabel, deriveAgentStatus, mergeAgentStatuses, orderedAgentOrganization } from "../src/agents";
 import { eligibleOrganizationParents } from "../src/components/AgentDetail";
 
 const organizationAgent = (id: string, title: string, parent?: string): AgentDto => ({
@@ -11,8 +12,8 @@ const organizationAgent = (id: string, title: string, parent?: string): AgentDto
 
 function detailWith(runStatuses: Array<"running" | "completed" | "failed">, workItemStatuses: Array<"running" | "waiting_approval" | "done"> = []): AgentDetailDto {
   return {
-    runs: runStatuses.map((status, index) => ({ id: `run-${index}`, status, updatedAt: `2026-07-12T00:00:0${index}.000Z` })),
-    workItems: workItemStatuses.map((status, index) => ({ id: `item-${index}`, status })),
+    runs: runStatuses.map((status, index) => ({ id: `run-${index}`, title: `Run ${index}`, status, updatedAt: `2026-07-12T00:00:0${index}.000Z` })),
+    workItems: workItemStatuses.map((status, index) => ({ id: `item-${index}`, title: `Item ${index}`, status })),
   } as AgentDetailDto;
 }
 
@@ -29,6 +30,12 @@ describe("visible agent status", () => {
     const status = deriveAgentStatus(detailWith(["completed", "completed"]));
     expect(status).toBe("idle");
     expect(agentStatusLabel(status)).toBe("Idle");
+  });
+
+  it("shows only actionable current activity, never completed history", () => {
+    expect(agentActivity(detailWith(["completed"]))).toBeUndefined();
+    expect(agentActivity(detailWith(["completed", "running"]))).toBe("Run 1");
+    expect(agentActivity(detailWith(["completed"], ["done", "waiting_approval"]))).toBe("Item 1");
   });
 
   it("keeps newly managed health identities visible before the roster refreshes", () => {
@@ -63,5 +70,18 @@ describe("agent organization roster", () => {
     const archived = { ...organizationAgent("archived", "Archived"), archived: true };
     const foreign = { ...organizationAgent("foreign", "Foreign"), projectId: "other" };
     expect(eligibleOrganizationParents(current, [current, archived, foreign, descendant, active]).map((agent) => agent.id)).toEqual(["active"]);
+  });
+
+  it("uses the spawn identity for custom specialists and preserves generic fallback", () => {
+    const specialist = {
+      ...organizationAgent("reviewer", "Skeptical Reviewer"),
+      spawnPrompt: "Challenge the release plan and report risks. ".repeat(12),
+    };
+    expect(agentRoleProfile(specialist).role).toBe("Skeptical Reviewer");
+    expect(agentRoleProfile(specialist).description).toMatch(/^Challenge the release plan/);
+    expect(agentRoleProfile(specialist).description.length).toBeLessThanOrEqual(161);
+    expect(agentRoleProfile(organizationAgent("generic", "General"))).toEqual({
+      role: "Generalist", description: "General-purpose agent General",
+    });
   });
 });

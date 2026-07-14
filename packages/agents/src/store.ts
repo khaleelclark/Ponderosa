@@ -513,48 +513,69 @@ export class AgentStore {
    * Persist the explicit communication-to-agent edge before a run is started,
    * steered, or queued. Text and room placement are never consulted.
    */
+  recordRunTriggers(
+    projectId: string,
+    communicationEventIds: readonly string[],
+    agentId: string,
+    createdAt = new Date().toISOString(),
+  ): Array<{ trigger: RunTriggerRecord; replayed: boolean }> {
+    const uniqueEventIds = [...new Set(communicationEventIds)];
+    if (uniqueEventIds.length === 0) return [];
+    const agent = this.getAgent(agentId);
+    if (!agent || agent.projectId !== projectId || agent.archived) throw new Error("run trigger agent must be active in its project");
+    const candidates = uniqueEventIds.map((communicationEventId): RunTriggerRecord => {
+      const event = this.getCommunicationEvent(projectId, communicationEventId);
+      if (!event) throw new Error("run trigger communication was not found");
+      if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) {
+        throw new Error("run trigger agent must belong to the communication conversation");
+      }
+      const behavior = deriveCommunicationBehavior(event);
+      const source = event.intent === "broadcast" && event.sender.kind === "user"
+        ? "project_request" as const
+        : behavior.runTriggerAgentIds.includes(agentId)
+          ? event.intent === "collaboration" ? "collaboration" as const : "direct_message" as const
+          : undefined;
+      if (!source) throw new Error("communication is not eligible to trigger this agent");
+      return {
+        triggerId: `${communicationEventId}:agent:${agentId}`,
+        projectId,
+        agentId,
+        communicationEventId,
+        source,
+        createdAt,
+      };
+    });
+    const index = this.runTriggerIndex(projectId);
+    for (const trigger of candidates) {
+      const existing = index.byId.get(trigger.triggerId);
+      if (existing && (existing.projectId !== trigger.projectId || existing.agentId !== trigger.agentId ||
+          existing.communicationEventId !== trigger.communicationEventId || existing.source !== trigger.source)) {
+        throw new Error("run trigger identity collision");
+      }
+    }
+    const fresh = candidates.filter((trigger) => !index.byId.has(trigger.triggerId));
+    if (fresh.length > 0) {
+      appendFsyncedJsonl(runTriggersPath(this.dataDir, projectId), fresh);
+      for (const trigger of fresh) {
+        index.records.push(trigger);
+        index.byId.set(trigger.triggerId, trigger);
+        index.byEventAgent.set(`${trigger.communicationEventId}\u0000${agentId}`, trigger);
+      }
+    }
+    const freshIds = new Set(fresh.map((trigger) => trigger.triggerId));
+    return candidates.map((trigger) => ({
+      trigger: index.byId.get(trigger.triggerId)!,
+      replayed: !freshIds.has(trigger.triggerId),
+    }));
+  }
+
   recordRunTrigger(
     projectId: string,
     communicationEventId: string,
     agentId: string,
     createdAt = new Date().toISOString(),
   ): { trigger: RunTriggerRecord; replayed: boolean } {
-    const event = this.getCommunicationEvent(projectId, communicationEventId);
-    if (!event) throw new Error("run trigger communication was not found");
-    const agent = this.getAgent(agentId);
-    if (!agent || agent.projectId !== projectId || agent.archived) throw new Error("run trigger agent must be active in its project");
-    if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) {
-      throw new Error("run trigger agent must belong to the communication conversation");
-    }
-    const behavior = deriveCommunicationBehavior(event);
-    const source = event.intent === "broadcast" && event.sender.kind === "user"
-      ? "project_request" as const
-      : behavior.runTriggerAgentIds.includes(agentId)
-        ? event.intent === "collaboration" ? "collaboration" as const : "direct_message" as const
-        : undefined;
-    if (!source) throw new Error("communication is not eligible to trigger this agent");
-    const trigger: RunTriggerRecord = {
-      triggerId: `${communicationEventId}:agent:${agentId}`,
-      projectId,
-      agentId,
-      communicationEventId,
-      source,
-      createdAt,
-    };
-    const index = this.runTriggerIndex(projectId);
-    const existing = index.byId.get(trigger.triggerId);
-    if (existing) {
-      if (existing.projectId !== trigger.projectId || existing.agentId !== trigger.agentId ||
-          existing.communicationEventId !== trigger.communicationEventId || existing.source !== trigger.source) {
-        throw new Error("run trigger identity collision");
-      }
-      return { trigger: existing, replayed: true };
-    }
-    appendFsyncedJsonl(runTriggersPath(this.dataDir, projectId), [trigger]);
-    index.records.push(trigger);
-    index.byId.set(trigger.triggerId, trigger);
-    index.byEventAgent.set(`${communicationEventId}\u0000${agentId}`, trigger);
-    return { trigger, replayed: false };
+    return this.recordRunTriggers(projectId, [communicationEventId], agentId, createdAt)[0]!;
   }
 
   readRunTriggers(projectId: string, agentId?: string): RunTriggerRecord[] {

@@ -720,7 +720,10 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Directory", hostPath: repoDir });
     const preset = store.listAgentPresets(project.id).find((item) => item.name === "Frontend")!;
     const parent = store.createAgent(project.id, { title: "Lead", engine: "codex", presetId: preset.id });
-    const child = store.createAgent(project.id, { title: "Reviewer", engine: "codex" });
+    const child = store.createAgent(project.id, { title: "Reviewer", engine: "codex" }, {
+      agentId: parent.id, executionId: "directory-run",
+      prompt: "Challenge release safety and report concise findings.", idempotencyKey: "directory-reviewer",
+    });
     store.updateAgentOrganization(child.id, { managerAgentId: parent.id });
     store.appendEvent(parent.id, { type: "work_item_update", workItemId: "directory", title: "Build directory", status: "running" });
 
@@ -731,7 +734,10 @@ describe("server chunk F", () => {
     expect(directory.statusCode).toBe(200);
     expect(directory.json()).toMatchObject({ projectId: project.id, agents: expect.arrayContaining([
       expect.objectContaining({ agentId: parent.id, role: "Frontend", status: "running", childAgentIds: [child.id], engine: "codex" }),
-      expect.objectContaining({ agentId: child.id, managerAgentId: parent.id, role: "Generalist" }),
+      expect.objectContaining({
+        agentId: child.id, managerAgentId: parent.id, role: "Reviewer",
+        description: "Challenge release safety and report concise findings.",
+      }),
     ]) });
     expect((await app.inject({ method: "GET", url: `/api/agent-directory/${child.id}`, headers: { authorization: `Bearer ${token}` } })).json())
       .toMatchObject({ agentId: child.id, managerAgentId: parent.id });
@@ -2921,16 +2927,27 @@ describe("server chunk F", () => {
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
       payload: { intent: "collaboration", recipientAgentIds: [parent.id], text },
     });
-    expect((await sendReport(firstToken, "First report.")).statusCode).toBe(200);
+    const firstReport = await sendReport(firstToken, "First report.");
+    expect(firstReport.statusCode).toBe(200);
     await sleep(40);
     const parentTurns = () => [...adapter.seeds, ...adapter.continues].filter((turn) => turn.agentId === parent.id);
     expect(parentTurns()).toHaveLength(1);
 
-    expect((await sendReport(secondToken, "Second report.")).statusCode).toBe(200);
+    const secondReport = await sendReport(secondToken, "Second report.");
+    expect(secondReport.statusCode).toBe(200);
     await vi.waitFor(() => expect(parentTurns()).toHaveLength(2));
     expect(parentTurns()[1]?.prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
     expect(parentTurns()[1]?.prompt).toContain("First report.");
     expect(parentTurns()[1]?.prompt).toContain("Second report.");
+    const reportEventIds = [firstReport, secondReport]
+      .map((response) => response.json<{ messageId: string }>().messageId);
+    expect(store.readRunTriggers(project.id, parent.id)
+      .filter((trigger) => trigger.source === "collaboration")
+      .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
+    const detail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
+    expect(detail.json<{ runTriggers: Array<{ communicationEventId: string; source: string }> }>().runTriggers
+      .filter((trigger) => trigger.source === "collaboration")
+      .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
 
     await Promise.all([parent, first, second].map((agent) => cancelAndWait(app, agent.id)));
     await app.close();

@@ -287,6 +287,32 @@ export interface AgentDto {
   presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
 }
 
+export interface AgentRoleProfile {
+  role: string;
+  description: string;
+}
+
+/**
+ * Present a spawned agent's durable identity as its role instead of silently
+ * calling every agent without a preset a Generalist. Keep the prompt-derived
+ * description compact because this profile is also injected into team discovery.
+ */
+export function agentRoleProfile(
+  agent: Pick<AgentDto, "title" | "spawnPrompt" | "presetSnapshot">,
+): AgentRoleProfile {
+  const prompt = agent.spawnPrompt?.replace(/\s+/g, " ").trim();
+  const compactPrompt = prompt && prompt.length > 160
+    ? `${prompt.slice(0, 160).replace(/\s+\S*$/, "").trimEnd()}…`
+    : prompt;
+  if (agent.presetSnapshot) {
+    return { role: agent.presetSnapshot.name, description: agent.presetSnapshot.description };
+  }
+  if (compactPrompt) {
+    return { role: agent.title, description: compactPrompt };
+  }
+  return { role: "Generalist", description: `General-purpose agent ${agent.title}` };
+}
+
 export interface TeamDirectoryAgentDto {
   agentId: string;
   displayName: string;
