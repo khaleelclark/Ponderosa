@@ -29,6 +29,10 @@ export function dbPath(dataDir: string): string {
   return path.join(dataDir, "ponderosa.db");
 }
 
+export function workspaceEventsPath(dataDir: string): string {
+  return path.join(dataDir, "workspace-events.jsonl");
+}
+
 export function projectsDir(dataDir: string): string {
   return path.join(dataDir, "projects");
 }

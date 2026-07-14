@@ -47,3 +47,8 @@ pre,
 code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
+
+.emoji-category { padding: 4px 8px; background: var(--mui-palette-background-paper); font-size: 12px; font-weight: 700; }
+.emoji-row { display: grid !important; grid-template-columns: repeat(8, 1fr); }
+.emoji-cell { border: 0; background: transparent; border-radius: 6px; min-width: 40px; min-height: 40px; font-size: 22px; cursor: pointer; }
+.emoji-cell-active { background: color-mix(in srgb, currentColor 12%, transparent); }

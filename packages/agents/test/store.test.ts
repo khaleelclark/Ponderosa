@@ -1078,6 +1078,21 @@ describe("agent presets", () => {
 });
 
 describe("project lifecycle", () => {
+  it("cleans an interrupted atomic-project staging directory instead of projecting it", () => {
+    const stagingId = ".interrupted.creating";
+    mkdirSync(projectDir(dir, stagingId), { recursive: true });
+    writeFileSync(projectJsonPath(dir, stagingId), JSON.stringify({
+      id: "interrupted",
+      label: "Must not appear",
+      hostPath: "/staged",
+      createdAt: new Date().toISOString(),
+      defaultEngine: "codex",
+    }));
+    store.rebuildProjections();
+    expect(store.getProject("interrupted")).toBeUndefined();
+    expect(existsSync(projectDir(dir, stagingId))).toBe(false);
+  });
+
   it("renames canonically and rebuilds the renamed projection", () => {
     const project = store.createProject({ label: "Before", hostPath: "/repo" });
     expect(store.updateProject(project.id, { label: "After" })?.label).toBe("After");

@@ -15,7 +15,7 @@ describe("horizontal overflow containment", () => {
     );
 
     const constrainedShell = 'width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden"';
-    expect(projectShell.split(constrainedShell)).toHaveLength(4);
+    expect(projectShell.split(constrainedShell)).toHaveLength(3);
   });
 
   it("retains local horizontal scrolling for wide code, tables, and task output", () => {

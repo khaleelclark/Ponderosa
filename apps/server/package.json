@@ -12,16 +12,18 @@
     "dev": "node --watch --experimental-strip-types src/main.ts"
   },
   "dependencies": {
+    "@ponderosa/agents": "workspace:*",
     "@ponderosa/core": "workspace:*",
     "@ponderosa/engines": "workspace:*",
-    "@ponderosa/agents": "workspace:*",
     "better-sqlite3": "^11.10.0",
     "fastify": "^5.2.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
+    "@types/web-push": "^3.6.4",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

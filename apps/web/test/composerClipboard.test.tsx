@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { StrictMode } from "react";
 import { create, unstable_batchedUpdates } from "react-test-renderer";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactElement } from "react";
 import { Composer, filesFromClipboard, replyPreviewText, selectComposerFiles } from "../src/components/panes";
 
 const file = (name: string, type: string, size = 4) => {
@@ -13,6 +15,7 @@ const clipboard = (files: File[]) => ({
   preventDefault: () => undefined,
 });
 const pasteTarget = (view: ReturnType<typeof create>) => view.root.findAll((node) => typeof node.props.onPaste === "function")[0]!;
+const renderComposer = (element: ReactElement) => create(<QueryClientProvider client={new QueryClient()}>{element}</QueryClientProvider>);
 
 describe("composer clipboard attachments", () => {
   it("bounds long reply previews so the cancel action remains reachable", () => {
@@ -25,7 +28,7 @@ describe("composer clipboard attachments", () => {
   it("locks synchronously against duplicate sends", () => {
     let calls = 0;
     const pending = new Promise<void>(() => undefined);
-    const view = create(<Composer disabled={false} running={false} onSend={() => { calls += 1; return pending; }} />);
+    const view = renderComposer(<Composer disabled={false} running={false} onSend={() => { calls += 1; return pending; }} />);
     const textarea = pasteTarget(view);
     textarea.props.onChange({ target: { value: "one message", selectionStart: 11 } });
     const send = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")[0]!;
@@ -79,7 +82,7 @@ describe("composer clipboard attachments", () => {
     URL.createObjectURL = (value) => `blob:${(value as File).name}`;
     URL.revokeObjectURL = () => undefined;
     let sent: File[] = [];
-    const view = create(<Composer disabled={false} running={false} onSend={(_text, files) => { sent = files; }} />);
+    const view = renderComposer(<Composer disabled={false} running={false} onSend={(_text, files) => { sent = files; }} />);
     const textarea = pasteTarget(view);
     const first = [1, 2, 3, 4].map((index) => file(`first-${index}.png`, "image/png"));
     const second = [1, 2, 3, 4].map((index) => file(`second-${index}.png`, "image/png"));
@@ -103,7 +106,7 @@ describe("composer clipboard attachments", () => {
     URL.createObjectURL = (value) => `blob:${(value as File).name}`;
     URL.revokeObjectURL = () => undefined;
     let sent: File[] = [];
-    const view = create(<Composer disabled={false} running={false} onSend={(_text, files) => { sent = files; }} />);
+    const view = renderComposer(<Composer disabled={false} running={false} onSend={(_text, files) => { sent = files; }} />);
     const textarea = pasteTarget(view);
     const eightMiB = 8 * 1024 * 1024;
 
@@ -124,7 +127,7 @@ describe("composer clipboard attachments", () => {
   it("leaves plain text paste alone and ignores file paste while disabled or running", () => {
     for (const props of [{ disabled: true, running: false }, { disabled: false, running: true }]) {
       let prevented = false;
-      const view = create(<Composer {...props} onSend={() => undefined} />);
+      const view = renderComposer(<Composer {...props} onSend={() => undefined} />);
       const textarea = pasteTarget(view);
       textarea.props.onPaste({ clipboardData: { items: [{ kind: "string", getAsFile: () => null }], files: [] }, preventDefault: () => { prevented = true; } });
       textarea.props.onPaste({ ...clipboard([file("screen.png", "image/png")]), preventDefault: () => { prevented = true; } });
@@ -144,10 +147,10 @@ describe("composer clipboard attachments", () => {
       created.push(url);
       return url;
     };
-    const view = create(<StrictMode><Composer disabled={false} running={false} onSend={() => undefined} /></StrictMode>);
+    const view = renderComposer(<StrictMode><Composer disabled={false} running={false} onSend={() => undefined} /></StrictMode>);
     pasteTarget(view).props.onPaste(clipboard([file("screen.png", "image/png")]));
     expect(revoked).toEqual([]);
-    view.update(<StrictMode><Composer disabled={false} running={false} onSend={() => undefined} placeholder="Updated" /></StrictMode>);
+    view.update(<QueryClientProvider client={new QueryClient()}><StrictMode><Composer disabled={false} running={false} onSend={() => undefined} placeholder="Updated" /></StrictMode></QueryClientProvider>);
     expect(revoked).toEqual([]);
     view.unmount();
     expect(revoked).toEqual(created);
@@ -161,7 +164,7 @@ describe("composer clipboard attachments", () => {
     const revoked: string[] = [];
     URL.createObjectURL = (value) => `blob:${(value as File).name}`;
     URL.revokeObjectURL = (value) => { revoked.push(value); };
-    const view = create(<Composer disabled={false} running={false} onSend={() => undefined} />);
+    const view = renderComposer(<Composer disabled={false} running={false} onSend={() => undefined} />);
     pasteTarget(view).props.onPaste(clipboard([file("remove.png", "image/png"), file("send.png", "image/png")]));
     view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Remove remove.png")[0]!.props.onClick();
     expect(revoked).toContain("blob:remove.png");

@@ -1,4 +1,5 @@
 import CssBaseline from "@mui/material/CssBaseline";
+import "@fontsource-variable/inter";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, useEffect, useMemo, useState } from "react";

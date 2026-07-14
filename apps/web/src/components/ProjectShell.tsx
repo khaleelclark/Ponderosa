@@ -284,73 +284,21 @@ export function ProjectShell({
     </>
   );
 
-  // Mobile: the sidebar is the "list" screen; a selection opens a full-screen
-  // detail with a back affordance. Desktop: sidebar + detail side by side.
+  // Workspace navigation is owned by App on every viewport. Mobile opens the
+  // same project hierarchy in an AppBar drawer, so the legacy per-project list
+  // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
-    const showList = route.kind === "project";
     return (
       <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
-        {showList ? (
-          <Box sx={{ minHeight: 0, overflow: "auto", bgcolor: "background.paper" }}>{sidebar}</Box>
-        ) : (
-          <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
-            <Stack
-              direction="row"
-              spacing={1}
-              sx={{ alignItems: "center", px: 1, py: 0.5, borderBottom: 1, borderColor: "divider" }}
-            >
-              <IconButton
-                aria-label="Open project navigation"
-                onClick={() => navigate({ kind: "project", projectId })}
-                sx={{ minWidth: 44, minHeight: 44 }}
-              >
-                <ArrowBackIcon />
-              </IconButton>
-              <Typography variant="subtitle2" color="text.secondary">
-                Project navigation
-              </Typography>
-              <IconButton
-                aria-label="Manage agent presets"
-                onClick={() => setPresetsOpen(true)}
-                sx={{ ml: "auto", minWidth: 44, minHeight: 44 }}
-              >
-                <TuneIcon />
-              </IconButton>
-            </Stack>
-            <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>{main}</Box>
-          </Box>
-        )}
+        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>{main}</Box>
         {dialogs}
       </Box>
     );
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)" }}>
-      <Box
-        sx={{
-          borderRight: 1,
-          borderColor: "divider",
-          overflow: "hidden",
-          bgcolor: "background.paper",
-          display: "grid",
-          gridTemplateRows: "minmax(0, 1fr) auto",
-        }}
-      >
-        <Box sx={{ minHeight: 0, overflow: "auto" }}>
-          {loading ? <LinearProgress /> : null}
-          {sidebar}
-        </Box>
-        <Button
-          onClick={() => setPresetsOpen(true)}
-          startIcon={<TuneIcon />}
-          sx={{ m: 1, minHeight: 44 }}
-          variant="outlined"
-        >
-          Manage presets
-        </Button>
-      </Box>
+    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
       <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
       {dialogs}
     </Box>

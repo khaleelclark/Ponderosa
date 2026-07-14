@@ -39,6 +39,10 @@ interface CommunicationEventBase {
   correlationId?: string;
   causationId?: string;
   idempotencyKey?: string;
+  /** Immutable link from an operator correction to the original communication. */
+  correctionOfEventId?: string;
+  /** Auditable selector used when a collaboration audience was resolved. */
+  audienceSelector?: "mention" | "everyone";
   /** Durable send-time labels are display fallback only; IDs remain authoritative. */
   identity?: {
     senderLabel: string;
@@ -251,6 +255,8 @@ export interface ProjectedCommunicationMessage {
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   document?: CommunicationDocumentReference;
+  executionId?: string;
+  correctionOfEventId?: string;
 }
 
 export type CommunicationDeliveryStatus =

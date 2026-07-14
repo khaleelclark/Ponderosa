@@ -210,6 +210,14 @@ export class CollaborationDeliveryStore {
     return id ? this.deliveries.get(id) : undefined;
   }
 
+  listForConversation(conversationId: string): CollaborationDelivery[] {
+    return [...this.deliveries.values()]
+      .filter((delivery) => delivery.conversationId === conversationId)
+      .sort((a, b) =>
+        (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt) ||
+        (this.insertionOrder.get(a.id) ?? 0) - (this.insertionOrder.get(b.id) ?? 0));
+  }
+
   deleteAgents(agentIds: ReadonlySet<string>): void {
     const rawRecords = readFileSync(this.file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record);
     const removedMessageIds = new Set(rawRecords.flatMap((record) =>
@@ -305,6 +313,18 @@ export class CollaborationDeliveryStore {
   cancel(id: string, reason: string): CollaborationDelivery | undefined {
     const delivery = this.deliveries.get(id);
     if (!delivery || delivery.status !== "delivered") return delivery;
+    return this.persist({
+      ...delivery,
+      status: "cancelled",
+      cancelledAt: new Date().toISOString(),
+      failure: reason,
+    }, "replace");
+  }
+
+  /** Atomically cancel only work that has not entered the dispatcher. */
+  cancelQueued(id: string, reason: string): CollaborationDelivery | undefined {
+    const delivery = this.deliveries.get(id);
+    if (!delivery || delivery.status !== "queued") return delivery;
     return this.persist({
       ...delivery,
       status: "cancelled",

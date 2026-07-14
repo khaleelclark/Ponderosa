@@ -104,19 +104,19 @@ describe("user message labels on chat surfaces", () => {
 
     expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
-    expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf(">Reply</button>"));
-    expect(manager.indexOf(">Reply</button>")).toBeLessThan(manager.indexOf("<time"));
+    expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf('aria-label="Reply to message"'));
+    expect(manager.indexOf('aria-label="Reply to message"')).toBeLessThan(manager.indexOf("<time"));
     expect(agent).toContain('data-message-tag="everyone"');
     expect(agent).toContain("#everyone</span> result");
-    expect(agent.indexOf(">Reply</button>")).toBeLessThan(agent.indexOf("Reply Directly"));
-    expect(agent.indexOf("Reply Directly")).toBeLessThan(agent.indexOf("<time"));
+    expect(agent.indexOf('aria-label="Reply to message"')).toBeLessThan(agent.indexOf("Reply directly to Pinnacles"));
+    expect(agent.indexOf("Reply directly to Pinnacles")).toBeLessThan(agent.indexOf("<time"));
   });
 
   it("does not offer Reply Directly in collaboration while preserving Reply and timestamps", () => {
     const html = renderMaster(masterMessage({ role: "assistant", authorAgentId: "agent-1", text: "Collaboration update" }), "collaboration");
 
-    expect(html).toContain(">Reply</button>");
-    expect(html).not.toContain("Reply Directly");
+    expect(html).toContain('aria-label="Reply to message"');
+    expect(html).not.toContain("Reply directly to Pinnacles");
     expect(html).toContain("<time");
   });
 });

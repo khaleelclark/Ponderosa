@@ -20,6 +20,15 @@ import type {
   ProjectFolderOptionsDto,
   WorkspaceFileReviewDto,
   WorkspaceStatusDto,
+  WorkspacePreferencesDto,
+  UpdateWorkspacePreferencesRequest,
+  ConversationDraftDto,
+  DraftAttachmentDto,
+  PutConversationDraftRequest,
+  GenerateConversationTitleResponse,
+  WorkspaceNotificationDto,
+  WorkspaceEventEnvelope,
+  HostFolderBrowseDto,
   UpdateProjectRequest,
   ProjectEngineCapabilitiesDto,
   FilesResponse,
@@ -31,7 +40,7 @@ import type {
   TokenUsageScope,
   TokenUsageSummaryDto,
 } from "@ponderosa/core";
-import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription } from "./types";
+import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
 const API_BASE = "";
 
@@ -81,6 +90,12 @@ export const realApi: PonderosaApi = {
   getProjectFolders() {
     return requestJson<ProjectFolderOptionsDto>("/api/project-folders");
   },
+  browseProjectFolders(path) {
+    return requestJson<HostFolderBrowseDto>(`/api/project-folders/browse${toQuery({ path })}`);
+  },
+  markProjectUsed(projectId, conversationId) {
+    return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}/use`, { method: "POST", body: JSON.stringify({ conversationId }) });
+  },
   updateProject(projectId, patch) {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, {
       method: "PATCH",
@@ -129,6 +144,46 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });
   },
+  getConversationDraft(conversationId) {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`);
+  },
+  putConversationDraft(conversationId, request) {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  },
+  uploadDraftAttachment(conversationId, file) {
+    return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-ponderosa-media-type": file.type || "application/octet-stream",
+        "x-ponderosa-filename": file.name,
+      },
+      body: file,
+    });
+  },
+  async downloadDraftAttachment(attachment) {
+    const response = await fetch(attachment.downloadUrl, { cache: "no-store" });
+    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
+  },
+  async deleteDraftAttachment(conversationId, attachmentId) {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
+    if (!response.ok && response.status !== 404) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+  },
+  generateConversationTitle(conversationId) {
+    return requestJson<GenerateConversationTitleResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/generate-title`, { method: "POST" });
+  },
+  getWorkspacePreferences() { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
+  updateWorkspacePreferences(request) { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
+  listNotifications() { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
+  async clearConversationNotifications(conversationId) { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
+  getWebPushStatus() { return requestJson("/api/push/status"); },
+  async upsertWebPushSubscription(subscription) {
+    await requestJson(`/api/push/subscriptions/${encodeURIComponent(subscription.deviceId)}`, { method: "PUT", body: JSON.stringify(subscription) });
+  },
+  async deleteWebPushSubscription(deviceId) {
+    await requestJson(`/api/push/subscriptions/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+  },
   sendDirectReply(conversationId, request) {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-replies`, {
       method: "POST",
@@ -137,6 +192,21 @@ export const realApi: PonderosaApi = {
   },
   sendMultiAgentDirectMessage(conversationId, request) {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-messages`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  listQueuedConversationMessages(conversationId) {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages`);
+  },
+  cancelQueuedConversationMessage(conversationId, deliveryId, request) {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages/${encodeURIComponent(deliveryId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  correctConversationMessage(conversationId, messageId, request) {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/corrections`, {
       method: "POST",
       body: JSON.stringify(request),
     });
@@ -273,5 +343,12 @@ export const realApi: PonderosaApi = {
         source.close();
       },
     };
+  },
+  subscribeWorkspace(lastSeenId, handlers: WorkspaceStreamHandlers): StreamSubscription {
+    const source = new EventSource(`/api/workspace/stream${toQuery({ lastEventId: lastSeenId })}`);
+    source.onopen = () => handlers.onOpen?.();
+    source.onerror = (event) => handlers.onError?.(event);
+    source.addEventListener("message", (event) => handlers.onEvent(JSON.parse(event.data as string) as WorkspaceEventEnvelope));
+    return { close: () => source.close() };
   },
 };

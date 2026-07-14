@@ -44,9 +44,11 @@ drafting to that running agent. This keeps conversation fluid without removing
 the ability to schedule a follow-up at a safe turn boundary.
 
 Typing/responding indicators and elapsed-time stopwatches reflect canonical
-execution ownership. Drafts, selected chat/detail tabs, and reading position are
-restored across navigation and refresh so inspecting another agent does not
-discard the manager's place.
+execution ownership. One revisioned, server-backed draft belongs to each Project
+chat and is never a sent communication event. Draft conflicts resolve by accepted
+server revision, and a draft clears only after send confirmation. Selected views
+and reading position are restored across navigation and refresh so inspecting
+another agent does not discard the manager's place.
 
 Agent Detail separates durable views of the same execution domain: Chat for
 explicit communication, Work log for ordinary runtime output, Activity for the
@@ -72,11 +74,20 @@ without making runtime residency part of the product's memory model.
 
 ## Projects and agent organization
 
-Selecting an existing working folder when creating a project is optional. A
-manager may choose a registered folder, create a new empty managed folder, or
-accept Ponderosa's managed default. Projects can be renamed or permanently
-deleted; deletion removes Ponderosa-owned chats, agents, executions, artifacts,
-and projections without deleting the selected source folder.
+Projects and their Project chats live in a collapsible, resizable explorer-style
+sidebar rather than top-level tabs. Project sorting is either Last used or
+Alphabetical and is a synced server preference. Selecting a project opens its
+most recently used active Project chat, with deterministic first-chat fallback.
+Sidebar collapse and width are synced preferences as well.
+
+Creating a project requires a label, a validated host working folder, and a
+default subscription-backed engine, and atomically creates an initial “New chat.”
+The host folder picker exposes only explicitly configured browse roots and rejects
+canonical paths or symlinks that escape them; manual entry is validated by the
+same rule. Creating another Project chat is immediate and inherits the project
+engine default, while each send may override engine, model, and effort. Projects
+can be renamed or permanently deleted; deletion removes Ponderosa-owned chats,
+agents, executions, artifacts, and projections without deleting source files.
 
 There is one kind of agent. A subagent is an ordinary agent with a direct manager,
 not a separate delegated runtime or rigid Assignment. It has the same Chat,
@@ -106,6 +117,35 @@ without manufacturing a chat message. Deleting a manager recursively deletes its
 remaining descendants; a user promotes or re-parents any agent they want to keep
 before deletion. Changing the organization never rewrites creator, communication,
 or execution history.
+
+The sidebar includes a compact, collapsible agent hierarchy with live status and
+project running counts; Agent Detail remains the complete management surface.
+Stop All reports partial cancellation failures. Delete All is unavailable until
+every agent is stopped, requires destructive confirmation, and preserves main
+Project-chat history by using canonical deletion semantics.
+
+## Live workspace and notifications
+
+REST remains the mutation protocol and authenticated SSE is the server-to-client
+live protocol. A typed workspace stream complements detailed agent streams and
+carries project/chat mutation signals, communication availability, lifecycle and
+running-count changes, draft revisions, preferences, notifications, and read
+cursors. Workspace event IDs are monotonic and replayable after Last-Event-ID;
+clients deduplicate, detect gaps, refetch affected resources, and reconnect after
+mobile backgrounding without maintaining divergent browser truth.
+
+Workspace/user state is recorded in append-only canonical logs with rebuildable
+projections, separate from per-agent execution logs and canonical Communication.
+SQLite and browser storage remain caches/projections rather than sources of truth.
+
+In-app notifications are durable. Opening a Project chat clears its unread state
+across devices. Notification preferences are synced and cover direct responses,
+Project-chat responses, mentions, all messages, #everyone messages, Broadcasts,
+or none; matching and device delivery are idempotent so one event produces at
+most one notification per device and never notifies its author. Standards-based
+Web Push may deliver while the PWA is closed; permission denial or unsupported
+browsers keep in-app notifications working, and VAPID/private configuration stays
+outside repositories and logs.
 
 ## The communication model
 

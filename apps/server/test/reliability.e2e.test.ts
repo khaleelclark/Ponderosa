@@ -52,11 +52,12 @@ describe("V1 reliability safety net", () => {
       dataDir,
       store,
       engines: [{ adapter, authStatus: async () => ({ authenticated: true }) }],
+      allowedBrowseRoots: [repoDir],
       logger: false,
     });
 
     const project = (await app.inject({
-      method: "POST", url: "/api/projects", payload: { label: "Fixture", hostPath: repoDir },
+      method: "POST", url: "/api/projects", payload: { label: "Fixture", hostPath: repoDir, defaultEngine: "codex" },
     })).json<{ id: string }>();
     const master = (await app.inject({
       method: "POST", url: `/api/projects/${project.id}/conversations`, payload: { title: "Control room", defaultEngine: "codex" },

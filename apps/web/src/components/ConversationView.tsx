@@ -1,9 +1,11 @@
 import AddIcon from "@mui/icons-material/Add";
+import ReplyIcon from "@mui/icons-material/Reply";
+import QuickreplyIcon from "@mui/icons-material/Quickreply";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import TuneIcon from "@mui/icons-material/Tune";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert,
@@ -34,9 +36,10 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, AgentDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { CopyMessageButton } from "./CopyMessageButton";
 import { compactDefined } from "../collections";
 import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
@@ -71,7 +74,6 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
   </Alert>;
 }
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
-import { MessageContextMenu } from "./MessageContextMenu";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 
 export function ConversationMessage({
@@ -84,6 +86,7 @@ export function ConversationMessage({
   onReply,
   onDirectReply,
   onReact,
+  onEdit,
 }: {
   message: ConversationMessageDto;
   conversation: "main" | "collaboration";
@@ -94,6 +97,7 @@ export function ConversationMessage({
   onReply(message: ConversationMessageDto): void;
   onDirectReply(message: ConversationMessageDto): void;
   onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
+  onEdit?: (message: ConversationMessageDto) => void;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
   const showUserLabel = fromManager && message.role === "user";
@@ -112,11 +116,6 @@ export function ConversationMessage({
       sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
     >
       {showUserLabel ? <UserMessageLabel /> : null}
-      <MessageContextMenu
-        text={visibleText}
-        onReply={() => onReply(message)}
-        onOpenAgent={message.authorAgentId ? () => onOpenAgent(message.authorAgentId!) : undefined}
-      >
       <Box
         data-message-bubble="true"
         sx={{
@@ -153,8 +152,11 @@ export function ConversationMessage({
             <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
           </Box>
         ) : null}
-        <ChatMessageBody text={visibleText} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+        <ChatMessageBody text={visibleText} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+        {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
+        {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
+        {message.fileActivity?.length ? <Box component="aside" aria-label="File activity" sx={{ mt: 1, p: .75, borderRadius: 1, bgcolor: "action.hover" }}><Typography variant="caption" sx={{ fontWeight: 700 }}>Files changed</Typography>{message.fileActivity.map((file) => <Stack key={`${file.kind}:${file.path}`} direction="row" spacing={1}><Typography variant="caption" sx={{ flex: 1 }} noWrap>{file.path.split("/").at(-1)}</Typography><Typography variant="caption" color="text.secondary">{file.kind} · {file.status}</Typography></Stack>)}</Box> : null}
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
             {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
@@ -163,23 +165,24 @@ export function ConversationMessage({
           </Box>)}
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
-        <MessageActionsAndTimestamp value={message.createdAt} actions={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: .5 }}>
+        <MessageActionsAndTimestamp value={message.createdAt} actions={<>
           {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
-          <Button size="small" color="inherit" onClick={() => onReply(message)}>Reply</Button>
+          <CopyMessageButton text={visibleText} />
+          <Tooltip title="Reply"><IconButton size="small" color="inherit" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip>
+          {onEdit ? <Tooltip title="Correct latest message"><IconButton size="small" color="inherit" aria-label="Correct latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
           {conversation === "main" && message.authorAgentId ? (
-            <Button
+            <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
               size="small"
               color="inherit"
               aria-label={`Reply directly to ${agentTitle(message.authorAgentId)}`}
               onClick={() => onDirectReply(message)}
               sx={{ minHeight: compactViewport ? 44 : undefined }}
             >
-              Reply Directly
-            </Button>
+              <QuickreplyIcon fontSize="inherit" />
+            </IconButton></Tooltip>
           ) : null}
-        </Stack>} />
+        </>} />
       </Box>
-      </MessageContextMenu>
     </Box>
   );
 }
@@ -206,6 +209,10 @@ export function ConversationView({
   const queryClient = useQueryClient();
   const detailQuery = useConversation(conversationId);
   const collaborationQuery = useCollaborationView(conversationId);
+  const queuedMessagesQuery = useQuery({
+    queryKey: ["queued-messages", conversationId],
+    queryFn: () => api.listQueuedConversationMessages(conversationId),
+  });
   const [activeView, setActiveView] = useState<"main" | "collaboration">(() =>
     readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main",
   );
@@ -219,7 +226,9 @@ export function ConversationView({
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
-  const [runSetupOpen, setRunSetupOpen] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
+  const [correctionText, setCorrectionText] = useState("");
+  const [correctionRequestId, setCorrectionRequestId] = useState("");
   const clearReply = () => {
     if (directReplyRequestId && directReplyTargetId) {
       const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
@@ -358,7 +367,7 @@ export function ConversationView({
   // Persist one canonical user message, then let the server fan it out to the
   // explicitly tagged agents as stable-ID direct deliveries.
   const reply = useMutation({
-    mutationFn: async ({ agentIds, text, files, replyToMessageId, requestId }: { agentIds: string[]; text: string; files: File[]; replyToMessageId?: string; requestId: string }) => {
+    mutationFn: async ({ agentIds, text, files, replyToMessageId, requestId, activeRunDelivery }: { agentIds: string[]; text: string; files: File[]; replyToMessageId?: string; requestId: string; activeRunDelivery: "steer" | "queue" }) => {
       const recipients = await Promise.all(agentIds.map(async (agentId) => {
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agentId, file)));
         return { agentId, attachmentIds: attachments.map((item) => item.id) };
@@ -368,6 +377,7 @@ export function ConversationView({
         recipients,
         replyToMessageId,
         idempotencyKey: requestId,
+        activeRunDelivery,
       });
     },
     onSuccess: (response, variables) => {
@@ -397,7 +407,7 @@ export function ConversationView({
   });
 
   const directReply = useMutation({
-    mutationFn: async ({ targetId, text, files, replyToMessageId, requestId }: { targetId: string; text: string; files: File[]; replyToMessageId: string; requestId: string }) => {
+    mutationFn: async ({ targetId, text, files, replyToMessageId, requestId, activeRunDelivery }: { targetId: string; text: string; files: File[]; replyToMessageId: string; requestId: string; activeRunDelivery: "steer" | "queue" }) => {
       let attachments = directReplyUploads.current.get(requestId);
       if (!attachments) {
         attachments = await uploadDirectReplyFiles(
@@ -413,6 +423,7 @@ export function ConversationView({
         targetAuthorAgentId: targetId,
         attachmentIds: attachments.map((item) => item.id),
         idempotencyKey: requestId,
+        activeRunDelivery,
       });
     },
     onSuccess: (response, variables) => {
@@ -434,6 +445,28 @@ export function ConversationView({
     },
   });
 
+  const cancelQueued = useMutation({
+    mutationFn: (deliveryId: string) => api.cancelQueuedConversationMessage(conversationId, deliveryId, {
+      idempotencyKey: correctionRequestId,
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] });
+    },
+  });
+  const correctMessage = useMutation({
+    mutationFn: (message: ConversationMessageDto) => api.correctConversationMessage(conversationId, message.id, {
+      text: correctionText.trim(),
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      activeRunDelivery: "steer",
+    }),
+    onSuccess: () => {
+      setEditingMessage(undefined);
+      setCorrectionText("");
+      setCorrectionRequestId("");
+      invalidate();
+    },
+  });
+
   const collaborate = useMutation({
     mutationFn: ({ text, recipientAgentIds, replyToMessageId }: { text: string; recipientAgentIds: string[]; replyToMessageId?: string }) =>
       api.sendCollaborationMessage(conversationId, { text, recipientAgentIds, replyToMessageId }),
@@ -451,6 +484,21 @@ export function ConversationView({
       setRenameOpen(false);
     },
   });
+  const titleGenerationRequested = useRef<string>();
+  const generateTitle = useMutation({
+    mutationFn: () => api.generateConversationTitle(conversationId),
+    onSuccess: (result) => {
+      if (result.generated) invalidate();
+    },
+  });
+  useEffect(() => {
+    if (conversation?.title !== "New chat" || titleGenerationRequested.current === conversationId) return;
+    const hasOperatorMessage = messages.some((message) => message.role === "user");
+    const hasAgentMessage = messages.some((message) => message.role === "assistant");
+    if (!hasOperatorMessage || !hasAgentMessage) return;
+    titleGenerationRequested.current = conversationId;
+    generateTitle.mutate();
+  }, [conversation?.title, conversationId, generateTitle, messages]);
 
   const deleteConversation = useMutation({
     mutationFn: () => api.deleteConversation(conversationId),
@@ -542,7 +590,7 @@ export function ConversationView({
     .map((agent) => agentMentionHandle(agent.title));
   const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
 
-  const submit = async (text: string, files: File[]) => {
+  const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer") => {
     if (activeView === "collaboration") {
       if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
       const activeAgents = agents.filter((agent) => !agent.archived);
@@ -578,6 +626,7 @@ export function ConversationView({
         files,
         replyToMessageId: replyTo.id,
         requestId: directReplyRequestId,
+        activeRunDelivery,
       });
       return;
     }
@@ -588,11 +637,59 @@ export function ConversationView({
         files,
         replyToMessageId: replyTo?.id,
         requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        activeRunDelivery,
       });
     } else {
       await spawn.mutateAsync({ text, files });
     }
   };
+
+  const runtimeControls = activeView === "main" ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: "max-content" }}>
+    <FormControl size="small" variant="standard" sx={{ minWidth: 105 }}>
+      <InputLabel id="composer-engine-label">Engine</InputLabel>
+      <Select
+        labelId="composer-engine-label"
+        aria-label="Engine"
+        value={engines.some((option) => option.id === engine) ? engine : ""}
+        onChange={(event: SelectChangeEvent) => {
+          const next = event.target.value;
+          setEngine(next); setModel(""); setEffort("");
+          persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: null, defaultEffort: null });
+        }}
+      >
+        {engines.map((option) => <MenuItem key={option.id} value={option.id} disabled={!option.authenticated}>{option.displayName}{option.authenticated ? "" : " — signed out"}</MenuItem>)}
+      </Select>
+    </FormControl>
+    {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: 115 }}>
+      <InputLabel id="composer-model-label">Model</InputLabel>
+      <Select
+        labelId="composer-model-label"
+        aria-label="Model"
+        value={models.some((option) => option.id === model) ? model : ""}
+        onChange={(event: SelectChangeEvent) => {
+          const next = event.target.value;
+          const effortRemainsValid = effortSelectionIsCompatible(activeEngine, next, effort);
+          setModel(next); if (!effortRemainsValid) setEffort("");
+          persistDefaults.mutate({ defaultModel: next || null, ...(!effortRemainsValid ? { defaultEffort: null } : {}) });
+        }}
+      >
+        <MenuItem value="">Default</MenuItem>
+        {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+      </Select>
+    </FormControl> : null}
+    {efforts.length ? <FormControl size="small" variant="standard" sx={{ minWidth: 90 }}>
+      <InputLabel id="composer-effort-label">Effort</InputLabel>
+      <Select
+        labelId="composer-effort-label"
+        aria-label="Effort"
+        value={efforts.some((option) => option.id === effort) ? effort : ""}
+        onChange={(event: SelectChangeEvent) => { const next = event.target.value; setEffort(next); persistDefaults.mutate({ defaultEffort: next || null }); }}
+      >
+        <MenuItem value="">Default</MenuItem>
+        {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+      </Select>
+    </FormControl> : null}
+  </Stack> : null;
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
@@ -663,100 +760,6 @@ export function ConversationView({
           >
             <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New</Box>{" "}Agent
           </Button>
-          <Button
-            variant={runSetupOpen ? "contained" : "outlined"}
-            size="small"
-            startIcon={<TuneIcon />}
-            onClick={() => setRunSetupOpen((open) => !open)}
-            aria-expanded={runSetupOpen}
-            aria-controls="master-run-setup"
-            sx={{ display: compactViewport ? "inline-flex" : "none", minHeight: 44 }}
-          >
-            Setup
-          </Button>
-        </Stack>
-
-        <Stack
-          id="master-run-setup"
-          direction={{ xs: "column", sm: "row" }}
-          spacing={1}
-          sx={{ mt: 1, display: compactViewport && !runSetupOpen ? "none" : "flex" }}
-        >
-          <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 190 } }}>
-            <InputLabel id="master-engine-label">Engine</InputLabel>
-            <Select
-              labelId="master-engine-label"
-              label="Engine"
-              value={engines.some((o) => o.id === engine) ? engine : ""}
-              onChange={(event: SelectChangeEvent) => {
-                const next = event.target.value;
-                setEngine(next);
-                setModel("");
-                setEffort("");
-                persistDefaults.mutate({
-                  defaultEngine: next as EngineDto["id"],
-                  defaultModel: null,
-                  defaultEffort: null,
-                });
-              }}
-            >
-              {engines.map((option) => (
-                <MenuItem key={option.id} value={option.id} disabled={!option.authenticated}>
-                  {option.displayName}
-                  {option.authenticated ? "" : " — not signed in"}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          {models.length > 0 ? (
-            <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 170 } }}>
-              <InputLabel id="master-model-label">Model</InputLabel>
-              <Select
-                labelId="master-model-label"
-                label="Model"
-                value={models.some((o) => o.id === model) ? model : ""}
-                onChange={(event: SelectChangeEvent) => {
-                  const next = event.target.value;
-                  const effortRemainsValid = effortSelectionIsCompatible(activeEngine, next, effort);
-                  setModel(next);
-                  if (!effortRemainsValid) setEffort("");
-                  persistDefaults.mutate({
-                    defaultModel: next || null,
-                    ...(!effortRemainsValid ? { defaultEffort: null } : {}),
-                  });
-                }}
-              >
-                <MenuItem value="">Engine default</MenuItem>
-                {models.map((option) => (
-                  <MenuItem key={option.id} value={option.id}>
-                    {option.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          ) : null}
-          {efforts.length > 0 ? (
-            <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 150 } }}>
-              <InputLabel id="master-effort-label">Effort</InputLabel>
-              <Select
-                labelId="master-effort-label"
-                label="Effort"
-                value={efforts.some((o) => o.id === effort) ? effort : ""}
-                onChange={(event: SelectChangeEvent) => {
-                  const next = event.target.value;
-                  setEffort(next);
-                  persistDefaults.mutate({ defaultEffort: next || null });
-                }}
-              >
-                <MenuItem value="">Engine default</MenuItem>
-                {efforts.map((option) => (
-                  <MenuItem key={option.id} value={option.id}>
-                    {option.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          ) : null}
         </Stack>
       </Box>
 
@@ -788,6 +791,26 @@ export function ConversationView({
             </Alert>
           ) : null}
           {activeView === "main" ? <MasterRespondingIndicator agents={agents} healthByAgentId={healthByAgentId} /> : null}
+          {activeView === "main" && (queuedMessagesQuery.data?.length ?? 0) > 0 ? (
+            <Stack spacing={0.75} sx={{ mb: 1.5 }} aria-label="Queued project messages">
+              {queuedMessagesQuery.data!.map((queued) => (
+                <Box key={queued.deliveryId} sx={{ display: "flex", alignItems: "center", gap: 1, p: 1, border: 1, borderColor: "warning.light", bgcolor: "warning.50", borderRadius: 1.5 }}>
+                  <Chip size="small" color="warning" label={`Queued · ${queued.position}`} />
+                  <Typography variant="body2" noWrap sx={{ minWidth: 0, flex: 1 }}>
+                    {agentTitle(queued.targetAgentId)}: {queued.text}
+                  </Typography>
+                  <Tooltip title="Cancel queued message">
+                    <span><IconButton
+                      size="small"
+                      aria-label={`Cancel queued message for ${agentTitle(queued.targetAgentId)}`}
+                      disabled={cancelQueued.isPending}
+                      onClick={() => cancelQueued.mutate(queued.deliveryId)}
+                    ><DeleteOutlineIcon fontSize="small" /></IconButton></span>
+                  </Tooltip>
+                </Box>
+              ))}
+            </Stack>
+          ) : null}
 
           <Stack spacing={1.25} sx={{ mb: 2 }}>
             {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
@@ -821,6 +844,9 @@ export function ConversationView({
                   emoji,
                   requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
                 }).then(() => undefined)}
+                onEdit={activeView === "main" && message.id === messages.filter((candidate) => candidate.role === "user" && !candidate.authorAgentId).at(-1)?.id && !message.correctedByMessageId
+                  ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); setCorrectionRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`); }
+                  : undefined}
               />
             ))}
           </Stack>
@@ -931,6 +957,8 @@ export function ConversationView({
         ) : null}
         <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
+          conversationDraftId={activeView === "main" ? conversationId : undefined}
+          controls={runtimeControls}
           disabled={busy}
           running={false}
           mentionHandles={mentionHandles}
@@ -945,6 +973,8 @@ export function ConversationView({
                 : "#tag an agent or use #broadcast for shared context"
           }
           onSend={submit}
+          onQueue={(text, files) => submit(text, files, "queue")}
+          agentResponding={Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
           projectId={conversation.projectId}
@@ -977,6 +1007,16 @@ export function ConversationView({
             Save
           </Button>
         </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(editingMessage)} onClose={() => !correctMessage.isPending && setEditingMessage(undefined)} fullWidth maxWidth="sm">
+        <DialogTitle>Correct latest message</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>The original remains immutable. Saving appends a linked correction and starts exactly one follow-up turn; earlier side effects are not undone.</Alert>
+          <TextField autoFocus fullWidth multiline minRows={3} label="Correction" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} />
+          {correctMessage.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(correctMessage.error)}</Alert> : null}
+        </DialogContent>
+        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save correction</Button></DialogActions>
       </Dialog>
 
       <Dialog

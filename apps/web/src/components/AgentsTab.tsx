@@ -64,6 +64,10 @@ export function AgentsTab({
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
+  const [bulkError, setBulkError] = useState<string>();
+  const [stoppingAll, setStoppingAll] = useState(false);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
+  const [deleteAllConfirmation, setDeleteAllConfirmation] = useState("");
 
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteAgent(agentId),
@@ -113,6 +117,25 @@ export function AgentsTab({
     },
     { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
+  const activeAgentIds = agents.filter((agent) => ["running", "compacting", "waiting"].includes(statusByAgentId.get(agent.id) ?? "idle")).map((agent) => agent.id);
+  const stopAll = async () => {
+    setStoppingAll(true); setBulkError(undefined);
+    const results = await Promise.allSettled(activeAgentIds.map((id) => api.cancelRun(id)));
+    const failed = results.filter((item) => item.status === "rejected").length;
+    if (failed) setBulkError(`${activeAgentIds.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);
+    await queryClient.invalidateQueries({ queryKey: ["agents"] });
+    setStoppingAll(false);
+  };
+  const deleteAll = async () => {
+    setBulkError(undefined);
+    const roots = agents.filter((agent) => !agent.managerAgentId || !agents.some((candidate) => candidate.id === agent.managerAgentId));
+    const results = await Promise.allSettled(roots.map((agent) => api.deleteAgent(agent.id)));
+    const failed = results.filter((item) => item.status === "rejected").length;
+    if (failed) setBulkError(`${roots.length - failed} agent trees deleted; ${failed} failed. Project-chat history was preserved.`);
+    setDeleteAllOpen(false); setDeleteAllConfirmation("");
+    await queryClient.invalidateQueries({ queryKey: ["agents"] });
+    await queryClient.invalidateQueries({ queryKey: ["conversation"] });
+  };
 
   return (
     <Box data-testid="agent-roster" sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
@@ -124,10 +147,13 @@ export function AgentsTab({
         <Typography variant="h6" sx={{ flex: 1 }}>
           Agents
         </Typography>
+        <Button variant="outlined" size="small" disabled={activeAgentIds.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop all</Button>
+        <Button color="error" variant="outlined" size="small" disabled={agents.length === 0 || activeAgentIds.length > 0} onClick={() => setDeleteAllOpen(true)}>Delete all</Button>
         <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
         </Button>
       </Stack>
+      {bulkError ? <Alert severity="warning" sx={{ mx: 2, mt: 1 }}>{bulkError}</Alert> : null}
 
       <Stack
         direction={{ xs: "column", sm: "row" }}
@@ -345,6 +371,11 @@ export function AgentsTab({
             Delete
           </Button>
         </DialogActions>
+      </Dialog>
+      <Dialog open={deleteAllOpen} onClose={() => setDeleteAllOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Delete every agent?</DialogTitle>
+        <DialogContent><Alert severity="error" sx={{ mb: 2 }}>This permanently deletes all agent identities, runs, work logs, and artifacts. Main Project-chat history remains intact. This action is available only after every agent is stopped.</Alert><TextField fullWidth label="Type DELETE ALL" value={deleteAllConfirmation} onChange={(event) => setDeleteAllConfirmation(event.target.value)} /></DialogContent>
+        <DialogActions><Button onClick={() => setDeleteAllOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteAllConfirmation !== "DELETE ALL" || activeAgentIds.length > 0} onClick={() => void deleteAll()}>Delete all agents</Button></DialogActions>
       </Dialog>
     </Box>
   );

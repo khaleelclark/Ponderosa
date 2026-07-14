@@ -60,6 +60,7 @@ export default defineConfig({
         workboxOptions: {
           cleanupOutdatedCaches: true,
           navigateFallback: "/index.html",
+          importScripts: ["/push-handler.js"],
           runtimeCaching: [],
         },
       },
