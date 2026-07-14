@@ -23,6 +23,6 @@ export function CopyMessageButton({ text }: { text: string }): JSX.Element {
         {state === "copied" ? <CheckIcon fontSize="inherit" /> : state === "failed" ? <ErrorOutlineIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
       </IconButton>
     </Tooltip>
-    <Box component="span" aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>{state === "idle" ? "" : label}</Box>
+    <Box component="span" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{state === "idle" ? "" : label}</Box>
   </>;
 }
