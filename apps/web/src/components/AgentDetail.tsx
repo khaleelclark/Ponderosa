@@ -51,6 +51,7 @@ import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
+import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 import { TokenUsageButton } from "./TokenUsageButton";
 
@@ -179,15 +180,31 @@ export function AgentDetail({
     ...(engineCapability?.commands ?? []),
   ];
 
+  const latestRun = detail?.runs.at(-1);
+  const persistedModel = detail
+    ? latestRun ? latestRun.model ?? "" : detail.agent.model ?? ""
+    : "";
+  const persistedEffort = detail
+    ? latestRun ? latestRun.effort ?? "" : detail.agent.effort ?? ""
+    : "";
+
+  useEffect(() => {
+    setModel(persistedModel);
+    setEffort(persistedEffort);
+  }, [agentId, persistedModel, persistedEffort]);
+
   useEffect(() => {
     if (!engine) {
       setModel("");
       setEffort("");
       return;
     }
-    setModel((current) => (current === "" || engine.models.some((o) => o.id === current) ? current : ""));
-    setEffort((current) => (current === "" || engine.efforts.some((o) => o.id === current) ? current : ""));
-  }, [engine]);
+    if (engine.modelCatalogKnown === false) return;
+    setModel((current) => (modelSelectionIsCompatible(engine, current) ? current : ""));
+    setEffort((current) => (
+      effortSelectionIsCompatible(engine, model, current) ? current : ""
+    ));
+  }, [engine, model]);
 
   const runtimeActivity = projectedHealth?.runtimeActivity;
   const running = Boolean(runtimeActivity) || sendMessage.isPending;
@@ -298,8 +315,14 @@ export function AgentDetail({
     );
   }
 
-  const models = engine?.models ?? [];
-  const efforts = engine?.efforts ?? [];
+  const advertisedModels = engine?.models.filter((option) => option.id) ?? [];
+  const models = engine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
+    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
+    : advertisedModels;
+  const advertisedEfforts = effortOptionsForModel(engine, model);
+  const efforts = effort && effortSelectionIsCompatible(engine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
+    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
+    : advertisedEfforts;
   const master = detail.agent.conversationId
     ? conversations.find((candidate) => candidate.id === detail.agent.conversationId)
     : undefined;
@@ -322,8 +345,8 @@ export function AgentDetail({
             {
               text,
               attachmentIds: attachments.map((item) => item.id),
-              model: model || undefined,
-              effort: effort || undefined,
+              model,
+              effort: effortSelectionIsCompatible(engine, model, effort) ? effort : "",
               replyToMessageId: replyTo?.id,
               activeRunDelivery,
             },
@@ -510,7 +533,11 @@ export function AgentDetail({
               labelId="agent-detail-model-label"
               value={models.some((o) => o.id === model) ? model : ""}
               label="Model"
-              onChange={(event: SelectChangeEvent) => setModel(event.target.value)}
+              onChange={(event: SelectChangeEvent) => {
+                const nextModel = event.target.value;
+                setModel(nextModel);
+                if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
+              }}
             >
               <MenuItem value="">Engine default</MenuItem>
               {models.map((option) => (

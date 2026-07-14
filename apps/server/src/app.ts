@@ -439,11 +439,42 @@ function agentMessagingPrompt(): string[] {
     "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
     "After asking another agent to work, register a durable wait when your next action depends on one or more reports, then end your turn. Do not poll, sleep, or remain active. Agents run independently and return results through Collaboration.",
     "The wait tool is ponderosa_wait_for_reports in Codex and mcp__ponderosa__wait_for_reports in Claude. Supply stable expectedAgentIds and mode all, any, or quorum. Matching reports persist without waking you until the condition is satisfied; a user message or managed-agent failure wakes you immediately.",
+    "Registering a wait is execution control, not a communication event. Do not Direct Message or Broadcast merely to announce that you registered a wait or are waiting.",
+    "Never include your own stable agent ID in Collaboration recipients. After a wait completes, deliver the synthesis to the original requester or accountable consumer; keep an internal-only note in Work log.",
     "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
     "Your direct reports are ordinary agents with their own chat, activity, files, and execution audit. Coordinate with them and any other relevant agent using stable IDs from the directory.",
     "Accumulate results across notification turns and deliver one integrated result to the requester or accountable outcome owner once the expected work has reported.",
     'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
   ];
+}
+
+function runtimeSelectionError(adapter: Adapter, model?: string, effort?: string): string | undefined {
+  const selectedModel = model?.trim() || undefined;
+  const selectedEffort = effort?.trim() || undefined;
+  const models = adapter.listModels();
+  const concreteModels = models.filter((option) => option.id);
+  const matchedModel = selectedModel ? concreteModels.find((option) => option.id === selectedModel) : undefined;
+  // A missing/unreadable provider cache is unknown availability, not evidence
+  // that an already-configured model disappeared.
+  if (selectedModel && concreteModels.length > 0 && !matchedModel) return "model is not available for engine";
+  const knownEfforts = selectedModel
+    ? matchedModel?.efforts ?? (adapter.modelSpecificEfforts ? undefined : adapter.listEfforts(selectedModel))
+    : adapter.listEfforts();
+  if (selectedEffort && knownEfforts && !knownEfforts.some((option) => option.id === selectedEffort)) {
+    return selectedModel ? "effort is not available for model" : "effort is not available for engine";
+  }
+}
+
+function normalizedRuntimeSelection(adapter: Adapter, model?: string, effort?: string): { model?: string; effort?: string } {
+  const selectedModel = model?.trim() || undefined;
+  const selectedEffort = effort?.trim() || undefined;
+  const modelIsStale = selectedModel && runtimeSelectionError(adapter, selectedModel, undefined)?.startsWith("model ");
+  const normalizedModel = modelIsStale ? undefined : selectedModel;
+  const effortIsStale = selectedEffort && runtimeSelectionError(adapter, normalizedModel, selectedEffort)?.startsWith("effort ");
+  return {
+    ...(normalizedModel ? { model: normalizedModel } : {}),
+    ...(selectedEffort && !effortIsStale ? { effort: selectedEffort } : {}),
+  };
 }
 
 function sharedRequestCompletionPrompt(): string {
@@ -2159,18 +2190,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const configuredRuntime = engines.get(runtime);
       if (!configuredRuntime) return reply.code(400).send({ error: "runtime is not configured" });
       const parentRuns = store.getRuns(parent.id);
-      const latestParentRun = [...parentRuns].reverse().find((run) => run.engine === runtime && (run.model || run.effort));
+      const latestParentRun = [...parentRuns].reverse().find((run) => run.engine === runtime);
       const inheritParentSelection = runtime === parent.activeEngine;
       const requestedModel = input.model?.trim() || undefined;
       const requestedEffort = input.effort?.trim() || undefined;
-      const model = preset?.model ?? requestedModel ?? (inheritParentSelection ? parent.model ?? latestParentRun?.model ?? parent.presetSnapshot?.model : undefined);
-      const effort = preset?.effort ?? requestedEffort ?? (inheritParentSelection ? parent.effort ?? latestParentRun?.effort ?? parent.presetSnapshot?.effort : undefined);
-      if (model && !configuredRuntime.adapter.listModels().some((option) => option.id === model)) {
-        return reply.code(400).send({ error: "model is not available for runtime" });
+      const inherited = inheritParentSelection
+        ? normalizedRuntimeSelection(
+            configuredRuntime.adapter,
+            latestParentRun ? latestParentRun.model : parent.model ?? parent.presetSnapshot?.model,
+            latestParentRun ? latestParentRun.effort : parent.effort ?? parent.presetSnapshot?.effort,
+          )
+        : {};
+      const hasModelOverride = preset?.model !== undefined || input.model !== undefined;
+      const modelOverride = preset?.model ?? requestedModel;
+      if (hasModelOverride) {
+        const modelError = runtimeSelectionError(configuredRuntime.adapter, modelOverride, undefined);
+        if (modelError) return reply.code(400).send({ error: modelError });
       }
-      if (effort && !configuredRuntime.adapter.listEfforts().some((option) => option.id === effort)) {
-        return reply.code(400).send({ error: "effort is not available for runtime" });
+      const model = hasModelOverride ? modelOverride : inherited.model;
+      const hasEffortOverride = preset?.effort !== undefined || input.effort !== undefined;
+      const effortOverride = preset?.effort ?? requestedEffort;
+      if (hasEffortOverride) {
+        const effortError = runtimeSelectionError(configuredRuntime.adapter, model, effortOverride);
+        if (effortError) return reply.code(400).send({ error: effortError });
       }
+      const effort = hasEffortOverride ? effortOverride : hasModelOverride ? undefined : inherited.effort;
 
       const replay = store.findAgentSpawn(parent.id, capability.runId, idempotencyKey);
       if (replay) {
@@ -2447,6 +2491,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
+    if (!request.body.defaultEngine && (request.body.defaultModel || request.body.defaultEffort)) {
+      return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
+    }
+    if (request.body.defaultEngine) {
+      const selectionError = runtimeSelectionError(
+        engines.get(request.body.defaultEngine)!.adapter,
+        request.body.defaultModel,
+        request.body.defaultEffort,
+      );
+      if (selectionError) return reply.code(400).send({ error: selectionError });
+    }
     return store.createConversation(request.params.id, request.body);
   });
 
@@ -2472,11 +2527,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       archived?: boolean;
     };
   }>("/api/conversations/:id", async (request, reply) => {
+    const current = store.getConversation(request.params.id);
+    if (!current) return reply.code(404).send({ error: "conversation not found" });
     if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
+    const defaultEngine = request.body.defaultEngine === null ? undefined : request.body.defaultEngine ?? current.defaultEngine;
+    const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? current.defaultModel;
+    const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? current.defaultEffort;
+    if (!defaultEngine && (defaultModel || defaultEffort)) {
+      return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
+    }
+    if (defaultEngine) {
+      const configuredDefaultEngine = engines.get(defaultEngine);
+      if (!configuredDefaultEngine) return reply.code(400).send({ error: "unknown engine" });
+      const selectionError = runtimeSelectionError(configuredDefaultEngine.adapter, defaultModel, defaultEffort);
+      if (selectionError) return reply.code(400).send({ error: selectionError });
+    }
     const conversation = store.updateConversation(request.params.id, request.body ?? {});
-    return conversation ?? reply.code(404).send({ error: "conversation not found" });
+    return conversation;
   });
 
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
@@ -2974,8 +3043,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (input.guidance !== undefined && (input.guidance.trim().length < 10 || input.guidance.trim().length > 8000)) return "guidance must be 10-8000 characters";
     if (input.engine) {
       const configured = engines.get(input.engine); if (!configured) return "unknown engine";
-      if (input.model && !configured.adapter.listModels().some((x) => x.id === input.model)) return "model is not available for engine";
-      if (input.effort && !configured.adapter.listEfforts().some((x) => x.id === input.effort)) return "effort is not available for engine";
+      return runtimeSelectionError(configured.adapter, input.model ?? undefined, input.effort ?? undefined);
     }
   };
   app.get<{ Params: { id: string } }>("/api/projects/:id/agent-presets", async (request, reply) => store.getProject(request.params.id) ? store.listAgentPresets(request.params.id) : reply.code(404).send({ error: "project not found" }));
@@ -3009,6 +3077,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         request.body.engine = preset.engine; request.body.model = preset.model; request.body.effort = preset.effort;
       }
       if (!engines.has(request.body.engine)) return reply.code(400).send({ error: "unknown engine" });
+      const selectionError = runtimeSelectionError(engines.get(request.body.engine)!.adapter, request.body.model, request.body.effort);
+      if (selectionError) return reply.code(400).send({ error: selectionError });
       if (request.body.managerAgentId) {
         const manager = store.getAgent(request.body.managerAgentId);
         if (!manager || manager.projectId !== request.params.id || manager.archived) {
@@ -3323,6 +3393,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
+      const priorRuns = store.getRuns(agent.id);
+      const latestRun = priorRuns.at(-1);
+      const recovered = normalizedRuntimeSelection(
+        engine.adapter,
+        latestRun ? latestRun.model : agent.model ?? agent.presetSnapshot?.model,
+        latestRun ? latestRun.effort : agent.effort ?? agent.presetSnapshot?.effort,
+      );
+      const hasModelOverride = request.body.model !== undefined;
+      const requestedModel = request.body.model?.trim() || undefined;
+      if (hasModelOverride) {
+        const modelError = runtimeSelectionError(engine.adapter, requestedModel, undefined);
+        if (modelError) return reply.code(400).send({ error: modelError });
+      }
+      const effectiveModel = hasModelOverride ? requestedModel : recovered.model;
+      const hasEffortOverride = request.body.effort !== undefined;
+      const requestedEffort = request.body.effort?.trim() || undefined;
+      if (hasEffortOverride) {
+        const effortError = runtimeSelectionError(engine.adapter, effectiveModel, requestedEffort);
+        if (effortError) return reply.code(400).send({ error: effortError });
+      }
+      const effectiveEffort = hasEffortOverride
+        ? requestedEffort
+        : hasModelOverride
+          ? undefined
+          : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
       const attachmentIds = request.body?.attachmentIds ?? [];
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
       const attached = (await Promise.all(attachmentIds.map((id) => assetMetadata(agent.id, id))));
@@ -3583,10 +3678,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // identity", not "forget how this run should be attributed". Recover the
       // latest explicit selection so collaboration wake-ups and restarts remain
       // priceable even though they do not repeat UI controls in every delivery.
-      const priorRuns = store.getRuns(agent.id);
-      const effectiveModel = request.body.model ?? [...priorRuns].reverse().find((run) => run.model)?.model ?? agent.model ?? agent.presetSnapshot?.model;
-      const effectiveEffort = request.body.effort ?? [...priorRuns].reverse().find((run) => run.effort)?.effort ?? agent.effort ?? agent.presetSnapshot?.effort;
-
       // Project-chat turns receive the user-facing conversation. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
       // particular linked agent.
@@ -4282,11 +4373,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             detail: err instanceof Error ? err.message : "auth status check failed",
           };
         }
+        const models = adapter.listModels();
         return {
           id: adapter.id,
           displayName: adapter.displayName,
-          models: adapter.listModels(),
+          models: models.map((model) => ({
+            ...model,
+            ...(model.efforts !== undefined
+              ? { efforts: model.efforts }
+              : !adapter.modelSpecificEfforts || !model.id
+                ? { efforts: adapter.listEfforts(model.id || undefined) }
+                : {}),
+          })),
           efforts: adapter.listEfforts(),
+          modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
           authenticated: status.authenticated,
           authDetail: status.detail,
         };

@@ -247,7 +247,10 @@ describe("CodexAdapter surface", () => {
     const cachePath = join(tempDir, "models-cache.json");
     writeFileSync(cachePath, JSON.stringify({
       models: [
-        { slug: "gpt-new", display_name: "GPT New", visibility: "list" },
+        {
+          slug: "gpt-new", display_name: "GPT New", visibility: "list", default_reasoning_level: "medium",
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "xhigh" }],
+        },
         { slug: "gpt-hidden", display_name: "Internal", visibility: "hide" },
         { slug: "gpt-new", display_name: "Duplicate", visibility: "list" },
         { slug: "gpt-fallback-label", visibility: "list" },
@@ -256,9 +259,41 @@ describe("CodexAdapter surface", () => {
 
     expect(readCodexModels(cachePath)).toEqual([
       { id: "", label: "Codex default" },
-      { id: "gpt-new", label: "GPT New" },
+      {
+        id: "gpt-new", label: "GPT New", defaultEffort: "medium",
+        efforts: [{ id: "low", label: "Low" }, { id: "medium", label: "Medium" }, { id: "xhigh", label: "Extra high" }],
+      },
       { id: "gpt-fallback-label", label: "gpt-fallback-label" },
     ]);
+    rmSync(tempDir, { recursive: true });
+  });
+
+  it("uses the authenticated model cache for model-specific efforts", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "ponderosa-codex-efforts-"));
+    const cachePath = join(tempDir, "models-cache.json");
+    writeFileSync(cachePath, JSON.stringify({ models: [
+      { slug: "luna", display_name: "Luna", visibility: "list", supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }] },
+      { slug: "sol", display_name: "Sol", visibility: "list", supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }, { effort: "ultra" }] },
+    ] }));
+    const adapter = new CodexAdapter({ modelsCachePath: cachePath });
+
+    expect(adapter.listEfforts("luna").map((option) => option.id)).toEqual(["low", "high"]);
+    expect(adapter.listEfforts("sol").map((option) => option.id)).toEqual(["low", "max", "ultra"]);
+    expect(adapter.listEfforts().map((option) => option.id)).toEqual(["low"]);
+    expect(adapter.listEfforts("luna").map((option) => option.id)).not.toContain("minimal");
+    rmSync(tempDir, { recursive: true });
+  });
+
+  it("preserves an explicitly empty provider effort roster", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "ponderosa-codex-empty-efforts-"));
+    const cachePath = join(tempDir, "models-cache.json");
+    writeFileSync(cachePath, JSON.stringify({ models: [
+      { slug: "fixed", display_name: "Fixed", visibility: "list", supported_reasoning_levels: [] },
+    ] }));
+    const adapter = new CodexAdapter({ modelsCachePath: cachePath });
+    expect(adapter.listModels()).toContainEqual(expect.objectContaining({ id: "fixed", efforts: [] }));
+    expect(adapter.listEfforts("fixed")).toEqual([]);
+    expect(adapter.listEfforts()).toEqual([]);
     rmSync(tempDir, { recursive: true });
   });
 

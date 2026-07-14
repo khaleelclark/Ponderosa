@@ -690,6 +690,8 @@ export interface EngineDto {
   displayName: string;
   models: ModelOption[];
   efforts: EffortOption[];
+  /** False when provider model metadata is temporarily unavailable. */
+  modelCatalogKnown?: boolean;
   authenticated: boolean;
   authDetail?: string;
 }
