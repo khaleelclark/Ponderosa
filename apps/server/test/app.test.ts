@@ -1400,6 +1400,16 @@ describe("server chunk F", () => {
       content: "diff --git a/a.ts b/a.ts\n",
       contentType: "diff",
     });
+
+    store.createAgent(agent.projectId, { title: "New Specialist", engine: "codex" });
+    await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "third" },
+    });
+    await waitForRun(agent.id, 3);
+    expect(adapter.continues[1]?.prompt).toContain("Current Team Directory");
+    expect(adapter.continues[1]?.prompt).toContain("New Specialist");
     await app.close();
   });
 
@@ -1423,6 +1433,8 @@ describe("server chunk F", () => {
 
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
+    expect(adapter.seeds[1]?.prompt).toContain("Current Team Directory");
     expect(adapter.seeds[1]?.history.map((message) => message.text)).toContain("first");
     expect(store.readEvents(agent.id).filter((item) => item.event.type === "session_reset"))
       .toHaveLength(1);

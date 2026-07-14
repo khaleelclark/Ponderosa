@@ -16,7 +16,7 @@ This PR implements that contract for the usage Ponderosa currently receives. The
 
 ## Safe savings implemented now
 
-A resumed provider session already contains its original static organization envelope. Ponderosa therefore sends the full team directory and managed-agent creation instructions only when seeding a new provider session. Continuation turns still receive authoritative runtime identity, current manager relationship, new room context, the current request, and the required communication contract.
+A retained provider session already contains its organization envelope. Ponderosa therefore omits the full team directory and managed-agent creation instructions while the stable roster, roles, and reporting graph remain unchanged. New, restarted, evicted, rolled-over, or organization-changed sessions receive the complete envelope. Continuation turns still receive authoritative runtime identity, current manager relationship, a pointer to the live directory, new room context, the current request, and the required communication contract.
 
 This reduces repeated input as the organization grows without changing delivery behavior or relying on rendered text heuristics.
 

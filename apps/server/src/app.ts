@@ -943,6 +943,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   };
   const activeRuns = new Map<string, ActiveRun>();
   const runtimeSessions = new Map<string, PersistentRuntime>();
+  const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
   const userReactions = new UserReactionStore(opts.dataDir);
   const runLedger = new RunLedger(opts.dataDir);
@@ -3581,13 +3582,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const completionContract = sharedTaskTurn
         ? sharedRequestCompletionPrompt()
         : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
-      // The provider session already retains the static directory and spawn
-      // contract. Repeating them on every continuation scales prompt input with
-      // team size and weakens cache locality. A fresh/rolled-over session gets
-      // the complete envelope; every turn still gets authoritative identity,
-      // current manager state, request context, and its completion contract.
-      const sessionEnvelope = resumeSessionId ? "" : `${teamDirectoryPrompt(directoryForTurn)}\n\n${agentSpawnPrompt().join("\n")}\n\n`;
-      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${managerRelationshipPrompt(agent).join("\n")}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const stableDirectory = directoryForTurn.agents.map(({ status: _status, currentActivity: _activity, ...entry }) => entry);
+      const organizationEnvelopeHash = createHash("sha256").update(JSON.stringify(stableDirectory)).digest("hex");
+      const previousOrganizationEnvelope = organizationEnvelopeStates.get(agent.id);
+      const fullSessionEnvelope = `${teamDirectoryPrompt(directoryForTurn)}\n\n${agentSpawnPrompt().join("\n")}\n\n`;
+      // A retained provider session already has this stable organization
+      // envelope. Repeat it only for a new/rolled-over session, after a server
+      // restart or warm eviction, or when roster/roles/reporting lines changed.
+      // Live status remains available through PONDEROSA_AGENT_DIRECTORY_URL.
+      const sessionEnvelope = resumeSessionId && previousOrganizationEnvelope?.sessionId === resumeSessionId &&
+        previousOrganizationEnvelope.hash === organizationEnvelopeHash ? "" : fullSessionEnvelope;
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\nThe live team directory and current activity are available from PONDEROSA_AGENT_DIRECTORY_URL when routing or discovery requires them.${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
+      // A resume-time compaction fallback seeds a genuinely fresh provider
+      // session and therefore must restore the envelope even if the first
+      // attempt expected the old thread to retain it.
+      const freshPrompt = sessionEnvelope ? prompt : `${runtimeIdentityPrompt(agent, runId)}\n\n${fullSessionEnvelope}${promptTail}`;
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
 
       await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
@@ -3789,7 +3799,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               : engine.adapter.seed({
                   agentId: agent.id,
                   cwd: project.hostPath,
-                  prompt,
+                  prompt: freshPrompt,
                   history,
                   model: effectiveModel,
                   effort: effectiveEffort,
@@ -3874,6 +3884,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               executionId: runId,
             });
             publish(agent.id, terminal);
+            const acceptedSessionId = !runError ? store.resumeSessionId(agent.id) : undefined;
+            if (acceptedSessionId) organizationEnvelopeStates.set(agent.id, {
+              sessionId: acceptedSessionId,
+              hash: organizationEnvelopeHash,
+            });
             if (runError) notifyManagerOfChildFailure(agent.id, runId, runError);
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
