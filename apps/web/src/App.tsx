@@ -195,6 +195,7 @@ export default function App({
         minWidth: 0,
         overflow: "hidden",
         display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr)",
         gridTemplateRows: "auto minmax(0, 1fr)",
         bgcolor: "background.default",
       }}
