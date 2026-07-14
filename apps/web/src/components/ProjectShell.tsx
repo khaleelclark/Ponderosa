@@ -289,12 +289,12 @@ export function ProjectShell({
   if (isMobile) {
     const showList = route.kind === "project";
     return (
-      <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
         {showList ? (
           <Box sx={{ minHeight: 0, overflow: "auto", bgcolor: "background.paper" }}>{sidebar}</Box>
         ) : (
-          <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+          <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
             <Stack
               direction="row"
               spacing={1}
@@ -327,7 +327,7 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)" }}>
+    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateColumns: "300px minmax(0, 1fr)" }}>
       <Box
         sx={{
           borderRight: 1,
