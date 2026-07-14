@@ -505,6 +505,20 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   projectedApiCost?: ProjectedApiCostDto;
 }
 
+/** One mutually exclusive billed token class. Input totals are normalized into
+ * uncached input, cached reads, and cache writes before pricing. */
+export interface ProjectedApiCostComponentDto {
+  tokens: number;
+  usd: number;
+}
+
+export interface ProjectedApiCostComponentsDto {
+  uncachedInput: ProjectedApiCostComponentDto;
+  cachedInput: ProjectedApiCostComponentDto;
+  cacheWriteInput: ProjectedApiCostComponentDto;
+  output: ProjectedApiCostComponentDto;
+}
+
 export interface ProjectedApiCostBreakdownDto {
   engine: EngineId;
   requestedModel?: string;
@@ -512,6 +526,7 @@ export interface ProjectedApiCostBreakdownDto {
   proxy: boolean;
   runs: number;
   usd: number;
+  components: ProjectedApiCostComponentsDto;
 }
 
 /** Informational API-equivalent list-price estimate; never a subscription bill. */
@@ -523,6 +538,7 @@ export interface ProjectedApiCostDto {
   pricedRuns: number;
   unpricedRuns: number;
   coverage: number | null;
+  components: ProjectedApiCostComponentsDto;
   breakdown: ProjectedApiCostBreakdownDto[];
 }
 

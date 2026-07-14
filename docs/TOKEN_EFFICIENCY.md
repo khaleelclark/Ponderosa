@@ -12,6 +12,22 @@ Optimization starts with provider-measured usage, not estimates derived from vis
 - Mark unreported runs and unknown price profiles explicitly. Never silently price unknown usage at zero.
 - Display cost only as a dated, projected API-equivalent list-price estimate. Subscription usage, provider discounts, tool fees, and infrastructure cost are different things.
 
+Cost is the primary user-facing efficiency metric. Raw total-token volume is
+diagnostic evidence, not the headline, because different models and token classes
+have materially different prices. Ponderosa prices each finalized run using the
+model recorded on that run, normalizing provider input into four mutually
+exclusive billable classes:
+
+- uncached input = total input minus cached reads minus cache writes;
+- cached input reads;
+- cache-write input; and
+- output (including any reasoning tokens already counted by the provider as output).
+
+Per-run costs are summed by token class and by pricing model before agent,
+project, or overall totals are displayed. Never apply one blended rate to an
+aggregate containing multiple models, and never charge cached or cache-write
+tokens again as uncached input.
+
 This PR implements that contract for the usage Ponderosa currently receives. The price catalog is code-reviewed and dated rather than fetched during a request, so historical totals do not change unexpectedly when a provider edits its pricing page.
 
 ## Safe savings implemented now
