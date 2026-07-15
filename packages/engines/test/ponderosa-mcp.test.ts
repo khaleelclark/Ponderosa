@@ -96,4 +96,48 @@ describe("Ponderosa stdio MCP bridge", () => {
     ]);
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });
+
+  it("exposes only the three Communication V3 tools", async () => {
+    const received: string[] = [];
+    const http = createServer((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        received.push(request.url ?? "");
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ requestIds: ["request-1"], joinId: "join-1" }));
+      });
+    });
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("HTTP test server did not bind");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const child = spawn(process.execPath, [join(here, "../dist/ponderosa-mcp.js")], {
+      env: {
+        ...process.env,
+        PONDEROSA_COMMUNICATION_VERSION: "3",
+        PONDEROSA_AGENT_MESSAGE_URL: `${origin}/api/agent-messages`,
+        PONDEROSA_AGENT_COORDINATE_URL: `${origin}/api/agent-coordinate`,
+        PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${origin}/api/agent-request-updates`,
+        PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(child);
+    const responses: unknown[] = [];
+    createInterface({ input: child.stdout! }).on("line", (line) => responses.push(JSON.parse(line)));
+    child.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })}\n`);
+    child.stdin!.write(`${JSON.stringify({
+      jsonrpc: "2.0", id: 2, method: "tools/call",
+      params: { name: "coordinate", arguments: {
+        idempotencyKey: "one", requests: [{ recipientAgentId: "agent", text: "Review", lifetime: { kind: "indefinite" } }],
+      } },
+    })}\n`);
+    await expect.poll(() => responses.length).toBe(2);
+    expect(responses[0]).toMatchObject({ result: { tools: [
+      { name: "coordinate" }, { name: "update_request" }, { name: "message" },
+    ] } });
+    expect(JSON.stringify(responses[0])).not.toMatch(/spawn_agent|wait_for_reports|send_message/);
+    expect(received).toEqual(["/api/agent-coordinate"]);
+    await new Promise<void>((resolve) => http.close(() => resolve()));
+  });
 });

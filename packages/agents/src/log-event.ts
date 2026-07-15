@@ -7,7 +7,7 @@
 // core stays untouched (no SPEC edit needed — this is an additive superset, not a
 // redefinition of a core type).
 
-import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentWaitDto, ImageAttachmentDto } from "@ponderosa/core";
+import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentWaitDto, AgentCoordinationV3Dto, ImageAttachmentDto } from "@ponderosa/core";
 import type { AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
@@ -53,11 +53,17 @@ export interface AgentWaitChangedEvent {
   activeWait: AgentWaitDto | null;
 }
 
+/** Live telemetry mirror of authoritative SQLite V3 coordination state. */
+export interface CoordinationV3ChangedEvent {
+  type: "coordination_v3_changed";
+  coordination: AgentCoordinationV3Dto;
+}
+
 /** Runtime completion enriched by the server with its canonical execution id. */
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | AgentWaitChangedEvent |
+export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | AgentWaitChangedEvent | CoordinationV3ChangedEvent |
   AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */

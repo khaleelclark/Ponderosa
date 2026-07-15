@@ -4,6 +4,24 @@
 
 export { AgentStore } from "./store.js";
 export { WorkspaceStore } from "./workspace-store.js";
+export { CoordinationV3Store } from "./coordination-v3-store.js";
+export type {
+  CoordinateV3Input,
+  CoordinateV3Result,
+  UpdateRequestV3Input,
+  RequestUpdateV3Result,
+  SchedulerLease,
+  SteeringLease,
+  ProviderOperation,
+  CancellationResult,
+  RuntimeCommunicationV3Input,
+  RuntimeCommunicationV3Result,
+  ActivationDispatchPolicy,
+  ActivationPromptClass,
+  OutboxItem,
+  EnqueueMessageActivationInput,
+  CoordinationRequestV3View,
+} from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { openDb } from "./db.js";
@@ -22,7 +40,7 @@ export {
 } from "./projectors.js";
 export type { ProjectionOp, ProjectionState } from "./projectors.js";
 
-export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, AgentLifecycleEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
+export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, AgentLifecycleEvent, CoordinationV3ChangedEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
 export * as schema from "./schema.js";
 export type {
   ProjectRow,
@@ -32,4 +50,8 @@ export type {
   WorkItemRow,
   ArtifactRow,
   EventRow,
+  CoordinationRequestRow,
+  CoordinationJoinRow,
+  AgentActivationRow,
+  SchedulerRunRow,
 } from "./schema.js";

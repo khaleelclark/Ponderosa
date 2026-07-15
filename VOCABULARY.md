@@ -1,4 +1,4 @@
-# Ponderosa V1 Vocabulary
+# Ponderosa Vocabulary
 
 Ponderosa uses friendly chat language in the interface and precise lifecycle
 language in its domain model. These names are part of the architecture: two
@@ -11,6 +11,9 @@ objects with different identity, audience, or lifetime must not share a noun.
 | Agent coordination projection | Team chat (Agent-only) | `CollaborationView` | Inspectable view of explicit agent-to-agent messages associated with a project chat. It is not a second message store. |
 | One-agent audit projection | Chat with *Agent* | `AgentCommunicationView` | Messages actually involving one agent. It is a projection, not another conversation. |
 | Persistent participant | Agent | `Agent` | Stable, addressable identity across many runs and provider sessions. |
+| Correlated work or consultation | Request | `CoordinationRequest` | Ephemeral work from one requester to one recipient with its own lifetime and outcome. |
+| Durable waiting condition | Waiting for | `CoordinationJoin` | Immutable condition over request outcomes; independent from request deadlines. |
+| Actionable reason to wake | Ready | `Activation` | Prioritized, durable scheduler input that may be coalesced into one Run. |
 | One runtime activation | Run | `AgentRun` / `Execution` | Bounded agent activation ending in completion, failure, cancellation, or suspension. |
 | Provider-side continuity | Model session (diagnostics only) | `ProviderSession` | Optional Codex/Claude context continued across runs for exactly one agent. |
 | Explicit authored communication | Message | `Communication` / `Message` | Immutable content, author, audience, provenance, and project-chat association. |
@@ -28,6 +31,8 @@ objects with different identity, audience, or lifetime must not share a noun.
   domain object and `CommunicationView` for projections.
 - Use **Agent** for identity, **Run** in the UI, `Execution`/`AgentRun` in the
   domain, and `ProviderSession` for engine continuity.
+- Use **Request** for correlated work, **Join** for waiting conditions, and
+  **Activation** for reasons to run. None is a synonym for a message or Run.
 - Use **Message** for authored semantic content, **Dispatch** for routing,
   **Delivery** for recipient queue state, and **RunTrigger** for activation.
 - Use **Work log** for execution-local output. Do not imply that Ponderosa
@@ -60,7 +65,8 @@ objects with different identity, audience, or lifetime must not share a noun.
 ```text
 Project
   ├─ Conversation ── Message ── MessageDispatch ── MessageDelivery
-  ├─ Agent ── AgentRun ── RunOutput / ActivityEvent
+  ├─ Agent ── CoordinationRequest ── CoordinationJoin
+  │       └─ Activation ── AgentRun ── RunOutput / ActivityEvent
   │            └─ ProviderSession (optional continuity)
   ├─ WorkItem ── advanced by AgentRun
   └─ Artifact ── produced by AgentRun and referenced by Message/WorkItem

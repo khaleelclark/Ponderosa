@@ -1,4 +1,7 @@
-# V1 Communication Contract
+# Communication Scope Contract
+
+Correlated work, joins, activation, and run scheduling are specified separately
+in [COMMUNICATION_V3.md](./COMMUNICATION_V3.md).
 
 Communication scope is structural. Message text, `#tags`, the initiating view,
 and rendered labels never grant visibility or trigger work.
@@ -18,11 +21,10 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
 
 - A broadcast never starts, steers, or queues an agent.
 - Only explicit agent recipients may receive a delivery or run trigger.
-- Collaboration delivery owns its explicit wait behavior: `queue` persists
-  without advancing an active latch, `report` advances an expected-reporter
-  latch, and `interrupt` cancels the latch and wakes the recipient. Behavior is
-  never inferred from message text. Newly authored agent Collaboration requires
-  a behavior; only replayed legacy delivery may omit it and fall back to `report`.
+- Correlated agent work is a Request, waiting is an optional Join over immutable
+  request IDs, and a reason to run is an Activation. A human or urgent activation
+  never implicitly cancels an existing Join. Behavior is never inferred from
+  message text.
 - Sent collaboration is auditable in the author's Agent chat as well as each
   recipient's Agent chat.
 - Completed ordinary output belongs to the originating Run and appears in Work

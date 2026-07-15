@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, AgentWaitDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentWaitDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -709,6 +709,7 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
 export function RunsPane({
   runs,
   activeWait,
+  coordinationV3,
   workItems,
   runTriggers,
   messages,
@@ -716,6 +717,7 @@ export function RunsPane({
 }: {
   runs: AgentRunDto[];
   activeWait?: AgentWaitDto;
+  coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   runTriggers: RunTriggerRecord[];
   messages: MessageDto[];
@@ -740,6 +742,20 @@ export function RunsPane({
           Waiting for reports: {activeWait.receivedAgentIds.length} of {activeWait.expectedAgentIds.length} received
           {activeWait.mode === "quorum" ? ` · quorum ${activeWait.quorum}` : ` · ${activeWait.mode}`}
           {activeWait.deadline ? ` · deadline ${new Date(activeWait.deadline).toLocaleString()}` : ""}
+        </Alert>
+      ) : null}
+      {coordinationV3 ? (
+        <Alert severity={coordinationV3.availability === "waiting" ? "info" : "success"}>
+          Communication V3: {coordinationV3.availability}
+          {coordinationV3.joins.some((join) => join.state === "open")
+            ? ` · ${coordinationV3.joins.filter((join) => join.state === "open").length} open join(s)`
+            : ""}
+          {coordinationV3.requests.some((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state))
+            ? ` · ${coordinationV3.requests.filter((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).length} open request(s)`
+            : ""}
+          {coordinationV3.activeRun
+            ? ` · fence ${coordinationV3.activeRun.fencingToken} · ${coordinationV3.activeRun.promptInjectionState.replaceAll("_", " ")}`
+            : ""}
         </Alert>
       ) : null}
       {runs.length === 0 ? (

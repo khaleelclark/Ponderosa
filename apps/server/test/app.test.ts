@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
-import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
@@ -222,11 +222,17 @@ class SteerableMockAdapter extends MockAdapter {
   closed = 0;
   completeStartedTurns = false;
   onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
+  readonly queues: TestEventQueue[] = [];
+
+  completeTurn(sessionIndex: number): void {
+    this.queues[sessionIndex]?.push({ type: "turn_done" });
+  }
 
   async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
     this.opened += 1;
     this.openedOptions.push(opts);
     const queue = new TestEventQueue();
+    this.queues.push(queue);
     queue.push({ type: "session", sessionId: "persistent-session" });
     return {
       engineAgentId: "persistent-session",
@@ -2535,6 +2541,154 @@ describe("server chunk F", () => {
     });
     expect(wait.success, wait.text).toBe(true);
     expect(JSON.parse(wait.text)).toMatchObject({ mode: "all", quorum: 1, replayed: false });
+    await app.close();
+  });
+
+  it("runs correlated V3 work through exactly three tools and a fenced activation cycle", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
+      executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
+    });
+    const project = store.createProject({ label: "V3", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+
+    const started = await app.inject({
+      method: "POST", url: `/api/agents/${requester.id}/messages`,
+      payload: { text: "Coordinate the review", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(started.statusCode, started.body).toBe(202);
+    expect(started.json()).toMatchObject({ queued: true, position: 1 });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const requesterRuntime = persistent.openedOptions[0]!;
+    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual([
+      "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
+    ]);
+    expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.required)
+      .toEqual(["updateId", "kind"]);
+    expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);
+
+    const coordinated = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "review-cycle",
+        requests: [{
+          requestId: "review-request",
+          recipientAgentId: recipient.id,
+          text: "Review the change and report a terminal outcome.",
+          lifetime: { kind: "indefinite" },
+        }],
+        join: { id: "review-join", mode: "all" },
+      },
+    });
+    expect(coordinated.success, coordinated.text).toBe(true);
+    expect(JSON.parse(coordinated.text)).toMatchObject({
+      requestIds: ["review-request"], joinId: "review-join", replayed: false,
+    });
+
+    persistent.completeTurn(0);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const recipientRuntime = persistent.openedOptions[1]!;
+    await vi.waitFor(() => expect(persistent.starts.some((turn) => turn.prompt.includes("review-request"))).toBe(true));
+    await sleep(140);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running')
+    `).get()).toEqual({ count: 1 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'review-request'").get())
+      .toEqual({ state: "open" });
+    const mistyped = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: {
+        requestId: "review-requesx",
+        updateId: "review-complete",
+        kind: "completed",
+        text: "Review passed.",
+      },
+    });
+    expect(mistyped.success).toBe(false);
+    expect(JSON.parse(mistyped.text)).toMatchObject({
+      error: "request not found",
+      currentRequestIds: ["review-request"],
+      hint: "Retry without requestId to target the current run's attached request",
+    });
+    const completed = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: {
+        updateId: "review-complete",
+        kind: "completed",
+        text: "Review passed.",
+      },
+    });
+    expect(completed.success, completed.text).toBe(true);
+    expect(JSON.parse(completed.text)).toMatchObject({ requestId: "review-request", state: "completed" });
+    persistent.completeTurn(1);
+
+    await vi.waitFor(() => expect(persistent.starts.some((turn) =>
+      turn.prompt.includes("coordination_join_satisfied") && turn.prompt.includes("Review passed."),
+    )).toBe(true));
+    const sqlite = store.sqlite;
+    expect(sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'review-request'").get()).toEqual({ state: "completed" });
+    expect(sqlite.prepare("SELECT state FROM coordination_joins WHERE id = 'review-join'").get()).toEqual({ state: "satisfied" });
+    expect(sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running', 'completed')
+    `).get()).toEqual({ count: 3 });
+    expect(sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations WHERE kind = 'coordination_join_satisfied'
+    `).get()).toEqual({ count: 1 });
+
+    const metrics = (await app.inject({ method: "GET", url: "/api/communication-v3/metrics" })).json<{
+      storage: { outcomeUnknownRuns: number }; scheduler: { acceptedRuns: number };
+    }>();
+    expect(metrics.storage.outcomeUnknownRuns).toBe(0);
+    expect(metrics.scheduler.acceptedRuns).toBeGreaterThanOrEqual(2);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      ok: true,
+      missingProjectionMetadataEventIds: [],
+    });
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
+  it("rebuilds a missing communication projection from SQLite before V3 scheduling starts", async () => {
+    const project = store.createProject({ label: "V3 recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Recover me", createdAt: new Date().toISOString(),
+    };
+    new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+      id: `dispatch:${event.eventId}:${agent.id}`,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: event.audience,
+      payload: { communication: event, dispatch: { text: event.text } },
+      activation: {
+        agentId: agent.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
+      },
+      now: event.createdAt,
+    });
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await app.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toEqual(event);
     await app.close();
   });
 
