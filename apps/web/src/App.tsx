@@ -1,6 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
-import DarkModeIcon from "@mui/icons-material/DarkMode";
-import LightModeIcon from "@mui/icons-material/LightMode";
+import SettingsIcon from "@mui/icons-material/Settings";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
 import {
@@ -15,7 +14,13 @@ import {
   DialogContent,
   DialogTitle,
   Drawer,
+  Checkbox,
+  FormControlLabel,
   IconButton,
+  List,
+  ListItem,
+  ListItemButton,
+  ListItemText,
   FormControl,
   InputLabel,
   MenuItem,
@@ -81,6 +86,7 @@ export default function App({
   const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
   const [pushStatus, setPushStatus] = useState<string>();
   const [pushBusy, setPushBusy] = useState(false);
@@ -169,7 +175,7 @@ export default function App({
     },
   });
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages" as const, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
@@ -215,7 +221,7 @@ export default function App({
             variant="outlined"
             sx={{ maxWidth: { xs: 132, sm: "none" } }}
           />
-          <Tooltip title="Notifications"><IconButton aria-label="Notification settings" onClick={() => setNotificationSettingsOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
+          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
@@ -223,15 +229,7 @@ export default function App({
           <Box sx={{ ml: 0.5, display: { xs: "block", sm: "none" } }}>
             <TokenUsageButton scope="overall" label="Overall" compact />
           </Box>
-          <Tooltip title={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
-            <IconButton
-              aria-label={colorMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              onClick={onToggleColorMode}
-              sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}
-            >
-              {colorMode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
-            </IconButton>
-          </Tooltip>
+          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={() => setNotificationSettingsOpen(true)} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
       </AppBar>
 
@@ -340,22 +338,45 @@ export default function App({
         </DialogActions>
       </Dialog>
       <HostFolderPicker open={folderPickerOpen} initialPath={projectPath || undefined} onClose={() => setFolderPickerOpen(false)} onChoose={(hostPath) => { setProjectPath(hostPath); setFolderPickerOpen(false); }} />
-      <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={notificationPanelOpen} onClose={() => setNotificationPanelOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Notifications</DialogTitle>
         <DialogContent>
+          <Stack spacing={1} sx={{ pt: 1 }}>
+            {Array.from((notificationsQuery.data ?? []).reduce((groups, item) => {
+              const key = `${item.projectId}:${item.conversationId ?? "project"}`;
+              const group = groups.get(key) ?? []; group.push(item); groups.set(key, group); return groups;
+            }, new Map<string, import("@ponderosa/core").WorkspaceNotificationDto[]>()).entries()).map(([key, items]) => {
+              const [projectId = "", conversationId] = key.split(":");
+              const project = projects.find((candidate) => candidate.id === projectId);
+              return <Box key={key} sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
+                <Button fullWidth sx={{ justifyContent: "flex-start", px: 1.5 }} onClick={() => { if (conversationId && conversationId !== "project") { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId, conversationId }); } }}>
+                  {project?.label ?? "Project"} · {conversationId && conversationId !== "project" ? "Project chat" : "Project"} ({items.length})
+                </Button>
+                <List dense disablePadding>{items.map((item) => <ListItem key={item.id} disablePadding><ListItemButton onClick={() => { if (item.conversationId) { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId: item.projectId, conversationId: item.conversationId }); } }}><ListItemText primary={item.title} secondary={item.body} /></ListItemButton></ListItem>)}</List>
+              </Box>;
+            })}
+            {(notificationsQuery.data ?? []).length === 0 ? <Typography color="text.secondary">No notifications.</Typography> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions><Button onClick={() => setNotificationPanelOpen(false)}>Done</Button></DialogActions>
+      </Dialog>
+      <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Settings</DialogTitle>
+        <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
-            <FormControl fullWidth>
-              <InputLabel id="notification-preference-label">Notify me about</InputLabel>
-              <Select labelId="notification-preference-label" label="Notify me about" value={preferences.notifications} onChange={(event) => savePreferences({ notifications: event.target.value as typeof preferences.notifications })}>
-                <MenuItem value="direct_responses">Direct responses</MenuItem><MenuItem value="project_responses">Project-chat responses</MenuItem><MenuItem value="mentions">Mentions</MenuItem><MenuItem value="all_messages">All messages</MenuItem><MenuItem value="everyone">#everyone messages</MenuItem><MenuItem value="broadcasts">Broadcasts</MenuItem><MenuItem value="none">None</MenuItem>
-              </Select>
-            </FormControl>
+            <Typography variant="subtitle2">Appearance</Typography>
+            <Button variant="outlined" onClick={onToggleColorMode}>Use {colorMode === "dark" ? "light" : "dark"} mode</Button>
             <FormControl fullWidth>
               <InputLabel id="font-preference-label">Font</InputLabel>
               <Select labelId="font-preference-label" label="Font" value={preferences.fontFamily} onChange={(event) => savePreferences({ fontFamily: event.target.value as typeof preferences.fontFamily })}>
                 <MenuItem value="inter">Inter</MenuItem><MenuItem value="system">System</MenuItem><MenuItem value="sans">Classic sans</MenuItem>
               </Select>
             </FormControl>
+            <Typography variant="subtitle2">Notifications</Typography>
+            {(Object.entries({ mentions: "Mentions", directReplies: "Direct replies", projectChatMessages: "Project-chat messages", broadcasts: "Broadcasts / #everyone", allMessages: "All messages" }) as Array<[keyof typeof preferences.notifications, string]>).map(([key, label]) => {
+              const all = key !== "allMessages" && preferences.notifications.allMessages;
+              return <FormControlLabel key={key} control={<Checkbox checked={preferences.notifications[key]} disabled={all} onChange={(event) => savePreferences({ notifications: { ...preferences.notifications, [key]: event.target.checked } })} />} label={all ? `${label} (included by All messages)` : label} />;
+            })}
             <Alert severity={notificationPermission === "granted" ? "success" : notificationPermission === "denied" ? "warning" : "info"}>
               In-app notifications remain available. Browser push permission: {notificationPermission}.
               {pushStatus ? ` ${pushStatus}` : ""}

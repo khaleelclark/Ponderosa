@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
-import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -87,6 +87,10 @@ describe("workspace synchronization policy", () => {
   it("derives a bounded local title without routing labels", () => {
     expect(conciseConversationTitle("#broadcast #Agent fix the flaky cache invalidation please today")).toBe("fix the flaky cache invalidation please");
     expect(conciseConversationTitle("hello")).toBeUndefined();
+  });
+
+  it("derives semantic title-case titles from the first exchange", () => {
+    expect(semanticConversationTitle("Track down the flaky cache invalidation", "I found the stale cursor path")).toBe("Found Stale Cursor Path");
   });
 
   it("normalizes explicit external sources and rejects local or credentialed URLs", () => {
@@ -466,10 +470,10 @@ describe("project lifecycle API", () => {
     appendCanonicalMessage(store, project.id, conversationId, { text: "Track down the flaky cache invalidation" });
     appendCanonicalMessage(store, project.id, conversationId, { text: "I found the stale cursor path" }, "agent-title");
     const generated = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` });
-    expect(generated.json()).toEqual({ title: "Track down the flaky cache invalidation", generated: true });
-    expect(store.getConversation(conversationId)?.title).toBe("Track down the flaky cache invalidation");
+    expect(generated.json()).toEqual({ title: "Found Stale Cursor Path", generated: true });
+    expect(store.getConversation(conversationId)?.title).toBe("Found Stale Cursor Path");
     expect(adapter.seeds).toHaveLength(0);
-    expect((await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` })).json()).toEqual({ title: "Track down the flaky cache invalidation", generated: false });
+    expect((await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/generate-title` })).json()).toEqual({ title: "Found Stale Cursor Path", generated: false });
     await app.close();
   });
 

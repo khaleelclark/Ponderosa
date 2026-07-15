@@ -65,6 +65,8 @@ import type {
   WorkspaceEventEnvelope,
   WorkspaceEvent,
   WorkspaceNotificationDto,
+  NotificationPreferencesDto,
+  NotificationPreference,
   VerifiedCitationDto,
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
@@ -995,10 +997,18 @@ export function notificationKindForCommunication(event: CommunicationEvent): Wor
 }
 
 export function notificationPreferenceMatches(
-  preference: import("@ponderosa/core").NotificationPreference,
+  preference: NotificationPreference | NotificationPreferencesDto,
   event: CommunicationEvent,
   kind: WorkspaceNotificationDto["kind"],
 ): boolean {
+  if (typeof preference === "object") {
+    if (preference.allMessages) return true;
+    if (kind === "direct_responses") return preference.directReplies;
+    if (kind === "project_responses") return preference.projectChatMessages && event.intent === "broadcast" && Boolean(event.conversationId);
+    if (kind === "broadcasts" || kind === "everyone") return preference.broadcasts;
+    if (kind === "mentions") return preference.mentions;
+    return false;
+  }
   if (preference === "none") return false;
   if (preference === "all_messages") return true;
   if (preference === "project_responses") return event.intent === "broadcast" && Boolean(event.conversationId);
@@ -1019,6 +1029,28 @@ export function conciseConversationTitle(text: string): string | undefined {
   const words = normalized.split(" ").filter(Boolean).slice(0, 6);
   if (words.length < 2) return undefined;
   return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 72).trim() || undefined;
+}
+
+const TITLE_STOP_WORDS = new Set("a an and are as at be by can could for from get give have how i if in into is it me my of on or please request should that the this to update we what when with you your".split(" "));
+
+/** Deterministic semantic title used when no provider title service is
+ * available. It combines the first operator intent and first agent outcome,
+ * extracts distinctive terms, and title-cases them without copying a query. */
+export function semanticConversationTitle(operatorText: string, agentText: string): string | undefined {
+  // Deliberately title the outcome rather than copying/truncating the
+  // operator's request. Keep the intent parameter in the contract for a
+  // future local summarizer without changing the route shape.
+  void operatorText;
+  const words = agentText
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !TITLE_STOP_WORDS.has(word.toLowerCase()));
+  const unique: string[] = [];
+  for (const word of words) if (!unique.some((item) => item.toLowerCase() === word.toLowerCase())) unique.push(word);
+  if (unique.length === 0) return undefined;
+  return unique.slice(0, 5).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ").slice(0, 72);
 }
 
 export function normalizeExternalCitations(value: unknown, verifiedAt = new Date().toISOString()): VerifiedCitationDto[] {
@@ -1290,7 +1322,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!stored.replayed && stored.event.sender.kind === "agent") {
       const preference = workspace.getPreferences().notifications;
       const kind = notificationKindForCommunication(stored.event);
-      if (kind && notificationPreferenceMatches(preference, stored.event, kind)) {
+      // Team Chat is agent-only collaboration. Keep its structural kind for
+      // policy tests/audit, but never materialize an operator notification.
+      if (kind && stored.event.intent !== "collaboration" && notificationPreferenceMatches(preference, stored.event, kind)) {
         const cursor = workspace.cursor();
         const notification = workspace.createNotification({
           projectId: stored.event.projectId,
@@ -1310,13 +1344,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   const generateConversationTitle = async (conversationId: string): Promise<{ title: string; generated: boolean }> => {
     const conversation = store.getConversation(conversationId);
-    if (!conversation || conversation.title !== "New chat") return { title: conversation?.title ?? "New chat", generated: false };
-    const firstOperatorMessage = store.getConversationMessages(conversationId, "main")
+    if (!conversation || !/^New Chat$/i.test(conversation.title)) return { title: conversation?.title ?? "New Chat", generated: false };
+    const messages = store.getConversationMessages(conversationId, "main");
+    const firstOperatorMessage = messages
       .find((message) => message.role === "user" && !message.authorAgentId);
-    const title = firstOperatorMessage ? conciseConversationTitle(firstOperatorMessage.text) : undefined;
+    const firstAgentMessage = messages.find((message) => message.role === "assistant" && Boolean(message.authorAgentId));
+    // A title is generated once the first exchange exists. This prevents a
+    // premature title from being replaced by later turns and leaves manual
+    // edits authoritative.
+    const title = firstOperatorMessage && firstAgentMessage
+      ? semanticConversationTitle(firstOperatorMessage.text, firstAgentMessage.text) ?? "Initial Conversation"
+      : undefined;
     if (!title) return { title: conversation.title, generated: false };
     const latest = store.getConversation(conversationId);
-    if (!latest || latest.title !== "New chat") return { title: latest?.title ?? conversation.title, generated: false };
+    if (!latest || !/^New Chat$/i.test(latest.title)) return { title: latest?.title ?? conversation.title, generated: false };
     const updated = store.updateConversation(conversationId, { title });
     if (!updated) return { title: conversation.title, generated: false };
     appendWorkspace({ type: "conversation_changed", projectId: updated.projectId, conversationId, action: "updated" });
@@ -3005,7 +3046,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Body: { title: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
   }>("/api/projects/:id/conversations", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const title = request.body?.title?.trim() || "New chat";
+    const title = request.body?.title?.trim() || "New Chat";
     if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
     }
@@ -4860,7 +4901,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (patch.projectOrder && (patch.projectOrder.length > 10_000 || patch.projectOrder.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.projectOrder).size !== patch.projectOrder.length)) {
       return reply.code(400).send({ error: "invalid custom project order" });
     }
-    if (patch.notifications && !["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts", "none"].includes(patch.notifications)) return reply.code(400).send({ error: "invalid notification preference" });
+    if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
     publishWorkspaceSince(cursor);

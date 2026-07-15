@@ -187,8 +187,8 @@ export function ConversationMessage({
       <MessageActionsAndTimestamp value={message.createdAt} actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
-        <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip>
-        {onEdit ? <Tooltip title="Correct latest message"><IconButton size="small" aria-label="Correct latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" && onEdit ? <Tooltip title="Correct latest message"><IconButton size="small" aria-label="Correct latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {conversation === "main" && message.authorAgentId ? (
           <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
             size="small"
@@ -516,7 +516,7 @@ export function ConversationView({
     },
   });
   useEffect(() => {
-    if (conversation?.title !== "New chat" || titleGenerationRequested.current === conversationId) return;
+    if (!/^New Chat$/i.test(conversation?.title ?? "") || titleGenerationRequested.current === conversationId) return;
     const hasOperatorMessage = messages.some((message) => message.role === "user");
     const hasAgentMessage = messages.some((message) => message.role === "assistant");
     if (!hasOperatorMessage || !hasAgentMessage) return;
@@ -1004,7 +1004,7 @@ export function ConversationView({
         ) : null}
         <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
-          conversationDraftId={activeView === "main" ? conversationId : `collaboration:${conversationId}`}
+          conversationDraftId={conversationId}
           controls={runtimeControls}
           disabled={busy && !operationRunning}
           running={operationRunning}
