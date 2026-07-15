@@ -52,6 +52,7 @@ import type {
   AgentDto,
   AgentState,
   TokenUsageSummaryDto,
+  TokenUsage,
   RunOutputDto,
   UpdateProjectRequest,
   UpdateAgentConversationMembershipsRequest,
@@ -1757,31 +1758,45 @@ export class AgentStore {
 
   /** Metered canonical runs used by the server's adapter-owned pricing projection. */
   getMeteredRuns(scope: { type: "overall" } | { type: "project" | "agent"; id: string }): Array<{
-    engine: string; model?: string; usage: NonNullable<AgentRunDto["usage"]>;
+    engine: string; model?: string; usage: NonNullable<AgentRunDto["usage"]>; providerRequestUsage?: TokenUsage[];
   }> {
     const predicate = scope.type === "overall" ? "" : scope.type === "project" ? " AND agents.project_id = ?" : " AND runs.agent_id = ?";
     const rows = this.client.prepare(`
       SELECT runs.engine, runs.model, runs.input_tokens, runs.cached_input_tokens,
-        runs.cache_write_input_tokens, runs.output_tokens, runs.reasoning_output_tokens, runs.total_tokens
+        runs.cache_write_input_tokens, runs.output_tokens, runs.reasoning_output_tokens, runs.total_tokens,
+        runs.provider_request_usage_json
       FROM runs JOIN agents ON agents.id = runs.agent_id
       WHERE runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')
         AND runs.total_tokens IS NOT NULL${predicate}
     `).all(...(scope.type === "overall" ? [] : [scope.id])) as Array<{
       engine: string; model: string | null; input_tokens: number | null; cached_input_tokens: number | null;
       cache_write_input_tokens: number | null; output_tokens: number | null; reasoning_output_tokens: number | null; total_tokens: number;
+      provider_request_usage_json: string | null;
     }>;
-    return rows.map((row) => ({
-      engine: row.engine,
-      model: row.model ?? undefined,
-      usage: {
-        ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
-        ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
-        ...(row.cache_write_input_tokens !== null ? { cacheWriteInputTokens: row.cache_write_input_tokens } : {}),
-        ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
-        ...(row.reasoning_output_tokens !== null ? { reasoningOutputTokens: row.reasoning_output_tokens } : {}),
-        totalTokens: row.total_tokens,
-      },
-    }));
+    return rows.map((row) => {
+      let providerRequestUsage: TokenUsage[] | undefined;
+      if (row.provider_request_usage_json) {
+        try {
+          const parsed = JSON.parse(row.provider_request_usage_json) as unknown;
+          if (Array.isArray(parsed)) providerRequestUsage = parsed as TokenUsage[];
+        } catch {
+          // A malformed rebuildable projection must not make the usage API fail.
+        }
+      }
+      return {
+        engine: row.engine,
+        model: row.model ?? undefined,
+        usage: {
+          ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
+          ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
+          ...(row.cache_write_input_tokens !== null ? { cacheWriteInputTokens: row.cache_write_input_tokens } : {}),
+          ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
+          ...(row.reasoning_output_tokens !== null ? { reasoningOutputTokens: row.reasoning_output_tokens } : {}),
+          totalTokens: row.total_tokens,
+        },
+        ...(providerRequestUsage ? { providerRequestUsage } : {}),
+      };
+    });
   }
 
   getWorkItems(agentId: string): WorkItemDto[] {
@@ -2102,6 +2117,7 @@ export class AgentStore {
                 outputTokens: op.outputTokens ?? null,
                 reasoningOutputTokens: op.reasoningOutputTokens ?? null,
                 totalTokens: op.totalTokens ?? null,
+                providerRequestUsageJson: op.providerRequestUsage ? JSON.stringify(op.providerRequestUsage) : null,
               })
               .where(and(eq(runs.agentId, agentId), eq(runs.id, op.id)))
               .run();

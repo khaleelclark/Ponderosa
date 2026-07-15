@@ -635,7 +635,14 @@ const RUN: LogEvent[] = [
     diff: "diff --git a/auth.ts b/auth.ts\n",
   },
   { type: "text", delta: "Done — auth refactor complete.", executionId: "run-1" },
-  { type: "turn_done", usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } },
+  {
+    type: "turn_done",
+    usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+    providerRequestUsage: [
+      { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+      { inputTokens: 6, outputTokens: 3, totalTokens: 9 },
+    ],
+  },
   { type: "agent_output", executionId: "run-1", text: "I'll handle this.Done — auth refactor complete.", sourceSeqStart: 4, sourceSeqEnd: 8 },
   { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-1" },
 ];
@@ -699,9 +706,16 @@ describe("AgentStore — append + projection", () => {
     expect(store.getTokenUsage({ type: "agent", id: agentId })).toMatchObject({ totalTokens: 15, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
     expect(store.getTokenUsage({ type: "project", id: projectId })).toMatchObject({ totalTokens: 15, finalizedRuns: 2, reportedRuns: 1, unreportedRuns: 1, coverage: 0.5 });
     expect(store.getTokenUsage({ type: "overall" })).toMatchObject({ inputTokens: 30, cachedInputTokens: 8, outputTokens: 12, reasoningOutputTokens: 3, totalTokens: 42, finalizedRuns: 3, reportedRuns: 2 });
+    expect(store.getMeteredRuns({ type: "agent", id: agentId })).toEqual([expect.objectContaining({
+      providerRequestUsage: [
+        { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
+        { inputTokens: 6, outputTokens: 3, totalTokens: 9 },
+      ],
+    })]);
 
     store.rebuildProjections();
     expect(store.getTokenUsage({ type: "overall" })).toMatchObject({ totalTokens: 42, finalizedRuns: 3, reportedRuns: 2, unreportedRuns: 1 });
+    expect(store.getMeteredRuns({ type: "agent", id: agentId })[0]?.providerRequestUsage).toHaveLength(2);
   });
 
   it("does not manufacture durable Work log responses from transient deltas", () => {

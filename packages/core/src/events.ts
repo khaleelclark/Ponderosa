@@ -42,7 +42,12 @@ export type AgentEvent =
   | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string } // → Artifact
   | { type: "test_result"; passed: boolean; summary: string } // → Artifact
   | { type: "work_item_update"; workItemId: string; status: WorkItemStatus; title?: string; executionId?: string }
-  | { type: "turn_done"; usage?: TokenUsage }
+  | {
+      type: "turn_done";
+      usage?: TokenUsage;
+      /** Individual provider requests, when reported, for request-tiered pricing. */
+      providerRequestUsage?: TokenUsage[];
+    }
   | { type: "error"; message: string };
 
 /** The literal `type` discriminants of {@link AgentEvent}. */

@@ -24,8 +24,9 @@ describe("token usage UI", () => {
     expect(html).toContain("Cache writes");
     expect(html).toContain("Provider usage was reported for 3 of 4 finalized runs");
     expect(html).toContain("1 older or unsupported runs have no usage data");
-    expect(html).toContain("1 run is excluded from cost");
+    expect(html).toContain("1 run is excluded because model pricing, usage, or request-level detail");
     expect(html).toContain("projected API-equivalent list price");
+    expect(html).toContain("Long-context tiers are applied per provider request");
     expect(html).toContain("gpt-5.6-luna");
     expect(formatTokens(0)).toBe("0");
     expect(formatUsd(0.25)).toContain("0.25");

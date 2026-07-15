@@ -66,10 +66,10 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
     <Alert severity={data.unreportedRuns || cost?.unpricedRuns ? "warning" : "info"}>
       Provider usage was reported for {data.reportedRuns} of {data.finalizedRuns} finalized runs. {cost ? `${runsLabel(cost.pricedRuns)} ${cost.pricedRuns === 1 ? "has" : "have"} a recognized model price.` : "No recognized model prices are available."}
       {data.unreportedRuns ? ` ${data.unreportedRuns} older or unsupported runs have no usage data.` : ""}
-      {cost?.unpricedRuns ? ` ${runsLabel(cost.unpricedRuns)} ${cost.unpricedRuns === 1 ? "is" : "are"} excluded from cost because usage or model pricing is unavailable.` : ""}
+      {cost?.unpricedRuns ? ` ${runsLabel(cost.unpricedRuns)} ${cost.unpricedRuns === 1 ? "is" : "are"} excluded because model pricing, usage, or request-level detail required for long-context pricing is unavailable.` : ""}
     </Alert>
     <Typography variant="caption" color="text.secondary">
-      New input is calculated as provider input minus cached reads and cache writes, so no token is charged twice. Reasoning is included in output. Costs are summed per run using that run's model and current public API list-price proxy; subscription terms and tool fees are excluded.
+      New input is calculated as provider input minus cached reads and cache writes, so no token is charged twice. Reasoning is included in output. Long-context tiers are applied per provider request; aggregate-only runs that could cross a tier are excluded. Current public API list prices are used, while subscription terms and tool fees are excluded.
     </Typography>
   </Stack>;
 }

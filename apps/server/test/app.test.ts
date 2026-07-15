@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
-import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, runtimeIdentityPrompt, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -331,6 +331,26 @@ describe("generated artifact endpoints", () => {
 });
 
 describe("token usage API", () => {
+  it("applies long-context pricing to individual provider requests", () => {
+    const profile: ApiPriceProfile = {
+      id: "tiered", pricingModel: "tiered", catalogVersion: "test", effectiveAt: "2026-01-01",
+      sourceUrl: "https://example.test/pricing", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1,
+      outputUsdPerMillion: 5,
+      longContext: { inputTokenThreshold: 100, inputMultiplier: 2, outputMultiplier: 1.5 },
+    };
+    const aggregate = { inputTokens: 160, cachedInputTokens: 20, outputTokens: 30, totalTokens: 190 };
+
+    expect(projectedRunCost(aggregate, profile, [
+      { inputTokens: 80, cachedInputTokens: 10, outputTokens: 15, totalTokens: 95 },
+      { inputTokens: 80, cachedInputTokens: 10, outputTokens: 15, totalTokens: 95 },
+    ])?.usd).toBeCloseTo(0.000292);
+    expect(projectedRunCost(aggregate, profile, [
+      { inputTokens: 120, cachedInputTokens: 20, outputTokens: 20, totalTokens: 140 },
+      { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10, totalTokens: 50 },
+    ])?.usd).toBeCloseTo(0.000444);
+    expect(projectedRunCost(aggregate, profile)).toBeUndefined();
+  });
+
   it("reports provider usage at agent, project, and overall scopes after a real run", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     adapter.turnUsage = { inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 150 };

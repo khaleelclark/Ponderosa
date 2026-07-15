@@ -29,6 +29,8 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
 export class CodexAppServerSession implements RuntimeSession {
   private activeTurnId?: string;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
+  private readonly providerRequestUsageByTurnId = new Map<string, TokenUsage[]>();
+  private readonly usageCheckpointsByTurnId = new Map<string, Set<string>>();
   private baselineTotal?: TokenUsage;
   private latestTotal?: TokenUsage;
   readonly events: AsyncIterable<AgentEvent>;
@@ -165,6 +167,18 @@ export class CodexAppServerSession implements RuntimeSession {
               const usage = this.baselineTotal ? subtractUsage(total, this.baselineTotal) : undefined;
               if (usage) this.usageByTurnId.set(params.turnId, usage);
               else this.usageByTurnId.delete(params.turnId);
+              const requestUsage = mapCodexTokenUsage(params.tokenUsage?.last);
+              if (requestUsage) {
+                const checkpoint = usageCheckpointKey(total);
+                const seen = this.usageCheckpointsByTurnId.get(params.turnId) ?? new Set<string>();
+                if (!seen.has(checkpoint)) {
+                  seen.add(checkpoint);
+                  this.usageCheckpointsByTurnId.set(params.turnId, seen);
+                  const requests = this.providerRequestUsageByTurnId.get(params.turnId) ?? [];
+                  requests.push(requestUsage);
+                  this.providerRequestUsageByTurnId.set(params.turnId, requests);
+                }
+              }
               this.latestTotal = total;
             }
           }
@@ -179,13 +193,20 @@ export class CodexAppServerSession implements RuntimeSession {
         ? ((notification.params as { turn?: { id?: unknown } } | undefined)?.turn?.id)
         : undefined;
       if (notification.method === "turn/completed") this.activeTurnId = undefined;
+      const completedUsage = typeof completedTurnId === "string" ? this.usageByTurnId.get(completedTurnId) : undefined;
+      const providerRequestUsage = completedUsage && typeof completedTurnId === "string"
+        ? reconcileProviderRequestUsage(completedUsage, this.providerRequestUsageByTurnId.get(completedTurnId) ?? [])
+        : undefined;
       yield* mapCodexAppServerNotification(
         notification,
         this.cwd,
-        typeof completedTurnId === "string" ? this.usageByTurnId.get(completedTurnId) : undefined,
+        completedUsage,
+        providerRequestUsage,
       );
       if (typeof completedTurnId === "string") {
         this.usageByTurnId.delete(completedTurnId);
+        this.providerRequestUsageByTurnId.delete(completedTurnId);
+        this.usageCheckpointsByTurnId.delete(completedTurnId);
         if (this.latestTotal) this.baselineTotal = this.latestTotal;
       }
     }
@@ -194,6 +215,43 @@ export class CodexAppServerSession implements RuntimeSession {
 
 function zeroUsage(): TokenUsage {
   return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
+}
+
+const USAGE_KEYS: Array<keyof TokenUsage> = [
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+  "reasoningOutputTokens",
+  "totalTokens",
+];
+
+function usageCheckpointKey(usage: TokenUsage): string {
+  return USAGE_KEYS.map((key) => usage[key] ?? "").join(":");
+}
+
+/** Keep request detail only when it reconciles to the canonical turn aggregate. */
+export function reconcileProviderRequestUsage(aggregate: TokenUsage, requests: TokenUsage[]): TokenUsage[] | undefined {
+  if (!requests.length || aggregate.inputTokens === undefined || aggregate.outputTokens === undefined) return undefined;
+  const pricingKeys: Array<keyof TokenUsage> = [
+    "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "totalTokens",
+  ];
+  const sums = new Map<keyof TokenUsage, number>(pricingKeys.map((key) => [key, 0]));
+  for (const request of requests) {
+    if (request.inputTokens === undefined || request.outputTokens === undefined) return undefined;
+    const cached = request.cachedInputTokens ?? 0;
+    const cacheWrite = request.cacheWriteInputTokens ?? 0;
+    if (cached + cacheWrite > request.inputTokens) return undefined;
+    for (const key of pricingKeys) {
+      const value = request[key] ?? 0;
+      if (!Number.isSafeInteger(value) || value < 0) return undefined;
+      sums.set(key, sums.get(key)! + value);
+    }
+  }
+  for (const key of pricingKeys) {
+    if ((aggregate[key] ?? 0) !== sums.get(key)) return undefined;
+  }
+  return requests;
 }
 
 /** Delta compatible absolute thread checkpoints; any reset fails closed. */
@@ -240,7 +298,12 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   };
 }
 
-export function mapCodexAppServerNotification(notification: JsonRpcNotification, cwd: string, usage?: TokenUsage): AgentEvent[] {
+export function mapCodexAppServerNotification(
+  notification: JsonRpcNotification,
+  cwd: string,
+  usage?: TokenUsage,
+  providerRequestUsage?: TokenUsage[],
+): AgentEvent[] {
   const params = notification.params as Record<string, unknown> | undefined;
   if (notification.method === "ponderosa/processError") {
     return [{ type: "error", message: String(params?.message ?? "Codex app-server stopped") }];
@@ -257,7 +320,11 @@ export function mapCodexAppServerNotification(notification: JsonRpcNotification,
   if (notification.method === "turn/completed") {
     const turn = params?.turn as { status?: string; error?: { message?: string } | null } | undefined;
     if (turn?.status === "failed") return [{ type: "error", message: turn.error?.message ?? "Codex turn failed" }];
-    return [{ type: "turn_done", ...(usage ? { usage } : {}) }];
+    return [{
+      type: "turn_done",
+      ...(usage ? { usage } : {}),
+      ...(providerRequestUsage ? { providerRequestUsage } : {}),
+    }];
   }
   if (notification.method !== "item/started" && notification.method !== "item/completed") return [];
   const item = params?.item as Record<string, unknown> | undefined;

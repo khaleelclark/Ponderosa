@@ -20,7 +20,7 @@
 // Only explicit communication events may create a Chat projection. Runtime text
 // and reasoning remain scoped to their originating execution.
 
-import type { AgentLifecycleReason, AgentRunStatus } from "@ponderosa/core";
+import type { AgentLifecycleReason, AgentRunStatus, TokenUsage } from "@ponderosa/core";
 import { artifactId, eventRowId, messageId, workItemId } from "./ids.js";
 import type { StoredLogEvent } from "./log-event.js";
 import type {
@@ -35,7 +35,7 @@ export type ProjectionOp =
   | { kind: "insert_message"; row: MessageRow }
   | { kind: "insert_run"; row: RunRow }
   | { kind: "update_run"; id: string; status: AgentRunStatus; reason: AgentLifecycleReason; updatedAt: string; completedAt?: string }
-  | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number }
+  | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; providerRequestUsage?: TokenUsage[] }
   | { kind: "insert_work_item"; row: WorkItemRow }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
@@ -170,6 +170,7 @@ export function projectEvent(
             outputTokens: null,
             reasoningOutputTokens: null,
             totalTokens: null,
+            providerRequestUsageJson: null,
             startedAt: ts,
             updatedAt: ts,
             completedAt: null,
@@ -268,7 +269,12 @@ export function projectEvent(
 
     case "turn_done": {
       if (event.usage && (event.executionId ?? next.activeExecutionId)) {
-        ops.push({ kind: "set_run_usage", id: event.executionId ?? next.activeExecutionId!, ...event.usage });
+        ops.push({
+          kind: "set_run_usage",
+          id: event.executionId ?? next.activeExecutionId!,
+          ...event.usage,
+          ...(event.providerRequestUsage ? { providerRequestUsage: event.providerRequestUsage } : {}),
+        });
       }
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
