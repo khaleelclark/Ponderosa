@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, AgentWaitDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentWaitDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -1337,6 +1337,7 @@ export function Composer({
   const files = attachments.files;
   const queryClient = useQueryClient();
   const [sendError, setSendError] = useState<string>();
+  const [draftConflict, setDraftConflict] = useState<ConversationDraftConflictDto>();
   const fileInput = useRef<HTMLInputElement | null>(null);
   const previousDraftStorageKey = useRef(draftStorageKey);
   const previousConversationDraftId = useRef(conversationDraftId);
@@ -1468,6 +1469,9 @@ export function Composer({
           draftGeneration.current += 1;
           draftRevision.current = current.revision;
           queryClient.setQueryData(["conversation-draft", conversationDraftId], current);
+          const conflicts = await api.getConversationDraftConflicts(conversationDraftId).catch(() => undefined);
+          const displaced = conflicts?.conflicts.at(-1);
+          if (displaced) setDraftConflict(displaced);
         }
       });
     }, 500);
@@ -1657,6 +1661,9 @@ export function Composer({
         {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => removeFile(index)} />)}
       </Stack> : null}
       {(attachments.error ?? sendError) ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {attachments.error ?? sendError}</Alert> : null}
+      {draftConflict ? <Alert severity="warning" sx={{ mb: 1 }} action={<Button size="small" onClick={() => { update(draftConflict.displaced.text); setDraftConflict(undefined); inputRef.current?.focus(); }}>Restore</Button>}>
+        This chat changed in another tab. Your displaced draft is preserved: “{replyPreviewText(draftConflict.displaced.text)}”
+      </Alert> : null}
       <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} useFlexGap sx={{ alignItems: "flex-end", flexWrap: "wrap" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
           addFiles(Array.from(event.target.files ?? []));

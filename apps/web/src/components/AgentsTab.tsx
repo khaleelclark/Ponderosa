@@ -120,7 +120,7 @@ export function AgentsTab({
   const activeAgentIds = agents.filter((agent) => ["running", "compacting", "waiting"].includes(statusByAgentId.get(agent.id) ?? "idle")).map((agent) => agent.id);
   const stopAll = async () => {
     setStoppingAll(true); setBulkError(undefined);
-    const results = await Promise.allSettled(activeAgentIds.map((id) => api.cancelRun(id)));
+    const results = await Promise.allSettled(activeAgentIds.map((id) => api.cancelRun(id, `bulk-stop:${id}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`)));
     const failed = results.filter((item) => item.status === "rejected").length;
     if (failed) setBulkError(`${activeAgentIds.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);
     await queryClient.invalidateQueries({ queryKey: ["agents"] });

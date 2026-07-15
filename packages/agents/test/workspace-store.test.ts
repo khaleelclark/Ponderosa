@@ -21,12 +21,13 @@ describe("WorkspaceStore canonical replay", () => {
     expect(first.revision).toBe(1);
     let conflict: unknown;
     try { store.putDraft("chat", { text: "stale", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" }); } catch (error) { conflict = error; }
-    expect(conflict).toMatchObject({ code: "DRAFT_CONFLICT", current: first });
+    expect(conflict).toMatchObject({ code: "DRAFT_CONFLICT", current: first, displaced: { text: "stale", clientId: "tab-b" } });
 
     const restarted = new WorkspaceStore(dir);
     expect(restarted.instanceId()).toBe(store.instanceId());
     expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], sidebarWidth: 340 });
     expect(restarted.getDraft("chat")).toEqual(first);
+    expect(restarted.listDraftConflicts("chat").conflicts).toEqual([expect.objectContaining({ current: first, displaced: expect.objectContaining({ text: "stale" }) })]);
     expect(restarted.readSince(0).map((item) => item.id)).toEqual(restarted.readSince(0).map((_, index) => index + 1));
   });
 

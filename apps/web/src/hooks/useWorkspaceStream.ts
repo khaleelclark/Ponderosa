@@ -11,6 +11,18 @@ function initialCursor(): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
+export interface WorkspaceCursorReconciliation {
+  cursor: number;
+  duplicate: boolean;
+  gap: boolean;
+}
+
+/** Pure ordered-cursor reducer shared by every tab's stream consumer. */
+export function reconcileWorkspaceCursor(current: number, envelope: Pick<WorkspaceEventEnvelope, "id">): WorkspaceCursorReconciliation {
+  if (envelope.id <= current) return { cursor: current, duplicate: true, gap: false };
+  return { cursor: envelope.id, duplicate: false, gap: envelope.id !== current + 1 };
+}
+
 /** One authoritative live stream invalidates only caches affected by each event. */
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
@@ -27,11 +39,13 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
       void queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
       void queryClient.invalidateQueries({ queryKey: ["workspace-file"] });
+      void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
-      if (envelope.id <= cursor.current) return;
-      if (envelope.id !== cursor.current + 1) invalidateAll();
-      cursor.current = envelope.id;
+      const reconciliation = reconcileWorkspaceCursor(cursor.current, envelope);
+      if (reconciliation.duplicate) return;
+      if (reconciliation.gap) invalidateAll();
+      cursor.current = reconciliation.cursor;
       window.localStorage.setItem(CURSOR_KEY, String(envelope.id));
       const event = envelope.event;
       if (event.type === "preferences_updated") queryClient.setQueryData(["workspace-preferences"], event.preferences);
@@ -39,7 +53,7 @@ export function useWorkspaceStream(): void {
       else if (event.type === "conversation_changed") {
         void queryClient.invalidateQueries({ queryKey: ["conversations", event.projectId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation", event.conversationId] });
-      } else if (event.type === "draft_changed") void queryClient.invalidateQueries({ queryKey: ["conversation-draft", event.conversationId] });
+      } else if (event.type === "draft_changed" || event.type === "draft_conflict") void queryClient.invalidateQueries({ queryKey: ["conversation-draft", event.conversationId] });
       else if (event.type === "queued_message_changed") {
         void queryClient.invalidateQueries({ queryKey: ["queued-messages", event.conversationId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation", event.conversationId] });
@@ -54,7 +68,9 @@ export function useWorkspaceStream(): void {
           void queryClient.invalidateQueries({ queryKey: ["workspace-status", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["workspace-file", event.projectId] });
         }
+        if (event.category === "usage") void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       }
+      else if (event.type === "usage_changed") void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       else void queryClient.invalidateQueries({ queryKey: ["notifications"] });
     };
     const subscription = api.subscribeWorkspace(cursor.current, {

@@ -36,6 +36,7 @@ import type {
   WorkspacePreferencesDto,
   UpdateWorkspacePreferencesRequest,
   ConversationDraftDto,
+  ConversationDraftConflictListDto,
   DraftAttachmentDto,
   PutConversationDraftRequest,
   GenerateConversationTitleResponse,
@@ -54,7 +55,9 @@ import type {
   AgentDetailDto,
   AgentDto,
   TokenUsageScope,
+  TokenUsageRangeDto,
   TokenUsageSummaryDto,
+  CancelAgentRunResponse,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -102,7 +105,7 @@ export interface PonderosaApi {
   updateProject(projectId: string, request: UpdateProjectRequest): Promise<ProjectDto>;
   deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
-  getTokenUsage(scope: TokenUsageScope, id?: string): Promise<TokenUsageSummaryDto>;
+  getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto>;
   listConversations(projectId: string): Promise<ConversationDto[]>;
   createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto>;
   getConversation(conversationId: string): Promise<ConversationDetailDto>;
@@ -111,6 +114,7 @@ export interface PonderosaApi {
   deleteConversation(conversationId: string): Promise<void>;
   sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void>;
   getConversationDraft(conversationId: string): Promise<ConversationDraftDto>;
+  getConversationDraftConflicts(conversationId: string): Promise<ConversationDraftConflictListDto>;
   putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto>;
   uploadDraftAttachment(conversationId: string, file: File): Promise<DraftAttachmentDto>;
   downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File>;
@@ -153,7 +157,7 @@ export interface PonderosaApi {
   sendMessage(agentId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
   uploadAttachment(agentId: string, file: File): Promise<ImageAttachmentDto>;
   deleteAttachment(agentId: string, attachmentId: string): Promise<void>;
-  cancelRun(agentId: string): Promise<void>;
+  cancelRun(agentId: string, idempotencyKey?: string): Promise<CancelAgentRunResponse>;
   compactSession(agentId: string): Promise<{ compacted: boolean }>;
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription;
