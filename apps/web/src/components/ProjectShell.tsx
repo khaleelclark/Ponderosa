@@ -6,6 +6,7 @@ import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilit
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { chatStateKey, writeChatState } from "../chatState";
 import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
@@ -139,6 +140,12 @@ export function ProjectShell({
     });
   };
 
+  const openAgentReview = (agentId: string, path?: string) => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), "review");
+    if (path) writeChatState(chatStateKey("view", `agent.${agentId}.review-file`), path);
+    navigate({ kind: "agent", projectId, agentId });
+  };
+
   const sidebarSelection = {
     conversationId: route.kind === "conversation" ? route.conversationId : undefined,
     agentsActive: route.kind === "agents" || route.kind === "agent",
@@ -205,6 +212,7 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenReview={openAgentReview}
         onNewAgent={openNewAgentFromMaster}
         onDeleted={() => navigate({ kind: "agents", projectId })}
       />

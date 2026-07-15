@@ -580,7 +580,7 @@ describe("AgentStore — canonical communication events", () => {
     const author = store.createAgent(project.id, { title: "Former author", engine: "codex", conversationId: room.id });
     const executionId = "historical-execution";
     store.appendEvent(author.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId });
-    store.appendEvent(author.id, { type: "file_change", path: "src/history.ts", kind: "edit" });
+    store.appendEvent(author.id, { type: "file_change", path: "src/history.ts", kind: "edit", diff: "@@ -1 +1 @@\n-old\n+new\n+added" });
     const event: CommunicationEvent = {
       eventId: "historical-broadcast", schemaVersion: 2, projectId: project.id, conversationId: room.id,
       sender: { kind: "agent", agentId: author.id, executionId }, intent: "broadcast",
@@ -590,7 +590,7 @@ describe("AgentStore — canonical communication events", () => {
     store.appendCommunicationEvent(event);
     store.appendConversationMessage(room.id, { role: "assistant", text: event.text }, author.id, "main", undefined, undefined, event.eventId);
     expect(store.getProjectedConversationMessages(room.id)[0]?.fileActivity)
-      .toEqual([{ path: "src/history.ts", kind: "edit", status: "completed" }]);
+      .toEqual([{ path: "src/history.ts", kind: "edit", status: "completed", additions: 2, deletions: 1 }]);
 
     expect(store.deleteAgent(author.id)).toBe(true);
     expect(store.getProjectedConversationMessages(room.id)).toEqual([
