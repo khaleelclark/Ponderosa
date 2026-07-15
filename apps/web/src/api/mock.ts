@@ -16,6 +16,8 @@ import type {
   AgentDetailDto,
   AgentDto,
   TokenUsageScope,
+  TokenUsageRangeDto,
+  CancelAgentRunResponse,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -354,7 +356,7 @@ export const mockApi: PonderosaApi = {
       }),
     });
   },
-  getTokenUsage(scope: TokenUsageScope, id?: string) {
+  getTokenUsage(scope: TokenUsageScope, id?: string, _range?: TokenUsageRangeDto) {
     const scopedAgents = agents.filter((agent) => scope === "overall" ||
       (scope === "project" && agent.projectId === id) ||
       (scope === "agent" && agent.id === id));
@@ -371,6 +373,12 @@ export const mockApi: PonderosaApi = {
       finalizedRuns: finalized.length, reportedRuns: reported.length,
       unreportedRuns: finalized.length - reported.length,
       coverage: finalized.length ? reported.length / finalized.length : null,
+      metricAvailability: {
+        inputTokens: "unavailable", cachedInputTokens: "unavailable", cacheWriteInputTokens: "unavailable",
+        outputTokens: "unavailable", reasoningOutputTokens: "unavailable", totalTokens: "unavailable",
+      },
+      breakdown: [],
+      recentTurns: [],
     });
   },
   listAgentPresets(projectId) { return delay(agentPresets.filter((preset) => preset.projectId === projectId)); },
@@ -426,6 +434,7 @@ export const mockApi: PonderosaApi = {
     const draft = drafts.get(conversationId) ?? { conversationId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
     return delay({ ...draft, attachments: draft.attachmentIds.map((id) => draftAttachments.get(id)?.dto).filter((item): item is import("@ponderosa/core").DraftAttachmentDto => Boolean(item)) });
   },
+  getConversationDraftConflicts(conversationId) { return delay({ conversationId, conflicts: [] }); },
   putConversationDraft(conversationId, request) {
     const current = drafts.get(conversationId);
     if ((current?.revision ?? 0) !== request.expectedRevision) return Promise.reject(new Error("draft revision conflict"));
@@ -676,10 +685,11 @@ export const mockApi: PonderosaApi = {
     return Promise.resolve({ id: `mock-${Date.now()}`, agentId, name: file.name, mediaType: (file.type || "image/png") as "image/png", size: file.size, width: 1, height: 1, url: URL.createObjectURL(file) });
   },
   deleteAttachment() { return Promise.resolve(); },
-  async cancelRun(agentId) {
+  async cancelRun(agentId): Promise<CancelAgentRunResponse> {
     emit(agentId, { type: "error", message: "Mock run cancelled." });
     emit(agentId, { type: "turn_done" });
     await delay(undefined, 80);
+    return { cancelled: true, replayed: false };
   },
   compactSession() { return delay({ compacted: true }); },
   subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {

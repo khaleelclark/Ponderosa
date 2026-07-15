@@ -19,13 +19,15 @@ export interface RunClaim {
   processStartTime?: string;
 }
 
-type RunRecord = { type: "claim" | "transition"; claim: RunClaim };
+type StopReceipt = { agentId: string; idempotencyKey: string; cancelled: boolean; createdAt: string };
+type RunRecord = { type: "claim" | "transition"; claim: RunClaim } | { type: "stop"; receipt: StopReceipt };
 export type RunFence = Pick<RunClaim, "agentId" | "runId" | "generation">;
 
 /** Append-only evidence backing the server's authoritative ActiveRun CAS. */
 export class RunLedger {
   private readonly file: string;
   private readonly claims = new Map<string, RunClaim>();
+  private readonly stopReceipts = new Map<string, StopReceipt>();
 
   constructor(dataDir: string, now: () => string = () => new Date().toISOString()) {
     this.file = path.join(dataDir, "runtime-runs.jsonl");
@@ -46,7 +48,8 @@ export class RunLedger {
         writeFileSync(this.file, contents.slice(0, completeLength), { encoding: "utf8", mode: 0o600 });
         break;
       }
-      this.claims.set(record.claim.agentId, record.claim);
+      if (record.type === "stop") this.stopReceipts.set(`${record.receipt.agentId}\0${record.receipt.idempotencyKey}`, record.receipt);
+      else this.claims.set(record.claim.agentId, record.claim);
     }
     for (const claim of [...this.claims.values()]) {
       if (["running", "stalled", "cancelling"].includes(claim.state)) {
@@ -57,6 +60,17 @@ export class RunLedger {
 
   current(agentId: string): RunClaim | undefined { return this.claims.get(agentId); }
   all(): RunClaim[] { return [...this.claims.values()]; }
+
+  stopReceipt(agentId: string, idempotencyKey: string): StopReceipt | undefined {
+    return this.stopReceipts.get(`${agentId}\0${idempotencyKey}`);
+  }
+
+  rememberStop(agentId: string, idempotencyKey: string, cancelled: boolean, createdAt = new Date().toISOString()): StopReceipt {
+    const receipt: StopReceipt = { agentId, idempotencyKey, cancelled, createdAt };
+    appendFileSync(this.file, `${JSON.stringify({ type: "stop", receipt } satisfies RunRecord)}\n`, "utf8");
+    this.stopReceipts.set(`${agentId}\0${idempotencyKey}`, receipt);
+    return receipt;
+  }
 
   claim(agentId: string, runId: string, deliveryIds?: string[], now = new Date().toISOString()): RunClaim {
     const current = this.claims.get(agentId);
@@ -82,13 +96,14 @@ export class RunLedger {
 
   deleteAgents(agentIds: ReadonlySet<string>): void {
     for (const agentId of agentIds) this.claims.delete(agentId);
+    for (const key of this.stopReceipts.keys()) if (agentIds.has(key.split("\0", 1)[0]!)) this.stopReceipts.delete(key);
     const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
       .map((line) => JSON.parse(line) as RunRecord)
-      .filter((record) => !agentIds.has(record.claim.agentId));
+      .filter((record) => record.type === "stop" ? !agentIds.has(record.receipt.agentId) : !agentIds.has(record.claim.agentId));
     writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 
-  private persist(claim: RunClaim, type: RunRecord["type"]): RunClaim {
+  private persist(claim: RunClaim, type: "claim" | "transition"): RunClaim {
     appendFileSync(this.file, `${JSON.stringify({ type, claim } satisfies RunRecord)}\n`, "utf8");
     this.claims.set(claim.agentId, claim);
     return claim;

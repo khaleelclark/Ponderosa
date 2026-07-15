@@ -42,7 +42,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { agentDescendants, agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
 import { useAgent } from "../hooks/queries";
@@ -217,10 +217,19 @@ export function AgentDetail({
   const connectedMcps = engineCapability?.mcpServers.filter((server) => server.status === "connected") ?? [];
   const mcpSummary = engineCapability?.mcpServers.map((server) => `${server.name}: ${server.status}`).join("\n") || "No inherited MCP servers reported by this engine.";
 
+  const stopRequestId = useRef<string>();
   const cancelRun = useMutation({
-    mutationFn: () => api.cancelRun(agentId),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["agent", agentId] }),
+    mutationFn: ({ idempotencyKey }: { idempotencyKey: string }) => api.cancelRun(agentId, idempotencyKey),
+    onSettled: () => {
+      stopRequestId.current = undefined;
+      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+    },
   });
+  const stopActiveRun = () => {
+    const idempotencyKey = stopRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+    stopRequestId.current = idempotencyKey;
+    return cancelRun.mutateAsync({ idempotencyKey });
+  };
 
   const deleteAgent = useMutation({
     mutationFn: () => api.deleteAgent(agentId),
@@ -457,7 +466,7 @@ export function AgentDetail({
               color="error"
               variant="outlined"
               disabled={cancelRun.isPending}
-              onClick={() => cancelRun.mutate()}
+              onClick={() => stopActiveRun()}
               sx={{ minHeight: compactViewport ? 44 : undefined }}
             >
               {cancelRun.isPending ? "Stopping…" : "Cancel"}
@@ -617,7 +626,7 @@ export function AgentDetail({
           onSend={(text, files) => {
             if (files.length === 0 && text === "/cancel") {
               setQueuedMessageNotice("Cancelling the active turn…");
-              return cancelRun.mutateAsync().then(() => setQueuedMessageNotice("Active turn cancelled."));
+              return stopActiveRun().then(() => setQueuedMessageNotice("Active turn cancelled."));
             }
             if (files.length === 0 && text === "/compact") {
               setQueuedMessageNotice("Compacting this agent session…");
@@ -630,7 +639,7 @@ export function AgentDetail({
             return submitAgentMessage("steer")(text, files);
           }}
           onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
-          onCancel={() => cancelRun.mutate()}
+          onCancel={() => stopActiveRun()}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(undefined)}
         />

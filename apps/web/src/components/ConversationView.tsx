@@ -247,6 +247,7 @@ export function ConversationView({
   const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
   const [stoppedNotice, setStoppedNotice] = useState<string>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
+  const stopOperationRequestId = useRef<string>();
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
   const clearReply = () => {
@@ -422,8 +423,8 @@ export function ConversationView({
   });
 
   const broadcast = useMutation({
-    mutationFn: ({ text, replyToMessageId }: { text: string; replyToMessageId?: string }) =>
-      api.sendConversationMessage(conversationId, { text, replyToMessageId }),
+    mutationFn: ({ text, replyToMessageId, requestId }: { text: string; replyToMessageId?: string; requestId: string }) =>
+      api.sendConversationMessage(conversationId, { text, replyToMessageId, idempotencyKey: requestId }),
     onSuccess: () => {
       clearReply();
       invalidate();
@@ -492,8 +493,8 @@ export function ConversationView({
   });
 
   const collaborate = useMutation({
-    mutationFn: ({ text, recipientAgentIds, replyToMessageId }: { text: string; recipientAgentIds: string[]; replyToMessageId?: string }) =>
-      api.sendCollaborationMessage(conversationId, { text, recipientAgentIds, replyToMessageId }),
+    mutationFn: ({ text, recipientAgentIds, replyToMessageId, requestId }: { text: string; recipientAgentIds: string[]; replyToMessageId?: string; requestId: string }) =>
+      api.sendCollaborationMessage(conversationId, { text, recipientAgentIds, replyToMessageId, idempotencyKey: requestId }),
     onSuccess: () => {
       clearReply();
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
@@ -631,7 +632,10 @@ export function ConversationView({
     const names = agentIds.map((id) => agentTitle(id)).join(", ");
     if (agentIds.length > 1 && !window.confirm(`Stop this operation tree (${names})? Partial output will remain visible.`)) return;
     setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
-    await Promise.allSettled(agentIds.map((agentId) => api.cancelRun(agentId)));
+    const requestId = stopOperationRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+    stopOperationRequestId.current = requestId;
+    await Promise.allSettled(agentIds.map((agentId) => api.cancelRun(agentId, requestId)));
+    stopOperationRequestId.current = undefined;
     setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
     invalidate();
   };
@@ -648,14 +652,14 @@ export function ConversationView({
       if (targets.length === 0) throw new Error("Tag one unambiguous agent with #name, use #everyone, or reply to an agent message.");
       const messageText = stripCollaborationRoutingTags(text, activeAgents);
       if (!messageText) throw new Error("Add a message after the routing tag.");
-      await collaborate.mutateAsync({ text: messageText, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id });
+      await collaborate.mutateAsync({ text: messageText, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
       return;
     }
     const broadcastText = managerBroadcastText(text);
     if (broadcastText !== undefined) {
       if (!broadcastText) throw new Error("Add informational context after #broadcast.");
       if (files.length) throw new Error("#broadcast does not currently support attachments.");
-      await broadcast.mutateAsync({ text: broadcastText, replyToMessageId: replyTo?.id });
+      await broadcast.mutateAsync({ text: broadcastText, replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
       return;
     }
     const targets = hasEveryoneMention(text)

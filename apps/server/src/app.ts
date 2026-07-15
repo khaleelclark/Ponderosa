@@ -57,6 +57,8 @@ import type {
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
   TokenUsage,
+  TokenUsageRangeDto,
+  TokenUsageBreakdownDto,
   TokenUsageSummaryDto,
   ProjectedApiCostComponentsDto,
   PutConversationDraftRequest,
@@ -69,6 +71,8 @@ import type {
   NotificationPreference,
   VerifiedCitationDto,
   WebPushSubscriptionDto,
+  CancelAgentRunRequest,
+  CancelAgentRunResponse,
 } from "@ponderosa/core";
 import { agentRoleProfile, deriveCommunicationBehavior, PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, WorkspaceStore } from "@ponderosa/agents";
@@ -940,6 +944,19 @@ function roundedUsd(value: number): number {
   return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
+export function parseTokenUsageRange(query: { from?: string; to?: string }): TokenUsageRangeDto {
+  const range: TokenUsageRangeDto = {};
+  for (const key of ["from", "to"] as const) {
+    const value = query[key];
+    if (value === undefined) continue;
+    const timestamp = new Date(value);
+    if (!value.trim() || Number.isNaN(timestamp.valueOf())) throw new Error(`${key} must be a valid ISO timestamp`);
+    range[key] = timestamp.toISOString();
+  }
+  if (range.from && range.to && range.from >= range.to) throw new Error("from must be earlier than to");
+  return range;
+}
+
 type RawCostComponents = {
   [Key in keyof ProjectedApiCostComponentsDto]: { tokens: number; usd: number };
 };
@@ -951,6 +968,14 @@ function emptyCostComponents(): RawCostComponents {
     cacheWriteInput: { tokens: 0, usd: 0 },
     output: { tokens: 0, usd: 0 },
   };
+}
+
+function addTokenUsage(target: TokenUsage, source: TokenUsage): void {
+  const keys: Array<keyof TokenUsage> = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
+  for (const key of keys) {
+    const value = source[key];
+    if (value !== undefined) target[key] = (target[key] ?? 0) + value;
+  }
 }
 
 function addCostComponents(target: RawCostComponents, source: RawCostComponents): void {
@@ -1177,25 +1202,65 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   store.recoverInterruptedExecutions();
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
-  const projectedUsage = (scope: { type: "overall" } | { type: "project" | "agent"; id: string }): TokenUsageSummaryDto => {
-    const summary = store.getTokenUsage(scope);
+  const projectedUsage = (
+    scope: { type: "overall" } | { type: "project" | "agent"; id: string },
+    range: TokenUsageRangeDto = {},
+  ): TokenUsageSummaryDto => {
+    const summary = store.getTokenUsage(scope, range);
     const grouped = new Map<string, { engine: string; requestedModel?: string; profile: ApiPriceProfile; runs: number; usd: number; components: RawCostComponents }>();
+    const usageGrouped = new Map<string, TokenUsageBreakdownDto>();
+    const recentTurns: TokenUsageSummaryDto["recentTurns"] = [];
     const components = emptyCostComponents();
     let pricedRuns = 0;
-    for (const run of store.getMeteredRuns(scope)) {
+    for (const run of store.getMeteredRuns(scope, range)) {
       const profile = engines.get(run.engine)?.adapter.apiPriceProfile?.(run.model);
       const cost = profile ? projectedRunCost(run.usage, profile, run.providerRequestUsage) : undefined;
-      if (!cost || !profile) continue;
-      pricedRuns += 1;
-      const key = `${run.engine}\0${run.model ?? ""}\0${profile.pricingModel}`;
-      const current = grouped.get(key) ?? { engine: run.engine, requestedModel: run.model, profile, runs: 0, usd: 0, components: emptyCostComponents() };
-      current.runs += 1;
-      current.usd += cost.usd;
-      addCostComponents(current.components, cost.components);
-      addCostComponents(components, cost.components);
-      grouped.set(key, current);
+      const usageKey = [run.projectId, run.conversationId ?? "", run.agentId, run.engine, run.model ?? ""].join("\0");
+      const usageCurrent: TokenUsageBreakdownDto = usageGrouped.get(usageKey) ?? {
+        projectId: run.projectId,
+        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
+        agentId: run.agentId,
+        agentTitle: run.agentTitle,
+        engine: run.engine as TokenUsageBreakdownDto["engine"],
+        ...(run.model ? { model: run.model } : {}),
+        runs: 0,
+        usage: {},
+        pricingAvailableRuns: 0,
+        unpricedRuns: 0,
+      };
+      usageCurrent.runs += 1;
+      addTokenUsage(usageCurrent.usage, run.usage);
+      if (cost && profile) {
+        pricedRuns += 1;
+        usageCurrent.pricingAvailableRuns += 1;
+        usageCurrent.estimatedCostUsd = roundedUsd((usageCurrent.estimatedCostUsd ?? 0) + cost.usd);
+        const key = `${run.engine}\0${run.model ?? ""}\0${profile.pricingModel}`;
+        const current = grouped.get(key) ?? { engine: run.engine, requestedModel: run.model, profile, runs: 0, usd: 0, components: emptyCostComponents() };
+        current.runs += 1;
+        current.usd += cost.usd;
+        addCostComponents(current.components, cost.components);
+        addCostComponents(components, cost.components);
+        grouped.set(key, current);
+      } else {
+        usageCurrent.unpricedRuns += 1;
+      }
+      usageGrouped.set(usageKey, usageCurrent);
+      recentTurns.push({
+        projectId: run.projectId,
+        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
+        agentId: run.agentId,
+        agentTitle: run.agentTitle,
+        executionId: run.executionId,
+        engine: run.engine as TokenUsageBreakdownDto["engine"],
+        ...(run.model ? { model: run.model } : {}),
+        startedAt: run.startedAt,
+        ...(run.completedAt ? { completedAt: run.completedAt } : {}),
+        usage: run.usage,
+        ...(cost && profile ? { estimatedCostUsd: roundedUsd(cost.usd), pricingModel: profile.pricingModel } : {}),
+        pricingAvailable: Boolean(cost && profile),
+      });
     }
-    const breakdown = [...grouped.values()].map((item) => ({
+    const costBreakdown = [...grouped.values()].map((item) => ({
       engine: item.engine,
       ...(item.requestedModel ? { requestedModel: item.requestedModel } : {}),
       pricingModel: item.profile.pricingModel,
@@ -1207,16 +1272,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const catalogVersion = [...grouped.values()].map((item) => item.profile.catalogVersion).sort().at(-1) ?? "2026-07-13";
     return {
       ...summary,
+      breakdown: [...usageGrouped.values()].sort((a, b) => (b.estimatedCostUsd ?? 0) - (a.estimatedCostUsd ?? 0) || b.runs - a.runs),
+      recentTurns: recentTurns.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 10),
       projectedApiCost: {
         currency: "USD",
-        usd: roundedUsd(breakdown.reduce((total, item) => total + item.usd, 0)),
+        usd: roundedUsd(costBreakdown.reduce((total, item) => total + item.usd, 0)),
         basis: "api_list_price_proxy",
         catalogVersion,
         pricedRuns,
         unpricedRuns: summary.finalizedRuns - pricedRuns,
         coverage: summary.finalizedRuns ? pricedRuns / summary.finalizedRuns : null,
         components: serializedCostComponents(components),
-        breakdown,
+        breakdown: costBreakdown,
       },
     };
   };
@@ -2126,6 +2193,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!agent) return;
     const event = stored.event;
     const category = workspaceAgentEventCategory(event);
+    if (event.type === "turn_done") {
+      appendWorkspace({
+        type: "usage_changed",
+        projectId: agent.projectId,
+        agentId,
+        conversationIds: agent.conversationIds,
+        seq: stored.seq,
+        ...(("executionId" in event && typeof event.executionId === "string") ? { executionId: event.executionId } : {}),
+      });
+      return;
+    }
     if (!category) return;
     appendWorkspace({
       type: "agent_event",
@@ -3024,11 +3102,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
   });
 
-  app.get("/api/usage", async () => projectedUsage({ type: "overall" }));
+  app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {
+    try { return projectedUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
+  });
 
-  app.get<{ Params: { id: string } }>("/api/projects/:id/usage", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/projects/:id/usage", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return projectedUsage({ type: "project", id: request.params.id });
+    try { return projectedUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
@@ -3139,12 +3221,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string; directReplyToAuthorAgentId?: string; attachments?: AssetDto[] };
+    Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string; directReplyToAuthorAgentId?: string; attachments?: AssetDto[]; idempotencyKey?: string };
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
     const text = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     if (!text) return reply.code(400).send({ error: "broadcast text is required after #broadcast" });
     if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
+    const idempotencyKey = request.body?.idempotencyKey?.trim();
+    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
@@ -3162,7 +3246,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (validatedAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
     const communication = recordCommunication({
       eventId: randomUUID(),
-      schemaVersion: 1,
+      schemaVersion: 2,
       projectId: master.projectId,
       conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" },
@@ -3170,7 +3254,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       audience: { kind: "organization", organizationId: master.projectId },
       text,
       createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey: `broadcast:${master.id}:${idempotencyKey}` } : {}),
     });
+    const replayedMessage = communication && idempotencyKey
+      ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
+      : undefined;
+    if (replayedMessage) return replayedMessage;
     let message;
     try {
       message = store.appendConversationMessage(request.params.id, {
@@ -3681,11 +3770,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorAgentId?: string };
+    Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorAgentId?: string; idempotencyKey?: string };
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
     const text = request.body?.text?.trim();
     if (!text) return reply.code(400).send({ error: "text is required" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+    const idempotencyKey = request.body?.idempotencyKey?.trim();
+    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
     const detail = collaborationViewDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
@@ -3729,12 +3820,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
     }
     const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
+      eventId: idempotencyKey
+        ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
+        : randomUUID(),
+      schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
       text, createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey: `collaboration:${master.id}:${idempotencyKey}` } : {}),
     });
+    const replayedMessage = detail.messages.find((candidate) => candidate.communicationEventId === communication.eventId);
+    if (replayedMessage) {
+      return {
+        message: replayedMessage,
+        audience: hasEveryoneMention(text) ? "everyone" : "mention",
+        notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
+      };
+    }
     let message;
     try { message = store.appendConversationMessage(
       request.params.id,
@@ -3921,9 +4024,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return detail ?? reply.code(404).send({ error: "agent not found" });
   });
 
-  app.get<{ Params: { id: string } }>("/api/agents/:id/usage", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    return projectedUsage({ type: "agent", id: request.params.id });
+    try { return projectedUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
   app.patch<{ Params: { id: string }; Body: { title?: string; archived?: boolean } }>(
@@ -4913,6 +5017,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return hydrateDraft(request.params.id);
   });
 
+  app.get<{ Params: { id: string } }>("/api/conversations/:id/draft-conflicts", async (request, reply) => {
+    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
+    return workspace.listDraftConflicts(request.params.id);
+  });
+
   app.put<{ Params: { id: string }; Body: PutConversationDraftRequest }>("/api/conversations/:id/draft", async (request, reply) => {
     if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
     if (!request.body?.clientId || !Number.isSafeInteger(request.body.expectedRevision) || !Array.isArray(request.body.attachmentIds)) return reply.code(400).send({ error: "invalid draft update" });
@@ -4925,7 +5034,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       publishWorkspaceSince(cursor);
       return hydrateDraft(request.params.id);
     } catch (error) {
-      if ((error as { code?: string }).code === "DRAFT_CONFLICT") return reply.code(409).send((error as { current: unknown }).current);
+      if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
+        return reply.code(409).send({
+          current: await hydrateDraft(request.params.id),
+          displaced: (error as { displaced: unknown }).displaced,
+        });
+      }
       throw error;
     }
   });
@@ -5112,9 +5226,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
-  app.post<{ Params: { id: string } }>("/api/agents/:id/cancel", async (request) => {
+  app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
+    const idempotencyKey = request.body?.idempotencyKey?.trim();
+    const stopResponse = (cancelled: boolean, replayed: boolean): CancelAgentRunResponse | { cancelled: boolean } =>
+      idempotencyKey ? { cancelled, replayed } : { cancelled };
+    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    if (idempotencyKey) {
+      const previous = runLedger.stopReceipt(request.params.id, idempotencyKey);
+      if (previous) return stopResponse(previous.cancelled, true);
+    }
     const run = activeRuns.get(request.params.id);
-    if (!run || !transitionRun(request.params.id, run, "cancelling")) return { cancelled: false };
+    if (!run || !transitionRun(request.params.id, run, "cancelling")) {
+      if (idempotencyKey) runLedger.rememberStop(request.params.id, idempotencyKey, false);
+      return stopResponse(false, false);
+    }
+    // Persist the receipt immediately after the ownership CAS. A second tab
+    // can arrive while the runtime session is asynchronously closing; it must
+    // replay the accepted stop rather than race and record a false result.
+    if (idempotencyKey) runLedger.rememberStop(request.params.id, idempotencyKey, true);
     if (run.deliveryIds?.length) collaborationDeliveries.cancelBatch(run.deliveryIds, "cancelled by user");
     const released = releaseActiveRun(request.params.id, run, "cancelled");
     if (released) {
@@ -5133,7 +5262,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     });
     publish(request.params.id, lifecycle);
     if (released) runDeliveryDispatch(request.params.id);
-    return { cancelled: true };
+    return stopResponse(true, false);
   });
 
   app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {

@@ -98,6 +98,17 @@ export interface ConversationDraftDto {
   clientId: string;
 }
 
+/** A rejected stale write includes the displaced text as a recoverable copy. */
+export interface ConversationDraftConflictDto {
+  current: ConversationDraftDto;
+  displaced: Pick<ConversationDraftDto, "conversationId" | "text" | "attachmentIds" | "clientId"> & { capturedAt: string };
+}
+
+export interface ConversationDraftConflictListDto {
+  conversationId: string;
+  conflicts: ConversationDraftConflictDto[];
+}
+
 export interface PutConversationDraftRequest {
   text: string;
   attachmentIds: string[];
@@ -127,9 +138,11 @@ export type WorkspaceEvent =
   | { type: "project_changed"; projectId: string; action: "created" | "updated" | "deleted" | "used" }
   | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
+  | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
-  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state"; executionId?: string }
+  | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
+  | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
   | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" };
 
 export interface WebPushSubscriptionDto {
@@ -337,6 +350,8 @@ export interface CreateConversationMessageRequest {
   text: string;
   replyToMessageId?: string;
   attachments?: ImageAttachmentDto[];
+  /** Stable across transport retries; absent is accepted for legacy clients. */
+  idempotencyKey?: string;
 }
 
 /** POST /api/conversations/:id/collaboration/messages body. */
@@ -345,6 +360,8 @@ export interface CreateCollaborationMessageRequest {
   /** Stable IDs resolved by the client; display handles are never routing input. */
   recipientAgentIds: string[];
   replyToMessageId?: string;
+  /** Stable across transport retries so a collaboration message is appended once. */
+  idempotencyKey?: string;
 }
 
 /** POST collaboration message response; recipients are the immutable resolved audience. */
@@ -410,6 +427,16 @@ export interface CancelQueuedMessageResponse {
   cancelled: boolean;
   replayed: boolean;
   status: "cancelled" | "delivery_started";
+}
+
+export interface CancelAgentRunRequest {
+  /** Stable across retries so a repeated stop cannot append another lifecycle event. */
+  idempotencyKey: string;
+}
+
+export interface CancelAgentRunResponse {
+  cancelled: boolean;
+  replayed: boolean;
 }
 
 export interface CorrectConversationMessageRequest {
@@ -696,6 +723,48 @@ export interface AgentRunDto {
 
 export type TokenUsageScope = "overall" | "project" | "agent";
 
+export type TokenUsageMetric = "inputTokens" | "cachedInputTokens" | "cacheWriteInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens";
+
+export type TokenUsageMetricAvailability = "available" | "unavailable";
+
+export interface TokenUsageRangeDto {
+  /** Inclusive ISO timestamp lower bound. */
+  from?: string;
+  /** Exclusive ISO timestamp upper bound. */
+  to?: string;
+}
+
+export interface TokenUsageTurnDto {
+  projectId: string;
+  conversationId?: string;
+  agentId: string;
+  agentTitle: string;
+  executionId: string;
+  engine: EngineId;
+  model?: string;
+  startedAt: string;
+  completedAt?: string;
+  usage?: TokenUsage;
+  /** Omitted when pricing or provider usage is unavailable. */
+  estimatedCostUsd?: number;
+  pricingModel?: string;
+  pricingAvailable: boolean;
+}
+
+export interface TokenUsageBreakdownDto {
+  projectId: string;
+  conversationId?: string;
+  agentId: string;
+  agentTitle: string;
+  engine: EngineId;
+  model?: string;
+  runs: number;
+  usage: TokenUsage;
+  estimatedCostUsd?: number;
+  pricingAvailableRuns: number;
+  unpricedRuns: number;
+}
+
 /** Rebuildable aggregate over finalized canonical runs. */
 export interface TokenUsageSummaryDto extends TokenUsage {
   scope: TokenUsageScope;
@@ -705,6 +774,13 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   unreportedRuns: number;
   /** 0..1; null when the scope has no finalized runs. */
   coverage: number | null;
+  range?: TokenUsageRangeDto;
+  /** Metrics absent from every reported run are explicitly unavailable. */
+  metricAvailability: Record<TokenUsageMetric, TokenUsageMetricAvailability>;
+  /** Aggregated by project chat, agent, and engine/model. */
+  breakdown: TokenUsageBreakdownDto[];
+  /** Most recent finalized turns in the selected range. */
+  recentTurns: TokenUsageTurnDto[];
   projectedApiCost?: ProjectedApiCostDto;
 }
 

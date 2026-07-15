@@ -1,6 +1,6 @@
 import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
-import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, LinearProgress, Stack, Tooltip, Typography } from "@mui/material";
-import type { ProjectedApiCostComponentsDto, TokenUsageScope, TokenUsageSummaryDto } from "@ponderosa/core";
+import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Select, Stack, Tooltip, Typography } from "@mui/material";
+import type { ProjectedApiCostComponentsDto, TokenUsageRangeDto, TokenUsageScope, TokenUsageSummaryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
@@ -46,6 +46,15 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
   const hasPricedRuns = Boolean(cost?.pricedRuns);
   const isPartialEstimate = Boolean(cost?.pricedRuns && cost.unpricedRuns);
   return <Stack spacing={2}>
+    <Box>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>Token usage</Typography>
+      <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap">
+        {(["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"] as const).map((key) => <Box key={key} sx={{ minWidth: 100 }}>
+          <Typography variant="caption" color="text.secondary">{key.replace(/Tokens$/, "").replace(/([A-Z])/g, " $1").trim()}</Typography>
+          <Typography variant="body2">{(data.metricAvailability?.[key] ?? (data[key] === undefined ? "unavailable" : "available")) === "available" ? formatTokens(data[key]) : "Unavailable"}</Typography>
+        </Box>)}
+      </Stack>
+    </Box>
     {cost && hasPricedRuns ? <>
       <Box>
         <Typography variant="h4" component="p">{formatUsd(cost.usd)}</Typography>
@@ -79,6 +88,13 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
       {data.unreportedRuns ? ` ${data.unreportedRuns} older or unsupported runs have no usage data.` : ""}
       {cost?.unpricedRuns ? ` ${runsLabel(cost.unpricedRuns)} ${cost.unpricedRuns === 1 ? "is" : "are"} excluded because model pricing, usage, or request-level detail required for long-context pricing is unavailable.` : ""}
     </Alert>
+    {data.breakdown?.length ? <Box>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>Usage by chat and agent</Typography>
+      {data.breakdown.map((item) => <Stack key={`${item.projectId}:${item.conversationId ?? ""}:${item.agentId}:${item.engine}:${item.model ?? ""}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: .5 }}>
+        <Typography variant="body2" noWrap>{item.agentTitle} · {item.engine}{item.model ? ` / ${item.model}` : ""} · {runsLabel(item.runs)}</Typography>
+        <Typography variant="caption" color="text.secondary">{item.estimatedCostUsd === undefined ? "Estimate unavailable" : formatUsd(item.estimatedCostUsd)}</Typography>
+      </Stack>)}
+    </Box> : null}
     <Typography variant="caption" color="text.secondary">
       New input is calculated as provider input minus cached reads and cache writes, so no token is charged twice. Reasoning is included in output. Long-context tiers are applied per provider request; aggregate-only runs that could cross a tier are excluded. Current public API list prices are used, while subscription terms and tool fees are excluded.
     </Typography>
@@ -87,9 +103,11 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
 
 export function TokenUsageButton({ scope, scopeId, label, compact = false }: { scope: TokenUsageScope; scopeId?: string; label: string; compact?: boolean }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [rangeKey, setRangeKey] = useState<"all" | "24h" | "7d" | "30d">("30d");
+  const range: TokenUsageRangeDto = rangeKey === "all" ? {} : { from: new Date(Date.now() - ({ "24h": 24, "7d": 24 * 7, "30d": 24 * 30 }[rangeKey] ?? 0) * 60 * 60 * 1000).toISOString() };
   const usage = useQuery({
-    queryKey: ["token-usage", scope, scopeId],
-    queryFn: () => api.getTokenUsage(scope, scopeId),
+    queryKey: ["token-usage", scope, scopeId, rangeKey],
+    queryFn: () => api.getTokenUsage(scope, scopeId, range),
     enabled: scope === "overall" || Boolean(scopeId),
     refetchInterval: open ? 5_000 : 30_000,
   });
@@ -113,6 +131,15 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="md" aria-labelledby={`${scope}-usage-title`} PaperProps={{ sx: { width: { xs: "calc(100% - 16px)", sm: 720 }, maxHeight: "calc(100dvh - 16px)", m: { xs: 1, sm: 4 } } }}>
       <DialogTitle id={`${scope}-usage-title`}>{label} cost</DialogTitle>
       <DialogContent>
+        <FormControl size="small" sx={{ minWidth: 150, mb: 2 }}>
+          <InputLabel id={`${scope}-usage-range-label`}>Time range</InputLabel>
+          <Select labelId={`${scope}-usage-range-label`} label="Time range" value={rangeKey} onChange={(event) => setRangeKey(event.target.value as typeof rangeKey)}>
+            <MenuItem value="24h">Last 24 hours</MenuItem>
+            <MenuItem value="7d">Last 7 days</MenuItem>
+            <MenuItem value="30d">Last 30 days</MenuItem>
+            <MenuItem value="all">All time</MenuItem>
+          </Select>
+        </FormControl>
         {usage.isError ? <Alert severity="error">Cost could not be loaded.</Alert> : !data ? <LinearProgress /> : <TokenUsageDetails data={data} />}
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>

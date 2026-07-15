@@ -23,6 +23,7 @@ import type {
   WorkspacePreferencesDto,
   UpdateWorkspacePreferencesRequest,
   ConversationDraftDto,
+  ConversationDraftConflictListDto,
   DraftAttachmentDto,
   PutConversationDraftRequest,
   GenerateConversationTitleResponse,
@@ -38,7 +39,9 @@ import type {
   AgentDetailDto,
   AgentDto,
   TokenUsageScope,
+  TokenUsageRangeDto,
   TokenUsageSummaryDto,
+  CancelAgentRunResponse,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
@@ -108,9 +111,10 @@ export const realApi: PonderosaApi = {
   getAgentHealth(projectId) {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
-  getTokenUsage(scope: TokenUsageScope, id?: string) {
+  getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto) {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
-    return requestJson<TokenUsageSummaryDto>(path);
+    const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
+    return requestJson<TokenUsageSummaryDto>(url);
   },
   listConversations(projectId) {
     return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
@@ -146,6 +150,9 @@ export const realApi: PonderosaApi = {
   },
   getConversationDraft(conversationId) {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`);
+  },
+  getConversationDraftConflicts(conversationId) {
+    return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts`);
   },
   putConversationDraft(conversationId, request) {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
@@ -319,8 +326,11 @@ export const realApi: PonderosaApi = {
     const response = await fetch(`/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
-  async cancelRun(agentId) {
-    await requestJson(`/api/agents/${encodeURIComponent(agentId)}/cancel`, { method: "POST" });
+  cancelRun(agentId, idempotencyKey) {
+    return requestJson<CancelAgentRunResponse>(`/api/agents/${encodeURIComponent(agentId)}/cancel`, {
+      method: "POST",
+      ...(idempotencyKey ? { body: JSON.stringify({ idempotencyKey }) } : {}),
+    });
   },
   compactSession(agentId) {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });

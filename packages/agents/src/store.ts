@@ -52,6 +52,9 @@ import type {
   AgentDto,
   AgentState,
   TokenUsageSummaryDto,
+  TokenUsageBreakdownDto,
+  TokenUsageMetric,
+  TokenUsageRangeDto,
   TokenUsage,
   RunOutputDto,
   UpdateProjectRequest,
@@ -1748,83 +1751,157 @@ export class AgentStore {
       }));
   }
 
-  getTokenUsage(scope: { type: "overall" } | { type: "project" | "agent"; id: string }): TokenUsageSummaryDto {
-    const predicate = scope.type === "overall" ? "" : scope.type === "project" ? " AND agents.project_id = ?" : " AND runs.agent_id = ?";
-    const row = this.client.prepare(`
-      SELECT
-        COUNT(*) AS finalized_runs,
-        SUM(CASE WHEN total_tokens IS NOT NULL THEN 1 ELSE 0 END) AS reported_runs,
-        SUM(COALESCE(input_tokens, 0)) AS input_tokens,
-        SUM(COALESCE(cached_input_tokens, 0)) AS cached_input_tokens,
-        SUM(COALESCE(cache_write_input_tokens, 0)) AS cache_write_input_tokens,
-        SUM(COALESCE(output_tokens, 0)) AS output_tokens,
-        SUM(COALESCE(reasoning_output_tokens, 0)) AS reasoning_output_tokens,
-        SUM(COALESCE(total_tokens, 0)) AS total_tokens
-      FROM runs JOIN agents ON agents.id = runs.agent_id
-      WHERE runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')${predicate}
-    `).get(...(scope.type === "overall" ? [] : [scope.id])) as {
-      finalized_runs: number; reported_runs: number | null; input_tokens: number | null; cached_input_tokens: number | null; cache_write_input_tokens: number | null;
-      output_tokens: number | null; reasoning_output_tokens: number | null; total_tokens: number | null;
-    };
-    const finalizedRuns = row.finalized_runs;
-    const reportedRuns = row.reported_runs ?? 0;
+  getTokenUsage(
+    scope: { type: "overall" } | { type: "project" | "agent"; id: string },
+    range: TokenUsageRangeDto = {},
+  ): TokenUsageSummaryDto {
+    const rows = this.getUsageRows(scope, range);
+    const finalizedRuns = rows.length;
+    const reportedRuns = rows.filter((row) => row.totalTokens !== undefined).length;
+    const keys: TokenUsageMetric[] = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
+    const totals: TokenUsage = {};
+    const metricAvailability = Object.fromEntries(keys.map((key) => [key, rows.some((row) => row.usage[key] !== undefined) ? "available" : "unavailable"])) as Record<TokenUsageMetric, "available" | "unavailable">;
+    for (const row of rows) {
+      for (const key of keys) {
+        const value = row.usage[key];
+        if (value !== undefined) totals[key] = (totals[key] ?? 0) + value;
+      }
+    }
+    const grouped = new Map<string, TokenUsageBreakdownDto>();
+    for (const row of rows.filter((item) => item.totalTokens !== undefined)) {
+      const key = [row.projectId, row.conversationId ?? "", row.agentId, row.engine, row.model ?? ""].join("\0");
+      const current = grouped.get(key) ?? {
+        projectId: row.projectId,
+        ...(row.conversationId ? { conversationId: row.conversationId } : {}),
+        agentId: row.agentId,
+        agentTitle: row.agentTitle,
+        engine: row.engine as TokenUsageBreakdownDto["engine"],
+        ...(row.model ? { model: row.model } : {}),
+        runs: 0,
+        usage: {},
+        pricingAvailableRuns: 0,
+        unpricedRuns: 0,
+      };
+      current.runs += 1;
+      for (const keyName of keys) {
+        const value = row.usage[keyName];
+        if (value !== undefined) current.usage[keyName] = (current.usage[keyName] ?? 0) + value;
+      }
+      grouped.set(key, current);
+    }
     return {
       scope: scope.type,
       ...(scope.type !== "overall" ? { scopeId: scope.id } : {}),
-      inputTokens: row.input_tokens ?? 0,
-      cachedInputTokens: row.cached_input_tokens ?? 0,
-      cacheWriteInputTokens: row.cache_write_input_tokens ?? 0,
-      outputTokens: row.output_tokens ?? 0,
-      reasoningOutputTokens: row.reasoning_output_tokens ?? 0,
-      totalTokens: row.total_tokens ?? 0,
+      ...totals,
       finalizedRuns,
       reportedRuns,
       unreportedRuns: finalizedRuns - reportedRuns,
       coverage: finalizedRuns ? reportedRuns / finalizedRuns : null,
+      ...(range.from || range.to ? { range } : {}),
+      metricAvailability,
+      breakdown: [...grouped.values()].sort((a, b) => b.runs - a.runs || a.agentTitle.localeCompare(b.agentTitle)),
+      recentTurns: rows
+        .filter((row) => row.totalTokens !== undefined)
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+        .slice(0, 10)
+        .map((row) => ({
+          projectId: row.projectId,
+          ...(row.conversationId ? { conversationId: row.conversationId } : {}),
+          agentId: row.agentId,
+          agentTitle: row.agentTitle,
+          executionId: row.executionId,
+          engine: row.engine as TokenUsageBreakdownDto["engine"],
+          ...(row.model ? { model: row.model } : {}),
+          startedAt: row.startedAt,
+          ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+          usage: row.usage,
+          pricingAvailable: false,
+        })),
     };
   }
 
   /** Metered canonical runs used by the server's adapter-owned pricing projection. */
-  getMeteredRuns(scope: { type: "overall" } | { type: "project" | "agent"; id: string }): Array<{
-    engine: string; model?: string; usage: NonNullable<AgentRunDto["usage"]>; providerRequestUsage?: TokenUsage[];
+  getMeteredRuns(scope: { type: "overall" } | { type: "project" | "agent"; id: string }, range: TokenUsageRangeDto = {}): Array<{
+    projectId: string; conversationId?: string; agentId: string; agentTitle: string; executionId: string; engine: string; model?: string;
+    startedAt: string; completedAt?: string; usage: NonNullable<AgentRunDto["usage"]>; providerRequestUsage?: TokenUsage[];
   }> {
-    const predicate = scope.type === "overall" ? "" : scope.type === "project" ? " AND agents.project_id = ?" : " AND runs.agent_id = ?";
-    const rows = this.client.prepare(`
-      SELECT runs.engine, runs.model, runs.input_tokens, runs.cached_input_tokens,
-        runs.cache_write_input_tokens, runs.output_tokens, runs.reasoning_output_tokens, runs.total_tokens,
-        runs.provider_request_usage_json
-      FROM runs JOIN agents ON agents.id = runs.agent_id
-      WHERE runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')
-        AND runs.total_tokens IS NOT NULL${predicate}
-    `).all(...(scope.type === "overall" ? [] : [scope.id])) as Array<{
-      engine: string; model: string | null; input_tokens: number | null; cached_input_tokens: number | null;
-      cache_write_input_tokens: number | null; output_tokens: number | null; reasoning_output_tokens: number | null; total_tokens: number;
-      provider_request_usage_json: string | null;
-    }>;
-    return rows.map((row) => {
+    return this.getUsageRows(scope, range).filter((row) => row.totalTokens !== undefined).map((row) => {
       let providerRequestUsage: TokenUsage[] | undefined;
-      if (row.provider_request_usage_json) {
+      if (row.providerRequestUsageJson) {
         try {
-          const parsed = JSON.parse(row.provider_request_usage_json) as unknown;
+          const parsed = JSON.parse(row.providerRequestUsageJson) as unknown;
           if (Array.isArray(parsed)) providerRequestUsage = parsed as TokenUsage[];
         } catch {
           // A malformed rebuildable projection must not make the usage API fail.
         }
       }
       return {
+        projectId: row.projectId,
+        ...(row.conversationId ? { conversationId: row.conversationId } : {}),
+        agentId: row.agentId,
+        agentTitle: row.agentTitle,
+        executionId: row.executionId,
         engine: row.engine,
         model: row.model ?? undefined,
-        usage: {
-          ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
-          ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
-          ...(row.cache_write_input_tokens !== null ? { cacheWriteInputTokens: row.cache_write_input_tokens } : {}),
-          ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
-          ...(row.reasoning_output_tokens !== null ? { reasoningOutputTokens: row.reasoning_output_tokens } : {}),
-          totalTokens: row.total_tokens,
-        },
+        startedAt: row.startedAt,
+        ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+        usage: row.usage,
         ...(providerRequestUsage ? { providerRequestUsage } : {}),
       };
     });
+  }
+
+  private getUsageRows(
+    scope: { type: "overall" } | { type: "project" | "agent"; id: string },
+    range: TokenUsageRangeDto,
+  ): Array<{
+    projectId: string; conversationId: string | null; agentId: string; agentTitle: string; executionId: string; engine: string; model: string | undefined;
+    startedAt: string; completedAt: string | undefined; totalTokens: number | undefined; usage: TokenUsage; providerRequestUsageJson: string | null;
+  }> {
+    const predicates = ["runs.status IN ('cancelled', 'completed', 'failed', 'interrupted')"];
+    const params: string[] = [];
+    if (scope.type === "project") { predicates.push("agents.project_id = ?"); params.push(scope.id); }
+    if (scope.type === "agent") { predicates.push("runs.agent_id = ?"); params.push(scope.id); }
+    if (range.from) { predicates.push("COALESCE(runs.completed_at, runs.started_at) >= ?"); params.push(range.from); }
+    if (range.to) { predicates.push("COALESCE(runs.completed_at, runs.started_at) < ?"); params.push(range.to); }
+    const rows = this.client.prepare(`
+      SELECT runs.id AS execution_id, runs.agent_id, agents.project_id, agents.conversation_id, agents.title AS agent_title,
+        runs.communication_event_id, runs.engine, runs.model, runs.started_at, runs.completed_at, runs.input_tokens, runs.cached_input_tokens,
+        runs.cache_write_input_tokens, runs.output_tokens, runs.reasoning_output_tokens, runs.total_tokens,
+        runs.provider_request_usage_json
+      FROM runs JOIN agents ON agents.id = runs.agent_id
+      WHERE ${predicates.join(" AND ")}
+    `).all(...params) as Array<{
+      execution_id: string; agent_id: string; project_id: string; conversation_id: string | null; agent_title: string;
+      communication_event_id: string | null; engine: string; model: string | null; started_at: string; completed_at: string | null;
+      input_tokens: number | null; cached_input_tokens: number | null; cache_write_input_tokens: number | null; output_tokens: number | null;
+      reasoning_output_tokens: number | null; total_tokens: number | null; provider_request_usage_json: string | null;
+    }>;
+    return rows.map((row) => ({
+      projectId: row.project_id,
+      // Prefer the immutable communication's room over mutable current
+      // membership so historical usage remains scoped to its original chat.
+      conversationId: row.communication_event_id
+        ? this.getCommunicationEvent(row.project_id, row.communication_event_id)?.conversationId ?? row.conversation_id
+        : row.conversation_id,
+      agentId: row.agent_id,
+      agentTitle: row.agent_title,
+      executionId: row.execution_id,
+      engine: row.engine,
+      model: row.model ?? undefined,
+      startedAt: row.started_at,
+      completedAt: row.completed_at ?? undefined,
+      totalTokens: row.total_tokens ?? undefined,
+      usage: {
+        ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
+        ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
+        ...(row.cache_write_input_tokens !== null ? { cacheWriteInputTokens: row.cache_write_input_tokens } : {}),
+        ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
+        ...(row.reasoning_output_tokens !== null ? { reasoningOutputTokens: row.reasoning_output_tokens } : {}),
+        ...(row.total_tokens !== null ? { totalTokens: row.total_tokens } : {}),
+      },
+      providerRequestUsageJson: row.provider_request_usage_json,
+    }));
   }
 
   getWorkItems(agentId: string): WorkItemDto[] {

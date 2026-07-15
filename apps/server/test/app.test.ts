@@ -364,6 +364,9 @@ describe("token usage API", () => {
 
     const agentUsage = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}/usage` })).json();
     expect(agentUsage).toMatchObject({ scope: "agent", scopeId: agent.id, inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, totalTokens: 150, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
+    expect(agentUsage.metricAvailability).toMatchObject({ inputTokens: "available", cachedInputTokens: "available", reasoningOutputTokens: "available" });
+    expect(agentUsage.breakdown).toEqual([expect.objectContaining({ projectId: project.id, agentId: agent.id, runs: 1, usage: expect.objectContaining({ totalTokens: 150 }), pricingAvailableRuns: 1 })]);
+    expect(agentUsage.recentTurns[0]).toMatchObject({ projectId: project.id, agentId: agent.id, executionId: expect.any(String), pricingAvailable: true });
     expect(agentUsage.projectedApiCost).toMatchObject({
       usd: 0.000239, basis: "api_list_price_proxy", pricedRuns: 1, unpricedRuns: 0, coverage: 1,
       components: {
@@ -384,12 +387,39 @@ describe("token usage API", () => {
     });
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/usage` })).json()).toMatchObject({ scope: "project", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/usage" })).json()).toMatchObject({ scope: "overall", totalTokens: 150 });
+    expect((await app.inject({ method: "GET", url: "/api/usage?from=2099-01-01T00:00:00.000Z" })).json()).toMatchObject({ scope: "overall", finalizedRuns: 0, recentTurns: [], breakdown: [] });
+    expect((await app.inject({ method: "GET", url: "/api/usage?from=not-a-date" })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: "/api/agents/missing/usage" })).statusCode).toBe(404);
     await app.close();
   });
 });
 
+describe("idempotent runtime controls", () => {
+  it("replays a stop receipt without appending a second cancellation", async () => {
+    const { app, agent } = await createProjectAndAgent();
+    const first = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-retry" } });
+    const second = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-retry" } });
+    expect(first.json()).toEqual({ cancelled: false, replayed: false });
+    expect(second.json()).toEqual({ cancelled: false, replayed: true });
+    await app.close();
+  });
+});
+
 describe("project lifecycle API", () => {
+  it("deduplicates retried Project chat sends by their stable idempotency key", async () => {
+    const { app, project } = await createProjectAndAgent();
+    const conversationId = project.lastConversationId!;
+    const request = { text: "#broadcast Retry-safe update", idempotencyKey: "broadcast-retry" };
+    const first = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: request });
+    const second = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: request });
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json<{ id: string }>().id).toBe(first.json<{ id: string }>().id);
+    expect(store.getConversationMessages(conversationId).filter((message) => message.text.includes("Retry-safe update"))).toHaveLength(1);
+    expect(store.readCommunicationEvents(project.id).filter((event) => event.idempotencyKey === `broadcast:${conversationId}:broadcast-retry`)).toHaveLength(1);
+    await app.close();
+  });
+
   it("persists staged draft attachments and restores them after a server restart", async () => {
     let app = createServer({ dataDir, store, engines, logger: false });
     const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Drafts", hostPath: repoDir, defaultEngine: "codex" } });
@@ -412,7 +442,10 @@ describe("project lifecycle API", () => {
     app = createServer({ dataDir, store, engines, logger: false });
     const restored = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft` });
     expect(restored.json()).toMatchObject({ revision: 1, text: "keep this", attachments: [{ id: attachment.id }] });
-    expect((await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { text: "stale", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" } })).statusCode).toBe(409);
+    const conflict = await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { text: "stale", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" } });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ current: { revision: 1, text: "keep this" }, displaced: { text: "stale", clientId: "tab-b" } });
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft-conflicts` })).json()).toMatchObject({ conversationId, conflicts: [expect.objectContaining({ displaced: expect.objectContaining({ text: "stale" }) })] });
     await app.close();
   });
 
@@ -456,9 +489,11 @@ describe("project lifecycle API", () => {
     const { app, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Run with workspace updates" } });
     await waitForRun(agent.id);
-    const events = new WorkspaceStore(dataDir).readSince(0).map((item) => item.event).filter((event) => event.type === "agent_event");
+    const allEvents = new WorkspaceStore(dataDir).readSince(0).map((item) => item.event);
+    const events = allEvents.filter((event) => event.type === "agent_event");
     expect(events.map((event) => event.type === "agent_event" ? event.category : undefined)).toEqual(expect.arrayContaining(["lifecycle", "task", "file"]));
     expect(events.some((event) => event.type === "agent_event" && ["text", "reasoning", "agent_output", "turn_done"].includes(event.eventType))).toBe(false);
+    expect(allEvents.some((event) => event.type === "usage_changed" && event.agentId === agent.id)).toBe(true);
     expect(events.every((event) => event.type !== "agent_event" || event.agentId === agent.id)).toBe(true);
     await app.close();
   });

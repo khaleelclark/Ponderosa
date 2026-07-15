@@ -3,6 +3,8 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, wr
 import { dirname } from "node:path";
 import type {
   ConversationDraftDto,
+  ConversationDraftConflictDto,
+  ConversationDraftConflictListDto,
   UpdateWorkspacePreferencesRequest,
   WorkspaceEvent,
   WorkspaceEventEnvelope,
@@ -17,6 +19,7 @@ import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
 type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
   mutation?:
     | { kind: "draft"; draft: ConversationDraftDto }
+    | { kind: "draft_conflict"; conflict: ConversationDraftConflictDto }
     | { kind: "draft_deleted"; draftId: string }
     | { kind: "notification"; notification: WorkspaceNotificationDto }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
@@ -39,6 +42,7 @@ export class WorkspaceStore {
   private readonly instance: string;
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
+  private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private preferences = DEFAULT_PREFERENCES;
@@ -64,6 +68,13 @@ export class WorkspaceStore {
       projectOrder: record.event.preferences.projectOrder ?? [],
     };
     if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
+    if (record.mutation?.kind === "draft_conflict") {
+      const conversationId = record.mutation.conflict.current.conversationId;
+      const conflicts = this.draftConflicts.get(conversationId) ?? [];
+      conflicts.push(record.mutation.conflict);
+      // Keep the canonical log complete, but bound the projection used by the UI.
+      this.draftConflicts.set(conversationId, conflicts.slice(-20));
+    }
     if (record.mutation?.kind === "draft_deleted") this.drafts.delete(record.mutation.draftId);
     if (record.mutation?.kind === "notification") this.notifications.set(record.mutation.notification.id, record.mutation.notification);
     if (record.mutation?.kind === "notifications_read") {
@@ -122,10 +133,25 @@ export class WorkspaceStore {
 
   putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; expectedRevision: number; clientId: string }): ConversationDraftDto {
     const current = this.getDraft(conversationId);
-    if (current.revision !== input.expectedRevision) throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current });
+    if (current.revision !== input.expectedRevision) {
+      const displaced: ConversationDraftConflictDto["displaced"] = {
+        conversationId,
+        text: input.text,
+        attachmentIds: [...new Set(input.attachmentIds)],
+        clientId: input.clientId,
+        capturedAt: new Date().toISOString(),
+      };
+      const conflict: ConversationDraftConflictDto = { current, displaced };
+      this.append({ type: "draft_conflict", conversationId, revision: current.revision, }, { kind: "draft_conflict", conflict });
+      throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current, displaced });
+    }
     const draft: ConversationDraftDto = { conversationId, text: input.text, attachmentIds: [...new Set(input.attachmentIds)], revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
     this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 }, { kind: "draft", draft });
     return draft;
+  }
+
+  listDraftConflicts(conversationId: string): ConversationDraftConflictListDto {
+    return { conversationId, conflicts: [...(this.draftConflicts.get(conversationId) ?? [])] };
   }
 
   deleteDraft(draftId: string): void {
