@@ -266,6 +266,79 @@ Preserved evidence:
 - V3.1 data: `/home/phoenix/.ponderosa-v31-compare-v31-20260715`
 - Matched metrics: `followup-metrics.json` under the trial root
 
+## Matched V2 versus V3.1 application-change trial
+
+A clean two-phase trial then compared V2 with the corrected V3.1 branch on
+Pine. Both conditions used byte-identical repositories, four-agent nested
+organizations, models, efforts, task contracts, grader, host, and launch
+window. The common user prompt described delegation and waiting behavior but
+did not name either protocol's tools. The initial phase built the portfolio;
+the follow-up changed the budget and six constraints while preserving the
+initial artifacts.
+
+The first comparison attempt found one additional V3.1 failure boundary. A
+resumed delivery Run sent its acceptance evidence as an ordinary message
+instead of terminally updating its suspended parent request. The continuation
+therefore remained `waiting_dependency` with no Run or actionable Activation.
+V3.1 now includes the complete continuation request and explicit update
+obligation in the join Activation. If a resumed Run still ends without a
+terminal update, the supervisor transitions the continuation to
+`outcome_unknown` and reevaluates its outer join; it can no longer deadlock.
+Automated coverage exercises both successful completion and this fail-closed
+path.
+
+A second attempt correctly stopped in `waiting_dependency` because the task
+required a Git commit while both provider sandboxes mounted `.git` read-only.
+The final matched task removed only that impossible host operation; all
+portfolio constraints, artifacts, agent roles, and grading remained unchanged.
+
+### Initial build
+
+| Metric | V2 | V3.1 | V3.1 change |
+| --- | ---: | ---: | ---: |
+| Deterministic quality | 100/100 | 100/100 | equal |
+| Provider turns | 8 | 6 | 25.0% fewer |
+| Provider requests | 44 | 33 | 25.0% fewer |
+| Total tokens | 895,956 | 652,098 | 27.2% fewer |
+| Projected API cost | $0.475951 | $0.547787 | 15.1% higher |
+| First start to last completion | 352.684 s | 320.334 s | 9.2% faster |
+
+### Follow-up application change
+
+| Metric | V2 | V3.1 | V3.1 change |
+| --- | ---: | ---: | ---: |
+| Deterministic quality | 100/100 | 100/100 | equal |
+| Provider turns | 8 | 6 | 25.0% fewer |
+| Provider requests | 33 | 33 | equal |
+| Total tokens | 1,153,525 | 772,404 | 33.0% fewer |
+| Projected API cost | $0.444705 | $0.435213 | 2.1% lower |
+| First start to last completion | 375.900 s | 322.786 s | 14.1% faster |
+
+Across both phases, V3.1 used 12 turns instead of 16, 66 provider requests
+instead of 77, and 1,424,502 tokens instead of 2,049,481. It finished each
+phase faster and used 30.5% fewer total tokens. Cumulative projected cost was
+$0.983000 versus V2's $0.920656, or 6.8% higher: request-boundary session resets
+reduced accumulated context but also reduced discounted cache reuse. The
+follow-up alone crossed into a small cost advantage. These results support a
+repeatable execution-shape, token, and latency improvement; they do not support
+a universal cost-savings claim.
+
+V2's two extra turns in each phase were duplicate report wakes: delivery and
+the architect each ran once for `wait_satisfied` and again when the same result
+arrived as ordinary collaboration. V3.1 represented every dependency with one
+correlated request and join, producing the intended six-turn shape. Its six
+requests completed, four joins satisfied, and no request, join, or scheduler
+Run ended unknown. V2 recorded four recoverable tool errors; V3.1 recorded one
+recoverable malformed join attempt. Neither condition had an engine failure.
+
+Preserved evidence:
+
+- Final matched trial: `/home/phoenix/khaleel/benchmarks/v2-v31-r3-20260715`
+- V2 data: `/home/phoenix/.ponderosa-v2-v31-r3-v2-20260715`
+- V3.1 data: `/home/phoenix/.ponderosa-v2-v31-r3-v31-20260715`
+- Failure-finding trials: `/home/phoenix/khaleel/benchmarks/v2-v31-20260715`
+  and `/home/phoenix/khaleel/benchmarks/v2-v31-r2-20260715`
+
 ## Qualification coverage
 
 Automated tests cover reducer transitions, authorization, independent request

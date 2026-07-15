@@ -414,6 +414,11 @@ describe("CoordinationV3Store scheduler", () => {
     const resumed = store.leaseNextRun({ workerId: "worker-1" })!;
     expect(resumed.agentId).toBe(recipientA);
     expect(resumed.activations.map((activation) => activation.kind)).toContain("coordination_join_satisfied");
+    expect(resumed.activations.find((activation) => activation.kind === "coordination_join_satisfied")?.payload)
+      .toMatchObject({
+        continuations: [{ requestId: "parent-work", state: "waiting_dependency" }],
+        continuationInstruction: expect.stringContaining("terminally update"),
+      });
     expect(store.requestIdsAttachedToRun(resumed.runId, recipientA)).toEqual(["parent-work"]);
     acknowledgeLease(resumed);
     store.updateRequest({
@@ -423,6 +428,47 @@ describe("CoordinationV3Store scheduler", () => {
     store.completeRun(resumed.runId, resumed.fencingToken);
     expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'parent-work'").get())
       .toEqual({ state: "completed" });
+  });
+
+  it("fails a resumed continuation closed instead of parking it without work", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "unreported-parent", requests: [
+        { requestId: "unreported-parent", recipientAgentId: recipientA, lifetime: indefinite },
+      ],
+      join: { id: "unreported-outer-join", mode: "all" },
+    });
+    const parentRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(parentRun);
+    store.coordinate({
+      projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}:run:${parentRun.runId}`,
+      idempotencyKey: "unreported-child", requests: [
+        { requestId: "unreported-child", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+      join: {
+        id: "unreported-inner-join", mode: "all", continuationRequestIds: ["unreported-parent"],
+      },
+    });
+    store.completeRun(parentRun.runId, parentRun.fencingToken);
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'unreported-parent'").get())
+      .toEqual({ state: "waiting_dependency" });
+
+    const childRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(childRun);
+    store.updateRequest({
+      requestId: "unreported-child", updateId: "unreported-child-done", kind: "completed",
+      actor: { kind: "agent", id: recipientB }, payload: { result: "ready" },
+    });
+    store.completeRun(childRun.runId, childRun.fencingToken);
+
+    const resumed = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(resumed);
+    store.completeRun(resumed.runId, resumed.fencingToken);
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'unreported-parent'").get())
+      .toEqual({ state: "outcome_unknown" });
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'unreported-outer-join'").get())
+      .toEqual({ state: "impossible" });
+    expect(store.leaseNextRun({ workerId: "worker-1" })?.agentId).toBe(requesterId);
   });
 
   it("resolves only the correlated requests authoritatively attached to a run", () => {

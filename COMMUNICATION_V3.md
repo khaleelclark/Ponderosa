@@ -94,9 +94,13 @@ durably records the inbound request as its continuation. Creating the join
 moves that request to `waiting_dependency`; completing the current Run does not
 make its outcome unknown. The terminal join Activation reattaches the
 continuation request to the resumed Run so `ponderosa_update_request` resolves
-it authoritatively. An exact equivalent join—including its continuations—is
-reused even after satisfaction or impossibility; immutable outcomes cannot
-justify a duplicate wake.
+it authoritatively. The join Activation includes the continuation's durable
+payload and an explicit terminal-update obligation. If the resumed Run ends
+without fulfilling a still-suspended continuation, the supervisor transitions
+it to `outcome_unknown`; it must never remain parked without a Run or actionable
+Activation. An exact equivalent join—including its continuations—is reused even
+after satisfaction or impossibility; immutable outcomes cannot justify a
+duplicate wake.
 
 Superseding terminates the original request. A replacement request uses a new
 join; V3 has no mutable logical slots. Deleting a join owner cancels its open

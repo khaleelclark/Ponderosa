@@ -1275,7 +1275,13 @@ export class CoordinationV3Store {
       this.sqlite.prepare(`
         UPDATE scheduler_run_activations SET consumed_at = ? WHERE run_id = ?
       `).run(now, runId);
-      this.markRelatedRequestsOutcomeUnknown(runId, now, "run_completed_without_request_update", ["open", "in_progress"]);
+      this.markRelatedRequestsOutcomeUnknown(
+        runId,
+        now,
+        "run_completed_without_request_update",
+        ["open", "in_progress"],
+        ["open", "in_progress", "waiting_dependency"],
+      );
     })();
   }
 
@@ -1659,6 +1665,14 @@ export class CoordinationV3Store {
       update_payload_json: string | null;
       update_created_at: string | null;
     }>;
+    const continuations = (JSON.parse(join.continuation_request_ids_json) as string[]).map((requestId) => {
+      const request = this.getRequestRow(requestId) as RequestRow & { payload_json: string };
+      return {
+        requestId: request.id,
+        state: request.state,
+        request: JSON.parse(request.payload_json) as unknown,
+      };
+    });
     this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
@@ -1681,6 +1695,10 @@ export class CoordinationV3Store {
             },
           } : {}),
         })),
+        ...(continuations.length ? {
+          continuations,
+          continuationInstruction: "Integrate the joined outcomes, then terminally update every nonterminal continuation request before ending this Run. Sending a message does not fulfill a correlated request.",
+        } : {}),
       },
       sourceKind: "join",
       sourceId: join.id,
@@ -1763,6 +1781,7 @@ export class CoordinationV3Store {
     now: string,
     reason: string,
     eligibleStates: CoordinationRequestState[],
+    continuationEligibleStates: CoordinationRequestState[] = eligibleStates,
   ): void {
     const placeholders = eligibleStates.map(() => "?").join(", ");
     const rows = this.sqlite.prepare(`
@@ -1780,7 +1799,22 @@ export class CoordinationV3Store {
         AND r.recipient_agent_id = run.agent_id
         AND r.state IN (${placeholders})
     `).all(runId, ...eligibleStates) as Array<{ id: string }>;
-    for (const row of rows) this.updateRequest({
+    const continuationPlaceholders = continuationEligibleStates.map(() => "?").join(", ");
+    const continuationRows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id
+      FROM scheduler_run_activations attached
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      JOIN activation_sources source
+        ON source.activation_id = attached.activation_id AND source.source_kind = 'join'
+      JOIN coordination_joins join_record ON join_record.id = source.source_id
+      JOIN json_each(join_record.continuation_request_ids_json) continuation
+      JOIN coordination_requests request ON request.id = continuation.value
+      WHERE attached.run_id = ?
+        AND request.recipient_agent_id = run.agent_id
+        AND request.state IN (${continuationPlaceholders})
+    `).all(runId, ...continuationEligibleStates) as Array<{ id: string }>;
+    const related = [...new Map([...rows, ...continuationRows].map((row) => [row.id, row])).values()];
+    for (const row of related) this.updateRequest({
       requestId: row.id,
       updateId: `system:outcome-unknown:${runId}:${row.id}`,
       kind: "outcome_unknown",
