@@ -6,6 +6,7 @@ import type { Adapter, AgentEvent, ContinueOptions, SeedOptions, AgentDto } from
 import { AgentStore } from "@ponderosa/agents";
 import { COLLABORATION_DISPATCH_LIMITS, createServer } from "../src/app.js";
 import { projectAgentHealth } from "../src/agent-health.js";
+import { AgentWaitStore } from "../src/agent-waits.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 class RecordingAdapter implements Adapter {
@@ -43,10 +44,12 @@ function fixture(count: number, text: (index: number) => string = (index) => `me
     conversationId: master.id,
     messageId: `message-${index}`,
     targetAgentId: agent.id,
+    authorAgentId: `reporter-${index}`,
     text: text(index),
     relayDepth: 0,
     mentionTrail: [],
     kind: "tag",
+    waitBehavior: "report",
     createdAt: `2026-07-12T00:00:${String(index).padStart(2, "0")}.000Z`,
     orderKey: String(index).padStart(8, "0"),
   }).delivery.id);
@@ -60,6 +63,41 @@ async function waitForPrompts(adapter: RecordingAdapter, count: number) {
 }
 
 describe("bounded collaboration delivery scheduling", () => {
+  it("retains a satisfied-wait cause through a 409 claim race and retry", async () => {
+    const { dataDir, store, agent, ids } = fixture(1);
+    new AgentWaitStore(dataDir).register({
+      agentId: agent.id, executionId: "delegation", mode: "all", expectedAgentIds: ["reporter-0"],
+      quorum: 1, deliveryWatermark: 0,
+    });
+    let claims = 0;
+    const adapter = new RecordingAdapter();
+    const app = createServer({
+      dataDir, store, engines: [{ adapter }], logger: false,
+      deliveryScheduling: { claimStatus: () => ++claims === 1 ? 409 : undefined },
+    });
+
+    await app.ready();
+    await waitForPrompts(adapter, 1);
+
+    expect(claims).toBe(2);
+    expect(store.getRuns(agent.id).at(-1)?.wakeCause).toBe("wait_satisfied");
+    expect(new CollaborationDeliveryStore(dataDir).get(ids[0]!)).toMatchObject({
+      status: "acknowledged", wakeCause: "wait_satisfied",
+    });
+    await app.close();
+  });
+
+  it("recovers an unacknowledged released batch after restart without losing its cause", () => {
+    const { dataDir, agent, ids } = fixture(1);
+    const ledger = new CollaborationDeliveryStore(dataDir);
+    ledger.persistBatchWakeCause(ids, "wait_satisfied");
+    ledger.markBatchDelivered(ids);
+
+    const restarted = new CollaborationDeliveryStore(dataDir);
+    expect(restarted.recoverUnacknowledged()).toEqual([agent.id]);
+    expect(restarted.pending(agent.id)[0]).toMatchObject({ wakeCause: "wait_satisfied", status: "queued" });
+  });
+
   it.each([429, 500])("deduplicates timers and dead-letters a persistent %s claim", async (status) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-12T00:00:00.000Z"));
@@ -90,7 +128,11 @@ describe("bounded collaboration delivery scheduling", () => {
   it("recovers a durable delayed retry after restart without losing FIFO", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-12T00:00:00.000Z"));
-    const { dataDir, store, ids } = fixture(2);
+    const { dataDir, store, agent, ids } = fixture(2);
+    new AgentWaitStore(dataDir).register({
+      agentId: agent.id, executionId: "delegation", mode: "all", expectedAgentIds: ["reporter-0", "reporter-1"],
+      quorum: 2, deliveryWatermark: 0,
+    });
     const adapter = new RecordingAdapter();
     const first = createServer({
       dataDir, store, engines: [{ adapter }], logger: false,
@@ -98,7 +140,9 @@ describe("bounded collaboration delivery scheduling", () => {
     });
     await first.ready();
     await vi.advanceTimersByTimeAsync(0);
-    expect(new CollaborationDeliveryStore(dataDir).get(ids[0]!)?.dispatchAttempts).toBe(1);
+    expect(new CollaborationDeliveryStore(dataDir).get(ids[0]!)).toMatchObject({
+      dispatchAttempts: 1, wakeCause: "wait_satisfied",
+    });
     await first.close();
 
     const reopenedStore = new AgentStore(dataDir);
@@ -108,6 +152,7 @@ describe("bounded collaboration delivery scheduling", () => {
     await vi.runOnlyPendingTimersAsync();
     expect(adapter.prompts[0]?.indexOf("message-0")).toBeLessThan(adapter.prompts[0]?.indexOf("message-1") ?? -1);
     expect(ids.map((id) => new CollaborationDeliveryStore(dataDir).get(id)?.status)).toEqual(["acknowledged", "acknowledged"]);
+    expect(reopenedStore.getRuns(agent.id).at(-1)?.wakeCause).toBe("wait_satisfied");
     await second.close();
   });
 

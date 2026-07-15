@@ -12,6 +12,11 @@ export const PONDEROSA_SEND_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
       intent: { type: "string", enum: ["broadcast", "direct_to_user", "collaboration"] },
       text: { type: "string", minLength: 1, maxLength: 4000 },
       recipientAgentIds: { type: "array", minItems: 1, maxItems: 100, items: { type: "string" } },
+      waitBehavior: {
+        type: "string",
+        enum: ["queue", "report", "interrupt"],
+        description: "Collaboration only: queue without affecting an active wait, count as an expected report, or interrupt the wait for an urgent blocker.",
+      },
       idempotencyKey: { type: "string", maxLength: 200 },
       document: {
         type: "object",
@@ -37,6 +42,10 @@ export const PONDEROSA_SEND_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         },
       },
     },
+    allOf: [{
+      if: { properties: { intent: { const: "collaboration" } }, required: ["intent"] },
+      then: { required: ["recipientAgentIds", "waitBehavior"] },
+    }],
   },
 };
 

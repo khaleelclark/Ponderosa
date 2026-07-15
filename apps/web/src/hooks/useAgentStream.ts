@@ -52,6 +52,10 @@ function projectedWorkItemId(agentId: string, workItemId: string): string {
 export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
   const { event, seq, ts } = envelope;
 
+  if (event.type === "agent_wait_changed") {
+    return { ...detail, activeWait: event.activeWait ?? undefined };
+  }
+
   if (executionTypes.has(event.type)) {
     const activity = detail.activity ?? [];
     const id = `${agentId}:activity:${seq}`;
@@ -149,11 +153,16 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
       reason: event.reason,
       engine: detail.agent.activeEngine,
       communicationEventId: existing?.communicationEventId ?? sourceMessage?.communicationEventId,
+      wakeCause: event.wakeCause ?? existing?.wakeCause,
       startedAt: existing?.startedAt ?? ts,
       updatedAt: ts,
       completedAt: terminal ? ts : existing?.completedAt,
     };
-    return { ...detail, runs: existing ? runs.map((run) => run.id === event.executionId ? nextRun : run) : [...runs, nextRun] };
+    return {
+      ...detail,
+      ...(event.status === "running" ? { activeWait: undefined } : {}),
+      runs: existing ? runs.map((run) => run.id === event.executionId ? nextRun : run) : [...runs, nextRun],
+    };
   }
 
   if (event.type === "work_item_update") {

@@ -85,6 +85,7 @@ export const runs = sqliteTable("runs", {
   model: text("model"),
   effort: text("effort"),
   communicationEventId: text("communication_event_id"),
+  wakeCause: text("wake_cause"),
   inputTokens: integer("input_tokens"),
   cachedInputTokens: integer("cached_input_tokens"),
   cacheWriteInputTokens: integer("cache_write_input_tokens"),

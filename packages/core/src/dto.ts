@@ -527,6 +527,20 @@ export interface AgentSpawnResponse {
 
 export type AgentWaitMode = "all" | "any" | "quorum";
 
+/** Runtime-control behavior for a Collaboration delivery while its recipient waits. */
+export type AgentCollaborationWaitBehavior = "queue" | "report" | "interrupt";
+
+/** Inspectable progress for one active durable wait latch. */
+export interface AgentWaitDto {
+  waitId: string;
+  mode: AgentWaitMode;
+  expectedAgentIds: string[];
+  receivedAgentIds: string[];
+  quorum: number;
+  deadline?: string;
+  createdAt: string;
+}
+
 /** Agent-facing durable wait registration. Ownership comes from the bearer capability. */
 export interface AgentWaitRequest {
   mode: AgentWaitMode;
@@ -634,6 +648,16 @@ export interface ImageAttachmentLimitsDto {
   acceptedMediaTypes: AssetMediaType[];
 }
 
+/** Structural reason one Run was activated; never inferred from message text. */
+export type AgentRunWakeCause =
+  | "project_request"
+  | "direct_message"
+  | "collaboration"
+  | "wait_satisfied"
+  | "wait_deadline"
+  | "wait_interrupted"
+  | "managed_failure";
+
 /** One canonical execution of an Agent. */
 export interface AgentRunDto {
   id: string;
@@ -645,6 +669,7 @@ export interface AgentRunDto {
   model?: string;
   effort?: string;
   communicationEventId?: string;
+  wakeCause?: AgentRunWakeCause;
   /** Provider-reported usage. Missing means the run was not metered, never zero. */
   usage?: TokenUsage;
   startedAt: string;
@@ -803,6 +828,7 @@ export interface AgentDetailDto {
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];
   runs: AgentRunDto[];
+  activeWait?: AgentWaitDto;
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
   state: AgentState;
@@ -875,6 +901,8 @@ export type SendAgentMessageRequest = AgentMessageRequestBase & (
       intent: "collaboration";
       /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
       recipientAgentIds: string[];
+      /** Queue silently, count as an expected report, or interrupt an active wait. */
+      waitBehavior: AgentCollaborationWaitBehavior;
     }
 );
 
@@ -945,6 +973,7 @@ export type AgentRunStatus = Exclude<AgentLifecycleStatus, "idle">;
 
 export type AgentLifecycleReason =
   | "no_active_work" | "active_run" | "work_item_waiting_approval" | "queued_delivery"
+  | "awaiting_reports"
   | "work_item_completed" | "turn_completed" | "runtime_error"
   | "session_rollover_scheduled" | "agent_cancelled"
   | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled"

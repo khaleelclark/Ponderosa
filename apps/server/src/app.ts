@@ -11,6 +11,8 @@ import type {
   AgentSpawnRequest,
   AgentWaitRequest,
   AgentWaitResponse,
+  AgentRunWakeCause,
+  AgentCollaborationWaitBehavior,
   AgentMessageChannel,
   AgentEvent,
   CommunicationEvent,
@@ -80,7 +82,7 @@ import {
   type CollaborationDeliveryBatch,
 } from "./handoffs.js";
 import { UserReactionStore } from "./user-reactions.js";
-import { AgentWaitStore, type AgentWaitCondition } from "./agent-waits.js";
+import { AgentWaitStore, type AgentWaitCondition, type AgentWaitEvaluation } from "./agent-waits.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -245,6 +247,8 @@ interface PendingTurn {
   replyTo?: MessageReferenceDto;
   replyToMessageId?: string;
   attachmentIds?: string[];
+  /** Server-owned structural reason the resulting Run was activated. */
+  wakeCause?: AgentRunWakeCause;
 }
 
 interface AgentMessageCapability {
@@ -451,6 +455,7 @@ function agentMessagingPrompt(): string[] {
     "Reply directly to the agent who requested work. Send decisions to affected owners, deliverables to their consumers, and blockers to whoever can resolve them. Escalate to a manager only for priority conflicts, scope or ownership decisions, unresolved disagreements, resource needs, or outcomes that manager owns.",
     "Managers are decision owners and synthesizers, not message relays. Do not send them routine peer coordination merely because they are above you in the organization.",
     "Every Collaboration message must carry an actionable request, decision, handoff, evidence, blocker, or completion result. Do not send acknowledgments, greetings, thanks, duplicate updates, speculative status chatter, or FYI-only messages that wake an agent without requiring action.",
+    'For Collaboration, set waitBehavior to "report" only for a completed or blocked outcome that should count toward an expected reporter latch. Use "queue" for non-urgent progress or coordination that can wait for the recipient\'s current latch. Use "interrupt" only for an urgent blocker that must cancel the current wait.',
     "If you are a top-level agent, Broadcast completed answers and task results from a shared Conversation request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
     "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
     "Use Collaboration for agent-to-agent coordination. Use direct_to_user only for a question or private update the user themselves needs, never as an automatic completion receipt. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
@@ -967,7 +972,8 @@ function serializedCostComponents(components: RawCostComponents): ProjectedApiCo
  */
 export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
   switch (event.type) {
-    case "agent_lifecycle": return "lifecycle";
+    case "agent_lifecycle":
+    case "agent_wait_changed": return "lifecycle";
     case "file_change": return "file";
     case "command":
     case "work_item_update":
@@ -1521,7 +1527,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function agentDetail(agentId: string): import("@ponderosa/core").AgentDetailDto | undefined {
     const detail = store.getAgentDetail(agentId);
     if (!detail) return detail;
-    return { ...detail, messages: withUserReactions(store.getProjectedAgentMessages(agentId)) };
+    const wait = agentWaits.active(agentId);
+    return {
+      ...detail,
+      messages: withUserReactions(store.getProjectedAgentMessages(agentId)),
+      ...(wait ? {
+        activeWait: agentWaits.progress(wait, collaborationDeliveries.pending(agentId), collaborationDeliveries),
+      } : {}),
+    };
+  }
+
+  function activeWaitDto(agentId: string): import("@ponderosa/core").AgentWaitDto | null {
+    const wait = agentWaits.active(agentId);
+    return wait ? agentWaits.progress(wait, collaborationDeliveries.pending(agentId), collaborationDeliveries) : null;
+  }
+
+  function publishWaitChanged(agentId: string): void {
+    if (closed || !store.getAgent(agentId)) return;
+    const stored = store.appendEvent(agentId, { type: "agent_wait_changed", activeWait: activeWaitDto(agentId) });
+    publish(agentId, stored);
+  }
+
+  function finishWaitEvaluation(evaluation: AgentWaitEvaluation): void {
+    if (!evaluation.wait || !evaluation.completion) return;
+    agentWaits.finish(evaluation.wait, evaluation.completion.status, evaluation.completion.reason);
+    clearWaitDeadline(evaluation.wait.agentId);
+    publishWaitChanged(evaluation.wait.agentId);
   }
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
@@ -1545,6 +1576,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agents,
       activeRuns: ownership,
       compactingAgents: scheduledSessionRollovers,
+      activeWaits: new Map(agentWaits.allActive().map((wait) => [wait.agentId, wait.createdAt])),
       queuedDeliveries: (agentId) => collaborationDeliveries.pending(agentId),
       events: (agentId) => store.readEvents(agentId),
     });
@@ -1601,6 +1633,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       replyToMessageId: delivery.replyToMessageId,
       replyTo: delivery.replyTo,
       attachmentIds: delivery.attachmentIds,
+      wakeCause: delivery.wakeCause ?? (delivery.kind === "manager_notification"
+        ? "managed_failure"
+        : delivery.kind === "direct"
+          ? "direct_message"
+          : "collaboration"),
     };
   }
 
@@ -1631,9 +1668,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function pendingTurnFromBatch(deliveries: CollaborationDelivery[]): PendingTurn {
     const first = deliveries[0]!;
+    const base = pendingTurnFromDelivery(first);
     const mentionTrail = mergeMentionTrails(deliveries);
     return {
-      ...pendingTurnFromDelivery(first),
+      ...base,
       text: formatDeliveryBatch({ deliveries }),
       agentMentionDepth: mentionTrail.length,
       agentMentionTrail: mentionTrail,
@@ -1641,6 +1679,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sourceAuthorAgentId: undefined,
       collaborationDeliveryId: undefined,
       collaborationDeliveryIds: deliveries.map((delivery) => delivery.id),
+      wakeCause: deliveries.find((delivery) => delivery.wakeCause)?.wakeCause ?? base.wakeCause,
     };
   }
 
@@ -1697,7 +1736,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const active = agentWaits.active(wait.agentId);
       if (!active || active.id !== wait.id) return;
       const evaluation = agentWaits.evaluate(wait.agentId, collaborationDeliveries.pending(wait.agentId), collaborationDeliveries, deliveryNow());
-      if (evaluation.wait?.status !== "expired") return;
+      if (evaluation.completion?.status !== "expired") return;
       queueCollaborationDelivery({
         messageId: `wait-deadline:${wait.id}`,
         targetAgentId: wait.agentId,
@@ -1705,7 +1744,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         relayDepth: 0,
         mentionTrail: [],
         kind: "manager_notification",
+        wakeCause: "wait_deadline",
       });
+      finishWaitEvaluation(evaluation);
     }, delay);
     timer.unref?.();
     waitDeadlineTimers.set(wait.agentId, timer);
@@ -1755,6 +1796,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         deliveryId: queued.delivery.id,
         action: "queued",
       });
+    }
+    if (!queued.replayed && agentWaits.active(queued.delivery.targetAgentId)) {
+      publishWaitChanged(queued.delivery.targetAgentId);
     }
     if (options.schedule !== false) scheduleDeliveryDispatch(queued.delivery.targetAgentId);
     return queued.delivery;
@@ -1822,7 +1866,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     try {
     const pending = collaborationDeliveries.pending(agentId);
     const waitEvaluation = agentWaits.evaluate(agentId, pending, collaborationDeliveries, deliveryNow());
-    if (waitEvaluation.wait?.status !== "active") clearWaitDeadline(agentId);
     if (waitEvaluation.hold) {
       waitHeld = true;
       return;
@@ -1842,9 +1885,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
       return;
     }
-    const next = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
     const deliveryIds = batch.map((item) => item.id);
-
+    const durableBatch = waitEvaluation.wakeCause
+      ? collaborationDeliveries.persistBatchWakeCause(deliveryIds, waitEvaluation.wakeCause)
+      : batch;
+    finishWaitEvaluation(waitEvaluation);
+    const baseTurn = durableBatch.length > 1 ? pendingTurnFromBatch(durableBatch) : pendingTurnFromDelivery(durableBatch[0]!);
+    const next: PendingTurn = {
+      ...baseTurn,
+      wakeCause: waitEvaluation.wakeCause ?? baseTurn.wakeCause,
+    };
     collaborationDeliveries.markBatchDelivered(deliveryIds);
     const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
     const response = injectedStatus === undefined ? await app.inject({
@@ -1935,6 +1985,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             mentionTrail: intent.mentionTrail,
             kind: intent.kind,
             audience: intent.audience,
+            waitBehavior: intent.waitBehavior,
             createdAt: message.createdAt,
             orderKey: deliveryOrderKey,
             sourceChannel: intent.kind === "direct" ? "main" : undefined,
@@ -2139,6 +2190,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     text: string,
     _relayDepth: number,
     mentionTrail: string[],
+    waitBehavior?: AgentCollaborationWaitBehavior,
   ): { text: string; intents: ConversationDeliveryIntent[]; error?: string } {
     const detail = store.getCollaborationViewDetail(conversationId);
     const members = new Map((detail?.agents ?? []).map((agent) => [agent.id, agent]));
@@ -2161,6 +2213,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: nextTrail,
         kind: "tag",
         audience: "mention",
+        ...(waitBehavior ? { waitBehavior } : {}),
       });
     }
     return { text: renderedText, intents };
@@ -2192,6 +2245,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: intent.mentionTrail,
         kind: intent.kind,
         audience: intent.audience,
+        waitBehavior: intent.waitBehavior,
         createdAt: message.createdAt,
         orderKey,
         replyToMessageId: message.replyTo?.messageId,
@@ -2253,6 +2307,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       relayDepth: 0,
       mentionTrail: [],
       kind: "manager_notification",
+      wakeCause: "managed_failure",
       createdAt,
       orderKey: store.nextDeliveryOrderKey(createdAt),
     });
@@ -2295,6 +2350,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const text = request.body?.text?.trim();
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
       return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
+    }
+    if (intent !== "collaboration" && "waitBehavior" in request.body && request.body.waitBehavior !== undefined) {
+      return reply.code(400).send({ error: "waitBehavior is only valid for collaboration" });
     }
     const currentAuthor = store.getAgent(capability.agentId);
     if (intent === "broadcast" && currentAuthor?.managerAgentId) {
@@ -2391,6 +2449,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
       }
       if (recipientAgentIds.length > 100) return reply.code(400).send({ error: "collaboration supports at most 100 recipients" });
+      const waitBehavior = request.body.waitBehavior;
+      if (waitBehavior === undefined) {
+        return reply.code(400).send({ error: "collaboration requires explicit waitBehavior" });
+      }
+      if (waitBehavior !== undefined && !(waitBehavior === "queue" || waitBehavior === "report" || waitBehavior === "interrupt")) {
+        return reply.code(400).send({ error: "waitBehavior must be queue, report, or interrupt" });
+      }
       const resolved = resolveExplicitCollaborationIntents(
         capability.conversationId,
         capability.agentId,
@@ -2398,6 +2463,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         text,
         capability.mentionDepth,
         capability.mentionTrail,
+        waitBehavior,
       );
       if (resolved.error) return reply.code(400).send({ error: resolved.error });
       renderedText = resolved.text;
@@ -2539,6 +2605,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ...(deadline ? { deadline } : {}),
     });
     scheduleWaitDeadline(registered.wait);
+    if (!registered.replayed) publishWaitChanged(agent.id);
     return {
       waitId: registered.wait.id,
       mode: registered.wait.mode,
@@ -2647,6 +2714,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             initialMessage,
             capability.mentionDepth,
             capability.mentionTrail,
+            "queue",
           );
           if (routing.error) throw new Error(routing.error);
           const communication = recordCommunication({
@@ -3996,6 +4064,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       attachmentIds?: string[];
       /** Server-only link used when one action projects into room and audit timelines. */
       communicationEventId?: string;
+      /** Server-only structural activation cause supplied by the durable dispatcher. */
+      wakeCause?: AgentRunWakeCause;
     };
   }>(
     "/api/agents/:id/messages",
@@ -4011,6 +4081,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+      }
+      if (request.body.wakeCause !== undefined && request.headers["x-ponderosa-turn-dispatch"] !== turnDispatchKey) {
+        return reply.code(403).send({ error: "wake cause is server-controlled" });
       }
       const priorRuns = store.getRuns(agent.id);
       const latestRun = priorRuns.at(-1);
@@ -4198,10 +4271,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               return replyTarget ? { messageId: replyTarget.id, text: replyTarget.text, role: replyTarget.role } : undefined;
             })()
           : undefined),
+        wakeCause: request.body.wakeCause,
       };
       const auditText = text;
       if (requestedDeliveryIds.length === 0) {
-        if (agentWaits.cancel(agent.id, "user message override")) clearWaitDeadline(agent.id);
+        if (agentWaits.cancel(agent.id, "user message override")) {
+          clearWaitDeadline(agent.id);
+          publishWaitChanged(agent.id);
+        }
       }
       const existingRun = activeRuns.get(agent.id);
       if (existingRun) {
@@ -4484,6 +4561,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const startedAt = new Date().toISOString();
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
+        wakeCause: pendingTurn.wakeCause ?? (sharedTaskTurn
+          ? "project_request"
+          : directUserTaskTurn
+            ? "direct_message"
+            : requestedDeliveryIds.length
+              ? "collaboration"
+              : "direct_message"),
         ...(effectiveModel ? { model: effectiveModel } : {}),
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       });

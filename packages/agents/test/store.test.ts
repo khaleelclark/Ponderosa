@@ -623,7 +623,7 @@ describe("AgentStore — multi-conversation membership", () => {
 
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
-  { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1" },
+  { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1", wakeCause: "wait_satisfied" },
   { type: "session", sessionId: "sess-abc" },
   { type: "text", delta: "I'll handle this.", executionId: "run-1" },
   { type: "command", command: "pnpm test", cwd: "/repo" },
@@ -667,7 +667,7 @@ describe("AgentStore — append + projection", () => {
       path: "auth.ts", kind: "edit", lastSeq: 7, diff: "diff --git a/auth.ts b/auth.ts\n",
     })]);
     expect(detail.runs).toEqual([expect.objectContaining({
-      id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication",
+      id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication", wakeCause: "wait_satisfied",
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
     })]);
     expect(detail.workItems).toEqual([]);

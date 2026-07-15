@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { AgentWaitMode } from "@ponderosa/core";
+import type { AgentRunWakeCause, AgentWaitDto, AgentWaitMode } from "@ponderosa/core";
 import type { CollaborationDelivery, CollaborationDeliveryStore } from "./handoffs.js";
 
 export type AgentWaitStatus = "active" | "satisfied" | "cancelled" | "expired";
@@ -19,6 +19,16 @@ export interface AgentWaitCondition {
   createdAt: string;
   completedAt?: string;
   reason?: string;
+}
+
+export interface AgentWaitEvaluation {
+  hold: boolean;
+  wait?: AgentWaitCondition;
+  completion?: {
+    status: Exclude<AgentWaitStatus, "active">;
+    reason: string;
+  };
+  wakeCause?: AgentRunWakeCause;
 }
 
 type WaitRecord = { type: "wait" | "replace"; wait: AgentWaitCondition };
@@ -95,32 +105,89 @@ export class AgentWaitStore {
     return wait ? this.finish(wait, "cancelled", reason) : undefined;
   }
 
+  progress(
+    wait: AgentWaitCondition,
+    pending: readonly CollaborationDelivery[],
+    deliveries: CollaborationDeliveryStore,
+  ): AgentWaitDto {
+    const expected = new Set(wait.expectedAgentIds);
+    const receivedAgentIds = [...new Set(pending.flatMap((delivery) =>
+      deliveries.position(delivery.id) >= wait.deliveryWatermark &&
+      (delivery.waitBehavior ?? "report") === "report" &&
+      delivery.authorAgentId && expected.has(delivery.authorAgentId)
+        ? [delivery.authorAgentId]
+        : []))].sort();
+    return {
+      waitId: wait.id,
+      mode: wait.mode,
+      expectedAgentIds: wait.expectedAgentIds,
+      receivedAgentIds,
+      quorum: wait.quorum,
+      ...(wait.deadline ? { deadline: wait.deadline } : {}),
+      createdAt: wait.createdAt,
+    };
+  }
+
   /**
    * Decide whether queued deliveries must remain parked. Direct/user signals and
    * managed-agent failures override the latch. Expected authors are counted once.
    */
-  evaluate(agentId: string, pending: readonly CollaborationDelivery[], deliveries: CollaborationDeliveryStore, now = Date.now()): { hold: boolean; wait?: AgentWaitCondition } {
+  evaluate(
+    agentId: string,
+    pending: readonly CollaborationDelivery[],
+    deliveries: CollaborationDeliveryStore,
+    now = Date.now(),
+  ): AgentWaitEvaluation {
     const wait = this.active(agentId);
     if (!wait) return { hold: false };
     if (wait.deadline && Date.parse(wait.deadline) <= now) {
-      return { hold: false, wait: this.finish(wait, "expired", "deadline reached") };
+      return {
+        hold: false,
+        wait,
+        completion: { status: "expired", reason: "deadline reached" },
+        wakeCause: "wait_deadline",
+      };
     }
     if (pending.some((delivery) => deliveries.position(delivery.id) < wait.deliveryWatermark)) {
-      return { hold: false, wait: this.finish(wait, "cancelled", "delivery was already pending when the wait was registered") };
+      return {
+        hold: false,
+        wait,
+        completion: { status: "cancelled", reason: "delivery was already pending when the wait was registered" },
+        wakeCause: "wait_interrupted",
+      };
     }
     const newDeliveries = pending.filter((delivery) => deliveries.position(delivery.id) >= wait.deliveryWatermark);
-    if (newDeliveries.some((delivery) => delivery.kind === "direct" || delivery.kind === "manager_notification")) {
-      return { hold: false, wait: this.finish(wait, "cancelled", "priority delivery override") };
+    const priority = newDeliveries.find((delivery) =>
+      !delivery.authorAgentId || delivery.kind === "direct" || delivery.kind === "manager_notification" || delivery.waitBehavior === "interrupt");
+    if (priority) {
+      return {
+        hold: false,
+        wait,
+        completion: { status: "cancelled", reason: "priority delivery override" },
+        wakeCause: priority.kind === "manager_notification"
+          ? "managed_failure"
+          : !priority.authorAgentId || priority.kind === "direct"
+            ? "direct_message"
+            : "wait_interrupted",
+      };
     }
     const expected = new Set(wait.expectedAgentIds);
     const reporters = new Set(newDeliveries.flatMap((delivery) =>
+      (delivery.waitBehavior ?? "report") === "report" &&
       delivery.authorAgentId && expected.has(delivery.authorAgentId) ? [delivery.authorAgentId] : []));
     const satisfied = wait.mode === "any"
       ? reporters.size >= 1
       : wait.mode === "all"
         ? reporters.size >= expected.size
         : reporters.size >= wait.quorum;
-    if (satisfied) return { hold: false, wait: this.finish(wait, "satisfied", `${reporters.size} expected reporters delivered`) };
+    if (satisfied) {
+      return {
+        hold: false,
+        wait,
+        completion: { status: "satisfied", reason: `${reporters.size} expected reporters delivered` },
+        wakeCause: "wait_satisfied",
+      };
+    }
     return { hold: true, wait };
   }
 
