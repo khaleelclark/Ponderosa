@@ -902,7 +902,7 @@ export type SendAgentMessageRequest = AgentMessageRequestBase & (
       /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
       recipientAgentIds: string[];
       /** Queue silently, count as an expected report, or interrupt an active wait. */
-      waitBehavior?: AgentCollaborationWaitBehavior;
+      waitBehavior: AgentCollaborationWaitBehavior;
     }
 );
 

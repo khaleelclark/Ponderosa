@@ -2228,7 +2228,7 @@ describe("server chunk F", () => {
     const toReviewer = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
       payload: {
-        intent: "collaboration", recipientAgentIds: [reviewer.id],
+        intent: "collaboration", recipientAgentIds: [reviewer.id], waitBehavior: "queue",
         text: "Reviewer-only launch credential: ALPHA.", idempotencyKey: "author-to-reviewer",
       },
     });
@@ -2250,7 +2250,7 @@ describe("server chunk F", () => {
     const toVerifier = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
       payload: {
-        intent: "collaboration", recipientAgentIds: [verifier.id],
+        intent: "collaboration", recipientAgentIds: [verifier.id], waitBehavior: "queue",
         text: "Verifier-only release checklist.", idempotencyKey: "author-to-verifier",
       },
     });
@@ -2290,7 +2290,7 @@ describe("server chunk F", () => {
     const collaboration = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
       payload: {
-        intent: "collaboration", recipientAgentIds: [collaborator.id],
+        intent: "collaboration", recipientAgentIds: [collaborator.id], waitBehavior: "queue",
         text: "participant-only review", idempotencyKey: "local-review",
       },
     });
@@ -2578,7 +2578,7 @@ describe("server chunk F", () => {
     const directRetry = await send({ intent: "direct_to_user", text: "Private implementation note.", idempotencyKey: "private-note" });
     const broadcast = await send({ intent: "broadcast", text: "Manager-facing checkpoint." });
     const collaboration = await send({
-      intent: "collaboration", recipientAgentIds: [reviewer.id, verifier.id, reviewer.id],
+      intent: "collaboration", recipientAgentIds: [reviewer.id, verifier.id, reviewer.id], waitBehavior: "queue",
       text: "Please review the API contract.",
     });
     expect(direct.statusCode).toBe(200);
@@ -2707,7 +2707,7 @@ describe("server chunk F", () => {
     expect(legacy.statusCode).toBe(400);
     const explicit = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Explicit route" },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Explicit route", waitBehavior: "queue" },
     });
     expect(explicit.statusCode).toBe(200);
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
@@ -2731,7 +2731,7 @@ describe("server chunk F", () => {
     const full = `# Detailed review\n\n${"private analysis ".repeat(400)}`;
     const sent = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Review complete; see the attached document.", document: { title: "Detailed Review", content: full, mediaType: "text/markdown" } },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Review complete; see the attached document.", waitBehavior: "report", document: { title: "Detailed Review", content: full, mediaType: "text/markdown" } },
     });
     expect(sent.statusCode).toBe(200);
     await waitForSeedCount(2);
@@ -2820,6 +2820,7 @@ describe("server chunk F", () => {
     const master = store.createConversation(project.id, { title: "Routing room" });
     const otherMaster = store.createConversation(project.id, { title: "Other room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
+    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
     const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: otherMaster.id });
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
@@ -2832,7 +2833,11 @@ describe("server chunk F", () => {
     });
     const unauthorized = await app.inject({
       method: "POST", url: "/api/agent-messages", headers,
-      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Cross-room." },
+      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Cross-room.", waitBehavior: "queue" },
+    });
+    const missingWaitBehavior = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Ambiguous." },
     });
     const invalidWaitBehavior = await app.inject({
       method: "POST", url: "/api/agent-messages", headers,
@@ -2845,6 +2850,7 @@ describe("server chunk F", () => {
 
     expect(recipientFree.statusCode).toBe(400);
     expect(unauthorized.statusCode).toBe(400);
+    expect(missingWaitBehavior).toMatchObject({ statusCode: 400, body: expect.stringContaining("requires explicit waitBehavior") });
     expect(invalidWaitBehavior.statusCode).toBe(400);
     expect(misplacedWaitBehavior.statusCode).toBe(400);
     expect(store.getConversationMessages(master.id, "collaboration")).toHaveLength(0);
@@ -2863,7 +2869,7 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
     await waitForSeedCount(1);
     const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const payload = { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "review this.", idempotencyKey: "broadcast-review" };
+    const payload = { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "review this.", waitBehavior: "queue", idempotencyKey: "broadcast-review" };
     const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
     const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
 
@@ -2895,7 +2901,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "should not receive this.", idempotencyKey: "removed-author" },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "should not receive this.", waitBehavior: "queue", idempotencyKey: "removed-author" },
     });
 
     expect(response.statusCode).toBe(409);
@@ -2977,7 +2983,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review this once you finish." },
+      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review this once you finish.", waitBehavior: "queue" },
     });
     expect(handoff.statusCode).toBe(200);
 
@@ -3005,7 +3011,7 @@ describe("server chunk F", () => {
     const childToken = adapter.seeds.find((seed) => seed.agentId === child.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
     expect(childToken).toBeTruthy();
 
-    const tag = { intent: "collaboration" as const, recipientAgentIds: [parent.id], text: "first completed result", idempotencyKey: "result-1" };
+    const tag = { intent: "collaboration" as const, recipientAgentIds: [parent.id], text: "first completed result", waitBehavior: "report" as const, idempotencyKey: "result-1" };
     const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
     const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
     expect(first.json()).toMatchObject({ replayed: false });
@@ -3149,6 +3155,11 @@ describe("server chunk F", () => {
       .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
     expect(parentDetail.activeWait).toBeUndefined();
     expect(parentDetail.runs.at(-1)?.wakeCause).toBe("wait_satisfied");
+    expect(store.readEvents(parent.id)
+      .filter((item) => item.event.type === "agent_wait_changed")
+      .map((item) => item.event.type === "agent_wait_changed"
+        ? item.event.activeWait?.receivedAgentIds ?? null
+        : null)).toEqual([[], [], [first.id], [first.id, second.id].sort(), null]);
 
     await Promise.all([parent, first, second].map((agent) => cancelAndWait(app, agent.id)));
     await app.close();
@@ -3234,7 +3245,7 @@ describe("server chunk F", () => {
       method: "POST",
       url: "/api/agent-messages",
       headers: { authorization: `Bearer ${childToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text: "Huntsville result is ready.", idempotencyKey: "huntsville-result" },
+      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text: "Huntsville result is ready.", waitBehavior: "report", idempotencyKey: "huntsville-result" },
     });
     expect(result.statusCode).toBe(200);
     const resultEventId = result.json<{ eventId: string }>().eventId;
@@ -3309,7 +3320,7 @@ describe("server chunk F", () => {
     adapter.mode = "normal";
     const assigned = await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit. No other agent needs a delivery from this synthetic adapter." },
+      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit. No other agent needs a delivery from this synthetic adapter.", waitBehavior: "queue" },
     });
     expect(assigned.statusCode).toBe(200);
     await waitForSeedCount(2);
@@ -3362,13 +3373,13 @@ describe("server chunk F", () => {
       const report = await app.inject({
         method: "POST", url: "/api/agent-messages",
         headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [consumer.id], text: "Schema contract ready for your integration." },
+        payload: { intent: "collaboration", recipientAgentIds: [consumer.id], text: "Schema contract ready for your integration.", waitBehavior: "report" },
       });
       expect(report.statusCode).toBe(200);
     };
     await app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Prepare the schema contract for the other branch's consumer." },
+      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Prepare the schema contract for the other branch's consumer.", waitBehavior: "queue" },
     });
     await waitForSeedCount(2);
     await waitForRun(child.id);
@@ -3791,7 +3802,7 @@ describe("server chunk F", () => {
         method: "POST",
         url: "/api/agent-messages",
         headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "thirteenth useful handoff" },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "thirteenth useful handoff", waitBehavior: "queue" },
       });
       handoffStatus = response.statusCode;
     };
@@ -3830,7 +3841,7 @@ describe("server chunk F", () => {
         method: "POST",
         url: "/api/agent-messages",
         headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "repeat this handoff" },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "repeat this handoff", waitBehavior: "queue" },
       });
       replayResponse = { statusCode: response.statusCode, body: response.body };
     };
@@ -3876,7 +3887,7 @@ describe("server chunk F", () => {
         method: "POST",
         url: "/api/agent-messages",
         headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "replay from second lineage" },
+        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "replay from second lineage", waitBehavior: "queue" },
       });
       replayResponse = { statusCode: response.statusCode, body: response.body };
     };
@@ -3929,6 +3940,7 @@ describe("server chunk F", () => {
           intent: "collaboration",
           recipientAgentIds: [reviewer.id],
           text: "replay from the first full lineage",
+          waitBehavior: "queue",
         },
       });
       replayResponse = { statusCode: response.statusCode, body: response.body };

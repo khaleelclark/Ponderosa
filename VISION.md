@@ -209,7 +209,8 @@ Collaboration delivery's structural wait behavior. `queue` holds non-urgent
 progress for the eventual batch, `report` counts a completed or blocked outcome
 from an expected agent, and `interrupt` wakes for an urgent blocker. Ponderosa
 never guesses these effects from prose. The active latch, received reporter
-count, and the structural cause of each resumed Run remain inspectable.
+count, and the structural cause of each resumed Run remain inspectable and
+update live from canonical wait-change events.
 
 Collaboration messages do not appear in Project chat and do not become shared
 context for future agents. If a finding matters to the organization, an agent

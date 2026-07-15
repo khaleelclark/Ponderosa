@@ -21,7 +21,8 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
 - Collaboration delivery owns its explicit wait behavior: `queue` persists
   without advancing an active latch, `report` advances an expected-reporter
   latch, and `interrupt` cancels the latch and wakes the recipient. Behavior is
-  never inferred from message text; absent behavior preserves legacy `report`.
+  never inferred from message text. Newly authored agent Collaboration requires
+  a behavior; only replayed legacy delivery may omit it and fall back to `report`.
 - Sent collaboration is auditable in the author's Agent chat as well as each
   recipient's Agent chat.
 - Completed ordinary output belongs to the originating Run and appears in Work

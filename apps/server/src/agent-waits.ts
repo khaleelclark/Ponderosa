@@ -21,6 +21,16 @@ export interface AgentWaitCondition {
   reason?: string;
 }
 
+export interface AgentWaitEvaluation {
+  hold: boolean;
+  wait?: AgentWaitCondition;
+  completion?: {
+    status: Exclude<AgentWaitStatus, "active">;
+    reason: string;
+  };
+  wakeCause?: AgentRunWakeCause;
+}
+
 type WaitRecord = { type: "wait" | "replace"; wait: AgentWaitCondition };
 
 /** Append-only, restart-safe wait latches. Only one active latch may exist per agent. */
@@ -127,16 +137,22 @@ export class AgentWaitStore {
     pending: readonly CollaborationDelivery[],
     deliveries: CollaborationDeliveryStore,
     now = Date.now(),
-  ): { hold: boolean; wait?: AgentWaitCondition; wakeCause?: AgentRunWakeCause } {
+  ): AgentWaitEvaluation {
     const wait = this.active(agentId);
     if (!wait) return { hold: false };
     if (wait.deadline && Date.parse(wait.deadline) <= now) {
-      return { hold: false, wait: this.finish(wait, "expired", "deadline reached"), wakeCause: "wait_deadline" };
+      return {
+        hold: false,
+        wait,
+        completion: { status: "expired", reason: "deadline reached" },
+        wakeCause: "wait_deadline",
+      };
     }
     if (pending.some((delivery) => deliveries.position(delivery.id) < wait.deliveryWatermark)) {
       return {
         hold: false,
-        wait: this.finish(wait, "cancelled", "delivery was already pending when the wait was registered"),
+        wait,
+        completion: { status: "cancelled", reason: "delivery was already pending when the wait was registered" },
         wakeCause: "wait_interrupted",
       };
     }
@@ -146,7 +162,8 @@ export class AgentWaitStore {
     if (priority) {
       return {
         hold: false,
-        wait: this.finish(wait, "cancelled", "priority delivery override"),
+        wait,
+        completion: { status: "cancelled", reason: "priority delivery override" },
         wakeCause: priority.kind === "direct"
           ? "direct_message"
           : priority.kind === "manager_notification"
@@ -166,7 +183,8 @@ export class AgentWaitStore {
     if (satisfied) {
       return {
         hold: false,
-        wait: this.finish(wait, "satisfied", `${reporters.size} expected reporters delivered`),
+        wait,
+        completion: { status: "satisfied", reason: `${reporters.size} expected reporters delivered` },
         wakeCause: "wait_satisfied",
       };
     }

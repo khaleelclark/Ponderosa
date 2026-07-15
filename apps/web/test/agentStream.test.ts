@@ -18,6 +18,7 @@ describe("updateAgentDetail", () => {
     const detail = {
       messages: [{ id: "message", agentId: "agent-1", seq: 1, role: "user", text: "Inspect routing", createdAt: "2026-07-11T08:00:00.000Z", communicationEventId: "event-1" }],
       runs: [], workItems: [], runTriggers: [], runOutput: [], activity: [], changedFiles: [], artifacts: [],
+      activeWait: { waitId: "stale", mode: "any", expectedAgentIds: ["peer"], receivedAgentIds: [], quorum: 1, createdAt: "2026-07-11T07:59:00.000Z" },
       agent: { activeEngine: "codex" },
     } as unknown as AgentDetailDto;
     const started = updateAgentDetail("agent-1", {
@@ -31,6 +32,27 @@ describe("updateAgentDetail", () => {
     expect(completed.runs).toEqual([expect.objectContaining({
       id: "run-real", title: "Inspect routing", communicationEventId: "event-1", status: "completed",
     })]);
+    expect(started.activeWait).toBeUndefined();
+  });
+
+  it("updates and clears durable wait progress from canonical stream events", () => {
+    const detail = {
+      messages: [], runs: [], workItems: [], runTriggers: [], runOutput: [], activity: [], changedFiles: [], artifacts: [],
+      agent: { activeEngine: "codex" },
+    } as unknown as AgentDetailDto;
+    const activeWait = {
+      waitId: "wait-1", mode: "all" as const, expectedAgentIds: ["one", "two"],
+      receivedAgentIds: ["one"], quorum: 2, createdAt: "2026-07-11T08:00:00.000Z",
+    };
+    const waiting = updateAgentDetail("agent-1", {
+      seq: 2, ts: "2026-07-11T08:00:01.000Z", event: { type: "agent_wait_changed", activeWait },
+    } as SseEventEnvelope, detail);
+    const resumed = updateAgentDetail("agent-1", {
+      seq: 3, ts: "2026-07-11T08:00:02.000Z", event: { type: "agent_wait_changed", activeWait: null },
+    } as SseEventEnvelope, waiting);
+
+    expect(waiting.activeWait).toEqual(activeWait);
+    expect(resumed.activeWait).toBeUndefined();
   });
 
   it("keeps streamed response and reasoning deltas in distinct transient Work log entries", () => {

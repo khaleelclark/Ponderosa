@@ -30,7 +30,10 @@ describe("durable agent wait conditions", () => {
     expect(reopened.evaluate("manager", deliveries.pending("manager"), deliveries).hold).toBe(true);
 
     deliveries.queue({ messageId: "two", targetAgentId: "manager", authorAgentId: "two", text: "two", relayDepth: 0, mentionTrail: [], kind: "tag" });
-    expect(reopened.evaluate("manager", deliveries.pending("manager"), deliveries)).toMatchObject({ hold: false, wait: { status: "satisfied" } });
+    const released = reopened.evaluate("manager", deliveries.pending("manager"), deliveries);
+    expect(released).toMatchObject({ hold: false, completion: { status: "satisfied" } });
+    expect(reopened.active("manager")?.id).toBe(registered.id);
+    reopened.finish(released.wait!, released.completion!.status, released.completion!.reason);
     expect(reopened.active("manager")).toBeUndefined();
   });
 
@@ -68,7 +71,7 @@ describe("durable agent wait conditions", () => {
       relayDepth: 0, mentionTrail: [], kind: "tag", waitBehavior: "report",
     });
     expect(queued.waits.evaluate("manager", queued.deliveries.pending("manager"), queued.deliveries))
-      .toMatchObject({ hold: false, wakeCause: "wait_satisfied", wait: { status: "satisfied" } });
+      .toMatchObject({ hold: false, wakeCause: "wait_satisfied", completion: { status: "satisfied" } });
 
     const interrupted = fixture();
     interrupted.waits.register({
@@ -80,7 +83,7 @@ describe("durable agent wait conditions", () => {
       relayDepth: 0, mentionTrail: [], kind: "tag", waitBehavior: "interrupt",
     });
     expect(interrupted.waits.evaluate("manager", interrupted.deliveries.pending("manager"), interrupted.deliveries))
-      .toMatchObject({ hold: false, wakeCause: "wait_interrupted", wait: { status: "cancelled" } });
+      .toMatchObject({ hold: false, wakeCause: "wait_interrupted", completion: { status: "cancelled" } });
   });
 
   it("fails open for a direct priority signal or an elapsed deadline", () => {
@@ -90,7 +93,7 @@ describe("durable agent wait conditions", () => {
       expectedAgentIds: ["one"], quorum: 1, deliveryWatermark: direct.deliveries.watermark(),
     });
     direct.deliveries.queue({ messageId: "user", targetAgentId: "manager", text: "user", relayDepth: 0, mentionTrail: [], kind: "direct" });
-    expect(direct.waits.evaluate("manager", direct.deliveries.pending("manager"), direct.deliveries)).toMatchObject({ hold: false, wakeCause: "direct_message", wait: { status: "cancelled" } });
+    expect(direct.waits.evaluate("manager", direct.deliveries.pending("manager"), direct.deliveries)).toMatchObject({ hold: false, wakeCause: "direct_message", completion: { status: "cancelled" } });
 
     const deadline = fixture();
     deadline.waits.register({
@@ -98,6 +101,6 @@ describe("durable agent wait conditions", () => {
       expectedAgentIds: ["one"], quorum: 1, deliveryWatermark: 0, deadline: "2026-07-14T00:00:00.000Z",
     });
     expect(deadline.waits.evaluate("manager", [], deadline.deliveries, Date.parse("2026-07-14T00:00:01.000Z")))
-      .toMatchObject({ hold: false, wakeCause: "wait_deadline", wait: { status: "expired" } });
+      .toMatchObject({ hold: false, wakeCause: "wait_deadline", completion: { status: "expired" } });
   });
 });

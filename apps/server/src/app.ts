@@ -82,7 +82,7 @@ import {
   type CollaborationDeliveryBatch,
 } from "./handoffs.js";
 import { UserReactionStore } from "./user-reactions.js";
-import { AgentWaitStore, type AgentWaitCondition } from "./agent-waits.js";
+import { AgentWaitStore, type AgentWaitCondition, type AgentWaitEvaluation } from "./agent-waits.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -972,7 +972,8 @@ function serializedCostComponents(components: RawCostComponents): ProjectedApiCo
  */
 export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
   switch (event.type) {
-    case "agent_lifecycle": return "lifecycle";
+    case "agent_lifecycle":
+    case "agent_wait_changed": return "lifecycle";
     case "file_change": return "file";
     case "command":
     case "work_item_update":
@@ -1536,6 +1537,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
+  function activeWaitDto(agentId: string): import("@ponderosa/core").AgentWaitDto | null {
+    const wait = agentWaits.active(agentId);
+    return wait ? agentWaits.progress(wait, collaborationDeliveries.pending(agentId), collaborationDeliveries) : null;
+  }
+
+  function publishWaitChanged(agentId: string): void {
+    if (closed || !store.getAgent(agentId)) return;
+    const stored = store.appendEvent(agentId, { type: "agent_wait_changed", activeWait: activeWaitDto(agentId) });
+    publish(agentId, stored);
+  }
+
+  function finishWaitEvaluation(evaluation: AgentWaitEvaluation): void {
+    if (!evaluation.wait || !evaluation.completion) return;
+    agentWaits.finish(evaluation.wait, evaluation.completion.status, evaluation.completion.reason);
+    clearWaitDeadline(evaluation.wait.agentId);
+    publishWaitChanged(evaluation.wait.agentId);
+  }
+
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
 
   function agentHealth(scope: AgentHealthProjectionDto["scope"], agents: AgentDto[]): AgentHealthProjectionDto {
@@ -1717,7 +1736,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const active = agentWaits.active(wait.agentId);
       if (!active || active.id !== wait.id) return;
       const evaluation = agentWaits.evaluate(wait.agentId, collaborationDeliveries.pending(wait.agentId), collaborationDeliveries, deliveryNow());
-      if (evaluation.wait?.status !== "expired") return;
+      if (evaluation.completion?.status !== "expired") return;
       queueCollaborationDelivery({
         messageId: `wait-deadline:${wait.id}`,
         targetAgentId: wait.agentId,
@@ -1727,6 +1746,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         kind: "manager_notification",
         wakeCause: "wait_deadline",
       });
+      finishWaitEvaluation(evaluation);
     }, delay);
     timer.unref?.();
     waitDeadlineTimers.set(wait.agentId, timer);
@@ -1776,6 +1796,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         deliveryId: queued.delivery.id,
         action: "queued",
       });
+    }
+    if (!queued.replayed && agentWaits.active(queued.delivery.targetAgentId)) {
+      publishWaitChanged(queued.delivery.targetAgentId);
     }
     if (options.schedule !== false) scheduleDeliveryDispatch(queued.delivery.targetAgentId);
     return queued.delivery;
@@ -1843,7 +1866,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     try {
     const pending = collaborationDeliveries.pending(agentId);
     const waitEvaluation = agentWaits.evaluate(agentId, pending, collaborationDeliveries, deliveryNow());
-    if (waitEvaluation.wait?.status !== "active") clearWaitDeadline(agentId);
     if (waitEvaluation.hold) {
       waitHeld = true;
       return;
@@ -1863,13 +1885,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
       return;
     }
-    const baseTurn = batch.length > 1 ? pendingTurnFromBatch(batch) : pendingTurnFromDelivery(delivery);
+    const deliveryIds = batch.map((item) => item.id);
+    const durableBatch = waitEvaluation.wakeCause
+      ? collaborationDeliveries.persistBatchWakeCause(deliveryIds, waitEvaluation.wakeCause)
+      : batch;
+    finishWaitEvaluation(waitEvaluation);
+    const baseTurn = durableBatch.length > 1 ? pendingTurnFromBatch(durableBatch) : pendingTurnFromDelivery(durableBatch[0]!);
     const next: PendingTurn = {
       ...baseTurn,
       wakeCause: waitEvaluation.wakeCause ?? baseTurn.wakeCause,
     };
-    const deliveryIds = batch.map((item) => item.id);
-
     collaborationDeliveries.markBatchDelivered(deliveryIds);
     const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
     const response = injectedStatus === undefined ? await app.inject({
@@ -2425,6 +2450,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       if (recipientAgentIds.length > 100) return reply.code(400).send({ error: "collaboration supports at most 100 recipients" });
       const waitBehavior = request.body.waitBehavior;
+      if (waitBehavior === undefined) {
+        return reply.code(400).send({ error: "collaboration requires explicit waitBehavior" });
+      }
       if (waitBehavior !== undefined && !(waitBehavior === "queue" || waitBehavior === "report" || waitBehavior === "interrupt")) {
         return reply.code(400).send({ error: "waitBehavior must be queue, report, or interrupt" });
       }
@@ -2577,6 +2605,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ...(deadline ? { deadline } : {}),
     });
     scheduleWaitDeadline(registered.wait);
+    if (!registered.replayed) publishWaitChanged(agent.id);
     return {
       waitId: registered.wait.id,
       mode: registered.wait.mode,
@@ -2685,6 +2714,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             initialMessage,
             capability.mentionDepth,
             capability.mentionTrail,
+            "queue",
           );
           if (routing.error) throw new Error(routing.error);
           const communication = recordCommunication({
@@ -4245,7 +4275,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       };
       const auditText = text;
       if (requestedDeliveryIds.length === 0) {
-        if (agentWaits.cancel(agent.id, "user message override")) clearWaitDeadline(agent.id);
+        if (agentWaits.cancel(agent.id, "user message override")) {
+          clearWaitDeadline(agent.id);
+          publishWaitChanged(agent.id);
+        }
       }
       const existingRun = activeRuns.get(agent.id);
       if (existingRun) {

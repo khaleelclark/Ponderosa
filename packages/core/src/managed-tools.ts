@@ -42,6 +42,10 @@ export const PONDEROSA_SEND_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         },
       },
     },
+    allOf: [{
+      if: { properties: { intent: { const: "collaboration" } }, required: ["intent"] },
+      then: { required: ["recipientAgentIds", "waitBehavior"] },
+    }],
   },
 };
 

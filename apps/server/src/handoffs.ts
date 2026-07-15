@@ -20,7 +20,7 @@ export interface CollaborationDelivery {
   kind: "direct" | "tag" | "manager_notification";
   /** Auditable selector resolved to this recipient at message creation time. */
   audience?: "mention" | "everyone";
-  /** Explicit effect on an active durable wait; absent preserves legacy report behavior. */
+  /** Explicit effect on an active durable wait; absent is accepted only for legacy replay. */
   waitBehavior?: AgentCollaborationWaitBehavior;
   /** Server-owned cause used when this delivery activates a Run. */
   wakeCause?: AgentRunWakeCause;
@@ -265,6 +265,16 @@ export class CollaborationDeliveryStore {
     return ids.flatMap((id) => {
       const delivery = this.markDelivered(id);
       return delivery ? [delivery] : [];
+    });
+  }
+
+  /** Persist one structural release cause before a dispatcher claim can fail or crash. */
+  persistBatchWakeCause(ids: readonly string[], wakeCause: AgentRunWakeCause): CollaborationDelivery[] {
+    return ids.flatMap((id) => {
+      const delivery = this.deliveries.get(id);
+      if (!delivery || (delivery.status !== "queued" && delivery.status !== "delivered")) return delivery ? [delivery] : [];
+      if (delivery.wakeCause === wakeCause) return [delivery];
+      return [this.persist({ ...delivery, wakeCause }, "replace")];
     });
   }
 
