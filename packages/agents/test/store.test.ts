@@ -574,6 +574,31 @@ describe("AgentStore — canonical communication events", () => {
     expect(store.recoverInterruptedExecutions()).toEqual([]);
   });
 
+  it("preserves historical messages after their agent author is deleted", () => {
+    const project = store.createProject({ label: "History", hostPath: "/repo" });
+    const room = store.createConversation(project.id, { title: "Room" });
+    const author = store.createAgent(project.id, { title: "Former author", engine: "codex", conversationId: room.id });
+    const executionId = "historical-execution";
+    store.appendEvent(author.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId });
+    store.appendEvent(author.id, { type: "file_change", path: "src/history.ts", kind: "edit" });
+    const event: CommunicationEvent = {
+      eventId: "historical-broadcast", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Historical answer",
+      createdAt: "2026-07-15T02:19:10.342Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendConversationMessage(room.id, { role: "assistant", text: event.text }, author.id, "main", undefined, undefined, event.eventId);
+    expect(store.getProjectedConversationMessages(room.id)[0]?.fileActivity)
+      .toEqual([{ path: "src/history.ts", kind: "edit", status: "completed" }]);
+
+    expect(store.deleteAgent(author.id)).toBe(true);
+    expect(store.getProjectedConversationMessages(room.id)).toEqual([
+      expect.objectContaining({ text: event.text, authorAgentId: author.id, executionId }),
+    ]);
+    expect(store.getProjectedConversationMessages(room.id)[0]).not.toHaveProperty("fileActivity");
+  });
+
   it("indexes sustained canonical writes without rescanning prior history", () => {
     const project = store.createProject({ label: "Scale", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Scale room" });

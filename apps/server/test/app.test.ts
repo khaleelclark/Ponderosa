@@ -4283,6 +4283,36 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("continues a conversation after a historical message author is deleted", async () => {
+    const project = store.createProject({ label: "Deleted author history", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Durable history" });
+    const author = store.createAgent(project.id, { title: "Former author", engine: "codex", conversationId: room.id });
+    const recipient = store.createAgent(project.id, { title: "Current recipient", engine: "codex", conversationId: room.id });
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "historical-execution" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Historical answer",
+      createdAt: "2026-07-15T02:19:10.342Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendConversationMessage(room.id, { role: "assistant", text: event.text }, author.id, "main", undefined, undefined, event.eventId);
+    expect(store.deleteAgent(author.id)).toBe(true);
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const detail = await app.inject({ method: "GET", url: `/api/conversations/${room.id}` });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json<{ messages: Array<{ text: string; authorAgentId?: string; fileActivity?: unknown }> }>().messages)
+      .toEqual([expect.objectContaining({ text: event.text, authorAgentId: author.id })]);
+    expect(detail.json<{ messages: Array<{ fileActivity?: unknown }> }>().messages[0]).not.toHaveProperty("fileActivity");
+
+    const sent = await app.inject({
+      method: "POST", url: `/api/agents/${recipient.id}/messages`, payload: { text: "Continue from that answer." },
+    });
+    expect(sent.statusCode).toBe(200);
+    await waitForRun(recipient.id);
+    await app.close();
+  });
+
   it("does not recreate a run claim when deletion finishes before claim creation", async () => {
     let beforeClaimReached = false;
     let releaseClaim!: () => void;
