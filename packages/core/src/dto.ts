@@ -909,6 +909,43 @@ export interface RunOutputDto {
   createdAt: string;
 }
 
+export interface AgentCoordinationV3Dto {
+  availability: "running" | "runnable" | "waiting" | "idle";
+  requests: Array<{
+    id: string;
+    direction: "outbound" | "inbound";
+    counterpartyAgentId?: string;
+    state: string;
+    version: number;
+    deadlineAt?: string;
+    updatedAt: string;
+  }>;
+  joins: Array<{
+    id: string;
+    mode: "all" | "any" | "quorum";
+    quorum: number;
+    state: "open" | "satisfied" | "impossible" | "expired" | "cancelled";
+    completed: number;
+    total: number;
+    deadlineAt?: string;
+    updatedAt: string;
+  }>;
+  activations: Array<{
+    id: string;
+    kind: string;
+    priority: number;
+    state: string;
+    createdAt: string;
+  }>;
+  activeRun?: {
+    id: string;
+    status: string;
+    fencingToken: number;
+    promptInjectionState: "not_injected" | "injecting" | "injected";
+    leaseExpiresAt: string;
+  };
+}
+
 /**
  * GET /api/agents/:id — the full agent view. Chat contains only explicit
  * communications; Work log contains execution-scoped ordinary output.
@@ -922,6 +959,7 @@ export interface AgentDetailDto {
   changedFiles: ChangedFileDto[];
   runs: AgentRunDto[];
   activeWait?: AgentWaitDto;
+  coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
   state: AgentState;

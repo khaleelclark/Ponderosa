@@ -204,13 +204,13 @@ chooses one or more explicit recipients and supplies the message. Ponderosa owns
 routing and renders recipient labels; agents do not manually construct textual
 mentions.
 
-When a recipient has parked on a durable wait, the sender also declares the
-Collaboration delivery's structural wait behavior. `queue` holds non-urgent
-progress for the eventual batch, `report` counts a completed or blocked outcome
-from an expected agent, and `interrupt` wakes for an urgent blocker. Ponderosa
-never guesses these effects from prose. The active latch, received reporter
-count, and the structural cause of each resumed Run remain inspectable and
-update live from canonical wait-change events.
+Correlated work is represented by a Request and optional Join rather than by a
+behavior flag on a message. An agent may request work and keep running. When it
+does wait, the immutable Join describes the outcomes it needs and an Activation
+records why it later becomes runnable. Human and urgent activations do not cancel
+open joins. Ponderosa never guesses these effects from prose; request progress,
+join state, activation sources, and resumed Runs remain inspectable and update
+live.
 
 Collaboration messages do not appear in Project chat and do not become shared
 context for future agents. If a finding matters to the organization, an agent

@@ -56,6 +56,10 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     return { ...detail, activeWait: event.activeWait ?? undefined };
   }
 
+  if (event.type === "coordination_v3_changed") {
+    return { ...detail, coordinationV3: event.coordination };
+  }
+
   if (executionTypes.has(event.type)) {
     const activity = detail.activity ?? [];
     const id = `${agentId}:activity:${seq}`;

@@ -128,6 +128,133 @@ export const events = sqliteTable("events", {
   createdAt: text("created_at").notNull(),
 });
 
+/** Authoritative Communication V3 state. Unlike the tables above, these rows
+ * are not projections of JSONL; scheduler correctness depends on their SQLite
+ * transaction boundaries. */
+export const coordinationRequests = sqliteTable("coordination_requests", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  requesterAgentId: text("requester_agent_id"),
+  recipientAgentId: text("recipient_agent_id").notNull(),
+  communicationEventId: text("communication_event_id"),
+  payloadJson: text("payload_json").notNull(),
+  state: text("state").notNull(),
+  version: integer("version").notNull().default(0),
+  lifetimeKind: text("lifetime_kind").notNull(),
+  deadlineAt: text("deadline_at"),
+  openQuestionUpdateId: text("open_question_update_id"),
+  supersededByRequestId: text("superseded_by_request_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  terminalAt: text("terminal_at"),
+});
+
+export const coordinationRequestUpdates = sqliteTable("coordination_request_updates", {
+  id: text("id").primaryKey(),
+  requestId: text("request_id").notNull(),
+  kind: text("kind").notNull(),
+  actorKind: text("actor_kind").notNull(),
+  actorId: text("actor_id"),
+  inReplyToUpdateId: text("in_reply_to_update_id"),
+  payloadJson: text("payload_json").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  resultingState: text("resulting_state").notNull(),
+  resultingVersion: integer("resulting_version").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const coordinationJoins = sqliteTable("coordination_joins", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  ownerAgentId: text("owner_agent_id").notNull(),
+  mode: text("mode").notNull(),
+  quorum: integer("quorum").notNull(),
+  satisfyingOutcomesJson: text("satisfying_outcomes_json").notNull(),
+  state: text("state").notNull(),
+  deadlineAt: text("deadline_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  terminalAt: text("terminal_at"),
+});
+
+export const coordinationJoinMembers = sqliteTable("coordination_join_members", {
+  joinId: text("join_id").notNull(),
+  requestId: text("request_id").notNull(),
+  position: integer("position").notNull(),
+}, (table) => [primaryKey({ columns: [table.joinId, table.requestId] })]);
+
+export const agentActivations = sqliteTable("agent_activations", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  kind: text("kind").notNull(),
+  priority: integer("priority").notNull(),
+  state: text("state").notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  availableAt: text("available_at").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  consumedAt: text("consumed_at"),
+});
+
+export const activationSources = sqliteTable("activation_sources", {
+  activationId: text("activation_id").notNull(),
+  sourceKind: text("source_kind").notNull(),
+  sourceId: text("source_id").notNull(),
+}, (table) => [primaryKey({ columns: [table.activationId, table.sourceKind, table.sourceId] })]);
+
+export const schedulerAgentFences = sqliteTable("scheduler_agent_fences", {
+  agentId: text("agent_id").primaryKey(),
+  nextFencingToken: integer("next_fencing_token").notNull(),
+});
+
+export const schedulerRuns = sqliteTable("scheduler_runs", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  status: text("status").notNull(),
+  leaseOwner: text("lease_owner").notNull(),
+  leaseExpiresAt: text("lease_expires_at").notNull(),
+  fencingToken: integer("fencing_token").notNull(),
+  promptInjectionState: text("prompt_injection_state").notNull(),
+  providerSessionId: text("provider_session_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  startedAt: text("started_at"),
+  terminalAt: text("terminal_at"),
+});
+
+export const schedulerRunActivations = sqliteTable("scheduler_run_activations", {
+  runId: text("run_id").notNull(),
+  activationId: text("activation_id").notNull(),
+  attachedAt: text("attached_at").notNull(),
+  consumedAt: text("consumed_at"),
+}, (table) => [primaryKey({ columns: [table.runId, table.activationId] })]);
+
+export const coordinationIdempotency = sqliteTable("coordination_idempotency", {
+  projectId: text("project_id").notNull(),
+  actorScope: text("actor_scope").notNull(),
+  operation: text("operation").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  resultJson: text("result_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.projectId, table.actorScope, table.operation, table.idempotencyKey] })]);
+
+export const activationOutbox = sqliteTable("activation_outbox", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  activationId: text("activation_id").notNull(),
+  eventKind: text("event_kind").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  claimedBy: text("claimed_by"),
+  claimedAt: text("claimed_at"),
+  processedAt: text("processed_at"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+});
+
 export type ProjectRow = typeof projects.$inferSelect;
 export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
@@ -138,3 +265,7 @@ export type RunRow = typeof runs.$inferSelect;
 export type WorkItemRow = typeof workItems.$inferSelect;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
+export type CoordinationRequestRow = typeof coordinationRequests.$inferSelect;
+export type CoordinationJoinRow = typeof coordinationJoins.$inferSelect;
+export type AgentActivationRow = typeof agentActivations.$inferSelect;
+export type SchedulerRunRow = typeof schedulerRuns.$inferSelect;

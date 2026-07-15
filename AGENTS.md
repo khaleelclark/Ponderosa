@@ -38,8 +38,12 @@ pay-per-token provider API keys.
    engine-specific branching outside `packages/engines`. Adding an engine = adding
    an adapter, nothing else.
 
-3. **The event log is canonical; views are projections.** The append-only event
-   log is the source of truth and SQLite is rebuildable from it. Project chat,
+3. **Canonical authority is domain-specific.** The append-only event log is the
+   source of truth for authored communication and execution telemetry. SQLite is
+   authoritative for Communication V3 coordination and scheduler state as
+   defined in [COMMUNICATION_V3.md](./COMMUNICATION_V3.md): requests, joins,
+   activations, runs, leases/fences, prompt injection, terminal outcomes,
+   idempotency, and the activation outbox. Project chat,
    Team chat, Agent chat, and output views must project canonical
    events rather than create duplicate conversations or competing state.
    A canonical Communication owns authored text, identity, scope, and audience.
@@ -159,7 +163,7 @@ pay-per-token provider API keys.
 
 ```
 Project chat → Agents → ephemeral runtime sessions
-Canonical event log → rebuildable SQLite projections
+Canonical communication log + authoritative V3 scheduler SQLite
 Communication → Broadcast | Direct Message | Collaboration
 Explicit communication → Agent chat audit timeline
 Ordinary runtime output → execution-scoped Work log
@@ -170,12 +174,12 @@ Ordinary runtime output → execution-scoped Work log
 - **Backend:** a long-lived **Fastify** (Node/TS) daemon that spawns/supervises
   engine CLIs and streams **SSE**. Runs on the host via **systemd**, as the user.
 - **Storage:** event log in folders under `$PONDEROSA_DATA_DIR` + **SQLite**
-  projections (`better-sqlite3` + Drizzle).
+  projections and authoritative V3 scheduling state (`better-sqlite3` + Drizzle).
 - **Primary engine:** Codex CLI (`codex exec --json`, `codex exec resume`).
   **Secondary:** Claude Agent SDK.
 - **Transport:** SSE for the live `AgentEvent` stream; REST for actions.
 
-### V1 interaction invariants
+### Interaction invariants
 
 - A direct message to an actively responding agent **steers by default**.
   Queueing is an explicit manager choice and remains durable FIFO work.
@@ -207,7 +211,8 @@ Ordinary runtime output → execution-scoped Work log
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
 - Explicit user cancellation is terminal for the active Run and its claimed
-  delivery. It revokes runtime capabilities and must never requeue or respawn the
+  activation. It immediately fences execution, revokes runtime capabilities,
+  interrupts the provider, and must never requeue or respawn the
   same delivery; later queued work remains eligible to run. Genuine runtime
   failures may retain their separate bounded retry policy.
 - Collaboration delivery rejects exact replay within bounded recent causal

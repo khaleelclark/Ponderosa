@@ -1551,15 +1551,20 @@ export class AgentStore {
    * append-only rule (which forbids mutating events *within* a live agent, not
    * discarding an entire agent). Returns false if the agent didn't exist.
    */
-  deleteAgent(id: string): boolean {
+  deleteAgent(id: string, beforeProjectionDelete?: (agentId: string) => void): boolean {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
     if (!row) return false;
 
     for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
-      this.deleteAgent(child.id);
+      this.deleteAgent(child.id, beforeProjectionDelete);
     }
 
     this.db.transaction((tx) => {
+      // Coordination V3 uses the same underlying SQLite connection. Its nested
+      // transaction is a savepoint, so join cancellation, recipient outcomes,
+      // pending-activation invalidation, and the agent projection deletion
+      // commit or roll back together.
+      beforeProjectionDelete?.(id);
       tx.delete(events).where(eq(events.agentId, id)).run();
       tx.delete(artifacts).where(eq(artifacts.agentId, id)).run();
       tx.delete(workItems).where(eq(workItems.agentId, id)).run();
