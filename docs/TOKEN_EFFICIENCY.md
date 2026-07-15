@@ -54,9 +54,9 @@ Agents have an explicit, durable wait latch supporting:
 - immediate user or blocker override; and
 - informational delivery without waking.
 
-Registering a wait atomically includes the expected stable agent IDs, condition, optional deadline, and the current delivery watermark. Each inbound communication is persisted normally, but only the transition that satisfies the condition may claim the next execution. User/direct signals and managed-agent failures override the latch, and deadlines resume with the reports received so far.
+Registering a wait atomically includes the expected stable agent IDs, condition, optional deadline, and the current delivery watermark. Each inbound Collaboration delivery is persisted normally with an explicit wait behavior: `queue` accumulates without advancing the latch, `report` counts its expected author once, and `interrupt` cancels the latch for urgent work. Missing behavior remains `report` so persisted legacy deliveries replay compatibly. User/direct signals and managed-agent failures override the latch, and deadlines resume with the reports received so far.
 
-This lets a manager park after delegating, accumulate three reports without running three times, and synthesize once. The latch is append-only and restart-safe; reporter identities are counted once after the registration watermark.
+This lets a manager park after delegating, accumulate progress and three reports without running for each message, and synthesize once. The latch is append-only and restart-safe; reporter identities are counted once after the registration watermark. Agent detail exposes current progress, and each resumed Run records its structural wake cause for diagnosis.
 
 ## Further strategies
 

@@ -149,6 +149,7 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
       reason: event.reason,
       engine: detail.agent.activeEngine,
       communicationEventId: existing?.communicationEventId ?? sourceMessage?.communicationEventId,
+      wakeCause: event.wakeCause ?? existing?.wakeCause,
       startedAt: existing?.startedAt ?? ts,
       updatedAt: ts,
       completedAt: terminal ? ts : existing?.completedAt,

@@ -178,6 +178,8 @@ export interface ConversationDeliveryIntent {
   kind: "direct" | "tag";
   /** The selector that authorized this recipient when the message was recorded. */
   audience?: "mention" | "everyone";
+  /** Explicit behavior when the recipient has an active durable wait. */
+  waitBehavior?: import("@ponderosa/core").AgentCollaborationWaitBehavior;
   /** Target-owned staged assets delivered with this recipient turn. */
   attachmentIds?: string[];
 }
@@ -1704,6 +1706,7 @@ export class AgentStore {
         model: r.model ?? undefined,
         effort: r.effort ?? undefined,
         communicationEventId: r.communicationEventId ?? undefined,
+        wakeCause: r.wakeCause as AgentRunDto["wakeCause"] ?? undefined,
         ...([r.inputTokens, r.cachedInputTokens, r.cacheWriteInputTokens, r.outputTokens, r.reasoningOutputTokens, r.totalTokens].some((value) => value !== null)
           ? { usage: {
               ...(r.inputTokens !== null ? { inputTokens: r.inputTokens } : {}),
@@ -2102,6 +2105,7 @@ export class AgentStore {
                   reason: op.row.reason,
                   engine: op.row.engine,
                   communicationEventId: op.row.communicationEventId,
+                  wakeCause: op.row.wakeCause,
                   updatedAt: op.row.updatedAt,
                   completedAt: op.row.completedAt,
                 },

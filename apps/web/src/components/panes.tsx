@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentWaitDto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -199,6 +199,18 @@ function runStatusColor(status: AgentRunDto["status"]): "success" | "warning" | 
 
 function runStatusLabel(status: AgentRunDto["status"]): string {
   return status[0] ? `${status[0].toUpperCase()}${status.slice(1)}` : status;
+}
+
+function wakeCauseLabel(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
+  switch (cause) {
+    case "project_request": return "Project request";
+    case "direct_message": return "Direct message";
+    case "collaboration": return "Collaboration";
+    case "wait_satisfied": return "Expected reports received";
+    case "wait_deadline": return "Wait deadline";
+    case "wait_interrupted": return "Urgent wait interruption";
+    case "managed_failure": return "Managed-agent failure";
+  }
 }
 
 function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
@@ -693,12 +705,14 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
 
 export function RunsPane({
   runs,
+  activeWait,
   workItems,
   runTriggers,
   messages,
   timeline,
 }: {
   runs: AgentRunDto[];
+  activeWait?: AgentWaitDto;
   workItems: WorkItemDto[];
   runTriggers: RunTriggerRecord[];
   messages: MessageDto[];
@@ -718,6 +732,13 @@ export function RunsPane({
           </Typography>
         ) : null}
       </Stack>
+      {activeWait ? (
+        <Alert severity="info">
+          Waiting for reports: {activeWait.receivedAgentIds.length} of {activeWait.expectedAgentIds.length} received
+          {activeWait.mode === "quorum" ? ` · quorum ${activeWait.quorum}` : ` · ${activeWait.mode}`}
+          {activeWait.deadline ? ` · deadline ${new Date(activeWait.deadline).toLocaleString()}` : ""}
+        </Alert>
+      ) : null}
       {runs.length === 0 ? (
         <Alert severity="info">No runs yet.</Alert>
       ) : (
@@ -746,6 +767,11 @@ export function RunsPane({
               <Typography variant="caption" color="text.secondary">
                 {run.engine} · {run.id.slice(0, 8)} · {new Date(run.startedAt).toLocaleString()}
               </Typography>
+              {run.wakeCause ? (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                  Started by {wakeCauseLabel(run.wakeCause)}
+                </Typography>
+              ) : null}
               <Typography variant="caption" color={run.usage ? "text.secondary" : "warning.main"} sx={{ display: "block" }}>
                 {run.usage
                   ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`

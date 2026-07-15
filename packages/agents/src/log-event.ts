@@ -8,7 +8,7 @@
 // redefinition of a core type).
 
 import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, ImageAttachmentDto } from "@ponderosa/core";
-import type { AgentLifecycleReason, AgentRunStatus } from "@ponderosa/core";
+import type { AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
 export interface UserMessageEvent {
@@ -40,6 +40,8 @@ export interface AgentLifecycleEvent {
   status: AgentRunStatus;
   reason: AgentLifecycleReason;
   executionId: string;
+  /** Structural activation cause, recorded only on the running transition. */
+  wakeCause?: AgentRunWakeCause;
   /** Requested runtime identity captured when the run starts. */
   model?: string;
   effort?: string;

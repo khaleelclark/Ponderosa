@@ -164,6 +164,7 @@ export function projectEvent(
             model: event.model ?? null,
             effort: event.effort ?? null,
             communicationEventId: next.pendingCommunicationEventId ?? null,
+            wakeCause: event.wakeCause ?? null,
             inputTokens: null,
             cachedInputTokens: null,
             cacheWriteInputTokens: null,

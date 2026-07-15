@@ -2834,9 +2834,19 @@ describe("server chunk F", () => {
       method: "POST", url: "/api/agent-messages", headers,
       payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Cross-room." },
     });
+    const invalidWaitBehavior = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Invalid.", waitBehavior: "eventually" },
+    });
+    const misplacedWaitBehavior = await app.inject({
+      method: "POST", url: "/api/agent-messages", headers,
+      payload: { intent: "broadcast", text: "Wrong scope.", waitBehavior: "queue" },
+    });
 
     expect(recipientFree.statusCode).toBe(400);
     expect(unauthorized.statusCode).toBe(400);
+    expect(invalidWaitBehavior.statusCode).toBe(400);
+    expect(misplacedWaitBehavior.statusCode).toBe(400);
     expect(store.getConversationMessages(master.id, "collaboration")).toHaveLength(0);
     expect(store.getConversationDeliveryIntents(master.id)).toHaveLength(0);
     await cancelAndWait(app, author.id);
@@ -3097,31 +3107,48 @@ describe("server chunk F", () => {
     expect(registered.json()).toMatchObject({ mode: "all", quorum: 2, replayed: false });
     await cancelAndWait(app, parent.id);
 
-    const sendReport = (token: string, text: string) => app.inject({
+    const sendCollaboration = (token: string, text: string, waitBehavior: "queue" | "report" | "interrupt") => app.inject({
       method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text },
+      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text, waitBehavior },
     });
-    const firstReport = await sendReport(firstToken, "First report.");
-    expect(firstReport.statusCode).toBe(200);
+    const progress = await sendCollaboration(firstToken, "First progress update.", "queue");
+    expect(progress.statusCode).toBe(200);
     await sleep(40);
     const parentTurns = () => [...adapter.seeds, ...adapter.continues].filter((turn) => turn.agentId === parent.id);
     expect(parentTurns()).toHaveLength(1);
+    const queuedDetail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
+    expect(queuedDetail.json<{ activeWait: { receivedAgentIds: string[] } }>().activeWait.receivedAgentIds).toEqual([]);
 
-    const secondReport = await sendReport(secondToken, "Second report.");
+    const firstReport = await sendCollaboration(firstToken, "First report.", "report");
+    expect(firstReport.statusCode).toBe(200);
+    await sleep(40);
+    expect(parentTurns()).toHaveLength(1);
+    const partialDetail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
+    expect(partialDetail.json<{ activeWait: { receivedAgentIds: string[] } }>().activeWait.receivedAgentIds).toEqual([first.id]);
+
+    const secondReport = await sendCollaboration(secondToken, "Second report.", "report");
     expect(secondReport.statusCode).toBe(200);
     await vi.waitFor(() => expect(parentTurns()).toHaveLength(2));
-    expect(parentTurns()[1]?.prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
+    expect(parentTurns()[1]?.prompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
+    expect(parentTurns()[1]?.prompt).toContain("First progress update.");
     expect(parentTurns()[1]?.prompt).toContain("First report.");
     expect(parentTurns()[1]?.prompt).toContain("Second report.");
-    const reportEventIds = [firstReport, secondReport]
+    const reportEventIds = [progress, firstReport, secondReport]
       .map((response) => response.json<{ messageId: string }>().messageId);
     expect(store.readRunTriggers(project.id, parent.id)
       .filter((trigger) => trigger.source === "collaboration")
       .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
     const detail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
-    expect(detail.json<{ runTriggers: Array<{ communicationEventId: string; source: string }> }>().runTriggers
+    const parentDetail = detail.json<{
+      activeWait?: unknown;
+      runs: Array<{ wakeCause?: string }>;
+      runTriggers: Array<{ communicationEventId: string; source: string }>;
+    }>();
+    expect(parentDetail.runTriggers
       .filter((trigger) => trigger.source === "collaboration")
       .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
+    expect(parentDetail.activeWait).toBeUndefined();
+    expect(parentDetail.runs.at(-1)?.wakeCause).toBe("wait_satisfied");
 
     await Promise.all([parent, first, second].map((agent) => cancelAndWait(app, agent.id)));
     await app.close();

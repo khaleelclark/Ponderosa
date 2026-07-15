@@ -51,6 +51,38 @@ describe("durable agent wait conditions", () => {
     expect(waits.evaluate("manager", deliveries.pending("manager"), deliveries).hold).toBe(false);
   });
 
+  it("queues informational collaboration, counts explicit reports, and interrupts structurally", () => {
+    const queued = fixture();
+    const wait = queued.waits.register({
+      agentId: "manager", executionId: "run-1", mode: "any",
+      expectedAgentIds: ["one"], quorum: 1, deliveryWatermark: queued.deliveries.watermark(),
+    }).wait;
+    queued.deliveries.queue({
+      messageId: "progress", targetAgentId: "manager", authorAgentId: "one", text: "progress",
+      relayDepth: 0, mentionTrail: [], kind: "tag", waitBehavior: "queue",
+    });
+    expect(queued.waits.evaluate("manager", queued.deliveries.pending("manager"), queued.deliveries).hold).toBe(true);
+    expect(queued.waits.progress(wait, queued.deliveries.pending("manager"), queued.deliveries).receivedAgentIds).toEqual([]);
+    queued.deliveries.queue({
+      messageId: "report", targetAgentId: "manager", authorAgentId: "one", text: "done",
+      relayDepth: 0, mentionTrail: [], kind: "tag", waitBehavior: "report",
+    });
+    expect(queued.waits.evaluate("manager", queued.deliveries.pending("manager"), queued.deliveries))
+      .toMatchObject({ hold: false, wakeCause: "wait_satisfied", wait: { status: "satisfied" } });
+
+    const interrupted = fixture();
+    interrupted.waits.register({
+      agentId: "manager", executionId: "run-1", mode: "all",
+      expectedAgentIds: ["one", "two"], quorum: 2, deliveryWatermark: interrupted.deliveries.watermark(),
+    });
+    interrupted.deliveries.queue({
+      messageId: "blocker", targetAgentId: "manager", authorAgentId: "one", text: "blocked",
+      relayDepth: 0, mentionTrail: [], kind: "tag", waitBehavior: "interrupt",
+    });
+    expect(interrupted.waits.evaluate("manager", interrupted.deliveries.pending("manager"), interrupted.deliveries))
+      .toMatchObject({ hold: false, wakeCause: "wait_interrupted", wait: { status: "cancelled" } });
+  });
+
   it("fails open for a direct priority signal or an elapsed deadline", () => {
     const direct = fixture();
     direct.waits.register({
@@ -58,7 +90,7 @@ describe("durable agent wait conditions", () => {
       expectedAgentIds: ["one"], quorum: 1, deliveryWatermark: direct.deliveries.watermark(),
     });
     direct.deliveries.queue({ messageId: "user", targetAgentId: "manager", text: "user", relayDepth: 0, mentionTrail: [], kind: "direct" });
-    expect(direct.waits.evaluate("manager", direct.deliveries.pending("manager"), direct.deliveries)).toMatchObject({ hold: false, wait: { status: "cancelled" } });
+    expect(direct.waits.evaluate("manager", direct.deliveries.pending("manager"), direct.deliveries)).toMatchObject({ hold: false, wakeCause: "direct_message", wait: { status: "cancelled" } });
 
     const deadline = fixture();
     deadline.waits.register({
@@ -66,6 +98,6 @@ describe("durable agent wait conditions", () => {
       expectedAgentIds: ["one"], quorum: 1, deliveryWatermark: 0, deadline: "2026-07-14T00:00:00.000Z",
     });
     expect(deadline.waits.evaluate("manager", [], deadline.deliveries, Date.parse("2026-07-14T00:00:01.000Z")))
-      .toMatchObject({ hold: false, wait: { status: "expired" } });
+      .toMatchObject({ hold: false, wakeCause: "wait_deadline", wait: { status: "expired" } });
   });
 });

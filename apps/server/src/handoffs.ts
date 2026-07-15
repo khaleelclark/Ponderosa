@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { MessageReferenceDto } from "@ponderosa/core";
+import type { AgentCollaborationWaitBehavior, AgentRunWakeCause, MessageReferenceDto } from "@ponderosa/core";
 
 export type CollaborationDeliveryStatus = "queued" | "delivered" | "acknowledged" | "failed" | "cancelled";
 
@@ -20,6 +20,10 @@ export interface CollaborationDelivery {
   kind: "direct" | "tag" | "manager_notification";
   /** Auditable selector resolved to this recipient at message creation time. */
   audience?: "mention" | "everyone";
+  /** Explicit effect on an active durable wait; absent preserves legacy report behavior. */
+  waitBehavior?: AgentCollaborationWaitBehavior;
+  /** Server-owned cause used when this delivery activates a Run. */
+  wakeCause?: AgentRunWakeCause;
   model?: string;
   effort?: string;
   sourceChannel?: "main";

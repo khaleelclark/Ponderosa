@@ -18,6 +18,10 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
 
 - A broadcast never starts, steers, or queues an agent.
 - Only explicit agent recipients may receive a delivery or run trigger.
+- Collaboration delivery owns its explicit wait behavior: `queue` persists
+  without advancing an active latch, `report` advances an expected-reporter
+  latch, and `interrupt` cancels the latch and wakes the recipient. Behavior is
+  never inferred from message text; absent behavior preserves legacy `report`.
 - Sent collaboration is auditable in the author's Agent chat as well as each
   recipient's Agent chat.
 - Completed ordinary output belongs to the originating Run and appears in Work
