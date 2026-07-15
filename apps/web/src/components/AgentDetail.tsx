@@ -385,7 +385,7 @@ export function AgentDetail({
     runOutput: <WorkLogPane entries={detail.runOutput} />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
-    review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} />,
+    review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
     runs: <RunsPane runs={detail.runs} activeWait={detail.activeWait} workItems={detail.workItems} runTriggers={detail.runTriggers} messages={detail.messages} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} />,
   };

@@ -260,7 +260,14 @@ export interface ConversationMessageDto {
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
   executionId?: string;
-  fileActivity?: Array<{ path: string; kind: "create" | "edit" | "delete"; status: "completed" }>;
+  fileActivity?: Array<{
+    path: string;
+    kind: "create" | "edit" | "delete";
+    status: "completed";
+    /** Unified-diff line totals when the engine supplied a textual diff. */
+    additions?: number;
+    deletions?: number;
+  }>;
   correctionOfMessageId?: string;
   correctedByMessageId?: string;
 }

@@ -83,6 +83,7 @@ export function ConversationMessage({
   agentIdForHandle,
   compactViewport = false,
   onOpenAgent,
+  onOpenReview,
   onReply,
   onDirectReply,
   onReact,
@@ -94,6 +95,7 @@ export function ConversationMessage({
   agentIdForHandle(handle: string): string | undefined;
   compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
+  onOpenReview?(agentId: string, path?: string): void;
   onReply(message: ConversationMessageDto): void;
   onDirectReply(message: ConversationMessageDto): void;
   onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
@@ -111,20 +113,21 @@ export function ConversationMessage({
     <Box
       id={`master-message-${message.id}`}
       component="article"
+      className="chat-message"
       aria-label={`${fromManager ? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
-      sx={{ alignSelf: fromManager ? "flex-end" : "flex-start", maxWidth: { xs: "96%", sm: "min(680px, 92%)" }, minWidth: 0 }}
+      sx={{ alignSelf: "center", width: "min(760px, 100%)", maxWidth: "100%", minWidth: 0 }}
     >
       {showUserLabel ? <UserMessageLabel /> : null}
       <Box
         data-message-bubble="true"
         sx={{
-          px: 1.5,
-          py: 1,
+          px: { xs: 1, sm: 1.5 },
+          py: { xs: 0.75, sm: 1 },
           borderRadius: 2,
-          bgcolor: fromManager ? "primary.main" : "background.paper",
-          color: fromManager ? "primary.contrastText" : "text.primary",
-          border: fromManager ? 0 : 1,
+          bgcolor: fromManager ? "action.selected" : "background.paper",
+          color: "text.primary",
+          border: 1,
           borderColor: "divider",
         }}
       >
@@ -156,17 +159,32 @@ export function ConversationMessage({
         {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
         {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
-        {message.fileActivity?.length ? <Box component="aside" aria-label="File activity" sx={{ mt: 1, p: .75, borderRadius: 1, bgcolor: "action.hover" }}><Typography variant="caption" sx={{ fontWeight: 700 }}>Files changed</Typography>{message.fileActivity.map((file) => <Stack key={`${file.kind}:${file.path}`} direction="row" spacing={1}><Typography variant="caption" sx={{ flex: 1 }} noWrap>{file.path.split("/").at(-1)}</Typography><Typography variant="caption" color="text.secondary">{file.kind} · {file.status}</Typography></Stack>)}</Box> : null}
+        {message.fileActivity?.length ? <Box component="aside" aria-label="File activity" sx={{ mt: 1, p: .75, borderRadius: 1, bgcolor: "action.hover" }}>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: .25 }}>
+            <Typography variant="caption" sx={{ fontWeight: 700, flex: 1 }}>Files changed</Typography>
+            <Typography variant="caption" color="success.main">+{message.fileActivity.reduce((total, file) => total + (file.additions ?? 0), 0)}</Typography>
+            <Typography variant="caption" color="error.main">−{message.fileActivity.reduce((total, file) => total + (file.deletions ?? 0), 0)}</Typography>
+            {message.authorAgentId && onOpenReview ? <Button size="small" color="inherit" onClick={() => onOpenReview(message.authorAgentId!)} sx={{ minWidth: 0, py: 0, px: .5 }}>Review</Button> : null}
+          </Stack>
+          {message.fileActivity.map((file) => <Button key={`${file.kind}:${file.path}`} size="small" color="inherit" onClick={() => message.authorAgentId && onOpenReview?.(message.authorAgentId, file.path)} disabled={!message.authorAgentId || !onOpenReview} sx={{ display: "flex", width: "100%", justifyContent: "flex-start", textTransform: "none", minHeight: 26, px: .5, py: 0, textAlign: "left" }}>
+            <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>{file.kind} · +{file.additions ?? 0} −{file.deletions ?? 0}</Typography>
+          </Button>)}
+        </Box> : null}
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-          {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
-            {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
-              ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-              : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
+          {message.attachments.map((attachment) => <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
+            {attachment.mediaType.startsWith("image/")
+              ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 320, maxHeight: 240, objectFit: "contain", borderRadius: 1 }} />
+              : <Stack spacing={.25} sx={{ p: .75, border: 1, borderColor: "divider", borderRadius: 1 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography><Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography></Stack>}
+            <Stack direction="row" spacing={.5} sx={{ mt: .25 }}>
+              {attachment.previewUrl ? <Button size="small" component="a" href={attachment.previewUrl} target="_blank" rel="noreferrer" sx={{ minWidth: 0, px: .5 }}>Open</Button> : null}
+              <Button size="small" component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" download aria-label={`Download ${attachment.name}`} sx={{ minWidth: 0, px: .5 }}>Download</Button>
+            </Stack>
           </Box>)}
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
       </Box>
-      <MessageActionsAndTimestamp value={message.createdAt} actions={<>
+      <MessageActionsAndTimestamp value={message.createdAt} actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip>
@@ -181,7 +199,7 @@ export function ConversationMessage({
             <QuickreplyIcon fontSize="inherit" />
           </IconButton></Tooltip>
         ) : null}
-      </>} />
+      </> : undefined} />
     </Box>
   );
 }
@@ -193,6 +211,7 @@ export function ConversationView({
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
+  onOpenReview,
   onNewAgent,
   onDeleted,
 }: {
@@ -202,6 +221,7 @@ export function ConversationView({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
+  onOpenReview?(agentId: string, path?: string): void;
   onNewAgent(master: ConversationDto): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -224,6 +244,8 @@ export function ConversationView({
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
+  const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
+  const [stoppedNotice, setStoppedNotice] = useState<string>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
@@ -339,6 +361,7 @@ export function ConversationView({
         engine,
         ...runConfig,
       });
+      setActiveOperation({ agentIds: [agent.id], state: "starting" });
       try {
         const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agent.id, file)));
         await api.sendMessage(agent.id, {
@@ -389,6 +412,9 @@ export function ConversationView({
           ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
           : undefined,
       );
+      const activeIds = response.recipients.filter((recipient) => !recipient.queued).map((recipient) => recipient.agentId);
+      if (activeIds.length === 0) setActiveOperation(undefined);
+      else setActiveOperation({ agentIds: activeIds, state: "starting" });
       for (const agentId of variables.agentIds) {
         void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
       }
@@ -429,6 +455,7 @@ export function ConversationView({
       clearReply();
       invalidate();
       setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.` : undefined);
+      if (response.queued) setActiveOperation(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
@@ -587,6 +614,28 @@ export function ConversationView({
     .map((agent) => agentMentionHandle(agent.title));
   const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
 
+  useEffect(() => {
+    if (!activeOperation || activeOperation.agentIds.length === 0) return;
+    const anyRunning = activeOperation.agentIds.some((agentId) => statusByAgentId.get(agentId) === "running");
+    if (anyRunning && activeOperation.state !== "running") {
+      setActiveOperation({ ...activeOperation, state: "running" });
+    } else if (!busy && activeOperation.state === "running" && !anyRunning) {
+      setActiveOperation(undefined);
+    }
+  }, [activeOperation, busy, statusByAgentId]);
+
+  const operationRunning = Boolean(activeOperation && (busy || activeOperation.state === "running"));
+  const stopOperation = async () => {
+    const agentIds = activeOperation?.agentIds ?? [];
+    if (agentIds.length === 0) return;
+    const names = agentIds.map((id) => agentTitle(id)).join(", ");
+    if (agentIds.length > 1 && !window.confirm(`Stop this operation tree (${names})? Partial output will remain visible.`)) return;
+    setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
+    await Promise.allSettled(agentIds.map((agentId) => api.cancelRun(agentId)));
+    setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
+    invalidate();
+  };
+
   const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer") => {
     if (activeView === "collaboration") {
       if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
@@ -617,6 +666,7 @@ export function ConversationView({
     if (route.kind === "direct-reply") {
       if (!replyTo) throw new Error("The direct reply target is no longer available. Cancel the reply and try again.");
       if (!directReplyRequestId) throw new Error("The direct reply receipt is no longer available. Cancel the reply and try again.");
+      setActiveOperation({ agentIds: route.agentIds, state: "starting" });
       await directReply.mutateAsync({
         targetId: route.agentIds[0],
         text,
@@ -628,6 +678,7 @@ export function ConversationView({
       return;
     }
     if (route.kind === "mentioned-reply") {
+      setActiveOperation({ agentIds: route.agentIds, state: "starting" });
       await reply.mutateAsync({
         agentIds: route.agentIds,
         text,
@@ -637,6 +688,7 @@ export function ConversationView({
         activeRunDelivery,
       });
     } else {
+      setActiveOperation({ agentIds: [], state: "starting" });
       await spawn.mutateAsync({ text, files });
     }
   };
@@ -762,6 +814,7 @@ export function ConversationView({
 
       <Box
         ref={chatScrollRef}
+        className="chat-scroll-region"
         onScroll={() => {
           if (chatScrollRef.current) {
             shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
@@ -826,6 +879,7 @@ export function ConversationView({
                 agentIdForHandle={agentIdForHandle}
                 compactViewport={compactViewport}
                 onOpenAgent={onOpenAgent}
+                onOpenReview={onOpenReview}
                 onReply={(selected) => {
                   clearReply();
                   setReplyTo(selected);
@@ -835,6 +889,7 @@ export function ConversationView({
                   setReplyTo(selected);
                   setDirectReplyTargetId(selected.authorAgentId);
                   setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+                  setStoppedNotice(undefined);
                 }}
                 onReact={(selected, emoji) => sendReaction.mutateAsync({
                   communicationEventId: selected.communicationEventId!,
@@ -932,8 +987,9 @@ export function ConversationView({
         </Box>
       </Drawer>
 
-      <Box>
+      {activeView === "main" ? <Box>
         {queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
+        {stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
@@ -941,33 +997,25 @@ export function ConversationView({
         ) : null}
         {agents.length > 0 ? (
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
-            {activeView === "collaboration" ? (
-              <Typography variant="caption" color="text.secondary">
-                Agent #tags resolve to stable identities. Ambiguous names fail closed; #everyone is always explicit.
-              </Typography>
-            ) : (
-              <Typography variant="caption" color="text.secondary">
-                Type <Box component="strong">#agent</Box> to message an existing agent, <Box component="strong">@</Box> to reference a file, or just send to start a new agent.
-              </Typography>
-            )}
+            <Typography variant="caption" color="text.secondary">
+              Type <Box component="strong">#agent</Box> to message an existing agent, <Box component="strong">@</Box> to reference a file, or just send to start a new agent.
+            </Typography>
           </Box>
         ) : null}
         <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
           conversationDraftId={activeView === "main" ? conversationId : `collaboration:${conversationId}`}
           controls={runtimeControls}
-          disabled={busy}
-          running={false}
+          disabled={busy && !operationRunning}
+          running={operationRunning}
           mentionHandles={mentionHandles}
           commands={commands}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={activeView === "collaboration" ? Boolean(replyTo?.authorAgentId) : engineReady}
+          allowUnmentionedSend={engineReady}
           placeholder={
-            activeView === "collaboration"
-              ? replyTo?.authorAgentId ? `Reply to ${agentTitle(replyTo.authorAgentId)}` : "Tag #agent or #everyone"
-              : engineReady
-                ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
-                : "#tag an agent or use #broadcast for shared context"
+            engineReady
+              ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
+              : "#tag an agent or use #broadcast for shared context"
           }
           onSend={submit}
           onQueue={(text, files) => submit(text, files, "queue")}
@@ -975,11 +1023,13 @@ export function ConversationView({
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
           projectId={conversation.projectId}
+          focusReply={Boolean(directReplyTargetId)}
+          onCancel={stopOperation}
           onCancelReply={() => {
             clearReply();
           }}
         />
-      </Box>
+      </Box> : null}
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename Project chat</DialogTitle>

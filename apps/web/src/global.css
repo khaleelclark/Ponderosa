@@ -21,6 +21,45 @@ body {
   box-sizing: border-box;
 }
 
+/* Keep the document column calm until a message is being inspected. Keyboard
+   focus and touch taps remain first-class ways to reveal the same actions. */
+.chat-message-actions .chat-message-action-buttons {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.chat-message:hover .chat-message-actions .chat-message-action-buttons,
+.chat-message:focus-within .chat-message-actions .chat-message-action-buttons,
+.chat-message-actions.revealed .chat-message-action-buttons {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-scroll-region {
+  scrollbar-width: none;
+}
+
+.chat-scroll-region::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.chat-scroll-region:hover,
+.chat-scroll-region:focus-within {
+  scrollbar-width: thin;
+}
+
+.chat-scroll-region:hover::-webkit-scrollbar,
+.chat-scroll-region:focus-within::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-actions .chat-message-action-buttons { transition: none; }
+}
+
 html {
   -webkit-text-size-adjust: 100%;
 }

@@ -5,7 +5,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DifferenceIcon from "@mui/icons-material/Difference";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import SendIcon from "@mui/icons-material/Send";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ReplyIcon from "@mui/icons-material/Reply";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
@@ -384,7 +384,7 @@ export function ChatMarkdown({
         "& > :last-child": { mb: 0 },
         fontSize: 14,
         lineHeight: "20px",
-        "& p": { my: 0.5 },
+        "& p": { my: 0.35 },
         "& h1, & h2, & h3, & h4": { mt: 1.5, mb: 0.75, lineHeight: 1.25 },
         "& h1": { fontSize: "1.35rem" },
         "& h2": { fontSize: "1.2rem" },
@@ -546,6 +546,7 @@ export function ChatPane({
     <Stack
       component="section"
       aria-label="Conversation"
+      className="chat-scroll-region"
       ref={scrollRef}
       spacing={1.25}
       onScroll={() => {
@@ -569,11 +570,13 @@ export function ChatPane({
           key={message.id}
           id={`message-${message.id}`}
           component="article"
+          className="chat-message"
           aria-label={`${senderLabel} message`}
           tabIndex={-1}
           sx={{
-            alignSelf: message.role === "user" ? "flex-end" : "flex-start",
-            maxWidth: "min(680px, 92%)",
+            alignSelf: "center",
+            width: "min(760px, 100%)",
+            maxWidth: "100%",
             minWidth: 0,
           }}
         >
@@ -581,14 +584,14 @@ export function ChatPane({
           <Box
             data-message-bubble="true"
             sx={{
-              px: 1.5,
-              py: 1,
+              px: { xs: 1, sm: 1.5 },
+              py: { xs: 0.75, sm: 1 },
               borderRadius: 2,
-              bgcolor: message.role === "user" ? "primary.main" : "background.paper",
-              color: message.role === "user" ? "primary.contrastText" : "text.primary",
-              border: message.role === "assistant" ? 1 : 0,
+              bgcolor: message.role === "user" ? "action.selected" : "background.paper",
+              color: "text.primary",
+              border: 1,
               borderColor: "divider",
-              boxShadow: message.role === "assistant" ? "0 1px 2px rgba(0,0,0,0.05)" : "none",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
             }}
           >
             <MessageSenderLabel name={senderLabel} />
@@ -970,7 +973,7 @@ export function formatActivitySpan(firstAt: string, lastAt: string): string {
   return `${minutes}m ${seconds % 60}s activity span`;
 }
 
-export function WorkspaceReviewPane({ projectId, files, running }: { projectId: string; files: ChangedFileDto[]; running: boolean }): JSX.Element {
+export function WorkspaceReviewPane({ projectId, files, running, initialPath }: { projectId: string; files: ChangedFileDto[]; running: boolean; initialPath?: string }): JSX.Element {
   const workspace = useQuery({
     queryKey: ["workspace", projectId],
     queryFn: () => api.getWorkspaceStatus(projectId),
@@ -978,12 +981,16 @@ export function WorkspaceReviewPane({ projectId, files, running }: { projectId: 
   });
   const provenance = new Map(files.map((file) => [file.path, file]));
   const changes = workspace.data?.changes ?? [];
-  const [selectedPath, setSelectedPath] = useState<string>();
+  const [selectedPath, setSelectedPath] = useState<string | undefined>(initialPath);
   const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
 
   useEffect(() => {
-    if (!selectedPath || !changes.some((change) => change.path === selectedPath)) setSelectedPath(changes[0]?.path);
-  }, [changes, selectedPath]);
+    if (initialPath && changes.some((change) => change.path === initialPath)) {
+      setSelectedPath(initialPath);
+    } else if (!selectedPath || !changes.some((change) => change.path === selectedPath)) {
+      setSelectedPath(changes[0]?.path);
+    }
+  }, [changes, initialPath, selectedPath]);
 
   const review = useQuery({
     queryKey: ["workspace-file", projectId, selectedPath],
@@ -1061,10 +1068,16 @@ export function WorkspaceReviewPane({ projectId, files, running }: { projectId: 
 /** Durable execution provenance, distinct from the live Git working-tree Review surface. */
 export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.Element {
   const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
+  const totals = ordered.reduce((sum, file) => {
+    const current = unifiedDiffLineTotals(file.diff);
+    return { additions: sum.additions + current.additions, deletions: sum.deletions + current.deletions };
+  }, { additions: 0, deletions: 0 });
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
     <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
       <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Changed Files</Typography>
       <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
+      <Typography variant="caption" color="success.main">+{totals.additions}</Typography>
+      <Typography variant="caption" color="error.main">−{totals.deletions}</Typography>
     </Stack>
     {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
       <Paper component="details" key={file.path} variant="outlined" sx={{ p: 1.25, "& > summary": { cursor: "pointer" } }}>
@@ -1078,6 +1091,16 @@ export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.El
         {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>}
       </Paper>)}
   </Stack>;
+}
+
+export function unifiedDiffLineTotals(diff: string | undefined): { additions: number; deletions: number } {
+  if (!diff) return { additions: 0, deletions: 0 };
+  return diff.split(/\r?\n/u).reduce((totals, line) => {
+    if (line.startsWith("+++") || line.startsWith("---")) return totals;
+    if (line.startsWith("+")) return { ...totals, additions: totals.additions + 1 };
+    if (line.startsWith("-")) return { ...totals, deletions: totals.deletions + 1 };
+    return totals;
+  }, { additions: 0, deletions: 0 });
 }
 
 export function languageForPath(filePath: string): string {
@@ -1276,6 +1299,7 @@ export function Composer({
   draftStorageKey,
   conversationDraftId,
   controls,
+  focusReply = false,
 }: {
   disabled: boolean;
   running: boolean;
@@ -1305,6 +1329,8 @@ export function Composer({
   conversationDraftId?: string;
   /** Compact engine/model/effort controls rendered in the bottom action row. */
   controls?: ReactNode;
+  /** Focus the normal composer when a direct reply is selected. */
+  focusReply?: boolean;
 }): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
@@ -1341,6 +1367,17 @@ export function Composer({
   });
   const canSend = textCanSend || (!disabled && !running && allowUnmentionedSend && files.length > 0);
   const canCancel = running && Boolean(onCancel);
+
+  useEffect(() => {
+    if (!focusReply) return;
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      const end = inputRef.current?.value.length ?? 0;
+      inputRef.current?.setSelectionRange(end, end);
+      setCaret(end);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusReply]);
   const draftQuery = useQuery({
     queryKey: ["conversation-draft", conversationDraftId],
     queryFn: () => api.getConversationDraft(conversationDraftId!),
@@ -1587,14 +1624,16 @@ export function Composer({
 
   return (
     <Paper
-      square
       elevation={3}
       sx={{
         position: "sticky",
         bottom: 0,
         zIndex: 3,
-        borderTop: 1,
+        border: 1,
         borderColor: "divider",
+        borderRadius: { xs: 2, sm: 2.5 },
+        width: "min(780px, 100%)",
+        mx: "auto",
         minWidth: 0,
         maxWidth: "100%",
         overflow: "hidden",
@@ -1607,7 +1646,7 @@ export function Composer({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5, minWidth: 0, width: "100%", overflow: "hidden" }}>
           <Box sx={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
             <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
-            <Typography variant="body2" noWrap title={replyTo.text} sx={{ display: "block", maxWidth: "100%" }}>
+            <Typography variant="body2" title={replyTo.text} sx={{ display: "-webkit-box", maxWidth: "100%", maxHeight: "3.6rem", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3, lineHeight: 1.2 }}>
               {replyPreviewText(replyTo.text)}
             </Typography>
           </Box>
@@ -1775,7 +1814,7 @@ export function Composer({
           <Tooltip title="Send">
             <span>
               <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"} sx={{ minWidth: 44, minHeight: 44 }}>
-                <SendIcon />
+                <ArrowUpwardIcon />
               </IconButton>
             </span>
           </Tooltip>

@@ -1,5 +1,6 @@
 import { Box, Stack, Typography } from "@mui/material";
-import type { ReactNode } from "react";
+import { useState } from "react";
+import type { PointerEvent, ReactNode } from "react";
 
 export interface FormattedTimestamp {
   dateTime: string;
@@ -75,8 +76,12 @@ export function MessageActionsAndTimestamp({
   actions?: ReactNode;
   value: string;
 }): JSX.Element {
-  return <Stack direction="row" spacing={0.25} sx={{ alignItems: "center", mt: 0.5, minHeight: 32 }}>
-    {actions}
+  const [touchRevealed, setTouchRevealed] = useState(false);
+  const revealOnTouch = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "touch") setTouchRevealed(true);
+  };
+  return <Stack direction="row" spacing={0.25} className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ alignItems: "center", mt: 0.25, minHeight: 28, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
+    <Box className="chat-message-action-buttons" sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>{actions}</Box>
     <Box sx={{ flex: 1 }} />
     <MessageTimestamp value={value} />
   </Stack>;

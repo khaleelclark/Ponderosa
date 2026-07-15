@@ -112,10 +112,10 @@ describe("user message labels on chat surfaces", () => {
     expect(agent.indexOf("Reply directly to Pinnacles")).toBeLessThan(agent.indexOf("<time"));
   });
 
-  it("does not offer Reply Directly in collaboration while preserving Reply and timestamps", () => {
+  it("keeps Team Chat read-only while preserving timestamps", () => {
     const html = renderMaster(masterMessage({ role: "assistant", authorAgentId: "agent-1", text: "Collaboration update" }), "collaboration");
 
-    expect(html).toContain('aria-label="Reply to message"');
+    expect(html).not.toContain('aria-label="Reply to message"');
     expect(html).not.toContain("Reply directly to Pinnacles");
     expect(html).toContain("<time");
   });
