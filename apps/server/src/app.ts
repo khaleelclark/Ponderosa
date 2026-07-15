@@ -511,7 +511,7 @@ function communicationV3Prompt(): string[] {
     "Prefer creating related requests and their join in one coordinate call. If valid requests were already created separately, recover without duplicating them by calling coordinate with a new idempotencyKey, requests: [], and join: {mode, requestIds: [their returned IDs]}.",
     "When a successful coordinate result contains joinId, that join already exists. Do not create or recover it again; end the turn if no other action remains.",
     "If an activation contains fullResultRef, call ponderosa_coordinate with inspectActivationIds containing those activation IDs to retrieve the complete durable payload.",
-    "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome. As a request recipient, reply to the request itself with completed—even when its text is a consultation question. Use question only to ask the original requester for missing information; answer is only the original requester replying to that question and references the question updateId.",
+    "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome. When this run has exactly one attached correlated request, omit requestId so Ponderosa resolves it from authoritative run state; provide an exact requestId only when multiple requests are attached. As a request recipient, reply to the request itself with completed—even when its text is a consultation question. Use question only to ask the original requester for missing information; answer is only the original requester replying to that question and references the question updateId.",
     "A terminal request update is a commit point: finish the request's edits and final checks first; afterward, do not change request-owned work or send a duplicate follow-up message because the requester receives the outcome through its join.",
     "Questions use a stable updateId; answers must reference it with inReplyToUpdateId. blocked is terminal; waiting_dependency is temporary.",
     "A human message, question, or urgent event never cancels your existing joins. Handle the activation and return to waiting when a join remains unresolved.",
@@ -2841,10 +2841,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const requestId = request.body?.requestId?.trim();
+    const suppliedRequestId = request.body?.requestId?.trim();
+    const attachedRequestIds = coordinationV3.requestIdsAttachedToRun(
+      active.v3SchedulerRunId ?? active.runId,
+      capability.agentId,
+    );
+    const requestId = suppliedRequestId ?? (attachedRequestIds.length === 1 ? attachedRequestIds[0] : undefined);
     const updateId = request.body?.updateId?.trim();
     const kind = request.body?.kind;
-    if (!requestId || !updateId || !kind) return reply.code(400).send({ error: "requestId, updateId, and kind are required" });
+    if (!updateId || !kind) return reply.code(400).send({ error: "updateId and kind are required" });
+    if (!requestId) return reply.code(400).send({
+      error: attachedRequestIds.length === 0
+        ? "requestId is required because the current run has no attached correlated request"
+        : "requestId is required because the current run has multiple attached correlated requests",
+      currentRequestIds: attachedRequestIds,
+    });
+    if (suppliedRequestId && !coordinationV3.getRequest(suppliedRequestId)) return reply.code(409).send({
+      error: "request not found",
+      currentRequestIds: attachedRequestIds,
+      hint: attachedRequestIds.length === 1
+        ? "Retry without requestId to target the current run's attached request"
+        : "Retry with one exact currentRequestId",
+    });
     try {
       const result = coordinationV3.updateRequest({
         requestId,

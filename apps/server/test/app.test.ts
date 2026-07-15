@@ -2568,6 +2568,8 @@ describe("server chunk F", () => {
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual([
       "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
     ]);
+    expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.required)
+      .toEqual(["updateId", "kind"]);
     expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);
 
     const coordinated = await requesterRuntime.handleDynamicToolCall!({
@@ -2601,16 +2603,31 @@ describe("server chunk F", () => {
     `).get()).toEqual({ count: 0 });
     expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'review-request'").get())
       .toEqual({ state: "open" });
+    const mistyped = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: {
+        requestId: "review-requesx",
+        updateId: "review-complete",
+        kind: "completed",
+        text: "Review passed.",
+      },
+    });
+    expect(mistyped.success).toBe(false);
+    expect(JSON.parse(mistyped.text)).toMatchObject({
+      error: "request not found",
+      currentRequestIds: ["review-request"],
+      hint: "Retry without requestId to target the current run's attached request",
+    });
     const completed = await recipientRuntime.handleDynamicToolCall!({
       name: "ponderosa_update_request",
       arguments: {
-        requestId: "review-request",
         updateId: "review-complete",
         kind: "completed",
         text: "Review passed.",
       },
     });
     expect(completed.success, completed.text).toBe(true);
+    expect(JSON.parse(completed.text)).toMatchObject({ requestId: "review-request", state: "completed" });
     persistent.completeTurn(1);
 
     await vi.waitFor(() => expect(persistent.starts.some((turn) =>

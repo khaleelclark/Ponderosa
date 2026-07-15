@@ -165,6 +165,10 @@ Only three coordination tools are exposed to the model:
 - `ponderosa_coordinate`: create correlated requests and optionally an immutable
   join; requests do not imply waiting.
 - `ponderosa_update_request`: append an authorized, idempotent request update.
+  When exactly one correlated request is attached to the current Run, the model
+  omits `requestId` and the server resolves it from SQLite's durable Run-to-
+  Activation linkage. Multiple attached requests require an exact ID; the server
+  never uses fuzzy identifier matching.
 - `ponderosa_message`: send an uncorrelated human or agent message.
 
 “Coordinate and wait” is a skill/helper around `ponderosa_coordinate`, not a

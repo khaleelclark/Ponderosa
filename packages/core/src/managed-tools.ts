@@ -70,13 +70,16 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Append one authorized, idempotent update to a correlated request. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
+  description: "Append one authorized, idempotent update to a correlated request. Omit requestId when the current run has exactly one attached correlated request; Ponderosa resolves it authoritatively. Supply the exact requestId only when the run contains multiple correlated requests. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["requestId", "updateId", "kind"],
+    required: ["updateId", "kind"],
     properties: {
-      requestId: { type: "string", minLength: 1, maxLength: 200 },
+      requestId: {
+        type: "string", minLength: 1, maxLength: 200,
+        description: "Optional when exactly one correlated request is attached to this run. Required, and matched exactly, when multiple requests are attached.",
+      },
       updateId: { type: "string", minLength: 1, maxLength: 200 },
       kind: {
         type: "string",

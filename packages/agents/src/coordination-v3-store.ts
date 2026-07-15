@@ -381,6 +381,25 @@ export class CoordinationV3Store {
     });
   }
 
+  requestIdsAttachedToRun(runId: string, agentId: string): string[] {
+    const rows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id, request.created_at
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN activation_sources source ON source.activation_id = attached.activation_id
+      LEFT JOIN coordination_request_updates request_update
+        ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+      JOIN coordination_requests request ON request.id = CASE
+        WHEN source.source_kind = 'request' THEN source.source_id
+        WHEN source.source_kind = 'request_update' THEN request_update.request_id
+      END
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND source.source_kind IN ('request', 'request_update')
+      ORDER BY request.created_at, request.id
+    `).all(runId, agentId) as Array<{ id: string }>;
+    return rows.map((row) => row.id);
+  }
+
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
     if (!input.idempotencyKey.trim()) throw new Error("idempotencyKey is required");
     if (input.requests.length === 0 && !input.join?.requestIds?.length) {

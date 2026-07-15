@@ -358,6 +358,33 @@ describe("CoordinationV3Store transactions", () => {
 });
 
 describe("CoordinationV3Store scheduler", () => {
+  it("resolves only the correlated requests authoritatively attached to a run", () => {
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "single-current-request",
+      requests: [{ requestId: "single-current", recipientAgentId: recipientA, lifetime: indefinite }],
+    });
+    const single = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(single);
+    expect(store.requestIdsAttachedToRun(single.runId, recipientA)).toEqual(["single-current"]);
+    expect(store.requestIdsAttachedToRun(single.runId, recipientB)).toEqual([]);
+
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "multiple-current-requests",
+      requests: [
+        { requestId: "multiple-a", recipientAgentId: recipientB, lifetime: indefinite },
+        { requestId: "multiple-b", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+    });
+    const multiple = store.leaseNextRun({ workerId: "worker-1" })!;
+    expect(store.requestIdsAttachedToRun(multiple.runId, recipientB)).toEqual(["multiple-a", "multiple-b"]);
+  });
+
   it("prioritizes human work and coalesces compatible activations once", () => {
     store.coordinate({
       projectId,

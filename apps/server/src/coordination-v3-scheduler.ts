@@ -221,7 +221,7 @@ export function formatActivationPrompt(
     `Run: ${lease.runId}`,
     "Handle every source exactly once. A human or urgent activation does not cancel your open joins.",
     "Ordinary runtime output is only a Work log. For a human activation, explicitly use ponderosa_message with direct_to_user, or broadcast only when its payload sets shareWithOrganization true.",
-    "For an inbound request, you are its recipient. Report with ponderosa_update_request. If the request itself asks for information or consultation, send that reply as completed. Use question only when you need a blocking follow-up from the original requester; answer is reserved for that requester replying to your question update.",
+    "For an inbound request, you are its recipient. Report with ponderosa_update_request. When exactly one correlated request is attached to this run, omit requestId so Ponderosa selects it from authoritative run state; use the exact requestId only when multiple requests are attached. If the request itself asks for information or consultation, send that reply as completed. Use question only when you need a blocking follow-up from the original requester; answer is reserved for that requester replying to your question update.",
     "Keep bounded work bounded: inspect only what the request needs, avoid repeated verification, run final checks once, send exactly one terminal request update only after all work and edits are complete, then stop working on that request.",
     "For an outbound request, do not repeat or forward the recipient's update; consume its outcome directly. Only the requester or user may answer, cancel, or supersede it.",
     "Full payloads remain durable. Use ponderosa_coordinate inspection when a fullResultRef is present.",
