@@ -501,6 +501,36 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.runStartsNewRecipientRequest(multiple.runId, recipientB)).toBe(true);
   });
 
+  it("identifies only same-execution terminal replies as passive requester messages", () => {
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "terminal-reply",
+      requests: [{ requestId: "terminal-reply-request", recipientAgentId: recipientA, lifetime: indefinite }],
+      join: { id: "terminal-reply-join", mode: "all" },
+    });
+    const run = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(run);
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientA, "provider-execution"))
+      .toEqual([]);
+
+    store.updateRequest({
+      requestId: "terminal-reply-request",
+      updateId: "terminal-reply-complete",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "Authoritative result", executionId: "provider-execution" },
+    });
+
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientA, "provider-execution"))
+      .toEqual([requesterId]);
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientA, "different-execution"))
+      .toEqual([]);
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientB, "provider-execution"))
+      .toEqual([]);
+  });
+
   it("prioritizes human work without crossing a provider-session boundary", () => {
     store.coordinate({
       projectId,

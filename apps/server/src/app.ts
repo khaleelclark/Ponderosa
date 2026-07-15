@@ -515,6 +515,7 @@ function communicationV3Prompt(): string[] {
     "If an activation contains fullResultRef, call ponderosa_coordinate with inspectActivationIds containing those activation IDs to retrieve the complete durable payload.",
     "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome. When this run has exactly one attached correlated request, omit requestId so Ponderosa resolves it from authoritative run state; provide an exact requestId only when multiple requests are attached. As a request recipient, reply to the request itself with completed—even when its text is a consultation question. Use question only to ask the original requester for missing information; answer is only the original requester replying to that question and references the question updateId.",
     "A terminal request update is a commit point: finish the request's edits and final checks first; afterward, do not change request-owned work or send a duplicate follow-up message because the requester receives the outcome through its join.",
+    "An ordinary message to that requester after your terminal update is retained as a passive audit copy and does not wake them. If you discover a genuinely material correction that requires action, send it with urgency urgent; do not use urgency to repeat or embellish the committed result.",
     "Questions use a stable updateId; answers must reference it with inReplyToUpdateId. blocked is terminal; waiting_dependency is temporary.",
     "A human message, question, or urgent event never cancels your existing joins. Handle the activation and return to waiting when a join remains unresolved.",
     "Keep bounded work context-bounded: inspect only necessary resources with targeted queries and bounded ranges; never load an entire large artifact or unbounded log/diff when a focused view will do. Avoid rereading unchanged material, run final verification once, then publish the terminal update and stop.",
@@ -3046,6 +3047,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       renderedText = resolved.text;
       routing = { intents: resolved.intents, blocked: [] };
     }
+    const terminalOutcomeRequesterIds = intent === "collaboration" && coordinationV3 && v3Urgency !== "urgent"
+      ? new Set(coordinationV3.terminalOutcomeRequesterIdsForRun(
+        active.v3SchedulerRunId ?? active.runId,
+        capability.agentId,
+        capability.runId,
+      ))
+      : new Set<string>();
+    const passiveRecipientAgentIds = new Set(routing.intents.flatMap((delivery) =>
+      terminalOutcomeRequesterIds.has(delivery.targetAgentId) ? [delivery.targetAgentId] : []));
+    const actionableRoutingIntents = routing.intents.filter(
+      (delivery) => !passiveRecipientAgentIds.has(delivery.targetAgentId),
+    );
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const proposedCommunication: CommunicationEvent = intent === "broadcast" ? {
       eventId: randomUUID(),
@@ -3083,7 +3096,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       audience: proposedCommunication.audience,
       payload: proposedCommunication,
       ...(intent === "collaboration" ? {
-        activations: routing.intents.map((delivery, index) => ({
+        activations: actionableRoutingIntents.map((delivery, index) => ({
           agentId: delivery.targetAgentId,
           kind: v3Urgency === "urgent" ? "urgent_message" : "ordinary_message",
           priority: v3Urgency === "urgent" ? 90 : 50,
@@ -3131,7 +3144,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
     }
-    return { intent, eventId: communication?.eventId, messageId: message.id, replayed: false };
+    return {
+      intent,
+      eventId: communication?.eventId,
+      messageId: message.id,
+      replayed: false,
+      ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
+    };
   });
 
   function agentCanReadDocument(event: CommunicationEvent, agentId: string): boolean {

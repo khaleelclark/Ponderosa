@@ -417,6 +417,44 @@ export class CoordinationV3Store {
       .map((row) => row.id);
   }
 
+  /**
+   * Return requesters that already received an authoritative terminal outcome
+   * from this exact provider execution. An ordinary message to one of these
+   * agents is a passive audit copy: the request or its Join owns the wake.
+   * Matching the execution ID keeps earlier outcomes and unrelated messages
+   * actionable, while callers may still explicitly override this for urgency.
+   */
+  terminalOutcomeRequesterIdsForRun(runId: string, agentId: string, executionId: string): string[] {
+    const requestIds = this.requestIdsAttachedToRun(runId, agentId);
+    if (requestIds.length === 0) return [];
+    const terminalStates = [...TERMINAL_REQUEST_STATES];
+    const requestPlaceholders = requestIds.map(() => "?").join(", ");
+    const terminalPlaceholders = terminalStates.map(() => "?").join(", ");
+    const rows = this.sqlite.prepare(`
+      SELECT DISTINCT request.requester_agent_id
+      FROM coordination_requests request
+      WHERE request.id IN (${requestPlaceholders}) AND request.recipient_agent_id = ?
+        AND request.requester_agent_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM coordination_request_updates request_update
+          WHERE request_update.request_id = request.id
+            AND request_update.actor_kind = 'agent'
+            AND request_update.actor_id = ?
+            AND request_update.resulting_state IN (${terminalPlaceholders})
+            AND json_extract(request_update.payload_json, '$.executionId') = ?
+        )
+      ORDER BY request.requester_agent_id
+    `).all(
+      ...requestIds,
+      agentId,
+      agentId,
+      ...terminalStates,
+      executionId,
+    ) as Array<{ requester_agent_id: string }>;
+    return rows.map((row) => row.requester_agent_id);
+  }
+
   /** Whether this Run consumes creation of a new request addressed to the
    * recipient. V3.1 uses this durable causal edge to select a fresh provider
    * cache without conflating provider memory with agent identity. Request

@@ -122,6 +122,13 @@ is durable, but they create no Activation and wake no agent. Communication
 creation and the decision to create its deduplicated Activation are one SQLite
 transaction.
 
+An ordinary agent message sent to the requester after that same provider
+execution has terminally updated its attached correlated Request is also
+passive. The complete message remains durable and auditable, while the Request
+or Join remains the sole wake authority. This rule is recipient-specific:
+unrelated recipients remain actionable, and explicit urgent messages always
+override it.
+
 An Activation is an actionable cause, not an instruction to create a new Run.
 The scheduler alone decides whether to attach urgent steering to the current
 authoritative Run, retain passive input without waking, queue work for a later

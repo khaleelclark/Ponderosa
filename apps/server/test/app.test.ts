@@ -2628,6 +2628,27 @@ describe("server chunk F", () => {
     });
     expect(completed.success, completed.text).toBe(true);
     expect(JSON.parse(completed.text)).toMatchObject({ requestId: "review-request", state: "completed" });
+    const duplicateOutcomeMessage = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_message",
+      arguments: {
+        intent: "collaboration",
+        recipientAgentIds: [requester.id],
+        text: "Duplicate audit copy: review passed.",
+        idempotencyKey: "duplicate-review-outcome",
+      },
+    });
+    expect(duplicateOutcomeMessage.success, duplicateOutcomeMessage.text).toBe(true);
+    expect(JSON.parse(duplicateOutcomeMessage.text)).toMatchObject({
+      passiveRecipientAgentIds: [requester.id],
+    });
+    expect(store.sqlite.prepare(`
+      SELECT actionable FROM runtime_communications
+      WHERE json_extract(payload_json, '$.idempotencyKey') = 'duplicate-review-outcome'
+    `).get()).toEqual({ actionable: 0 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'ordinary_message' AND agent_id = ?
+    `).get(requester.id)).toEqual({ count: 0 });
     persistent.completeTurn(1);
 
     await vi.waitFor(() => expect(persistent.starts.some((turn) =>

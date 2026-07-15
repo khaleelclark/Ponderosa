@@ -94,7 +94,7 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Send an uncorrelated Ponderosa message with exactly {intent,text,idempotencyKey}. intent is exactly broadcast, direct_to_user, or collaboration; never use intent:user_dm or a direct_to_user boolean. collaboration additionally requires recipientAgentIds as an array, even for one recipient; never use singular recipientAgentId. Use coordinate, not message, when work needs a tracked outcome.",
+  description: "Send an uncorrelated Ponderosa message with exactly {intent,text,idempotencyKey}. intent is exactly broadcast, direct_to_user, or collaboration; never use intent:user_dm or a direct_to_user boolean. collaboration additionally requires recipientAgentIds as an array, even for one recipient; never use singular recipientAgentId. Use coordinate, not message, when work needs a tracked outcome. After terminally updating a correlated request, an ordinary message to its requester is a passive audit copy; use urgency:urgent only for a material correction that truly requires action.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

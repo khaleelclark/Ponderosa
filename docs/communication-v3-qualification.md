@@ -339,6 +339,58 @@ Preserved evidence:
 - Failure-finding trials: `/home/phoenix/khaleel/benchmarks/v2-v31-20260715`
   and `/home/phoenix/khaleel/benchmarks/v2-v31-r2-20260715`
 
+## Post-outcome duplicate-wake optimization
+
+The eight-pair preregistered comparison subsequently found three avoidable
+V3.1 turns. In those traces, a recipient terminally updated its correlated
+Request and then sent the same requester an ordinary Collaboration message.
+The Request or Join had already created the authoritative wake, so the message
+created a second `ordinary_message` Activation after the intended continuation.
+
+V3.1 now recognizes this case by durable causality rather than prose: the
+message sender must be the recipient of a Request attached to the current Run,
+and that exact provider execution must already have authored a terminal update.
+The complete communication and projections remain durable, but an ordinary
+copy to that requester is passive. Suppression is recipient-specific, so other
+recipients remain actionable. Explicit `urgency: "urgent"` remains actionable
+for a genuinely material correction.
+
+A fresh matched two-phase real-agent run exercised the rule directly. During
+the follow-up, the Quantitative Modeler completed its Request and then sent a
+correction/clarification to the Delivery Owner. SQLite recorded the complete
+message with `actionable = 0`; it created no `ordinary_message` Activation.
+V3.1 completed in the intended six-turn shape in both phases, with exactly two
+human, six request, and four satisfied-join Activations across the run.
+
+| Cumulative two-phase metric | V2 | Patched V3.1 | Change |
+| --- | ---: | ---: | ---: |
+| Deterministic quality | 200/200 | 198/200 | one memo evidence signal missed |
+| Provider turns | 15 | 12 | 20.0% fewer |
+| Total tokens | 1,969,319 | 1,825,347 | 7.3% fewer |
+| Projected API cost | $0.946369 | $0.987895 | 4.4% higher |
+| Failed scheduler Runs | n/a | 0 | clean |
+| Unknown scheduler outcomes | n/a | 0 | clean |
+
+The initial phase was 667.322 seconds for V3.1 versus 454.881 seconds for V2;
+the follow-up was 289.012 seconds versus 369.036 seconds. This reinforces the
+earlier conclusion: execution shape and reliability improved, while total cost
+and latency remain provider-dependent. The V3.1 follow-up allocation was
+feasible and exactly optimal; its two-point grading miss was confined to one of
+six memo evidence signals.
+
+This post-fix pair is regression evidence for the mechanism, not a new
+significance claim. The preceding eight matched pairs remain the statistical
+result: V3.1 used 99 turns versus 128 for V2 (22.7% fewer, exact paired
+`p = 0.03125`) and 37.3% fewer tokens (`p = 0.03125`), while cost and wall-time
+differences were not significant. Removing the three diagnosed duplicate wakes
+should improve the execution shape, but that adjusted effect must not be called
+statistical until another preregistered sample is run.
+
+Preserved post-fix evidence:
+
+- Trial and metrics: `/home/phoenix/khaleel/benchmarks/v2-v31-post-outcome-20260715`
+- V3.1 SQLite authority: `data/replicate-01/v31/ponderosa.db` under that root
+
 ## Qualification coverage
 
 Automated tests cover reducer transitions, authorization, independent request
@@ -346,8 +398,8 @@ and join deadlines, idempotency, immutable membership, deletion invariants,
 outbox reclaim/restart, 409 retry, pre/post-injection crash disposition,
 fencing, cancellation, activation coalescing, concurrency, long-running lease
 renewal, registered direct-run exclusion, joined outcome payloads, exact V3 tool
-surface, API flow, MCP flow, live SSE projections, and canonical audit
-reconciliation.
+surface, same-execution passive outcome copies, API flow, MCP flow, live SSE
+projections, and canonical audit reconciliation.
 
 The real-agent result is one matched application-change task, not evidence that
 V3 always improves latency or every domain. Additional shapes and non-software
