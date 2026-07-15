@@ -103,4 +103,19 @@ describe("durable agent wait conditions", () => {
     expect(deadline.waits.evaluate("manager", [], deadline.deliveries, Date.parse("2026-07-14T00:00:01.000Z")))
       .toMatchObject({ hold: false, wakeCause: "wait_deadline", completion: { status: "expired" } });
   });
+
+  it("treats a human-authored Team Chat tag as an immediate direct-message wake", () => {
+    const human = fixture();
+    human.waits.register({
+      agentId: "manager", executionId: "delegation", mode: "all",
+      expectedAgentIds: ["one"], quorum: 1, deliveryWatermark: human.deliveries.watermark(),
+    });
+    human.deliveries.queue({
+      messageId: "team-chat", targetAgentId: "manager", text: "human update",
+      relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
+    });
+
+    expect(human.waits.evaluate("manager", human.deliveries.pending("manager"), human.deliveries))
+      .toMatchObject({ hold: false, wakeCause: "direct_message", completion: { status: "cancelled" } });
+  });
 });

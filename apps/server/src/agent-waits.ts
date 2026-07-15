@@ -158,16 +158,16 @@ export class AgentWaitStore {
     }
     const newDeliveries = pending.filter((delivery) => deliveries.position(delivery.id) >= wait.deliveryWatermark);
     const priority = newDeliveries.find((delivery) =>
-      delivery.kind === "direct" || delivery.kind === "manager_notification" || delivery.waitBehavior === "interrupt");
+      !delivery.authorAgentId || delivery.kind === "direct" || delivery.kind === "manager_notification" || delivery.waitBehavior === "interrupt");
     if (priority) {
       return {
         hold: false,
         wait,
         completion: { status: "cancelled", reason: "priority delivery override" },
-        wakeCause: priority.kind === "direct"
-          ? "direct_message"
-          : priority.kind === "manager_notification"
-            ? "managed_failure"
+        wakeCause: priority.kind === "manager_notification"
+          ? "managed_failure"
+          : !priority.authorAgentId || priority.kind === "direct"
+            ? "direct_message"
             : "wait_interrupted",
       };
     }

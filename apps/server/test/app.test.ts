@@ -3165,6 +3165,44 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("wakes a parked agent immediately for a human Team Chat message", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Demo", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Human override" });
+    const parent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: master.id, managerAgentId: parent.id });
+    adapter.mode = "hang";
+
+    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Delegate and wait." } });
+    await waitForSeedCount(1);
+    const parentToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const registered = await app.inject({
+      method: "POST", url: "/api/agent-waits", headers: { authorization: `Bearer ${parentToken}` },
+      payload: { mode: "all", expectedAgentIds: [child.id] },
+    });
+    expect(registered.statusCode).toBe(200);
+    await cancelAndWait(app, parent.id);
+
+    const humanMessage = await app.inject({
+      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
+      payload: { text: "Please change direction now.", recipientAgentIds: [parent.id] },
+    });
+    expect(humanMessage.statusCode).toBe(200);
+    await vi.waitFor(() => expect([...adapter.seeds, ...adapter.continues]
+      .filter((turn) => turn.agentId === parent.id)).toHaveLength(2));
+
+    expect(adapter.continues.at(-1)?.prompt).toContain("Please change direction now.");
+    const detail = (await app.inject({ method: "GET", url: `/api/agents/${parent.id}` })).json<{
+      activeWait?: unknown;
+      runs: Array<{ wakeCause?: string }>;
+    }>();
+    expect(detail.activeWait).toBeUndefined();
+    expect(detail.runs.at(-1)?.wakeCause).toBe("direct_message");
+
+    await cancelAndWait(app, parent.id);
+    await app.close();
+  });
+
   it("creates a normal managed agent, injects shared Broadcasts, and permits direct need-to-know collaboration", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
