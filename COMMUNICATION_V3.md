@@ -1,5 +1,8 @@
 # Communication V3 Domain Contract
 
+Empirical qualification results and retained evidence are documented in
+[`docs/communication-v3-qualification.md`](docs/communication-v3-qualification.md).
+
 This contract is the scheduler and coordination source of truth. The executable
 request reducer lives in `packages/core/src/coordination-v3.ts`. Authorization,
 idempotency, and persistence surround that pure reducer.

@@ -17,7 +17,7 @@ const REQUEST_LIFETIME_SCHEMA = {
  * is asynchronous by default and an optional join is part of the same call. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Create one or more correlated work/consultation requests. You may keep working; include an optional join only when your next action depends on their outcomes.",
+  description: "Create one or more correlated work/consultation requests. Every request must explicitly include lifetime: use {kind: 'indefinite'} unless it has a real deadline. You may keep working; include an optional join only when your next action depends on their outcomes.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

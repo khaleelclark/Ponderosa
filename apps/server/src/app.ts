@@ -159,6 +159,9 @@ export interface CreateServerOptions {
     enabled: boolean;
     maxConcurrentRuns?: number;
     pollMs?: number;
+    /** Scheduler ownership lease. Defaults to the provider execution lease so
+     * ordinary long turns cannot be mistaken for abandoned work. */
+    leaseMs?: number;
   };
   /** Deterministic message-claim race seam; never enabled in production configuration. */
   messageLifecycleFaults?: {
@@ -182,6 +185,8 @@ interface ActiveRun {
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
+  v3SchedulerRunId?: string;
+  v3FencingToken?: number;
 }
 
 interface PersistentRuntime {
@@ -501,7 +506,7 @@ function communicationV3Prompt(): string[] {
   return [
     "Communication V3 separates messages, correlated requests, joins, activations, and runs.",
     "Your ordinary runtime response is Work log only. Explicitly use ponderosa_message when a user, agent, or the organization needs uncorrelated information.",
-    "Use ponderosa_coordinate for tracked work or consultation. Each request needs a stable recipientAgentId, text, and explicit deadline or indefinite lifetime.",
+    "Use ponderosa_coordinate for tracked work or consultation. In every request JSON object, include lifetime: {kind: \"indefinite\"} unless it has a real deadline, in which case use {kind: \"deadline\", at: <ISO timestamp>}.",
     "A coordination request does not make you wait. Add the optional join only when your next action depends on all, any, or a quorum of the request outcomes.",
     "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome.",
     "Questions use a stable updateId; answers must reference it with inReplyToUpdateId. blocked is terminal; waiting_dependency is temporary.",
@@ -1198,6 +1203,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const communicationV3Enabled = opts.communicationV3?.enabled ?? process.env.PONDEROSA_COMMUNICATION_VERSION === "3";
   const coordinationV3 = communicationV3Enabled ? new CoordinationV3Store(store.sqlite) : undefined;
+  const coordinationV3WorkerId = `server:${process.pid}`;
   const workspace = new WorkspaceStore(opts.dataDir);
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
   const publishWorkspace = (event: WorkspaceEventEnvelope): void => {
@@ -1476,6 +1482,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   };
   const executionLeaseMs = opts.executionLeaseScheduling?.leaseMs ?? 6 * 60 * 1000;
   const executionHeartbeatMs = opts.executionLeaseScheduling?.heartbeatMs ?? Math.max(1, Math.floor(executionLeaseMs / 3));
+  const coordinationV3LeaseMs = opts.communicationV3?.leaseMs ?? executionLeaseMs;
   const executionLeaseNow = opts.executionLeaseScheduling?.now ?? Date.now;
   const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearExecutionLeaseTimer = opts.executionLeaseScheduling?.clearTimer ?? clearTimeout;
@@ -1640,6 +1647,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     run.leaseExpiresAt = leaseExpiry();
     run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(agentId, run), executionLeaseMs);
     run.leaseTimer.unref?.();
+    if (coordinationV3 && run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
+      coordinationV3.renewLease(
+        run.v3SchedulerRunId,
+        run.v3FencingToken,
+        coordinationV3WorkerId,
+        coordinationV3LeaseMs,
+      );
+    }
     return true;
   }
 
@@ -1798,9 +1813,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       };
     },
     {
-      workerId: `server:${process.pid}`,
+      workerId: coordinationV3WorkerId,
       maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns,
       pollMs: opts.communicationV3?.pollMs,
+      leaseMs: coordinationV3LeaseMs,
     },
   ) : undefined;
   for (const mediaType of ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/zip", "application/octet-stream"]) {
@@ -2335,6 +2351,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (author && !author.archived) projectBroadcastToAgentAudit(author.id, event, attachments);
   }
 
+  /** Materialize a canonical collaboration in an agent's audit surface without
+   * copying it into runtime history. V3 activations carry the actionable prompt;
+   * this projection keeps reconciliation and the UI complete without charging
+   * the provider for the same handoff twice. */
+  function projectCommunicationToAgentAudit(
+    agentId: string,
+    event: CommunicationEvent,
+    renderedText: string,
+  ): void {
+    if (store.readCommunicationProjections(event.projectId).some((projection) =>
+      projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
+      projection.projectionKey === agentId && projection.message)) return;
+    store.appendCommunicationProjection(event.projectId, {
+      eventId: event.eventId,
+      surface: "direct_agent_audit",
+      projectionKey: agentId,
+      projectedAt: event.createdAt,
+      message: {
+        messageId: `${event.eventId}:agent-audit:${agentId}`,
+        role: event.sender.kind === "user" ? "user" : event.sender.kind === "system" ? "system" : "assistant",
+        renderedText,
+        createdAt: event.createdAt,
+        ...(event.sender.kind === "agent" ? { authorAgentId: event.sender.agentId } : {}),
+      },
+    });
+  }
+
   function subscribe(agentId: string, subscriber: Subscriber): () => void {
     let set = subscribers.get(agentId);
     if (!set) {
@@ -2631,6 +2674,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             capability.conversationId, { role: "assistant", text: routing.text }, author.id,
             "collaboration", undefined, undefined, communication.eventId,
           );
+          projectCommunicationToAgentAudit(author.id, communication, routing.text);
+          projectCommunicationToAgentAudit(item.recipientAgentId, communication, routing.text);
           coordinationV3.attachRequestCommunication(requestId, communication.eventId, author.projectId);
         } catch (error) {
           app.log.warn({ err: error, requestId }, "V3 request audit projection will be repaired on idempotent retry");
@@ -2869,6 +2914,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (intent === "collaboration") {
       if (coordinationV3) {
         for (const delivery of routing.intents) {
+          if (communication?.intent === "collaboration") {
+            projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
+          }
           coordinationV3.enqueueMessageActivation({
             projectId: currentAuthor.projectId,
             agentId: delivery.targetAgentId,
@@ -4979,6 +5027,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       publish(agent.id, userStored);
 
       const startedAt = new Date().toISOString();
+      let trackedV3FencingToken: number | undefined;
+      try {
+        trackedV3FencingToken = communicationV3Enabled
+          ? internalV3Dispatch
+            ? v3FencingToken!
+            : coordinationV3!.registerRun({
+              runId,
+              projectId: project.id,
+              agentId: agent.id,
+              workerId: coordinationV3WorkerId,
+              leaseMs: coordinationV3LeaseMs,
+              activation: {
+                kind: directUserTaskTurn || sharedTaskTurn ? "human_message" : "control_plane_message",
+                priority: directUserTaskTurn || sharedTaskTurn ? 100 : 90,
+                payload: { text, communicationEventId: communicationEventId ?? null },
+                sourceKind: "message",
+                sourceId: communicationEventId ?? runId,
+              },
+              now: startedAt,
+            }).fencingToken
+          : undefined;
+      } catch (error) {
+        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "agent scheduler ownership changed",
+          retryable: true,
+        });
+      }
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
         wakeCause: pendingTurn.wakeCause ?? (sharedTaskTurn
@@ -4995,6 +5071,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
         ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
+        ...(trackedV3FencingToken !== undefined
+          ? { v3SchedulerRunId: runId, v3FencingToken: trackedV3FencingToken }
+          : {}),
         generation: durableClaim.generation,
         ownershipState: "running",
       };
@@ -5168,10 +5247,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           while (true) {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
-            if (internalV3Dispatch) coordinationV3!.markPromptInjecting(runId, v3FencingToken!);
+            if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
+              coordinationV3!.markPromptInjecting(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
+            }
             for await (const event of startStream(sessionId)) {
-              if (internalV3Dispatch && !v3PromptInjected) {
-                coordinationV3!.markPromptInjected(runId, v3FencingToken!);
+              if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
+                coordinationV3!.markPromptInjected(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
                 v3PromptInjected = true;
               }
               if (closed || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
@@ -5216,7 +5297,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             }
             if (!retryFresh) break;
           }
-          if (internalV3Dispatch && !v3PromptInjected && !runError) {
+          if (activeRun.v3SchedulerRunId && !v3PromptInjected && !runError) {
             runError = "provider ended before prompt injection could be confirmed";
           }
         } catch (err) {
@@ -5255,16 +5336,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             if (runError) notifyManagerOfChildFailure(agent.id, runId, runError);
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
-          if (released && internalV3Dispatch) {
+          if (released && activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined) {
             try {
-              if (controller.signal.aborted) coordinationV3!.cancelRun(runId);
+              if (controller.signal.aborted) coordinationV3!.cancelRun(activeRun.v3SchedulerRunId);
               else if (runError) coordinationV3!.failRun({
-                runId,
-                fencingToken: v3FencingToken!,
-                workerId: `server:${process.pid}`,
+                runId: activeRun.v3SchedulerRunId,
+                fencingToken: activeRun.v3FencingToken,
+                workerId: coordinationV3WorkerId,
                 sameRunResumable: false,
               });
-              else coordinationV3!.completeRun(runId, v3FencingToken!);
+              else coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
             } catch (error) {
               app.log.error({ err: error, runId }, "Communication V3 terminal transition failed");
             }

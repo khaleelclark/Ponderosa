@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoordinationV3Store, openDb } from "@ponderosa/agents";
 import type { SchedulerLease } from "@ponderosa/agents";
-import { CoordinationV3Scheduler } from "../src/coordination-v3-scheduler.js";
+import { CoordinationV3Scheduler, formatActivationPrompt } from "../src/coordination-v3-scheduler.js";
 
 let opened: ReturnType<typeof openDb>;
 let store: CoordinationV3Store;
@@ -31,6 +31,19 @@ beforeEach(() => {
 afterEach(() => opened.client.close());
 
 describe("Communication V3 central scheduler", () => {
+  it("tells requesters to consume joined outcomes without redundant updates", () => {
+    const prompt = formatActivationPrompt({
+      runId: "run", projectId, agentId: agentA, fencingToken: 1,
+      leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
+      activationIds: ["activation"],
+      activations: [{ id: "activation", kind: "coordination_join_satisfied", priority: 70, payload: {
+        joinId: "join", state: "satisfied", outcomes: [{ requestId: "request", state: "completed" }],
+      } }],
+    });
+    expect(prompt).toContain("For an outbound request, do not repeat or forward the recipient's update");
+    expect(prompt).toContain('"requestId":"request"');
+  });
+
   it("recovers a retryable dispatch rejection without losing or duplicating its activation", async () => {
     let clock = Date.parse("2026-07-15T00:00:00.000Z");
     store.enqueueMessageActivation({

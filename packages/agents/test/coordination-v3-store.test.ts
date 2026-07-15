@@ -43,6 +43,35 @@ afterEach(() => opened.client.close());
 const indefinite = { kind: "indefinite" as const };
 
 describe("CoordinationV3Store transactions", () => {
+  it("fences activations behind a registered direct provider run", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const direct = store.registerRun({
+      runId: "direct-run", projectId, agentId: requesterId,
+      workerId: "server", leaseMs: 60_000, now,
+      activation: {
+        kind: "human_message", priority: 100, payload: { text: "Start" },
+        sourceKind: "message", sourceId: "user-message",
+      },
+    });
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations WHERE id = ?
+    `).get(direct.activationId)).toEqual({ state: "attached" });
+    store.enqueueMessageActivation({
+      projectId, agentId: requesterId, messageId: "during-run",
+      kind: "human", payload: { text: "Steer later" }, now,
+    });
+    expect(store.leaseNextRun({ workerId: "server", now })).toBeUndefined();
+    store.markPromptInjecting(direct.runId, direct.fencingToken, now);
+    store.markPromptInjected(direct.runId, direct.fencingToken, now);
+    store.completeRun(direct.runId, direct.fencingToken, now);
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations WHERE id = ?
+    `).get(direct.activationId)).toEqual({ state: "consumed" });
+    const resumed = store.leaseNextRun({ workerId: "server", now });
+    expect(resumed?.agentId).toBe(requesterId);
+    expect(resumed?.activationIds).toHaveLength(1);
+  });
+
   it("creates requests, an immutable join, activations, and an outbox atomically", () => {
     const input = {
       projectId,
@@ -116,16 +145,32 @@ describe("CoordinationV3Store transactions", () => {
     expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'both'").get()).toEqual({ state: "open" });
     store.updateRequest({
       requestId: "b", updateId: "done-b", kind: "completed",
-      actor: { kind: "agent", id: recipientB },
+      actor: { kind: "agent", id: recipientB }, payload: { text: "B finished the review." },
     });
     expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'both'").get()).toEqual({ state: "satisfied" });
     expect(opened.client.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations
       WHERE agent_id = ? AND kind = 'coordination_join_satisfied'
     `).get(requesterId)).toEqual({ count: 1 });
+    const joinActivation = opened.client.prepare(`
+      SELECT payload_json FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_join_satisfied'
+    `).get(requesterId) as { payload_json: string };
+    expect(JSON.parse(joinActivation.payload_json)).toEqual({
+      joinId: "both",
+      outcomes: [
+        { requestId: "a", state: "completed", request: null, update: {
+          id: "done-a", kind: "completed", payload: null, createdAt: expect.any(String),
+        } },
+        { requestId: "b", state: "completed", request: null, update: {
+          id: "done-b", kind: "completed", payload: { text: "B finished the review." }, createdAt: expect.any(String),
+        } },
+      ],
+      state: "satisfied",
+    });
     expect(store.updateRequest({
       requestId: "b", updateId: "done-b", kind: "completed",
-      actor: { kind: "agent", id: recipientB },
+      actor: { kind: "agent", id: recipientB }, payload: { text: "B finished the review." },
     }).replayed).toBe(true);
   });
 

@@ -2549,7 +2549,8 @@ describe("server chunk F", () => {
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({
       dataDir, store, engines, logger: false,
-      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 4 },
+      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
+      executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
     });
     const project = store.createProject({ label: "V3", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
@@ -2590,6 +2591,15 @@ describe("server chunk F", () => {
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
     const recipientRuntime = persistent.openedOptions[1]!;
     await vi.waitFor(() => expect(persistent.starts.some((turn) => turn.prompt.includes("review-request"))).toBe(true));
+    await sleep(140);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running')
+    `).get()).toEqual({ count: 1 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'review-request'").get())
+      .toEqual({ state: "open" });
     const completed = await recipientRuntime.handleDynamicToolCall!({
       name: "ponderosa_update_request",
       arguments: {
@@ -2602,13 +2612,15 @@ describe("server chunk F", () => {
     expect(completed.success, completed.text).toBe(true);
     persistent.completeTurn(1);
 
-    await vi.waitFor(() => expect(persistent.starts.some((turn) => turn.prompt.includes("coordination_join_satisfied"))).toBe(true));
+    await vi.waitFor(() => expect(persistent.starts.some((turn) =>
+      turn.prompt.includes("coordination_join_satisfied") && turn.prompt.includes("Review passed."),
+    )).toBe(true));
     const sqlite = store.sqlite;
     expect(sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'review-request'").get()).toEqual({ state: "completed" });
     expect(sqlite.prepare("SELECT state FROM coordination_joins WHERE id = 'review-join'").get()).toEqual({ state: "satisfied" });
     expect(sqlite.prepare(`
       SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running', 'completed')
-    `).get()).toEqual({ count: 2 });
+    `).get()).toEqual({ count: 3 });
     expect(sqlite.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations WHERE kind = 'coordination_join_satisfied'
     `).get()).toEqual({ count: 1 });
@@ -2618,6 +2630,10 @@ describe("server chunk F", () => {
     }>();
     expect(metrics.storage.outcomeUnknownRuns).toBe(0);
     expect(metrics.scheduler.acceptedRuns).toBeGreaterThanOrEqual(2);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      ok: true,
+      missingProjectionMetadataEventIds: [],
+    });
     persistent.completeTurn(0);
     await app.close();
   });

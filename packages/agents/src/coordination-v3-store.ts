@@ -123,6 +123,13 @@ export interface SchedulerLease {
   activations: Array<{ id: string; kind: string; priority: number; payload: unknown }>;
 }
 
+export interface RegisteredSchedulerRun {
+  runId: string;
+  fencingToken: number;
+  leaseExpiresAt: string;
+  activationId: string;
+}
+
 export interface OutboxItem {
   id: number;
   activationId: string;
@@ -302,6 +309,66 @@ export class CoordinationV3Store {
     return (this.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running')
     `).get() as { count: number }).count;
+  }
+
+  /** Register a user/control-plane run that did not originate from a queued
+   * activation. It still participates in the same per-agent lease and fence so
+   * activations cannot race a provider turn that only exists in memory. */
+  registerRun(input: {
+    runId: string;
+    projectId: string;
+    agentId: string;
+    workerId: string;
+    leaseMs: number;
+    activation: {
+      kind: string;
+      priority: number;
+      payload: unknown;
+      sourceKind: string;
+      sourceId: string;
+    };
+    now?: string;
+  }): RegisteredSchedulerRun {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      this.requireProject(input.projectId);
+      this.requireAgent(input.projectId, input.agentId);
+      if (this.sqlite.prepare(`
+        SELECT 1 FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running')
+      `).get(input.agentId)) throw new Error("agent already has an active scheduler run");
+      if (this.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id = ?").get(input.runId)) {
+        throw new Error("scheduler run already exists");
+      }
+      const fencingToken = this.nextFence(input.agentId);
+      const leaseExpiresAt = new Date(Date.parse(now) + input.leaseMs).toISOString();
+      const activationId = randomUUID();
+      this.sqlite.prepare(`
+        INSERT INTO agent_activations (
+          id, project_id, agent_id, kind, priority, state, dedupe_key,
+          payload_json, available_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'attached', ?, ?, ?, ?, ?)
+      `).run(
+        activationId, input.projectId, input.agentId, input.activation.kind,
+        input.activation.priority, `registered-run:${input.runId}`,
+        stableJson(input.activation.payload), now, now, now,
+      );
+      this.sqlite.prepare(`
+        INSERT INTO activation_sources (activation_id, source_kind, source_id) VALUES (?, ?, ?)
+      `).run(activationId, input.activation.sourceKind, input.activation.sourceId);
+      this.sqlite.prepare(`
+        INSERT INTO scheduler_runs (
+          id, project_id, agent_id, status, lease_owner, lease_expires_at,
+          fencing_token, prompt_injection_state, started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, 'not_injected', ?, ?, ?)
+      `).run(
+        input.runId, input.projectId, input.agentId, input.workerId,
+        leaseExpiresAt, fencingToken, now, now, now,
+      );
+      this.sqlite.prepare(`
+        INSERT INTO scheduler_run_activations (run_id, activation_id, attached_at) VALUES (?, ?, ?)
+      `).run(input.runId, activationId, now);
+      return { runId: input.runId, fencingToken, leaseExpiresAt, activationId };
+    })();
   }
 
   schedulerMetrics(): {
@@ -936,13 +1003,48 @@ export class CoordinationV3Store {
   }
 
   private createJoinActivation(join: JoinRow, state: CoordinationJoinState, now: string): void {
+    const outcomes = this.sqlite.prepare(`
+      SELECT r.id AS request_id, r.state, r.payload_json AS request_payload_json,
+        u.id AS update_id, u.kind AS update_kind,
+        u.payload_json AS update_payload_json, u.created_at AS update_created_at
+      FROM coordination_join_members m
+      JOIN coordination_requests r ON r.id = m.request_id
+      LEFT JOIN coordination_request_updates u
+        ON u.request_id = r.id AND u.resulting_version = r.version
+      WHERE m.join_id = ?
+      ORDER BY m.position
+    `).all(join.id) as Array<{
+      request_id: string;
+      state: CoordinationRequestState;
+      request_payload_json: string;
+      update_id: string | null;
+      update_kind: CoordinationRequestUpdateKind | null;
+      update_payload_json: string | null;
+      update_created_at: string | null;
+    }>;
     this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
       kind: `coordination_join_${state}`,
       priority: state === "satisfied" ? PRIORITY.satisfied : PRIORITY.actionable,
       dedupeKey: `join:${join.id}:terminal`,
-      payload: { joinId: join.id, state },
+      payload: {
+        joinId: join.id,
+        state,
+        outcomes: outcomes.map((outcome) => ({
+          requestId: outcome.request_id,
+          state: outcome.state,
+          request: JSON.parse(outcome.request_payload_json) as unknown,
+          ...(outcome.update_id ? {
+            update: {
+              id: outcome.update_id,
+              kind: outcome.update_kind,
+              payload: JSON.parse(outcome.update_payload_json ?? "null") as unknown,
+              createdAt: outcome.update_created_at,
+            },
+          } : {}),
+        })),
+      },
       sourceKind: "join",
       sourceId: join.id,
       now,

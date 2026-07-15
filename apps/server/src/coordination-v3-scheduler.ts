@@ -126,7 +126,8 @@ export function formatActivationPrompt(lease: SchedulerLease): string {
     "Ponderosa Communication V3 activation batch.",
     `Run: ${lease.runId}`,
     "Handle every source exactly once. A human or urgent activation does not cancel your open joins.",
-    "When a correlated request changes state, call ponderosa_update_request with its stable requestId and a new stable updateId.",
+    "For an inbound request, only its recipient reports progress, questions, completion, blockage, or failure with ponderosa_update_request.",
+    "For an outbound request, do not repeat or forward the recipient's update; consume its outcome directly. Only the requester or user may answer, cancel, or supersede it.",
     ...lease.activations.map((activation, index) => [
       `Activation ${index + 1}:`,
       `- activationId: ${activation.id}`,
