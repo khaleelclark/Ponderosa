@@ -899,7 +899,7 @@ export class AgentStore {
       lastConversationId: conversationId,
     };
     const conversation: ConversationJson = {
-      id: conversationId, projectId: id, title: "New chat", defaultEngine,
+      id: conversationId, projectId: id, title: "New Chat", defaultEngine,
       createdAt: now, updatedAt: now, archived: false,
     };
     const stagingId = `.${id}.creating`;
@@ -912,7 +912,7 @@ export class AgentStore {
       renameSync(stagingRoot, projectDir(this.dataDir, id));
       this.db.transaction((tx) => {
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New chat", defaultEngine, defaultModel: null, defaultEffort: null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: null, defaultEffort: null, createdAt: now, updatedAt: now, archived: 0 }).run();
       });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
@@ -1033,7 +1033,7 @@ export class AgentStore {
     const record: ConversationJson = {
       id,
       projectId,
-      title: input.title || "New chat",
+      title: input.title || "New Chat",
       defaultEngine: input.defaultEngine ?? project.defaultEngine,
       defaultModel: input.defaultModel,
       defaultEffort: input.defaultEffort,
@@ -1048,7 +1048,7 @@ export class AgentStore {
       .values({
         id,
         projectId,
-        title: input.title || "New chat",
+      title: input.title || "New Chat",
         defaultEngine: input.defaultEngine ?? project.defaultEngine,
         defaultModel: input.defaultModel ?? null,
         defaultEffort: input.defaultEffort ?? null,

@@ -87,6 +87,19 @@ code {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
+/* Keep dense panes calm while idle, but restore native scrolling affordances
+ * when a pointer or keyboard user is interacting with them. */
+.ponderosa-scroll {
+  scrollbar-width: none;
+}
+.ponderosa-scroll::-webkit-scrollbar { width: 0; height: 0; }
+.ponderosa-scroll:hover,
+.ponderosa-scroll:focus-within {
+  scrollbar-width: thin;
+}
+.ponderosa-scroll:hover::-webkit-scrollbar,
+.ponderosa-scroll:focus-within::-webkit-scrollbar { width: 8px; height: 8px; }
+
 .emoji-category { padding: 4px 8px; background: var(--mui-palette-background-paper); font-size: 12px; font-weight: 700; }
 .emoji-row { display: grid !important; grid-template-columns: repeat(8, 1fr); }
 .emoji-cell { border: 0; background: transparent; border-radius: 6px; min-width: 40px; min-height: 40px; font-size: 22px; cursor: pointer; }

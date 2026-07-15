@@ -53,13 +53,23 @@ export interface CreateProjectRequest {
 export type ProjectSort = "last_used" | "alphabetical" | "custom";
 export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
 
+/** Durable independent notification switches. `allMessages` implies the
+ * narrower categories in the UI without changing their saved values. */
+export interface NotificationPreferencesDto {
+  mentions: boolean;
+  directReplies: boolean;
+  projectChatMessages: boolean;
+  broadcasts: boolean;
+  allMessages: boolean;
+}
+
 export interface WorkspacePreferencesDto {
   projectSort: ProjectSort;
   /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
   projectOrder: string[];
   sidebarCollapsed: boolean;
   sidebarWidth: number;
-  notifications: NotificationPreference;
+  notifications: NotificationPreferencesDto;
   fontFamily: "inter" | "system" | "sans";
   updatedAt: string;
 }

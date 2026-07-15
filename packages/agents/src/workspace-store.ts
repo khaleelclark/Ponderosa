@@ -3,11 +3,11 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, wr
 import { dirname } from "node:path";
 import type {
   ConversationDraftDto,
-  NotificationPreference,
   UpdateWorkspacePreferencesRequest,
   WorkspaceEvent,
   WorkspaceEventEnvelope,
   WorkspaceNotificationDto,
+  NotificationPreferencesDto,
   WorkspacePreferencesDto,
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
@@ -28,7 +28,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   projectOrder: [],
   sidebarCollapsed: false,
   sidebarWidth: 288,
-  notifications: "all_messages",
+  notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
   fontFamily: "inter",
   updatedAt: new Date(0).toISOString(),
 };
@@ -60,6 +60,7 @@ export class WorkspaceStore {
     if (record.event.type === "preferences_updated") this.preferences = {
       ...DEFAULT_PREFERENCES,
       ...record.event.preferences,
+      notifications: normalizeNotifications(record.event.preferences.notifications),
       projectOrder: record.event.preferences.projectOrder ?? [],
     };
     if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
@@ -102,7 +103,7 @@ export class WorkspaceStore {
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
 
   updatePreferences(patch: UpdateWorkspacePreferencesRequest): WorkspacePreferencesDto {
-    const notifications: NotificationPreference = patch.notifications ?? this.preferences.notifications;
+    const notifications = patch.notifications ? normalizeNotifications(patch.notifications) : this.preferences.notifications;
     const preferences: WorkspacePreferencesDto = {
       ...this.preferences,
       ...patch,
@@ -143,7 +144,12 @@ export class WorkspaceStore {
     return notification;
   }
 
-  listNotifications(): WorkspaceNotificationDto[] { return [...this.notifications.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)); }
+  listNotifications(): WorkspaceNotificationDto[] {
+    // Collaboration/Team Chat is an agent-only room and is intentionally not
+    // part of the operator notification or unread-count tree, including when
+    // replaying logs created by an older server.
+    return [...this.notifications.values()].filter((item) => item.kind !== "collaboration").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
 
   readConversation(conversationId: string): void {
     const unread = this.listNotifications().some((item) => item.conversationId === conversationId && !item.readAt);
@@ -164,4 +170,26 @@ export class WorkspaceStore {
   }
 
   listPushSubscriptions(): WebPushSubscriptionDto[] { return [...this.pushSubscriptions.values()]; }
+}
+
+function normalizeNotifications(input: unknown): NotificationPreferencesDto {
+  if (input && typeof input === "object") {
+    const value = input as Partial<NotificationPreferencesDto>;
+    return {
+      mentions: value.mentions !== false,
+      directReplies: value.directReplies !== false,
+      projectChatMessages: value.projectChatMessages !== false,
+      broadcasts: value.broadcasts !== false,
+      allMessages: value.allMessages === true,
+    };
+  }
+  // Migrate the pre-toggle single-choice setting from the canonical log.
+  const legacy = typeof input === "string" ? input : "all_messages";
+  return {
+    mentions: legacy === "mentions" || legacy === "all_messages" || legacy === "everyone" || legacy === "broadcasts",
+    directReplies: legacy === "direct_responses" || legacy === "mentions" || legacy === "all_messages",
+    projectChatMessages: legacy === "project_responses" || legacy === "all_messages",
+    broadcasts: legacy === "broadcasts" || legacy === "all_messages",
+    allMessages: legacy === "all_messages",
+  };
 }

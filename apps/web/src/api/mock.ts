@@ -54,7 +54,7 @@ const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const agentPresets: AgentPresetDto[] = [];
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
-let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: "all_messages", fontFamily: "inter", updatedAt: now };
+let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", updatedAt: now };
 
 const agents: AgentDto[] = [
   {
@@ -449,8 +449,8 @@ export const mockApi: PonderosaApi = {
   },
   generateConversationTitle(conversationId) {
     const conversation = conversations.find((item) => item.id === conversationId);
-    if (!conversation || conversation.title !== "New chat") return delay({ title: conversation?.title ?? "New chat", generated: false });
-    conversation.title = "Generated chat title";
+    if (!conversation || !/^New Chat$/i.test(conversation.title)) return delay({ title: conversation?.title ?? "New Chat", generated: false });
+    conversation.title = "Generated Chat Title";
     return delay({ title: conversation.title, generated: true });
   },
   getWorkspacePreferences() { return delay(workspacePreferences); },

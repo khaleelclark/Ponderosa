@@ -43,9 +43,12 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
   const [renameText, setRenameText] = useState("");
   const [deleting, setDeleting] = useState<ConversationDto>();
   const [draftWidth, setDraftWidth] = useState(preferences.sidebarWidth);
+  const [projectFilter, setProjectFilter] = useState("");
+  const [localCollapsed, setLocalCollapsed] = useState(() => window.localStorage.getItem("ponderosa.sidebar.collapsed") === "true");
+  const [localWidth, setLocalWidth] = useState(() => Number(window.localStorage.getItem("ponderosa.sidebar.width")) || preferences.sidebarWidth);
   const resizing = useRef(false);
 
-  useEffect(() => { if (!resizing.current) setDraftWidth(preferences.sidebarWidth); }, [preferences.sidebarWidth]);
+  useEffect(() => { if (!resizing.current) setDraftWidth(localWidth); }, [localWidth]);
 
   useEffect(() => {
     if (selectedProjectId) setExpanded((current) => new Set(current).add(selectedProjectId));
@@ -58,7 +61,7 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
   }, [notifications]);
 
   const createChat = async (project: ProjectDto) => {
-    const conversation = await api.createConversation(project.id, { title: "New chat", defaultEngine: project.defaultEngine });
+    const conversation = await api.createConversation(project.id, { title: "New Chat", defaultEngine: project.defaultEngine });
     await api.markProjectUsed(project.id, conversation.id);
     void queryClient.invalidateQueries({ queryKey: ["conversations", project.id] });
     onNavigate({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
@@ -73,20 +76,27 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
     onPreferences({ projectSort: "custom", projectOrder: order });
   };
 
-  if (preferences.sidebarCollapsed) return <Box component="nav" aria-label="Workspace navigation" sx={{ width: 56, height: "100%", minHeight: 0, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", pt: 1, overflowY: "auto", overscrollBehavior: "contain" }}>
-    <Tooltip title="Expand sidebar" placement="right"><IconButton aria-label="Expand sidebar" onClick={() => onPreferences({ sidebarCollapsed: false })}><ChevronRightIcon /></IconButton></Tooltip>
-    {projects.map((project) => <Tooltip key={project.id} title={project.label} placement="right"><IconButton aria-label={`Open ${project.label}`} onClick={() => onNavigate({ kind: "project", projectId: project.id })}><FolderOutlinedIcon /></IconButton></Tooltip>)}
+  if (preferences.sidebarCollapsed || localCollapsed) return <Box component="nav" aria-label="Workspace navigation" sx={{ width: 0, height: "100%", minHeight: 0, position: "relative" }}>
+    <Tooltip title="Expand sidebar" placement="right"><IconButton aria-label="Expand sidebar" onClick={() => { setLocalCollapsed(false); window.localStorage.setItem("ponderosa.sidebar.collapsed", "false"); }} sx={{ position: "absolute", left: 4, top: 8, zIndex: 5, bgcolor: "background.paper", boxShadow: 1 }}><ChevronRightIcon /></IconButton></Tooltip>
   </Box>;
 
-  return <Box component="nav" aria-label="Workspace navigation" sx={{ position: "relative", width: draftWidth, height: "100%", minHeight: 0, minWidth: 220, maxWidth: 520, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+  const visibleProjects = projects.filter((project) => project.label.toLocaleLowerCase().includes(projectFilter.toLocaleLowerCase()));
+  // The sidebar itself remains a contained surface (width: draftWidth, height: "100%", minHeight: 0).
+  return <Box component="nav" aria-label="Workspace navigation" sx={{ position: "relative", width: localWidth, height: "100%", minHeight: 0, minWidth: 220, maxWidth: 520, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
     <Stack direction="row" sx={{ alignItems: "center", px: 1, py: .5 }}>
       <Typography variant="overline" sx={{ flex: 1, px: 1 }}>Projects</Typography>
       <Tooltip title="New project"><IconButton size="small" aria-label="New project" onClick={onCreateProject}><AddIcon fontSize="small" /></IconButton></Tooltip>
-      <Tooltip title="Collapse sidebar"><IconButton size="small" aria-label="Collapse sidebar" onClick={() => onPreferences({ sidebarCollapsed: true })}><ChevronLeftIcon fontSize="small" /></IconButton></Tooltip>
+      <Tooltip title="Collapse sidebar"><IconButton size="small" aria-label="Collapse sidebar" onClick={() => { setLocalCollapsed(true); window.localStorage.setItem("ponderosa.sidebar.collapsed", "true"); }}><ChevronLeftIcon fontSize="small" /></IconButton></Tooltip>
     </Stack>
-    <Box sx={{ overflowY: "auto", minHeight: 0, overscrollBehavior: "contain" }}>
+    <Box sx={{ px: 1, pb: .5 }}>
+      <Typography variant="caption" color="text.secondary">Current Project</Typography>
+      <Typography variant="body2" fontWeight={700} noWrap>{selectedProject?.label ?? "None selected"}</Typography>
+      <TextField value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} placeholder="Filter projects" size="small" fullWidth inputProps={{ "aria-label": "Filter projects" }} sx={{ mt: .75 }} />
+    </Box>
+    <Box className="ponderosa-scroll" sx={{ overflowY: "auto", minHeight: 0, overscrollBehavior: "contain" }}>
       <List dense disablePadding>
-        {projects.map((project, index) => {
+        {visibleProjects.map((project) => {
+          const index = projects.findIndex((candidate) => candidate.id === project.id);
           const conversations = (conversationsQueries[index]?.data ?? []).filter((item) => !item.archived);
           const projectUnread = conversations.reduce((sum, item) => sum + (unreadByConversation.get(item.id) ?? 0), 0);
           const running = (healthQueries[index]?.data?.agents ?? []).filter((agent) => agent.status === "running" || agent.status === "compacting").length;
@@ -117,7 +127,8 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
           </Box>;
         })}
       </List>
-      {selectedProjectId ? <Box sx={{ mt: 1, borderTop: 1, borderColor: "divider" }}>
+    </Box>
+    {selectedProjectId ? <Box className="ponderosa-scroll" sx={{ minHeight: 0, maxHeight: "34%", overflowY: "auto", borderTop: 1, borderColor: "divider" }}>
         <ListItemButton onClick={() => setAgentsExpanded((value) => !value)}><ExpandMoreIcon fontSize="small" sx={{ transform: agentsExpanded ? "none" : "rotate(-90deg)" }} /><SmartToyOutlinedIcon fontSize="small" sx={{ mx: 1 }} /><ListItemText primary="Agents" primaryTypographyProps={{ fontWeight: 700 }} /></ListItemButton>
         <Collapse in={agentsExpanded}><List dense disablePadding>{activeAgents.filter((agent) => !agent.archived).map((agent) => {
           let level = 0; let parent = agent.managerAgentId;
@@ -125,8 +136,7 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
           const status = selectedHealth.get(agent.id) ?? (agent.archived ? "stopped" : "idle");
           return <ListItemButton key={agent.id} selected={route.kind === "agent" && route.agentId === agent.id} onClick={() => onNavigate({ kind: "agent", projectId: selectedProjectId, agentId: agent.id })} sx={{ pl: 2 + level * 2, minHeight: 38 }}><ListItemText primary={agent.title} secondary={`${status} · ${selectedProject?.label ?? "Project"} · level ${level}`} primaryTypographyProps={{ noWrap: true, fontSize: 13 }} secondaryTypographyProps={{ fontSize: 11, noWrap: true }} /></ListItemButton>;
         })}</List></Collapse>
-      </Box> : null}
-    </Box>
+      </Box> : <Box />}
     <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", borderTop: 1, borderColor: "divider", p: 1 }}>
       <Typography variant="caption" color="text.secondary" sx={{ flex: 1, display: preferences.projectSort === "custom" ? "none" : "block" }}>Sort projects</Typography>
       <TextField select size="small" value={preferences.projectSort} onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"], ...(event.target.value === "custom" ? { projectOrder: projects.map((project) => project.id) } : {}) })} sx={{ minWidth: 112 }}>
@@ -143,7 +153,7 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
         </Tooltip>
       </> : null}
     </Stack>
-    <Box role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft") onPreferences({ sidebarWidth: preferences.sidebarWidth - 16 }); if (event.key === "ArrowRight") onPreferences({ sidebarWidth: preferences.sidebarWidth + 16 }); }} onPointerDown={(event) => { resizing.current = true; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (resizing.current) setDraftWidth(Math.max(220, Math.min(520, event.clientX))); }} onPointerUp={(event) => { resizing.current = false; event.currentTarget.releasePointerCapture(event.pointerId); onPreferences({ sidebarWidth: draftWidth }); }} sx={{ position: "absolute", right: -3, top: 0, bottom: 0, width: 7, cursor: "col-resize", zIndex: 4, "&:focus": { bgcolor: "primary.main" } }} />
+    <Box role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabIndex={0} onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { const next = Math.max(220, Math.min(520, localWidth + (event.key === "ArrowLeft" ? -16 : 16))); setLocalWidth(next); setDraftWidth(next); window.localStorage.setItem("ponderosa.sidebar.width", String(next)); } }} onPointerDown={(event) => { resizing.current = true; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (resizing.current) setDraftWidth(Math.max(220, Math.min(520, event.clientX))); }} onPointerUp={(event) => { resizing.current = false; event.currentTarget.releasePointerCapture(event.pointerId); setLocalWidth(draftWidth); window.localStorage.setItem("ponderosa.sidebar.width", String(draftWidth)); }} sx={{ position: "absolute", right: -3, top: 0, bottom: 0, width: 7, cursor: "col-resize", zIndex: 4, "&:focus": { bgcolor: "primary.main" } }} />
     <Menu anchorEl={menu?.anchor} open={Boolean(menu)} onClose={() => setMenu(undefined)}><MenuItem onClick={() => { if (menu) { setRename(menu.conversation); setRenameText(menu.conversation.title); } setMenu(undefined); }}>Rename</MenuItem><MenuItem sx={{ color: "error.main" }} onClick={() => { setDeleting(menu?.conversation); setMenu(undefined); }}>Delete</MenuItem></Menu>
     <Dialog open={Boolean(rename)} onClose={() => setRename(undefined)} fullWidth maxWidth="xs"><DialogTitle>Rename Project chat</DialogTitle><DialogContent><TextField autoFocus fullWidth value={renameText} onChange={(event) => setRenameText(event.target.value)} sx={{ mt: 1 }} /></DialogContent><DialogActions><Button onClick={() => setRename(undefined)}>Cancel</Button><Button variant="contained" disabled={!renameText.trim()} onClick={() => void api.updateConversation(rename!.id, { title: renameText.trim() }).then(() => { void queryClient.invalidateQueries({ queryKey: ["conversations", rename!.projectId] }); setRename(undefined); })}>Save</Button></DialogActions></Dialog>
     <Dialog open={Boolean(deleting)} onClose={() => setDeleting(undefined)} fullWidth maxWidth="xs"><DialogTitle>Delete Project chat?</DialogTitle><DialogContent><Typography>This preserves project history and refuses deletion while an agent in this chat is running.</Typography></DialogContent><DialogActions><Button onClick={() => setDeleting(undefined)}>Cancel</Button><Button color="error" variant="contained" onClick={() => void api.deleteConversation(deleting!.id).then(() => { void queryClient.invalidateQueries({ queryKey: ["conversations", deleting!.projectId] }); setDeleting(undefined); })}>Delete</Button></DialogActions></Dialog>
