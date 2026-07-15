@@ -544,6 +544,17 @@ export function ConversationView({
       setPendingDelete(undefined);
     },
   });
+  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
+
+  useEffect(() => {
+    if (!activeOperation || activeOperation.agentIds.length === 0) return;
+    const anyRunning = activeOperation.agentIds.some((agentId) => statusByAgentId.get(agentId) === "running");
+    if (anyRunning && activeOperation.state !== "running") {
+      setActiveOperation({ ...activeOperation, state: "running" });
+    } else if (!busy && activeOperation.state === "running" && !anyRunning) {
+      setActiveOperation(undefined);
+    }
+  }, [activeOperation, busy, statusByAgentId]);
 
   if (detailQuery.isLoading) {
     return (
@@ -613,17 +624,6 @@ export function ConversationView({
   const busyMentionHandles = agents
     .filter((agent) => statusByAgentId.get(agent.id) === "running")
     .map((agent) => agentMentionHandle(agent.title));
-  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
-
-  useEffect(() => {
-    if (!activeOperation || activeOperation.agentIds.length === 0) return;
-    const anyRunning = activeOperation.agentIds.some((agentId) => statusByAgentId.get(agentId) === "running");
-    if (anyRunning && activeOperation.state !== "running") {
-      setActiveOperation({ ...activeOperation, state: "running" });
-    } else if (!busy && activeOperation.state === "running" && !anyRunning) {
-      setActiveOperation(undefined);
-    }
-  }, [activeOperation, busy, statusByAgentId]);
 
   const operationRunning = Boolean(activeOperation && (busy || activeOperation.state === "running"));
   const stopOperation = async () => {
