@@ -13,6 +13,13 @@ export function formatUsd(value = 0): string {
   return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", minimumFractionDigits: value < 0.01 ? 4 : 2, maximumFractionDigits: value < 0.01 ? 6 : 2 }).format(value);
 }
 
+export function costSummaryLabel(data?: TokenUsageSummaryDto): string {
+  if (!data) return "Cost";
+  const cost = data.projectedApiCost;
+  if (!cost || cost.pricedRuns === 0) return "Cost unavailable";
+  return cost.unpricedRuns > 0 ? `Partial · ${formatUsd(cost.usd)}` : formatUsd(cost.usd);
+}
+
 function runsLabel(value: number): string {
   return `${value} run${value === 1 ? "" : "s"}`;
 }
@@ -36,14 +43,18 @@ function CostComponents({ components, compact = false }: { components: Projected
 
 export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX.Element {
   const cost = data.projectedApiCost;
+  const hasPricedRuns = Boolean(cost?.pricedRuns);
+  const isPartialEstimate = Boolean(cost?.pricedRuns && cost.unpricedRuns);
   return <Stack spacing={2}>
-    {cost ? <>
+    {cost && hasPricedRuns ? <>
       <Box>
         <Typography variant="h4" component="p">{formatUsd(cost.usd)}</Typography>
-      <Typography variant="body2" color="text.secondary">projected API-equivalent list price · not a subscription bill</Typography>
-      <Typography variant="caption" color="text.secondary">
+        <Typography variant="body2" color="text.secondary">
+          {isPartialEstimate ? "Partial estimate · " : ""}projected API-equivalent list price · not a subscription bill
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
           Priced {cost.pricedRuns} of {data.finalizedRuns} finalized runs using catalog {cost.catalogVersion}.
-      </Typography>
+        </Typography>
       </Box>
       <Box>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>Cost by token type</Typography>
@@ -62,7 +73,7 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
           <Box sx={{ mt: 0.5 }}><CostComponents components={item.components} compact /></Box>
         </Box>)}
       </Box>
-    </> : <Alert severity="warning">No runs in this scope can be priced yet.</Alert>}
+    </> : <Alert severity="warning">Cost unavailable. No finalized runs in this scope have enough recognized model pricing and request-level usage detail for a defensible estimate.</Alert>}
     <Alert severity={data.unreportedRuns || cost?.unpricedRuns ? "warning" : "info"}>
       Provider usage was reported for {data.reportedRuns} of {data.finalizedRuns} finalized runs. {cost ? `${runsLabel(cost.pricedRuns)} ${cost.pricedRuns === 1 ? "has" : "have"} a recognized model price.` : "No recognized model prices are available."}
       {data.unreportedRuns ? ` ${data.unreportedRuns} older or unsupported runs have no usage data.` : ""}
@@ -83,8 +94,9 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
     refetchInterval: open ? 5_000 : 30_000,
   });
   const data = usage.data;
+  const costLabel = costSummaryLabel(data);
   return <>
-    {compact ? <Tooltip title={`${label} projected cost${data?.projectedApiCost ? ` · ${formatUsd(data.projectedApiCost.usd)}` : ""}`}>
+    {compact ? <Tooltip title={`${label} projected cost · ${costLabel}`}>
       <IconButton onClick={() => setOpen(true)} aria-label={`${label} projected cost`} sx={{ minWidth: 44, minHeight: 44 }}>
         <PaidOutlinedIcon />
       </IconButton>
@@ -96,7 +108,7 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
         aria-label={`${label} projected cost`}
         sx={{ whiteSpace: "nowrap", minHeight: 36 }}
       >
-        {data?.projectedApiCost ? formatUsd(data.projectedApiCost.usd) : "Cost"}
+        {costLabel}
       </Button>}
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="md" aria-labelledby={`${scope}-usage-title`} PaperProps={{ sx: { width: { xs: "calc(100% - 16px)", sm: 720 }, maxHeight: "calc(100dvh - 16px)", m: { xs: 1, sm: 4 } } }}>
       <DialogTitle id={`${scope}-usage-title`}>{label} cost</DialogTitle>
