@@ -1297,6 +1297,11 @@ export class AgentStore {
     const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId);
     const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
     return projected.map((message) => {
+      const fileActivity = message.authorAgentId && message.executionId && this.getAgent(message.authorAgentId)
+        ? this.getChangedFiles(message.authorAgentId)
+          .filter((file) => file.executionIds.includes(message.executionId!))
+          .map((file) => ({ path: file.path, kind: file.kind, status: "completed" as const }))
+        : undefined;
       return {
         id: message.messageId,
         communicationEventId: message.eventId,
@@ -1310,7 +1315,7 @@ export class AgentStore {
         ...(message.document ? { document: message.document } : {}),
         ...(message.citations?.length ? { citations: message.citations } : {}),
         ...(message.executionId ? { executionId: message.executionId } : {}),
-        ...(message.authorAgentId && message.executionId ? { fileActivity: this.getChangedFiles(message.authorAgentId).filter((file) => file.executionIds.includes(message.executionId!)).map((file) => ({ path: file.path, kind: file.kind, status: "completed" as const })) } : {}),
+        ...(fileActivity ? { fileActivity } : {}),
         ...(message.correctionOfEventId ? { correctionOfMessageId: message.correctionOfEventId } : {}),
         ...(correctedBy.has(message.eventId) ? { correctedByMessageId: correctedBy.get(message.eventId) } : {}),
       };
