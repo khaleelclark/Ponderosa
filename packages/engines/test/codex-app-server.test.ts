@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
-import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, subtractUsage } from "../src/codex-app-server.js";
+import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, reconcileProviderRequestUsage, subtractUsage } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
@@ -21,6 +21,20 @@ describe("Codex app-server persistent runtime", () => {
     expect(subtractUsage(
       { totalTokens: 10, inputTokens: 8, outputTokens: 2 },
       { totalTokens: 20, inputTokens: 16, outputTokens: 4 },
+    )).toBeUndefined();
+  });
+  it("keeps request detail only when it reconciles to the turn aggregate", () => {
+    const requests = [
+      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2 },
+      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6 },
+    ];
+    expect(reconcileProviderRequestUsage(
+      { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8 },
+      requests,
+    )).toEqual(requests);
+    expect(reconcileProviderRequestUsage(
+      { totalTokens: 26, inputTokens: 18, cachedInputTokens: 4, outputTokens: 8 },
+      requests,
     )).toBeUndefined();
   });
   it("separates completed response blocks in Work log output", () => {
@@ -67,7 +81,14 @@ describe("Codex app-server persistent runtime", () => {
       { type: "text", delta: "steered response\n\n" },
       { type: "command", command: "git status", cwd: "/repo" },
       { type: "tool_result", id: "c1", output: "clean" },
-      { type: "turn_done", usage: { totalTokens: 999, inputTokens: 812, cachedInputTokens: 404, outputTokens: 187, reasoningOutputTokens: 92 } },
+      {
+        type: "turn_done",
+        usage: { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 },
+        providerRequestUsage: [
+          { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
+          { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 },
+        ],
+      },
     ]);
     await session.close();
   });

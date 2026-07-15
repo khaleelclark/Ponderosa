@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { formatTokens, formatUsd, TokenUsageDetails } from "../src/components/TokenUsageButton";
+import { costSummaryLabel, formatTokens, formatUsd, TokenUsageDetails } from "../src/components/TokenUsageButton";
 
 describe("token usage UI", () => {
   it("leads with cost, separates cached and new input, and makes coverage explicit", () => {
@@ -24,10 +24,45 @@ describe("token usage UI", () => {
     expect(html).toContain("Cache writes");
     expect(html).toContain("Provider usage was reported for 3 of 4 finalized runs");
     expect(html).toContain("1 older or unsupported runs have no usage data");
-    expect(html).toContain("1 run is excluded from cost");
+    expect(html).toContain("1 run is excluded because model pricing, usage, or request-level detail");
     expect(html).toContain("projected API-equivalent list price");
+    expect(html).toContain("Partial estimate");
+    expect(html).toContain("Long-context tiers are applied per provider request");
     expect(html).toContain("gpt-5.6-luna");
     expect(formatTokens(0)).toBe("0");
     expect(formatUsd(0.25)).toContain("0.25");
+  });
+
+  it("shows cost unavailable instead of a zero-dollar estimate when no runs can be priced", () => {
+    const data = {
+      scope: "agent", scopeId: "agent-1",
+      inputTokens: 400_000, cachedInputTokens: 300_000, cacheWriteInputTokens: 0, outputTokens: 5_000, reasoningOutputTokens: 1_000, totalTokens: 405_000,
+      finalizedRuns: 1, reportedRuns: 1, unreportedRuns: 0, coverage: 1,
+      projectedApiCost: {
+        currency: "USD", usd: 0, basis: "api_list_price_proxy", catalogVersion: "2026-07-13", pricedRuns: 0, unpricedRuns: 1, coverage: 0,
+        components: { uncachedInput: { tokens: 0, usd: 0 }, cachedInput: { tokens: 0, usd: 0 }, cacheWriteInput: { tokens: 0, usd: 0 }, output: { tokens: 0, usd: 0 } },
+        breakdown: [],
+      },
+    } as const;
+    const html = renderToStaticMarkup(<TokenUsageDetails data={data} />);
+
+    expect(html).toContain("Cost unavailable");
+    expect(html).toContain("request-level usage detail");
+    expect(html).not.toContain("$0.00");
+    expect(html).not.toContain("Cost by token type");
+    expect(costSummaryLabel(data)).toBe("Cost unavailable");
+  });
+
+  it("marks mixed-coverage button totals as partial", () => {
+    expect(costSummaryLabel({
+      scope: "overall",
+      inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 110,
+      finalizedRuns: 2, reportedRuns: 2, unreportedRuns: 0, coverage: 1,
+      projectedApiCost: {
+        currency: "USD", usd: 1.25, basis: "api_list_price_proxy", catalogVersion: "test", pricedRuns: 1, unpricedRuns: 1, coverage: 0.5,
+        components: { uncachedInput: { tokens: 100, usd: 0.25 }, cachedInput: { tokens: 0, usd: 0 }, cacheWriteInput: { tokens: 0, usd: 0 }, output: { tokens: 10, usd: 1 } },
+        breakdown: [],
+      },
+    })).toContain("Partial · $1.25");
   });
 });

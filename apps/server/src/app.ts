@@ -1037,7 +1037,7 @@ export function normalizeExternalCitations(value: unknown, verifiedAt = new Date
   return [...result.values()];
 }
 
-function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): { usd: number; components: RawCostComponents } | undefined {
+function projectedRequestCost(usage: TokenUsage, profile: ApiPriceProfile): { usd: number; components: RawCostComponents } | undefined {
   if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
   const cached = usage.cachedInputTokens ?? 0;
   const cacheWrite = usage.cacheWriteInputTokens ?? 0;
@@ -1055,6 +1055,39 @@ function projectedRunCost(usage: TokenUsage, profile: ApiPriceProfile): { usd: n
     output: { tokens: usage.outputTokens, usd: usage.outputTokens * profile.outputUsdPerMillion * outputMultiplier / 1_000_000 },
   };
   return { usd: Object.values(components).reduce((total, item) => total + item.usd, 0), components };
+}
+
+/** Price request-tiered models per provider request, never from an aggregate guess. */
+export function projectedRunCost(
+  usage: TokenUsage,
+  profile: ApiPriceProfile,
+  providerRequestUsage?: TokenUsage[],
+): { usd: number; components: RawCostComponents } | undefined {
+  if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
+  const requiresRequestGranularity = Boolean(
+    profile.longContext && usage.inputTokens > profile.longContext.inputTokenThreshold,
+  );
+  if (!requiresRequestGranularity) return projectedRequestCost(usage, profile);
+  if (!providerRequestUsage?.length) return undefined;
+
+  const reconciledKeys: Array<keyof TokenUsage> = [
+    "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens",
+  ];
+  for (const key of reconciledKeys) {
+    const aggregateValue = usage[key] ?? 0;
+    const requestValue = providerRequestUsage.reduce((total, request) => total + (request[key] ?? 0), 0);
+    if (aggregateValue !== requestValue) return undefined;
+  }
+
+  const components = emptyCostComponents();
+  let usd = 0;
+  for (const request of providerRequestUsage) {
+    const cost = projectedRequestCost(request, profile);
+    if (!cost) return undefined;
+    usd += cost.usd;
+    addCostComponents(components, cost.components);
+  }
+  return { usd, components };
 }
 
 export function createServer(opts: CreateServerOptions): FastifyInstance {
@@ -1113,7 +1146,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     let pricedRuns = 0;
     for (const run of store.getMeteredRuns(scope)) {
       const profile = engines.get(run.engine)?.adapter.apiPriceProfile?.(run.model);
-      const cost = profile ? projectedRunCost(run.usage, profile) : undefined;
+      const cost = profile ? projectedRunCost(run.usage, profile, run.providerRequestUsage) : undefined;
       if (!cost || !profile) continue;
       pricedRuns += 1;
       const key = `${run.engine}\0${run.model ?? ""}\0${profile.pricingModel}`;

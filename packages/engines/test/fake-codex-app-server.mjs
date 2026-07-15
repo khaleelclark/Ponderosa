@@ -44,8 +44,10 @@ lines.on("line", (line) => {
     send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "agentMessage", id: "m1", text: "steered response" } } });
     send({ method: "item/started", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "commandExecution", id: "c1", command: "git status", cwd: "/repo" } } });
     send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "commandExecution", id: "c1", command: "git status", cwd: "/repo", aggregatedOutput: "clean", exitCode: 0 } } });
-    send({ method: "thread/tokenUsage/updated", params: { threadId: "codex-thread-v1", turnId: "turn-1", tokenUsage: { total: { totalTokens: 981, inputTokens: 800, cachedInputTokens: 400, outputTokens: 181, reasoningOutputTokens: 90 }, last: { totalTokens: 7, inputTokens: 5, outputTokens: 2 } } } });
-    send({ method: "thread/tokenUsage/updated", params: { threadId: "codex-thread-v1", turnId: "turn-1", tokenUsage: { total: { totalTokens: 999, inputTokens: 812, cachedInputTokens: 404, outputTokens: 187, reasoningOutputTokens: 92 }, last: { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 } } } });
+    send({ method: "thread/tokenUsage/updated", params: { threadId: "codex-thread-v1", turnId: "turn-1", tokenUsage: { total: { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 }, last: { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 } } } });
+    send({ method: "thread/tokenUsage/updated", params: { threadId: "codex-thread-v1", turnId: "turn-1", tokenUsage: { total: { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 }, last: { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 } } } });
+    // Duplicate cumulative checkpoints are possible and must not duplicate the last request.
+    send({ method: "thread/tokenUsage/updated", params: { threadId: "codex-thread-v1", turnId: "turn-1", tokenUsage: { total: { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 }, last: { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 } } } });
     send({ method: "turn/completed", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "completed", error: null } } });
     return;
   }

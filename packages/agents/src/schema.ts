@@ -91,6 +91,7 @@ export const runs = sqliteTable("runs", {
   outputTokens: integer("output_tokens"),
   reasoningOutputTokens: integer("reasoning_output_tokens"),
   totalTokens: integer("total_tokens"),
+  providerRequestUsageJson: text("provider_request_usage_json"),
   startedAt: text("started_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   completedAt: text("completed_at"),

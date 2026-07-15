@@ -8,7 +8,7 @@ Optimization starts with provider-measured usage, not estimates derived from vis
 
 - Store input, cached-input, cache-write, output, reasoning, and total tokens independently when the provider exposes them.
 - Store the engine, requested model, and effort on every run so usage remains attributable after agent settings change.
-- Prefer absolute provider thread totals and derive a run delta from the prior absolute checkpoint. Never add a per-request snapshot to an absolute thread total.
+- Prefer absolute provider thread totals and derive a run delta from the prior absolute checkpoint. Preserve separately reported per-request snapshots as pricing detail, but never add them to the absolute thread total.
 - Mark unreported runs and unknown price profiles explicitly. Never silently price unknown usage at zero.
 - Display cost only as a dated, projected API-equivalent list-price estimate. Subscription usage, provider discounts, tool fees, and infrastructure cost are different things.
 
@@ -23,10 +23,13 @@ exclusive billable classes:
 - cache-write input; and
 - output (including any reasoning tokens already counted by the provider as output).
 
-Per-run costs are summed by token class and by pricing model before agent,
-project, or overall totals are displayed. Never apply one blended rate to an
-aggregate containing multiple models, and never charge cached or cache-write
-tokens again as uncached input.
+Costs are summed by token class and by pricing model before agent, project, or
+overall totals are displayed. Price tiers defined by provider-request context
+size are applied to each reconciled provider request, not to a run aggregate.
+When an aggregate could cross a request-level tier but its request detail is
+unavailable, exclude it from projected cost instead of guessing. Never apply one
+blended rate to an aggregate containing multiple models, and never charge cached
+or cache-write tokens again as uncached input.
 
 This PR implements that contract for the usage Ponderosa currently receives. The price catalog is code-reviewed and dated rather than fetched during a request, so historical totals do not change unexpectedly when a provider edits its pricing page.
 
