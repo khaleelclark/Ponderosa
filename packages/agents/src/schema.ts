@@ -172,6 +172,7 @@ export const coordinationJoins = sqliteTable("coordination_joins", {
   satisfyingOutcomesJson: text("satisfying_outcomes_json").notNull(),
   state: text("state").notNull(),
   deadlineAt: text("deadline_at"),
+  continuationRequestIdsJson: text("continuation_request_ids_json").notNull().default("[]"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   terminalAt: text("terminal_at"),

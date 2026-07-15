@@ -22,7 +22,7 @@ export interface UserMessageEvent {
 /** Clear a provider session while retaining the canonical agent history. */
 export interface SessionResetEvent {
   type: "session_reset";
-  reason: "explicit_compaction" | "resume_compaction_failed";
+  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover";
 }
 
 /** Direct Agent audit projection of one canonical communication event. */

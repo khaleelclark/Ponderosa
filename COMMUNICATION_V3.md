@@ -24,6 +24,19 @@ prompt-injection state, terminal outcomes, idempotency, and the activation outbo
 JSONL may retain rich runtime telemetry, but it is not a competing scheduler
 authority.
 
+Provider-session continuity follows durable causal scope. A newly created
+inbound coordination request starts a fresh task session for its recipient.
+Updates within that request, human steering, and join resumptions retain their
+current session. Rolling the provider cache never changes agent identity,
+messages, files, request state, or join ownership. Request text is therefore
+self-contained: recipients do not inherit the requester's hidden prompt or
+provider-session context.
+
+Fresh-task request Activations and continuity Activations are incompatible for
+Run coalescing. If both are pending, scheduler priority chooses the first Run
+and leaves the other class pending for the next authoritative Run, so a human
+message or join resumption can never receive an ambiguous cache disposition.
+
 ## Request state machine
 
 Nonterminal states are `open`, `in_progress`, `waiting_dependency`, and
@@ -75,6 +88,15 @@ It moves from `open` to exactly one of `satisfied`, `impossible`, `expired`, or
 `cancelled`. Satisfied, impossible, and expired joins activate their surviving
 owner. A join cancelled by its owner closes without creating a redundant
 activation.
+
+When a request recipient creates a join while handling that request, the join
+durably records the inbound request as its continuation. Creating the join
+moves that request to `waiting_dependency`; completing the current Run does not
+make its outcome unknown. The terminal join Activation reattaches the
+continuation request to the resumed Run so `ponderosa_update_request` resolves
+it authoritatively. An exact equivalent join—including its continuations—is
+reused even after satisfaction or impossibility; immutable outcomes cannot
+justify a duplicate wake.
 
 Superseding terminates the original request. A replacement request uses a new
 join; V3 has no mutable logical slots. Deleting a join owner cancels its open

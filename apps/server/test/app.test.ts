@@ -2652,7 +2652,178 @@ describe("server chunk F", () => {
       ok: true,
       missingProjectionMetadataEventIds: [],
     });
+
+    const openedBeforeSecond = persistent.openedOptions.length;
+    const requesterSessionIndex = persistent.openedOptions.map((option) => option.agentId).lastIndexOf(requester.id);
+    const second = new CoordinationV3Store(store.sqlite).coordinate({
+      projectId: project.id,
+      requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`,
+      idempotencyKey: "second-review-cycle",
+      requests: [{
+        requestId: "second-review-request",
+        recipientAgentId: recipient.id,
+        payload: { text: "Review README.md independently and report a terminal outcome." },
+        lifetime: { kind: "indefinite" },
+      }],
+    });
+    expect(second).toMatchObject({ requestIds: ["second-review-request"], replayed: false });
+    persistent.completeTurn(requesterSessionIndex);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(openedBeforeSecond + 1));
+    expect(store.readEvents(recipient.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "session_reset", reason: "request_context_rollover",
+      }) }),
+    ]));
+    const secondRecipientSessionIndex = persistent.openedOptions.length - 1;
+    expect(persistent.openedOptions[secondRecipientSessionIndex]).toMatchObject({
+      agentId: recipient.id, resumeSessionId: undefined,
+    });
+    expect(persistent.closed).toBeGreaterThanOrEqual(1);
+    const secondRecipientRuntime = persistent.openedOptions[secondRecipientSessionIndex]!;
+    const secondCompleted = await secondRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "second-review-complete", kind: "completed", text: "README review passed." },
+    });
+    expect(secondCompleted.success, secondCompleted.text).toBe(true);
+    persistent.completeTurn(secondRecipientSessionIndex);
+    await vi.waitFor(() => expect(store.sqlite.prepare(
+      "SELECT state FROM coordination_requests WHERE id = 'second-review-request'",
+    ).get()).toEqual({ state: "completed" }));
+    await app.close();
+  });
+
+  it("derives and resumes a nested join continuation from authoritative run state", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
+      executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
+    });
+    const project = store.createProject({ label: "V3 nested", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const requester = store.createAgent(project.id, {
+      title: "Requester", engine: "codex", conversationId: conversation.id,
+    });
+    const delivery = store.createAgent(project.id, {
+      title: "Delivery", engine: "codex", conversationId: conversation.id,
+    });
+    const specialist = store.createAgent(project.id, {
+      title: "Specialist", engine: "codex", conversationId: conversation.id,
+    });
+
+    const started = await app.inject({
+      method: "POST", url: `/api/agents/${requester.id}/messages`,
+      payload: { text: "Coordinate nested delivery", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(started.statusCode, started.body).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const outer = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "outer-work",
+        requests: [{
+          requestId: "delivery-work", recipientAgentId: delivery.id,
+          text: "Coordinate a specialist, integrate the result, and complete this request.",
+          lifetime: { kind: "indefinite" },
+        }],
+        join: { id: "outer-join", mode: "all" },
+      },
+    });
+    expect(outer.success, outer.text).toBe(true);
+    expect(JSON.parse(outer.text)).toMatchObject({
+      joinId: "outer-join", executionDirective: expect.stringContaining("End this turn"),
+    });
     persistent.completeTurn(0);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const inner = await persistent.openedOptions[1]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "inner-work",
+        requests: [{
+          requestId: "specialist-work", recipientAgentId: specialist.id,
+          text: "Return the bounded specialist result.", lifetime: { kind: "indefinite" },
+        }],
+        join: { id: "inner-join", mode: "all" },
+      },
+    });
+    expect(inner.success, inner.text).toBe(true);
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'delivery-work'").get())
+      .toEqual({ state: "waiting_dependency" });
+    expect(store.sqlite.prepare(`
+      SELECT continuation_request_ids_json AS continuations FROM coordination_joins WHERE id = 'inner-join'
+    `).get()).toEqual({ continuations: '["delivery-work"]' });
+    persistent.completeTurn(1);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'delivery-work' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    const childCompleted = await persistent.openedOptions[2]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "specialist-complete", kind: "completed", text: "Specialist result ready." },
+    });
+    expect(childCompleted.success, childCompleted.text).toBe(true);
+    persistent.completeTurn(2);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(4));
+    const parentCompleted = await persistent.openedOptions[3]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "delivery-complete", kind: "completed", text: "Integrated result ready." },
+    });
+    expect(parentCompleted.success, parentCompleted.text).toBe(true);
+    expect(JSON.parse(parentCompleted.text)).toMatchObject({ requestId: "delivery-work", state: "completed" });
+    persistent.completeTurn(3);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(5));
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'delivery-work'").get())
+      .toEqual({ state: "completed" });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_joins WHERE id = 'outer-join'").get())
+      .toEqual({ state: "satisfied" });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+    persistent.completeTurn(4);
+    await app.close();
+  });
+
+  it("accepts an actionable shared V3 request without an invalid audit projection", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    const project = store.createProject({ label: "V3 shared", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Lead", engine: "codex", conversationId: conversation.id,
+    });
+
+    const response = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: "Deliver the shared project result.",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+        shareWithOrganization: true,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(202);
+    expect(response.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
+    const communicationEventId = response.json<{ communicationEventId: string }>().communicationEventId;
+    expect(store.readRunTriggers(project.id, agent.id)).toEqual([
+      expect.objectContaining({ communicationEventId, source: "project_request" }),
+    ]);
+    expect(store.readCommunicationProjections(project.id).filter((projection) =>
+      projection.eventId === communicationEventId && projection.surface === "direct_agent_audit" &&
+      projection.projectionKey === agent.id && projection.message,
+    )).toHaveLength(1);
+    expect(store.getConversationMessages(conversation.id, "main")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId, text: "Deliver the shared project result." }),
+    ]));
     await app.close();
   });
 

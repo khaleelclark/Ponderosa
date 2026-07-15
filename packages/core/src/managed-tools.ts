@@ -17,7 +17,7 @@ const REQUEST_LIFETIME_SCHEMA = {
  * is asynchronous by default and an optional join is part of the same call. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Create correlated requests with {idempotencyKey, requests:[{recipientAgentId,text,lifetime}], optional join}; immutably join previously created owned requests with {idempotencyKey, requests:[], join:{mode,requestIds}}; or inspect overflow activation IDs. Do not use recipient/objective/context fields. Every new request needs an explicit lifetime. A successful result containing joinId means the join already exists; do not call coordinate again for it.",
+  description: "Create correlated requests with {idempotencyKey, requests:[{recipientAgentId,text,lifetime}], optional join}; immutably join previously created owned requests with {idempotencyKey, requests:[], join:{mode,requestIds}}; or inspect overflow activation IDs. Each request text must be self-contained because recipients do not inherit your hidden prompt: include exact constraints, values, artifact paths, and requested output. Do not use recipient/objective/context fields. Every new request needs an explicit lifetime. A successful result containing joinId means the join already exists; do not call coordinate again for it.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -36,7 +36,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
           properties: {
             requestId: { type: "string", minLength: 1, maxLength: 200 },
             recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Stable recipient agent ID." },
-            text: { type: "string", minLength: 1, maxLength: 4000, description: "Complete bounded request; do not split it into objective/context fields." },
+            text: { type: "string", minLength: 1, maxLength: 4000, description: "Complete bounded, self-contained request. Include exact constraints, values, artifact paths, and requested output; the recipient cannot see your hidden prompt. Do not split it into objective/context fields." },
             lifetime: REQUEST_LIFETIME_SCHEMA,
           },
         },

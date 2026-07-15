@@ -2424,7 +2424,7 @@ export class AgentStore {
    */
   clearResumeSession(
     agentId: string,
-    reason: "explicit_compaction" | "resume_compaction_failed",
+    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover",
   ): boolean {
     const row = this.db
       .select({ id: agents.id, activeSessionId: agents.activeSessionId })

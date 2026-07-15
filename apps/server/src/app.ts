@@ -83,6 +83,7 @@ import {
   PONDEROSA_SPAWN_AGENT_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_WAIT_FOR_REPORTS_TOOL,
+  TERMINAL_REQUEST_STATES,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
@@ -507,6 +508,7 @@ function communicationV3Prompt(): string[] {
     "Communication V3 separates messages, correlated requests, joins, activations, and runs.",
     "Your ordinary runtime response is Work log only. Explicitly use ponderosa_message when a user, agent, or the organization needs uncorrelated information.",
     "Use ponderosa_coordinate for tracked work or consultation. In every request JSON object, include lifetime: {kind: \"indefinite\"} unless it has a real deadline, in which case use {kind: \"deadline\", at: <ISO timestamp>}.",
+    "Every coordination request must be self-contained. The recipient receives the request text and durable activation payload, not your hidden prompt or provider-session context. Include exact constraints, values, artifact paths, and the requested output; never refer only to \"the constraints above\" or similar missing context.",
     "A coordination request does not make you wait. Add the optional join only when your next action depends on all, any, or a quorum of the request outcomes.",
     "Prefer creating related requests and their join in one coordinate call. If valid requests were already created separately, recover without duplicating them by calling coordinate with a new idempotencyKey, requests: [], and join: {mode, requestIds: [their returned IDs]}.",
     "When a successful coordinate result contains joinId, that join already exists. Do not create or recover it again; end the turn if no other action remains.",
@@ -1833,6 +1835,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           v3SchedulerRunId: lease.runId,
           v3FencingToken: lease.fencingToken,
           v3InjectionId: lease.injectionId,
+          v3FreshProviderSession: coordinationV3.runStartsNewRecipientRequest(lease.runId, lease.agentId),
         },
       });
       return {
@@ -2768,6 +2771,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     let result;
     try {
+      const continuationRequestIds = request.body.join
+        ? coordinationV3.requestIdsAttachedToRun(capability.runId, author.id).filter((requestId) => {
+            const attached = coordinationV3.getRequest(requestId);
+            return attached?.recipientAgentId === author.id && !TERMINAL_REQUEST_STATES.has(attached.state);
+          })
+        : [];
       result = coordinationV3.coordinate({
         projectId: author.projectId,
         requesterAgentId: author.id,
@@ -2786,6 +2795,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(request.body.join.deadlineAt?.trim() ? { deadlineAt: request.body.join.deadlineAt.trim() } : {}),
           ...(request.body.join.satisfyingOutcomes ? { satisfyingOutcomes: request.body.join.satisfyingOutcomes } : {}),
           ...(existingJoinRequestIds.length ? { requestIds: existingJoinRequestIds.map((requestId) => requestId.trim()) } : {}),
+          ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
         } } : {}),
       });
     } catch (error) {
@@ -2828,7 +2838,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     publishCoordinationV3Changed(author.id);
     for (const item of normalized) publishCoordinationV3Changed(item.recipientAgentId);
     coordinationV3Scheduler?.notify();
-    return result;
+    return {
+      ...result,
+      ...(result.joinId ? { executionDirective: "End this turn now unless independent work explicitly remains; Ponderosa will reactivate you when the durable join needs action." } : {}),
+    };
   });
 
   app.post<{
@@ -4699,6 +4712,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       v3SchedulerRunId?: string;
       v3FencingToken?: number;
       v3InjectionId?: string;
+      /** Server-only provider-cache disposition derived from durable V3 causes. */
+      v3FreshProviderSession?: boolean;
     };
   }>(
     "/api/agents/:id/messages",
@@ -4715,11 +4730,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const v3SchedulerRunId = request.body.v3SchedulerRunId;
       const v3FencingToken = request.body.v3FencingToken;
       const v3InjectionId = request.body.v3InjectionId;
-      if ((v3SchedulerRunId !== undefined || v3FencingToken !== undefined || v3InjectionId !== undefined) && !internalV3Dispatch) {
+      const v3FreshProviderSession = request.body.v3FreshProviderSession;
+      if ((v3SchedulerRunId !== undefined || v3FencingToken !== undefined || v3InjectionId !== undefined ||
+          v3FreshProviderSession !== undefined) && !internalV3Dispatch) {
         return reply.code(403).send({ error: "V3 scheduler identity is server-controlled" });
       }
-      if (internalV3Dispatch && (!v3SchedulerRunId || !Number.isSafeInteger(v3FencingToken) || !v3InjectionId)) {
-        return reply.code(400).send({ error: "V3 scheduler run, fencing token, and injection ID are required" });
+      if (internalV3Dispatch && (!v3SchedulerRunId || !Number.isSafeInteger(v3FencingToken) || !v3InjectionId ||
+          typeof v3FreshProviderSession !== "boolean")) {
+        return reply.code(400).send({ error: "V3 scheduler run, fencing token, injection ID, and provider-session disposition are required" });
       }
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
@@ -4970,11 +4988,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         if (!v3Intake.replayed) {
           await assets.associate(agent.projectId, agent.id, attachmentIds);
-          const stored = store.appendEvent(agent.id, {
-            type: "user_message", text: auditText, communicationEventId,
-            replyTo: pendingTurn.replyTo, attachments: messageAttachments,
-          });
-          publish(agent.id, stored);
+          if (sharedCommunication) {
+            // A directed Project request is still a canonical Broadcast. Its
+            // explicit communication-to-agent edge authorizes the responsible
+            // agent's audit projection; the V3 Activation remains the sole
+            // scheduler authority. Persist the edge before projecting so a
+            // successfully committed intake cannot return a scope error.
+            store.recordRunTrigger(project.id, sharedCommunication.eventId, agent.id, sharedCommunication.createdAt);
+            projectBroadcastToAgentAudit(agent.id, sharedCommunication, messageAttachments);
+          } else {
+            const stored = store.appendEvent(agent.id, {
+              type: "user_message", text: auditText, communicationEventId,
+              replyTo: pendingTurn.replyTo, attachments: messageAttachments,
+            });
+            publish(agent.id, stored);
+          }
         }
         coordinationV3Scheduler?.notify();
         publishCoordinationV3Changed(agent.id);
@@ -5080,6 +5108,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }));
       const runId = v3SchedulerRunId ?? randomUUID();
       const controller = new AbortController();
+      const requestContextRollover = Boolean(
+        internalV3Dispatch && v3FreshProviderSession,
+      );
+      if (requestContextRollover) {
+        // Provider sessions are resumable caches, not agent identity. A newly
+        // created inbound request is an independent task context, while answer,
+        // join, human, and steering activations continue their current context.
+        // Close only the idle provider process; canonical agent state and all
+        // durable coordination records remain intact.
+        const staleRuntime = runtimeSessions.get(agent.id);
+        if (staleRuntime) {
+          removePersistentRuntime(agent.id, staleRuntime);
+          await staleRuntime.session.close().catch(() => undefined);
+        }
+        scheduledSessionRollovers.delete(agent.id);
+        store.clearResumeSession(agent.id, "request_context_rollover");
+        organizationEnvelopeStates.delete(agent.id);
+      }
       const reusablePersistentRuntime = engine.adapter.openSession ? runtimeSessions.get(agent.id) : undefined;
       cancelRuntimeIdleClose(reusablePersistentRuntime);
       const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();

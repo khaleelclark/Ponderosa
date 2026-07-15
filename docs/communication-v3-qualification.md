@@ -195,6 +195,77 @@ The run confirmed the scheduler state that was added after the matched trial:
 - the lead produced clean commit `b7f5581` with the worker-owned file and no
   duplicate completion update.
 
+## V3.1 nested-organization qualification
+
+A later matched trial compared deployed V3 at `127.0.0.1:19860` with an
+isolated V3.1 candidate at `127.0.0.1:19861`. Both used separate data and
+repository roots on Pine. The organization was deliberately nested:
+Organization Architect → Portfolio Delivery Owner → parallel Quantitative
+Modeler and Risk & Strategy Reviewer. The follow-up changed the portfolio's
+budget and six constraints while requiring new artifacts and preservation of
+the original result.
+
+The trial exposed the source of the apparent V3 organization regression. When
+the Delivery Owner created its specialist join and ended its current Run, V3
+marked the still-open inbound delivery request `outcome_unknown`. That made the
+architect's outer join impossible and woke it before delivery integration was
+finished. Completion of the specialist join later resumed delivery, and its
+late result caused another architect Run. V3 therefore executed seven provider
+turns and ran two logically dependent stages concurrently.
+
+V3.1 records the inbound delivery request as a durable continuation of the
+specialist join. Join creation moved the request to `waiting_dependency`; the
+first delivery Run ended without an unknown outcome; the satisfied inner join
+reattached the request to the resumed delivery Run; and only its terminal
+update resolved the architect's outer join. Exact equivalent joins were also
+deduplicated after satisfaction or impossibility, preventing a second wake for
+an immutable condition.
+
+| Follow-up metric | Deployed V3 | V3.1 candidate | Change |
+| --- | ---: | ---: | ---: |
+| Deterministic artifact quality | 100/100 | 100/100 | equal |
+| Provider turns | 7 | 6 | 14.3% fewer |
+| Provider requests | 30 | 28 | 6.7% fewer |
+| Total tokens | 1,371,375 | 675,037 | 50.8% fewer |
+| Input tokens | 1,351,263 | 656,637 | 51.4% fewer |
+| Cached input tokens | 1,243,136 | 556,800 | 55.2% fewer |
+| Output tokens | 20,112 | 18,400 | 8.5% fewer |
+| Projected API cost | $0.526102 | $0.451275 | 14.2% lower |
+| First start to last completion | 314.745 s | 340.450 s | 8.2% slower |
+| Request-level unknown outcomes | 1 | 0 | eliminated |
+
+V3.1 rolled the provider cache at the three new recipient-request boundaries
+(Delivery Owner and two specialists), while the architect's human continuation
+and both join resumptions retained their causal sessions. Fresh-task request
+Activations are now incompatible with continuity Activations for coalescing,
+so a simultaneous human message cannot make that cache decision ambiguous.
+
+The wall-time regression is real but is not an execution-quality win for V3:
+its architect woke and finished once before delivery, then woke again after the
+late result. V3.1 preserved the required dependency order, so its final
+architect turn necessarily followed delivery. This sample supports a strong
+token/cost and reliability improvement, not a universal latency claim.
+
+Both provider sandboxes produced the requested artifacts but could not create
+`.git/index.lock`. V3.1 accurately reported its delivery request as `failed`;
+V3 lost the parent request before that report could be correlated. The grader
+measures the repository artifacts and awarded both 100/100. This shared host
+constraint is retained in the evidence rather than counted as a communication
+success.
+
+The same candidate also fixed a V3 intake defect reproduced by the control:
+an actionable organization-shared human message was committed and scheduled,
+then returned HTTP 500 while projecting its audit copy. V3.1 records the
+canonical run-trigger edge before projection and returns the committed result
+normally, preventing clients from retrying already accepted work.
+
+Preserved evidence:
+
+- Trial root: `/home/phoenix/khaleel/benchmarks/v31-context-20260715`
+- V3 data: `/home/phoenix/.ponderosa-v31-compare-v3-20260715`
+- V3.1 data: `/home/phoenix/.ponderosa-v31-compare-v31-20260715`
+- Matched metrics: `followup-metrics.json` under the trial root
+
 ## Qualification coverage
 
 Automated tests cover reducer transitions, authorization, independent request

@@ -42,6 +42,7 @@ interface JoinRow {
   satisfying_outcomes_json: string;
   state: CoordinationJoinState;
   deadline_at: string | null;
+  continuation_request_ids_json: string;
 }
 
 interface ActivationRow {
@@ -79,6 +80,8 @@ export interface CoordinateV3Input {
     satisfyingOutcomes?: CoordinationRequestState[];
     deadlineAt?: string;
     requestIds?: string[];
+    /** Server-derived inbound requests that this join suspends and resumes. */
+    continuationRequestIds?: string[];
   };
 }
 
@@ -382,7 +385,7 @@ export class CoordinationV3Store {
   }
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
-    const rows = this.sqlite.prepare(`
+    const directRows = this.sqlite.prepare(`
       SELECT DISTINCT request.id, request.created_at
       FROM scheduler_runs run
       JOIN scheduler_run_activations attached ON attached.run_id = run.id
@@ -396,8 +399,42 @@ export class CoordinationV3Store {
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
         AND source.source_kind IN ('request', 'request_update')
       ORDER BY request.created_at, request.id
-    `).all(runId, agentId) as Array<{ id: string }>;
-    return rows.map((row) => row.id);
+    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
+    const continuationRows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id, request.created_at
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN activation_sources source
+        ON source.activation_id = attached.activation_id AND source.source_kind = 'join'
+      JOIN coordination_joins join_record ON join_record.id = source.source_id
+      JOIN json_each(join_record.continuation_request_ids_json) continuation
+      JOIN coordination_requests request ON request.id = continuation.value
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND request.recipient_agent_id = run.agent_id
+    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
+    return [...new Map([...directRows, ...continuationRows].map((row) => [row.id, row])).values()]
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+      .map((row) => row.id);
+  }
+
+  /** Whether this Run consumes creation of a new request addressed to the
+   * recipient. V3.1 uses this durable causal edge to select a fresh provider
+   * cache without conflating provider memory with agent identity. Request
+   * updates (including answers), joins, and ordinary messages intentionally do
+   * not match and therefore retain continuity. */
+  runStartsNewRecipientRequest(runId: string, agentId: string): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 AS matched
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN activation_sources source ON source.activation_id = attached.activation_id
+      JOIN coordination_requests request
+        ON source.source_kind = 'request' AND request.id = source.source_id
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND request.recipient_agent_id = ?
+      LIMIT 1
+    `).get(runId, agentId, agentId) as { matched: number } | undefined;
+    return Boolean(row);
   }
 
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
@@ -474,6 +511,14 @@ export class CoordinationV3Store {
           throw new Error("every existing join request must be owned by the requester in this project");
         }
         const memberRequestIds = [...new Set([...requestIds, ...existingMemberRequestIds])];
+        const continuationRequestIds = [...new Set(input.join.continuationRequestIds ?? [])];
+        for (const requestId of continuationRequestIds) {
+          const continuation = this.getRequestRow(requestId);
+          if (continuation.project_id !== input.projectId || continuation.recipient_agent_id !== input.requesterAgentId ||
+              TERMINAL_REQUEST_STATES.has(continuation.state)) {
+            throw new Error("every join continuation must be a nonterminal request assigned to the join owner");
+          }
+        }
         joinId = input.join.id ?? randomUUID();
         const mode = input.join.mode;
         const quorum = mode === "all" ? memberRequestIds.length : mode === "any" ? 1 : input.join.quorum ?? 0;
@@ -491,10 +536,13 @@ export class CoordinationV3Store {
           quorum,
           satisfyingOutcomes: [...new Set(satisfying)].sort(),
           deadlineAt: input.join.deadlineAt ?? null,
+          continuationRequestIds: [...continuationRequestIds].sort(),
         });
         const equivalent = this.sqlite.prepare(`
           SELECT id FROM coordination_joins
-          WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ? AND state = 'open'
+          WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ?
+            AND state IN ('open', 'satisfied', 'impossible')
+          ORDER BY created_at LIMIT 1
         `).get(input.projectId, input.requesterAgentId, definitionHash) as { id: string } | undefined;
         if (equivalent) {
           joinId = equivalent.id;
@@ -505,16 +553,29 @@ export class CoordinationV3Store {
         this.sqlite.prepare(`
           INSERT INTO coordination_joins (
             id, project_id, owner_agent_id, mode, quorum,
-            satisfying_outcomes_json, state, deadline_at, definition_hash, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+            satisfying_outcomes_json, state, deadline_at, definition_hash,
+            continuation_request_ids_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
         `).run(
           joinId, input.projectId, input.requesterAgentId, mode, quorum,
-          stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash, now, now,
+          stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash,
+          stableJson(continuationRequestIds), now, now,
         );
         const insertMember = this.sqlite.prepare(`
           INSERT INTO coordination_join_members (join_id, request_id, position) VALUES (?, ?, ?)
         `);
         memberRequestIds.forEach((requestId, position) => insertMember.run(joinId, requestId, position));
+        for (const requestId of continuationRequestIds) {
+          const continuation = this.getRequestRow(requestId);
+          if (continuation.state === "open" || continuation.state === "in_progress") this.updateRequest({
+            requestId,
+            updateId: `join:${joinId}:waiting:${requestId}`,
+            kind: "waiting_dependency",
+            actor: { kind: "agent", id: input.requesterAgentId },
+            payload: { joinId, reason: "waiting_for_join" },
+            now,
+          });
+        }
         this.reevaluateRequestJoins(memberRequestIds[0]!, now);
       }
 
@@ -920,11 +981,20 @@ export class CoordinationV3Store {
         LIMIT 1
       `).get(now) as { agent_id: string; project_id: string } | undefined;
       if (!candidate) return undefined;
-      const activations = this.sqlite.prepare(`
+      const queuedActivations = this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND state IN ('pending', 'retry_pending') AND available_at <= ?
-        ORDER BY priority DESC, created_at, id LIMIT ?
-      `).all(candidate.agent_id, now, limit) as ActivationRow[];
+        ORDER BY priority DESC, created_at, id LIMIT 64
+      `).all(candidate.agent_id, now) as ActivationRow[];
+      // A new inbound request starts a fresh provider task context. Human
+      // messages, join resumptions, answers, and blockers retain continuity,
+      // so combining the two classes would make session disposition ambiguous.
+      // Keep the lower-priority class pending for the next authoritative Run.
+      const startsFreshTask = (activation: ActivationRow) => activation.kind === "coordination_request";
+      const candidateStartsFreshTask = startsFreshTask(queuedActivations[0]!);
+      const activations = queuedActivations
+        .filter((activation) => startsFreshTask(activation) === candidateStartsFreshTask)
+        .slice(0, limit);
       if (activations.length === 0) return undefined;
       const fencingToken = this.nextFence(candidate.agent_id);
       const runId = randomUUID();
