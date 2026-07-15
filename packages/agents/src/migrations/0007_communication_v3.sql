@@ -1,5 +1,17 @@
 -- Communication V3 authoritative coordination and scheduler state.
 
+CREATE TABLE runtime_communications (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  sender_json TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  audience_json TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  actionable INTEGER NOT NULL CHECK (actionable IN (0, 1)),
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE coordination_requests (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -68,6 +80,8 @@ CREATE TABLE agent_activations (
   agent_id TEXT NOT NULL,
   kind TEXT NOT NULL,
   priority INTEGER NOT NULL CHECK (priority >= 0),
+  dispatch_policy TEXT NOT NULL CHECK (dispatch_policy IN ('steer_or_run', 'next_run')),
+  prompt_class TEXT NOT NULL CHECK (prompt_class IN ('human', 'blocker', 'coordination', 'ordinary')),
   state TEXT NOT NULL CHECK (state IN (
     'pending', 'attached', 'consumed', 'retry_pending', 'failed',
     'outcome_unknown', 'cancelled'
@@ -105,6 +119,7 @@ CREATE TABLE scheduler_runs (
   fencing_token INTEGER NOT NULL CHECK (fencing_token > 0),
   prompt_injection_state TEXT NOT NULL CHECK (prompt_injection_state IN ('not_injected', 'injecting', 'injected')),
   provider_session_id TEXT,
+  heartbeat_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   started_at TEXT,
@@ -122,6 +137,52 @@ CREATE TABLE scheduler_run_activations (
   attached_at TEXT NOT NULL,
   consumed_at TEXT,
   PRIMARY KEY (run_id, activation_id)
+);
+
+CREATE TABLE scheduler_prompt_injections (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES scheduler_runs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('turn', 'steer')),
+  sequence INTEGER NOT NULL CHECK (sequence >= 0),
+  state TEXT NOT NULL CHECK (state IN (
+    'pending', 'submitted', 'acknowledged', 'outcome_unknown', 'cancelled'
+  )),
+  prompt_hash TEXT NOT NULL,
+  activation_ids_json TEXT NOT NULL,
+  provider_turn_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  submitted_at TEXT,
+  acknowledged_at TEXT,
+  terminal_at TEXT,
+  UNIQUE (run_id, sequence)
+);
+
+CREATE TABLE scheduler_cancellation_receipts (
+  agent_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  run_id TEXT,
+  accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)),
+  fencing_token INTEGER,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, idempotency_key)
+);
+
+CREATE TABLE provider_operation_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES scheduler_runs(id) ON DELETE CASCADE,
+  operation TEXT NOT NULL CHECK (operation IN ('interrupt')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'claimed', 'completed', 'failed')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  available_at TEXT NOT NULL,
+  claimed_by TEXT,
+  claimed_at TEXT,
+  completed_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE coordination_idempotency (
@@ -160,5 +221,11 @@ CREATE INDEX coordination_join_members_request
   ON coordination_join_members(request_id, join_id);
 CREATE INDEX agent_activations_runnable
   ON agent_activations(state, available_at, priority DESC, created_at);
+CREATE INDEX runtime_communications_project_created
+  ON runtime_communications(project_id, created_at, id);
+CREATE INDEX scheduler_prompt_injections_recovery
+  ON scheduler_prompt_injections(state, updated_at, run_id);
+CREATE INDEX provider_operation_outbox_runnable
+  ON provider_operation_outbox(state, available_at, claimed_at, id);
 CREATE INDEX activation_outbox_pending
   ON activation_outbox(processed_at, claimed_at, id);

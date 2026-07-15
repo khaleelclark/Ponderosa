@@ -508,9 +508,14 @@ function communicationV3Prompt(): string[] {
     "Your ordinary runtime response is Work log only. Explicitly use ponderosa_message when a user, agent, or the organization needs uncorrelated information.",
     "Use ponderosa_coordinate for tracked work or consultation. In every request JSON object, include lifetime: {kind: \"indefinite\"} unless it has a real deadline, in which case use {kind: \"deadline\", at: <ISO timestamp>}.",
     "A coordination request does not make you wait. Add the optional join only when your next action depends on all, any, or a quorum of the request outcomes.",
-    "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome.",
+    "Prefer creating related requests and their join in one coordinate call. If valid requests were already created separately, recover without duplicating them by calling coordinate with a new idempotencyKey, requests: [], and join: {mode, requestIds: [their returned IDs]}.",
+    "When a successful coordinate result contains joinId, that join already exists. Do not create or recover it again; end the turn if no other action remains.",
+    "If an activation contains fullResultRef, call ponderosa_coordinate with inspectActivationIds containing those activation IDs to retrieve the complete durable payload.",
+    "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome. As a request recipient, reply to the request itself with completed—even when its text is a consultation question. Use question only to ask the original requester for missing information; answer is only the original requester replying to that question and references the question updateId.",
+    "A terminal request update is a commit point: finish the request's edits and final checks first; afterward, do not change request-owned work or send a duplicate follow-up message because the requester receives the outcome through its join.",
     "Questions use a stable updateId; answers must reference it with inReplyToUpdateId. blocked is terminal; waiting_dependency is temporary.",
     "A human message, question, or urgent event never cancels your existing joins. Handle the activation and return to waiting when a join remains unresolved.",
+    "Keep bounded work context-bounded: inspect only necessary resources with targeted queries and bounded ranges; never load an entire large artifact or unbounded log/diff when a focused view will do. Avoid rereading unchanged material, run final verification once, then publish the terminal update and stop.",
     "Do not poll, sleep, send acknowledgments, or create progress-only wakeups. End the turn after creating a join when no other action remains.",
     "Only these three communication tools exist: ponderosa_coordinate, ponderosa_update_request, and ponderosa_message.",
     'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" using the Bearer token.',
@@ -1540,13 +1545,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   const runFence = (agentId: string, run: ActiveRun): RunFence => ({ agentId, runId: run.runId, generation: run.generation });
 
+  const ownsV3Run = (run: ActiveRun): boolean => Boolean(
+    coordinationV3 && run.v3SchedulerRunId && run.v3FencingToken !== undefined &&
+    coordinationV3.ownsRun(run.v3SchedulerRunId, run.v3FencingToken, coordinationV3WorkerId),
+  );
+
   function ownsActiveRun(agentId: string, run: ActiveRun): boolean {
-    return activeRuns.get(agentId) === run && runLedger.owns(runFence(agentId, run));
+    return activeRuns.get(agentId) === run && (run.v3SchedulerRunId ? ownsV3Run(run) : runLedger.owns(runFence(agentId, run)));
   }
 
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
-    const claim = runLedger.transition(runFence(agentId, run), state);
-    if (!claim) return false;
+    if (run.v3SchedulerRunId) {
+      if (!ownsV3Run(run)) return false;
+    } else {
+      const claim = runLedger.transition(runFence(agentId, run), state);
+      if (!claim) return false;
+    }
     run.ownershipState = state;
     opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state });
     return true;
@@ -1556,6 +1570,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!ownsActiveRun(agentId, run) || run.ownershipState === "cancelling") return false;
     const at = new Date().toISOString();
     run.lastEventReceivedAt = at;
+    if (run.v3SchedulerRunId) return true;
     return Boolean(runLedger.transition(runFence(agentId, run), run.ownershipState, { lastEventReceivedAt: at }));
   }
 
@@ -1570,7 +1585,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const at = new Date().toISOString();
     run.lastEventPersistedAt = at;
     const recovered = run.ownershipState === "stalled";
-    runLedger.transition(runFence(agentId, run), recovered ? "running" : run.ownershipState, { lastEventPersistedAt: at });
+    if (!run.v3SchedulerRunId) {
+      runLedger.transition(runFence(agentId, run), recovered ? "running" : run.ownershipState, { lastEventPersistedAt: at });
+    }
     if (recovered) {
       run.ownershipState = "running";
       opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state: "running" });
@@ -1621,7 +1638,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     clearRunLivenessTimer(run);
     agentMessageCapabilities.delete(run.messageCapability);
     scheduledSessionRollovers.delete(agentId);
-    runLedger.transition(runFence(agentId, run), "failed");
+    if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
+      try {
+        coordinationV3!.failRun({
+          runId: run.v3SchedulerRunId,
+          fencingToken: run.v3FencingToken,
+          workerId: coordinationV3WorkerId,
+          sameRunResumable: Boolean(run.runtimeSession?.isAlive()),
+        });
+      } catch { /* the advanced fence already rejects late runtime output */ }
+    } else {
+      runLedger.transition(runFence(agentId, run), "failed");
+    }
     const lifecycle = store.appendEvent(agentId, {
       type: "agent_lifecycle", status: "failed", reason: "execution_lease_expired", executionId: run.executionId,
     });
@@ -1668,7 +1696,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     activeRuns.delete(agentId);
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
-    runLedger.transition(runFence(agentId, run), state);
+    if (!run.v3SchedulerRunId) runLedger.transition(runFence(agentId, run), state);
     return true;
   }
 
@@ -1804,6 +1832,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           text: prompt,
           v3SchedulerRunId: lease.runId,
           v3FencingToken: lease.fencingToken,
+          v3InjectionId: lease.injectionId,
         },
       });
       return {
@@ -1817,6 +1846,62 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns,
       pollMs: opts.communicationV3?.pollMs,
       leaseMs: coordinationV3LeaseMs,
+      dispatchSteering: async (lease, prompt) => {
+        const run = activeRuns.get(lease.agentId);
+        if (!run || run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken || !run.runtimeSession) {
+          return { accepted: false, retryable: true, error: "authoritative run is not currently steerable" };
+        }
+        coordinationV3.markPromptSubmitted({
+          injectionId: lease.injectionId,
+          runId: lease.runId,
+          fencingToken: lease.fencingToken,
+          providerSessionId: run.runtimeSession.engineAgentId,
+        });
+        try {
+          const result = await run.runtimeSession.steer({
+            prompt,
+            kind: "user_message",
+            clientMessageId: lease.injectionId,
+          });
+          if (result.status !== "accepted") {
+            return { accepted: false, retryable: true, error: result.reason ?? result.status };
+          }
+          coordinationV3.acknowledgePromptInjection({
+            injectionId: lease.injectionId,
+            runId: lease.runId,
+            fencingToken: lease.fencingToken,
+            providerTurnId: result.turnId,
+            providerSessionId: run.runtimeSession.engineAgentId,
+          });
+          renewExecutionLease(lease.agentId, run);
+          publishCoordinationV3Changed(lease.agentId);
+          return { accepted: true };
+        } catch (error) {
+          return {
+            accepted: false,
+            outcomeUnknown: true,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      },
+      dispatchProviderOperation: async (operation) => {
+        const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
+        if (!entry) return { accepted: true };
+        const [agentId, run] = entry;
+        activeRuns.delete(agentId);
+        clearRunLeaseTimer(run);
+        clearRunLivenessTimer(run);
+        agentMessageCapabilities.delete(run.messageCapability);
+        scheduledSessionRollovers.delete(agentId);
+        run.controller.abort();
+        const runtime = runtimeSessions.get(agentId);
+        if (runtime) {
+          removePersistentRuntime(agentId, runtime);
+          await runtime.session.interrupt().catch(() => undefined);
+          await runtime.session.close().catch(() => undefined);
+        }
+        return { accepted: true };
+      },
     },
   ) : undefined;
   for (const mediaType of ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/zip", "application/octet-stream"]) {
@@ -2204,6 +2289,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return [...recipients];
   }
 
+  function reconcileRuntimeCommunicationProjections(): number {
+    if (!coordinationV3) return 0;
+    let projected = 0;
+    for (const row of coordinationV3.runtimeCommunications()) {
+      const payload = row.payload && typeof row.payload === "object"
+        ? row.payload as Record<string, unknown>
+        : undefined;
+      const candidate = payload?.communication ?? row.payload;
+      if (!candidate || typeof candidate !== "object") continue;
+      const event = candidate as Partial<CommunicationEvent>;
+      if (
+        typeof event.eventId !== "string" ||
+        typeof event.projectId !== "string" ||
+        typeof event.text !== "string" ||
+        typeof event.createdAt !== "string" ||
+        event.projectId !== row.projectId
+      ) continue;
+      if (!store.getCommunicationEvent(row.projectId, event.eventId)) {
+        recordCommunication(candidate as CommunicationEvent);
+        projected += 1;
+      }
+    }
+    return projected;
+  }
+
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawns" || request.url === "/api/agent-waits" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
@@ -2241,6 +2351,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.addHook("onReady", async () => {
     // Resume handoffs left queued or unacknowledged by a previous process after
     // Fastify has finished registering the internal dispatch route.
+    reconcileRuntimeCommunicationProjections();
     const interruptedDeliveryIds = new Set(runLedger.all()
       .filter((claim) => claim.state === "interrupted")
       .flatMap((claim) => claim.deliveryIds ?? []));
@@ -2250,6 +2361,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const agentId of recipients) {
       scheduleDeliveryDispatch(agentId);
     }
+    coordinationV3?.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3?.expireDue();
     coordinationV3Scheduler?.start();
     const reconcileAssets = async () => {
@@ -2267,7 +2379,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     closed = true;
-    coordinationV3Scheduler?.stop();
+    await coordinationV3Scheduler?.stop();
     for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
     deliveryRetryTimers.clear();
     for (const timer of waitDeadlineTimers.values()) clearTimeout(timer);
@@ -2276,7 +2388,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const [agentId, run] of activeRuns) {
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
-      transitionRun(agentId, run, "interrupted");
+      if (run.v3SchedulerRunId && run.v3FencingToken !== undefined && coordinationV3) {
+        try {
+          coordinationV3.failRun({
+            runId: run.v3SchedulerRunId,
+            fencingToken: run.v3FencingToken,
+            workerId: coordinationV3WorkerId,
+            sameRunResumable: false,
+          });
+        } catch { /* an already advanced fence is terminal */ }
+      } else {
+        transitionRun(agentId, run, "interrupted");
+      }
       run.controller.abort();
     }
     activeRuns.clear();
@@ -2587,7 +2710,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Body: {
       idempotencyKey?: string;
       requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
-      join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[] };
+      join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[] };
+      inspectActivationIds?: string[];
     };
   }>("/api/agent-coordinate", async (request, reply) => {
     if (!coordinationV3) return reply.code(404).send({ error: "Communication V3 is not enabled" });
@@ -2598,10 +2722,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token || !author) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const inspectActivationIds = request.body?.inspectActivationIds;
+    if (inspectActivationIds !== undefined) {
+      if (!Array.isArray(inspectActivationIds) || inspectActivationIds.length === 0 || inspectActivationIds.length > 20 ||
+          new Set(inspectActivationIds).size !== inspectActivationIds.length || inspectActivationIds.some((id) => !id?.trim())) {
+        return reply.code(400).send({ error: "inspectActivationIds must contain 1 to 20 unique IDs" });
+      }
+      const payloads = coordinationV3.activationPayloads(author.id, inspectActivationIds, capability.runId);
+      if (payloads.length !== inspectActivationIds.length) {
+        return reply.code(404).send({ error: "one or more activation references are not attached to this run" });
+      }
+      return { activations: payloads };
+    }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     const requests = request.body?.requests ?? [];
-    if (!idempotencyKey || idempotencyKey.length > 200 || requests.length === 0 || requests.length > 100) {
-      return reply.code(400).send({ error: "idempotencyKey and 1 to 100 requests are required" });
+    const existingJoinRequestIds = request.body?.join?.requestIds ?? [];
+    if (!idempotencyKey || idempotencyKey.length > 200 || requests.length > 100 ||
+        (requests.length === 0 && existingJoinRequestIds.length === 0)) {
+      return reply.code(400).send({ error: "idempotencyKey and at least one new request or existing join request ID are required" });
     }
     const normalized: Array<{ requestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
     for (const candidate of requests) {
@@ -2624,6 +2762,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (request.body.join && !(request.body.join.mode === "all" || request.body.join.mode === "any" || request.body.join.mode === "quorum")) {
       return reply.code(400).send({ error: "join mode must be all, any, or quorum" });
     }
+    if (existingJoinRequestIds.length > 100 || new Set(existingJoinRequestIds).size !== existingJoinRequestIds.length ||
+        existingJoinRequestIds.some((requestId) => !requestId?.trim())) {
+      return reply.code(400).send({ error: "join requestIds must contain 1 to 100 unique request IDs" });
+    }
     let result;
     try {
       result = coordinationV3.coordinate({
@@ -2643,6 +2785,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(request.body.join.quorum !== undefined ? { quorum: request.body.join.quorum } : {}),
           ...(request.body.join.deadlineAt?.trim() ? { deadlineAt: request.body.join.deadlineAt.trim() } : {}),
           ...(request.body.join.satisfyingOutcomes ? { satisfyingOutcomes: request.body.join.satisfyingOutcomes } : {}),
+          ...(existingJoinRequestIds.length ? { requestIds: existingJoinRequestIds.map((requestId) => requestId.trim()) } : {}),
         } } : {}),
       });
     } catch (error) {
@@ -2735,7 +2878,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const text = request.body?.text?.trim();
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
     if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
-      return reply.code(400).send({ error: "intent must be broadcast, direct_to_user, or collaboration" });
+      return reply.code(400).send({
+        error: 'ponderosa_message requires an intent property equal to "broadcast", "direct_to_user", or "collaboration"; do not use intent:"user_dm" or direct_to_user:true',
+      });
     }
     if (intent !== "collaboration" && "waitBehavior" in request.body && request.body.waitBehavior !== undefined) {
       return reply.code(400).send({ error: "waitBehavior is only valid for collaboration" });
@@ -2785,7 +2930,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     } : undefined;
 
     if (intent === "direct_to_user") {
-      const communication = recordCommunication({
+      const proposedCommunication: CommunicationEvent = {
         eventId: randomUUID(),
         schemaVersion: 2,
         projectId: currentAuthor.projectId,
@@ -2798,7 +2943,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...(citations.length ? { citations } : {}),
         createdAt: new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
+      };
+      coordinationV3?.recordRuntimeCommunication({
+        id: proposedCommunication.eventId,
+        projectId: currentAuthor.projectId,
+        sender: proposedCommunication.sender,
+        intent: proposedCommunication.intent,
+        audience: proposedCommunication.audience,
+        payload: proposedCommunication,
+        now: proposedCommunication.createdAt,
       });
+      const communication = recordCommunication(proposedCommunication);
       store.appendCommunicationProjection(currentAuthor.projectId, {
         eventId: communication.eventId,
         surface: "user_inbox",
@@ -2861,7 +3016,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       routing = { intents: resolved.intents, blocked: [] };
     }
     const channel = intent === "broadcast" ? "main" : "collaboration";
-    const communication = recordCommunication(intent === "broadcast" ? {
+    const proposedCommunication: CommunicationEvent = intent === "broadcast" ? {
       eventId: randomUUID(),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
@@ -2888,7 +3043,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ...(citations.length ? { citations } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
+    };
+    coordinationV3?.recordRuntimeCommunication({
+      id: proposedCommunication.eventId,
+      projectId: currentAuthor.projectId,
+      sender: proposedCommunication.sender,
+      intent: proposedCommunication.intent,
+      audience: proposedCommunication.audience,
+      payload: proposedCommunication,
+      ...(intent === "collaboration" ? {
+        activations: routing.intents.map((delivery, index) => ({
+          agentId: delivery.targetAgentId,
+          kind: v3Urgency === "urgent" ? "urgent_message" : "ordinary_message",
+          priority: v3Urgency === "urgent" ? 90 : 50,
+          dispatchPolicy: v3Urgency === "urgent" ? "steer_or_run" as const : "next_run" as const,
+          promptClass: v3Urgency === "urgent" ? "blocker" as const : "ordinary" as const,
+          dedupeKey: `communication:${proposedCommunication.eventId}:${delivery.targetAgentId}:${index}`,
+        })),
+      } : {}),
+      now: proposedCommunication.createdAt,
     });
+    const communication = recordCommunication(proposedCommunication);
     const message = store.appendConversationMessage(
       capability.conversationId,
       { role: "assistant", text: renderedText },
@@ -2917,18 +3092,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (communication?.intent === "collaboration") {
             projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
           }
-          coordinationV3.enqueueMessageActivation({
-            projectId: currentAuthor.projectId,
-            agentId: delivery.targetAgentId,
-            messageId: message.id,
-            kind: v3Urgency === "urgent" ? "urgent" : "ordinary",
-            payload: {
-              text,
-              messageId: message.id,
-              communicationEventId: communication?.eventId,
-              authorAgentId: capability.agentId,
-            },
-          });
           publishCoordinationV3Changed(delivery.targetAgentId);
         }
         coordinationV3Scheduler?.notify();
@@ -4517,6 +4680,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       /** Server-only Communication V3 execution identity. */
       v3SchedulerRunId?: string;
       v3FencingToken?: number;
+      v3InjectionId?: string;
     };
   }>(
     "/api/agents/:id/messages",
@@ -4532,11 +4696,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const internalV3Dispatch = communicationV3Enabled && request.headers["x-ponderosa-v3-dispatch"] === v3DispatchKey;
       const v3SchedulerRunId = request.body.v3SchedulerRunId;
       const v3FencingToken = request.body.v3FencingToken;
-      if ((v3SchedulerRunId !== undefined || v3FencingToken !== undefined) && !internalV3Dispatch) {
+      const v3InjectionId = request.body.v3InjectionId;
+      if ((v3SchedulerRunId !== undefined || v3FencingToken !== undefined || v3InjectionId !== undefined) && !internalV3Dispatch) {
         return reply.code(403).send({ error: "V3 scheduler identity is server-controlled" });
       }
-      if (internalV3Dispatch && (!v3SchedulerRunId || !Number.isSafeInteger(v3FencingToken))) {
-        return reply.code(400).send({ error: "V3 scheduler run and fencing token are required" });
+      if (internalV3Dispatch && (!v3SchedulerRunId || !Number.isSafeInteger(v3FencingToken) || !v3InjectionId)) {
+        return reply.code(400).send({ error: "V3 scheduler run, fencing token, and injection ID are required" });
       }
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
@@ -4643,8 +4808,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (serverCommunicationEventId && !store.getCommunicationEvent(project.id, serverCommunicationEventId)) {
         return reply.code(400).send({ error: "communication event was not found in this project" });
       }
-      const communicationEventId = internalV3Dispatch ? undefined : serverCommunicationEventId ?? (requestedDeliveryIds.length === 0
-        ? recordCommunication(shareWithOrganization ? {
+      const proposedCommunication: CommunicationEvent | undefined = internalV3Dispatch || serverCommunicationEventId || requestedDeliveryIds.length > 0
+        ? undefined
+        : shareWithOrganization ? {
             eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
             sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
             audience: { kind: "organization", organizationId: project.id }, text,
@@ -4655,8 +4821,54 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
             audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text,
             createdAt: new Date().toISOString(),
-          })?.eventId
-        : inheritedCommunicationEventId);
+          };
+      const intendedCommunicationEventId = internalV3Dispatch
+        ? undefined
+        : serverCommunicationEventId ?? proposedCommunication?.eventId ?? inheritedCommunicationEventId;
+      let v3Intake: ReturnType<CoordinationV3Store["recordRuntimeCommunication"]> | undefined;
+      if (communicationV3Enabled && !internalV3Dispatch && intendedCommunicationEventId) {
+        const humanDirected = proposedCommunication?.sender.kind === "user" ||
+          (!request.body.sourceAuthorAgentId && requestedDeliveryIds.length === 0);
+        const canonicalCommunication = proposedCommunication ??
+          store.getCommunicationEvent(project.id, intendedCommunicationEventId);
+        v3Intake = coordinationV3!.recordRuntimeCommunication({
+          id: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
+          projectId: project.id,
+          sender: proposedCommunication?.sender ?? { kind: request.body.sourceAuthorAgentId ? "agent" : "user" },
+          intent: proposedCommunication?.intent ?? "direct_dispatch",
+          audience: { agentId: agent.id },
+          payload: {
+            communication: canonicalCommunication ?? null,
+            dispatch: {
+              text,
+              communicationEventId: intendedCommunicationEventId,
+              sourceConversationId: sourceConversationId ?? null,
+              sourceChannel: request.body.sourceChannel ?? null,
+              shareWithOrganization,
+              replyTo: request.body.replyTo ?? null,
+              attachments: messageAttachments.map((item) => ({
+                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
+                localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
+              })),
+              model: request.body.model ?? null,
+              effort: request.body.effort ?? null,
+            },
+          },
+          activation: {
+            agentId: agent.id,
+            kind: humanDirected ? "human_message" : requestedDeliveryIds.length ? "coordination_message" : "ordinary_message",
+            priority: humanDirected ? 100 : 60,
+            dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
+            promptClass: humanDirected ? "human" : "coordination",
+          },
+          now: proposedCommunication?.createdAt,
+        });
+      }
+      const communicationEventId = internalV3Dispatch
+        ? undefined
+        : proposedCommunication
+          ? recordCommunication(proposedCommunication).eventId
+          : intendedCommunicationEventId;
       const communication = communicationEventId
         ? store.getCommunicationEvent(project.id, communicationEventId)
         : undefined;
@@ -4734,6 +4946,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         wakeCause: request.body.wakeCause,
       };
       const auditText = text;
+      if (communicationV3Enabled && !internalV3Dispatch) {
+        if (!v3Intake?.activationId) {
+          return reply.code(500).send({ error: "actionable communication did not create an activation" });
+        }
+        if (!v3Intake.replayed) {
+          await assets.associate(agent.projectId, agent.id, attachmentIds);
+          const stored = store.appendEvent(agent.id, {
+            type: "user_message", text: auditText, communicationEventId,
+            replyTo: pendingTurn.replyTo, attachments: messageAttachments,
+          });
+          publish(agent.id, stored);
+        }
+        coordinationV3Scheduler?.notify();
+        publishCoordinationV3Changed(agent.id);
+        return reply.code(202).send({
+          queued: true,
+          position: 1,
+          activationId: v3Intake.activationId,
+          communicationEventId,
+        });
+      }
       if (requestedDeliveryIds.length === 0 && !internalV3Dispatch) {
         if (agentWaits.cancel(agent.id, "user message override")) {
           clearWaitDeadline(agent.id);
@@ -4980,23 +5213,36 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
         return reply.code(404).send({ error: "agent not found" });
       }
-      let durableClaim: ReturnType<RunLedger["claim"]>;
+      let durableClaim: { generation: number };
       try {
         if (internalV3Dispatch) {
           coordinationV3!.markRunStarted(runId, v3FencingToken!);
           publishCoordinationV3Changed(agent.id);
+          durableClaim = { generation: v3FencingToken! };
+        } else {
+          durableClaim = runLedger.claim(agent.id, runId, requestedDeliveryIds);
         }
-        durableClaim = runLedger.claim(agent.id, runId, requestedDeliveryIds);
       } catch {
         return reply.code(409).send({ error: "agent run ownership changed; retry safely", retryable: true });
       }
+      const failUnstartedClaim = (cancelled = false): void => {
+        if (internalV3Dispatch) {
+          if (cancelled) coordinationV3!.cancelRun(runId);
+          else coordinationV3!.failRun({
+            runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId,
+            sameRunResumable: false, retryDelayMs: 0,
+          });
+        } else {
+          runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, cancelled ? "cancelled" : "failed");
+        }
+      };
       await opts.messageLifecycleFaults?.afterRunClaim?.({
         agentId: agent.id,
         runId,
         generation: durableClaim.generation,
       });
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
-        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "cancelled");
+        failUnstartedClaim(true);
         return reply.code(404).send({ error: "agent not found" });
       }
 
@@ -5005,56 +5251,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         try {
           store.recordRunTriggers(project.id, triggerEventIds, agent.id);
         } catch (error) {
-          runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
+          failUnstartedClaim();
           return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });
         }
       }
 
-      const userStored = store.appendEvent(agent.id, {
-        type: "user_message", text: auditText, communicationEventId: pendingTurn.communicationEventId,
-        replyTo: pendingTurn.replyTo, attachments: messageAttachments,
-      });
+      const userStored = internalV3Dispatch ? undefined : store.appendEvent(agent.id, {
+          type: "user_message", text: auditText, communicationEventId: pendingTurn.communicationEventId,
+          replyTo: pendingTurn.replyTo, attachments: messageAttachments,
+        });
       try {
         await assets.associate(agent.projectId, agent.id, attachmentIds);
       } catch (error) {
-        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
+        failUnstartedClaim();
         throw error;
       }
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
-        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "cancelled");
+        failUnstartedClaim(true);
         return reply.code(404).send({ error: "agent not found" });
       }
-      publish(agent.id, userStored);
+      if (userStored) publish(agent.id, userStored);
 
       const startedAt = new Date().toISOString();
-      let trackedV3FencingToken: number | undefined;
-      try {
-        trackedV3FencingToken = communicationV3Enabled
-          ? internalV3Dispatch
-            ? v3FencingToken!
-            : coordinationV3!.registerRun({
-              runId,
-              projectId: project.id,
-              agentId: agent.id,
-              workerId: coordinationV3WorkerId,
-              leaseMs: coordinationV3LeaseMs,
-              activation: {
-                kind: directUserTaskTurn || sharedTaskTurn ? "human_message" : "control_plane_message",
-                priority: directUserTaskTurn || sharedTaskTurn ? 100 : 90,
-                payload: { text, communicationEventId: communicationEventId ?? null },
-                sourceKind: "message",
-                sourceId: communicationEventId ?? runId,
-              },
-              now: startedAt,
-            }).fencingToken
-          : undefined;
-      } catch (error) {
-        runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, "failed");
-        return reply.code(409).send({
-          error: error instanceof Error ? error.message : "agent scheduler ownership changed",
-          retryable: true,
-        });
-      }
+      const trackedV3FencingToken = internalV3Dispatch ? v3FencingToken : undefined;
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
         wakeCause: pendingTurn.wakeCause ?? (sharedTaskTurn
@@ -5248,11 +5467,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
             if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
-              coordinationV3!.markPromptInjecting(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
+              coordinationV3!.markPromptSubmitted({
+                injectionId: v3InjectionId!,
+                runId: activeRun.v3SchedulerRunId,
+                fencingToken: activeRun.v3FencingToken,
+                providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
+              });
             }
             for await (const event of startStream(sessionId)) {
-              if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
-                coordinationV3!.markPromptInjected(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
+              if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected && event.type !== "error") {
+                coordinationV3!.acknowledgePromptInjection({
+                  injectionId: v3InjectionId!,
+                  runId: activeRun.v3SchedulerRunId,
+                  fencingToken: activeRun.v3FencingToken,
+                  providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
+                });
                 v3PromptInjected = true;
               }
               if (closed || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
@@ -5266,6 +5495,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 continue;
               }
               if (
+                !communicationV3Enabled &&
                 sessionId &&
                 !rolloverAttempted &&
                 !sawMaterialRuntimeEvent &&
@@ -5625,6 +5855,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const stopResponse = (cancelled: boolean, replayed: boolean): CancelAgentRunResponse | { cancelled: boolean } =>
       idempotencyKey ? { cancelled, replayed } : { cancelled };
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+    if (coordinationV3) {
+      const current = activeRuns.get(request.params.id);
+      const result = coordinationV3.cancelAgentRun({
+        agentId: request.params.id,
+        idempotencyKey: idempotencyKey ?? `run:${current?.runId ?? "idle"}`,
+      });
+      if (result.cancelled && !result.replayed && store.getAgent(request.params.id)) {
+        const lifecycle = store.appendEvent(request.params.id, {
+          type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",
+          executionId: result.runId ?? current?.runId ?? "cancelled",
+        });
+        publish(request.params.id, lifecycle);
+      }
+      coordinationV3Scheduler?.notify();
+      publishCoordinationV3Changed(request.params.id);
+      return stopResponse(result.cancelled, result.replayed);
+    }
     if (idempotencyKey) {
       const previous = runLedger.stopReceipt(request.params.id, idempotencyKey);
       if (previous) return stopResponse(previous.cancelled, true);

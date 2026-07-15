@@ -189,6 +189,8 @@ export const agentActivations = sqliteTable("agent_activations", {
   agentId: text("agent_id").notNull(),
   kind: text("kind").notNull(),
   priority: integer("priority").notNull(),
+  dispatchPolicy: text("dispatch_policy").notNull(),
+  promptClass: text("prompt_class").notNull(),
   state: text("state").notNull(),
   dedupeKey: text("dedupe_key").notNull(),
   payloadJson: text("payload_json").notNull(),
@@ -219,6 +221,7 @@ export const schedulerRuns = sqliteTable("scheduler_runs", {
   fencingToken: integer("fencing_token").notNull(),
   promptInjectionState: text("prompt_injection_state").notNull(),
   providerSessionId: text("provider_session_id"),
+  heartbeatAt: text("heartbeat_at").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   startedAt: text("started_at"),
@@ -231,6 +234,60 @@ export const schedulerRunActivations = sqliteTable("scheduler_run_activations", 
   attachedAt: text("attached_at").notNull(),
   consumedAt: text("consumed_at"),
 }, (table) => [primaryKey({ columns: [table.runId, table.activationId] })]);
+
+export const runtimeCommunications = sqliteTable("runtime_communications", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  senderJson: text("sender_json").notNull(),
+  intent: text("intent").notNull(),
+  audienceJson: text("audience_json").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  actionable: integer("actionable").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const schedulerPromptInjections = sqliteTable("scheduler_prompt_injections", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull(),
+  kind: text("kind").notNull(),
+  sequence: integer("sequence").notNull(),
+  state: text("state").notNull(),
+  promptHash: text("prompt_hash").notNull(),
+  activationIdsJson: text("activation_ids_json").notNull(),
+  providerTurnId: text("provider_turn_id"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  submittedAt: text("submitted_at"),
+  acknowledgedAt: text("acknowledged_at"),
+  terminalAt: text("terminal_at"),
+});
+
+export const schedulerCancellationReceipts = sqliteTable("scheduler_cancellation_receipts", {
+  agentId: text("agent_id").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  runId: text("run_id"),
+  accepted: integer("accepted").notNull(),
+  fencingToken: integer("fencing_token"),
+  createdAt: text("created_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.agentId, table.idempotencyKey] })]);
+
+export const providerOperationOutbox = sqliteTable("provider_operation_outbox", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runId: text("run_id").notNull(),
+  operation: text("operation").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadJson: text("payload_json").notNull(),
+  state: text("state").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  availableAt: text("available_at").notNull(),
+  claimedBy: text("claimed_by"),
+  claimedAt: text("claimed_at"),
+  completedAt: text("completed_at"),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
 
 export const coordinationIdempotency = sqliteTable("coordination_idempotency", {
   projectId: text("project_id").notNull(),
@@ -269,3 +326,7 @@ export type CoordinationRequestRow = typeof coordinationRequests.$inferSelect;
 export type CoordinationJoinRow = typeof coordinationJoins.$inferSelect;
 export type AgentActivationRow = typeof agentActivations.$inferSelect;
 export type SchedulerRunRow = typeof schedulerRuns.$inferSelect;
+export type RuntimeCommunicationRow = typeof runtimeCommunications.$inferSelect;
+export type SchedulerPromptInjectionRow = typeof schedulerPromptInjections.$inferSelect;
+export type SchedulerCancellationReceiptRow = typeof schedulerCancellationReceipts.$inferSelect;
+export type ProviderOperationOutboxRow = typeof providerOperationOutbox.$inferSelect;

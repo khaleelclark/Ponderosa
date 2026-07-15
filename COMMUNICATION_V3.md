@@ -84,6 +84,24 @@ reevaluates affected joins.
 
 ## Scheduling and failure invariants
 
+The governing execution invariant is:
+
+> Every actionable event becomes an Activation. Only the scheduler may attach
+> an Activation to a Run or create a new Run.
+
+Actionable events include directed human work, coordination requests, answers,
+questions, blockers, terminal joins, triggers, deadlines, recovery decisions,
+and steering. Informational broadcasts are passive: their communication event
+is durable, but they create no Activation and wake no agent. Communication
+creation and the decision to create its deduplicated Activation are one SQLite
+transaction.
+
+An Activation is an actionable cause, not an instruction to create a new Run.
+The scheduler alone decides whether to attach urgent steering to the current
+authoritative Run, retain passive input without waking, queue work for a later
+Run, or create a Run when no compatible execution exists. No HTTP handler,
+delivery queue, runtime adapter, or compatibility path may create or claim a Run.
+
 An agent is `running` with an authoritative active Run, `runnable` with an
 actionable Activation, `waiting` with neither of those while it owns an open Join
 or is recipient of an `awaiting_answer`/`waiting_dependency` request, and `idle`
@@ -104,6 +122,41 @@ increasing fencing token to each lease.
 An activation is retryable on another Run only before prompt injection. Once the
 prompt was injected, the scheduler resumes that same Run when possible; otherwise
 it records `outcome_unknown`. It never blindly replays an injected prompt.
+
+Every provider prompt or steering injection has a durable identity and lifecycle:
+`pending -> submitted -> acknowledged`, with `outcome_unknown` as the fail-closed
+terminal state. A provider session reference alone never proves whether a prompt
+was submitted. Recovery may resume the same Run only when the provider can
+reconcile the durable injection identity without resubmitting an acknowledged or
+ambiguously submitted prompt.
+
+Cancellation commits before provider interruption. One SQLite transaction
+advances the fence, marks the Run cancelled, closes or releases its attached
+Activations according to their policy, persists an idempotent cancellation
+receipt, and enqueues a provider-interrupt outbox operation. Late provider output
+is rejected by the advanced fence. The interrupt is asynchronous and cannot roll
+back external effects that already occurred.
+
+Complete communications, request reports, and join outcomes remain durable in
+SQLite. Prompt materialization is token-budgeted rather than semantically
+truncated: it reserves room for human messages and blockers, may use summaries
+and artifact references, splits large result sets into inspectable batches, and
+exposes full-result retrieval. An overflow is explicit and actionable.
+
+SQLite is the only runtime authority. Deleting JSONL telemetry cannot affect
+scheduling, ownership, recovery, cancellation, or agent availability.
+
+The cutover gate must prove:
+
+- no code path creates a Run except the scheduler;
+- every actionable cause has exactly one deduplicated Activation;
+- passive broadcasts never activate agents;
+- steering attaches without creating a competing Run;
+- restart recovery cannot duplicate prompt injection;
+- cancellation fences every late output;
+- terminal joins cause at most one actionable wake;
+- provider failure at each transaction boundary recovers deterministically; and
+- V2 communication tables and handlers have no readers or writers.
 
 ## Provider-visible tools
 

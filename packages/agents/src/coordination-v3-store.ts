@@ -50,6 +50,8 @@ interface ActivationRow {
   agent_id: string;
   kind: string;
   priority: number;
+  dispatch_policy: ActivationDispatchPolicy;
+  prompt_class: ActivationPromptClass;
   state: string;
   dedupe_key: string;
   payload_json: string;
@@ -76,6 +78,7 @@ export interface CoordinateV3Input {
     quorum?: number;
     satisfyingOutcomes?: CoordinationRequestState[];
     deadlineAt?: string;
+    requestIds?: string[];
   };
 }
 
@@ -119,15 +122,87 @@ export interface SchedulerLease {
   fencingToken: number;
   leaseOwner: string;
   leaseExpiresAt: string;
+  injectionId: string;
   activationIds: string[];
-  activations: Array<{ id: string; kind: string; priority: number; payload: unknown }>;
+  activations: Array<{
+    id: string;
+    kind: string;
+    priority: number;
+    dispatchPolicy: ActivationDispatchPolicy;
+    promptClass: ActivationPromptClass;
+    payload: unknown;
+  }>;
 }
 
-export interface RegisteredSchedulerRun {
+export type ActivationDispatchPolicy = "steer_or_run" | "next_run";
+export type ActivationPromptClass = "human" | "blocker" | "coordination" | "ordinary";
+
+export interface RuntimeCommunicationV3Input {
+  id: string;
+  projectId: string;
+  sender: unknown;
+  intent: string;
+  audience: unknown;
+  payload: unknown;
+  activation?: {
+    agentId: string;
+    kind: string;
+    priority: number;
+    dispatchPolicy: ActivationDispatchPolicy;
+    promptClass: ActivationPromptClass;
+    dedupeKey?: string;
+  };
+  activations?: Array<{
+    agentId: string;
+    kind: string;
+    priority: number;
+    dispatchPolicy: ActivationDispatchPolicy;
+    promptClass: ActivationPromptClass;
+    dedupeKey?: string;
+  }>;
+  now?: string;
+}
+
+export interface RuntimeCommunicationV3Result {
+  id: string;
+  activationId?: string;
+  activationIds?: string[];
+  replayed: boolean;
+}
+
+export interface RuntimeCommunicationV3View {
+  id: string;
+  projectId: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface SteeringLease {
   runId: string;
+  projectId: string;
+  agentId: string;
   fencingToken: number;
-  leaseExpiresAt: string;
-  activationId: string;
+  injectionId: string;
+  providerSessionId?: string;
+  activationIds: string[];
+  activations: SchedulerLease["activations"];
+}
+
+export interface CancellationResult {
+  cancelled: boolean;
+  replayed: boolean;
+  runId?: string;
+  fencingToken?: number;
+  operationId?: number;
+}
+
+export interface ProviderOperation {
+  id: number;
+  runId: string;
+  operation: "interrupt";
+  idempotencyKey: string;
+  payload: unknown;
+  attempts: number;
 }
 
 export interface OutboxItem {
@@ -143,6 +218,8 @@ export interface EnqueueMessageActivationInput {
   agentId: string;
   messageId: string;
   kind: "human" | "urgent" | "ordinary";
+  dispatchPolicy?: ActivationDispatchPolicy;
+  promptClass?: ActivationPromptClass;
   payload: unknown;
   now?: string;
 }
@@ -155,6 +232,24 @@ const PRIORITY = {
   request: 60,
   ordinary: 50,
 } as const;
+
+function activationDefaults(kind: string, priority: number): {
+  dispatchPolicy: ActivationDispatchPolicy;
+  promptClass: ActivationPromptClass;
+} {
+  if (kind === "human_message" || kind === "urgent_message" || kind.includes("question") || kind.includes("block")) {
+    return {
+      dispatchPolicy: "steer_or_run",
+      promptClass: kind === "human_message" ? "human" : "blocker",
+    };
+  }
+  return {
+    dispatchPolicy: "next_run",
+    promptClass: priority >= PRIORITY.actionable ? "blocker"
+      : kind.startsWith("coordination_") ? "coordination"
+        : "ordinary",
+  };
+}
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -182,9 +277,115 @@ function terminalAt(state: CoordinationRequestState, now: string): string | null
 export class CoordinationV3Store {
   constructor(private readonly sqlite: Database.Database) {}
 
+  recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
+    const now = input.now ?? new Date().toISOString();
+    const activationInputs = [...(input.activation ? [input.activation] : []), ...(input.activations ?? [])];
+    const canonical = {
+      sender: input.sender,
+      intent: input.intent,
+      audience: input.audience,
+      payload: input.payload,
+      actionable: activationInputs.length > 0,
+      activations: activationInputs,
+    };
+    const hash = payloadHash(canonical);
+    return this.sqlite.transaction(() => {
+      this.requireProject(input.projectId);
+      const existing = this.sqlite.prepare(`
+        SELECT payload_hash FROM runtime_communications WHERE id = ?
+      `).get(input.id) as { payload_hash: string } | undefined;
+      if (existing) {
+        if (existing.payload_hash !== hash) throw new Error("runtime communication ID collision");
+        const activations = this.sqlite.prepare(`
+          SELECT a.id FROM agent_activations a
+          JOIN activation_sources source ON source.activation_id = a.id
+          WHERE source.source_kind = 'communication' AND source.source_id = ?
+          ORDER BY a.created_at, a.id
+        `).all(input.id) as Array<{ id: string }>;
+        return {
+          id: input.id,
+          ...(activations[0] ? { activationId: activations[0].id } : {}),
+          ...(activations.length ? { activationIds: activations.map((activation) => activation.id) } : {}),
+          replayed: true,
+        };
+      }
+      for (const activation of activationInputs) this.requireAgent(input.projectId, activation.agentId);
+      this.sqlite.prepare(`
+        INSERT INTO runtime_communications (
+          id, project_id, sender_json, intent, audience_json, payload_json,
+          payload_hash, actionable, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.id, input.projectId, stableJson(input.sender), input.intent,
+        stableJson(input.audience), stableJson(input.payload), hash,
+        activationInputs.length ? 1 : 0, now,
+      );
+      const activationIds = activationInputs.map((activation, index) => this.createActivation({
+        projectId: input.projectId,
+        agentId: activation.agentId,
+        kind: activation.kind,
+        priority: activation.priority,
+        dispatchPolicy: activation.dispatchPolicy,
+        promptClass: activation.promptClass,
+        dedupeKey: activation.dedupeKey ?? `communication:${input.id}:${activation.agentId}:${index}`,
+        payload: input.payload,
+        sourceKind: "communication",
+        sourceId: input.id,
+        now,
+      }));
+      return {
+        id: input.id,
+        ...(activationIds[0] ? { activationId: activationIds[0] } : {}),
+        ...(activationIds.length ? { activationIds } : {}),
+        replayed: false,
+      };
+    })();
+  }
+
+  runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
+    const rows = this.sqlite.prepare(`
+      SELECT id, project_id, payload_json, created_at
+      FROM runtime_communications
+      WHERE (? IS NULL OR project_id = ?)
+      ORDER BY created_at, id
+    `).all(projectId ?? null, projectId ?? null) as Array<{
+      id: string; project_id: string; payload_json: string; created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      payload: JSON.parse(row.payload_json) as unknown,
+      createdAt: row.created_at,
+    }));
+  }
+
+  activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
+    id: string; kind: string; promptClass: ActivationPromptClass; payload: unknown;
+  }> {
+    if (activationIds.length === 0) return [];
+    const placeholders = activationIds.map(() => "?").join(", ");
+    const rows = this.sqlite.prepare(`
+      SELECT id, kind, prompt_class, payload_json FROM agent_activations
+      WHERE agent_id = ? AND id IN (${placeholders})
+        AND (? IS NULL OR EXISTS (
+          SELECT 1 FROM scheduler_run_activations attached
+          WHERE attached.activation_id = agent_activations.id AND attached.run_id = ?
+        ))
+    `).all(agentId, ...activationIds, runId ?? null, runId ?? null) as Array<{
+      id: string; kind: string; prompt_class: ActivationPromptClass; payload_json: string;
+    }>;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return activationIds.flatMap((id) => {
+      const row = byId.get(id);
+      return row ? [{ id, kind: row.kind, promptClass: row.prompt_class, payload: JSON.parse(row.payload_json) as unknown }] : [];
+    });
+  }
+
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
     if (!input.idempotencyKey.trim()) throw new Error("idempotencyKey is required");
-    if (input.requests.length === 0) throw new Error("at least one request is required");
+    if (input.requests.length === 0 && !input.join?.requestIds?.length) {
+      throw new Error("at least one new or existing request is required");
+    }
     const normalized = {
       ...input,
       requests: input.requests.map((request) => ({ ...request, requestId: request.requestId ?? null })),
@@ -236,10 +437,28 @@ export class CoordinationV3Store {
       let joinId: string | undefined;
       if (input.join) {
         if (!input.requesterAgentId) throw new Error("a join requires an agent requester");
+        const existingMemberRequestIds: string[] = [];
+        const newRecipientIds = new Set(input.requests.map((request) => request.recipientAgentId));
+        for (const requestId of input.join.requestIds ?? []) {
+          const existing = this.sqlite.prepare(`
+            SELECT project_id, requester_agent_id FROM coordination_requests WHERE id = ?
+          `).get(requestId) as { project_id: string; requester_agent_id: string | null } | undefined;
+          if (existing?.project_id === input.projectId && existing.requester_agent_id === input.requesterAgentId) {
+            existingMemberRequestIds.push(requestId);
+            continue;
+          }
+          // Provider models sometimes repeat the new recipients here even though
+          // joins automatically include every request created in this call. This
+          // spelling is unambiguous and safe to normalize; every other unknown or
+          // foreign ID still fails closed.
+          if (newRecipientIds.has(requestId)) continue;
+          throw new Error("every existing join request must be owned by the requester in this project");
+        }
+        const memberRequestIds = [...new Set([...requestIds, ...existingMemberRequestIds])];
         joinId = input.join.id ?? randomUUID();
         const mode = input.join.mode;
-        const quorum = mode === "all" ? requestIds.length : mode === "any" ? 1 : input.join.quorum ?? 0;
-        if (quorum < 1 || quorum > requestIds.length) throw new Error("join quorum is outside request membership");
+        const quorum = mode === "all" ? memberRequestIds.length : mode === "any" ? 1 : input.join.quorum ?? 0;
+        if (quorum < 1 || quorum > memberRequestIds.length) throw new Error("join quorum is outside request membership");
         const satisfying = input.join.satisfyingOutcomes ?? ["completed"];
         if (satisfying.length === 0 || satisfying.some((state) => !TERMINAL_REQUEST_STATES.has(state))) {
           throw new Error("join satisfying outcomes must be terminal request states");
@@ -247,19 +466,37 @@ export class CoordinationV3Store {
         if (input.join.deadlineAt && (!isIso(input.join.deadlineAt) || input.join.deadlineAt <= now)) {
           throw new Error("join deadline must be a future ISO timestamp");
         }
+        const definitionHash = payloadHash({
+          requestIds: [...memberRequestIds].sort(),
+          mode,
+          quorum,
+          satisfyingOutcomes: [...new Set(satisfying)].sort(),
+          deadlineAt: input.join.deadlineAt ?? null,
+        });
+        const equivalent = this.sqlite.prepare(`
+          SELECT id FROM coordination_joins
+          WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ? AND state = 'open'
+        `).get(input.projectId, input.requesterAgentId, definitionHash) as { id: string } | undefined;
+        if (equivalent) {
+          joinId = equivalent.id;
+          const result: CoordinateV3Result = { requestIds, joinId, replayed: false };
+          this.recordIdempotency(input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash, result, now);
+          return result;
+        }
         this.sqlite.prepare(`
           INSERT INTO coordination_joins (
             id, project_id, owner_agent_id, mode, quorum,
-            satisfying_outcomes_json, state, deadline_at, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+            satisfying_outcomes_json, state, deadline_at, definition_hash, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
         `).run(
           joinId, input.projectId, input.requesterAgentId, mode, quorum,
-          stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, now, now,
+          stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash, now, now,
         );
         const insertMember = this.sqlite.prepare(`
           INSERT INTO coordination_join_members (join_id, request_id, position) VALUES (?, ?, ?)
         `);
-        requestIds.forEach((requestId, position) => insertMember.run(joinId, requestId, position));
+        memberRequestIds.forEach((requestId, position) => insertMember.run(joinId, requestId, position));
+        this.reevaluateRequestJoins(memberRequestIds[0]!, now);
       }
 
       const result: CoordinateV3Result = { requestIds, ...(joinId ? { joinId } : {}), replayed: false };
@@ -278,6 +515,8 @@ export class CoordinationV3Store {
         agentId: input.agentId,
         kind: `${input.kind}_message`,
         priority: input.kind === "human" ? PRIORITY.human : input.kind === "urgent" ? PRIORITY.urgent : PRIORITY.ordinary,
+        dispatchPolicy: input.dispatchPolicy ?? (input.kind === "ordinary" ? "next_run" : "steer_or_run"),
+        promptClass: input.promptClass ?? (input.kind === "human" ? "human" : input.kind === "urgent" ? "blocker" : "ordinary"),
         dedupeKey: `message:${input.messageId}`,
         payload: input.payload,
         sourceKind: "message",
@@ -311,64 +550,13 @@ export class CoordinationV3Store {
     `).get() as { count: number }).count;
   }
 
-  /** Register a user/control-plane run that did not originate from a queued
-   * activation. It still participates in the same per-agent lease and fence so
-   * activations cannot race a provider turn that only exists in memory. */
-  registerRun(input: {
-    runId: string;
-    projectId: string;
-    agentId: string;
-    workerId: string;
-    leaseMs: number;
-    activation: {
-      kind: string;
-      priority: number;
-      payload: unknown;
-      sourceKind: string;
-      sourceId: string;
-    };
-    now?: string;
-  }): RegisteredSchedulerRun {
-    const now = input.now ?? new Date().toISOString();
-    return this.sqlite.transaction(() => {
-      this.requireProject(input.projectId);
-      this.requireAgent(input.projectId, input.agentId);
-      if (this.sqlite.prepare(`
-        SELECT 1 FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running')
-      `).get(input.agentId)) throw new Error("agent already has an active scheduler run");
-      if (this.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id = ?").get(input.runId)) {
-        throw new Error("scheduler run already exists");
-      }
-      const fencingToken = this.nextFence(input.agentId);
-      const leaseExpiresAt = new Date(Date.parse(now) + input.leaseMs).toISOString();
-      const activationId = randomUUID();
-      this.sqlite.prepare(`
-        INSERT INTO agent_activations (
-          id, project_id, agent_id, kind, priority, state, dedupe_key,
-          payload_json, available_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'attached', ?, ?, ?, ?, ?)
-      `).run(
-        activationId, input.projectId, input.agentId, input.activation.kind,
-        input.activation.priority, `registered-run:${input.runId}`,
-        stableJson(input.activation.payload), now, now, now,
-      );
-      this.sqlite.prepare(`
-        INSERT INTO activation_sources (activation_id, source_kind, source_id) VALUES (?, ?, ?)
-      `).run(activationId, input.activation.sourceKind, input.activation.sourceId);
-      this.sqlite.prepare(`
-        INSERT INTO scheduler_runs (
-          id, project_id, agent_id, status, lease_owner, lease_expires_at,
-          fencing_token, prompt_injection_state, started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, 'not_injected', ?, ?, ?)
-      `).run(
-        input.runId, input.projectId, input.agentId, input.workerId,
-        leaseExpiresAt, fencingToken, now, now, now,
-      );
-      this.sqlite.prepare(`
-        INSERT INTO scheduler_run_activations (run_id, activation_id, attached_at) VALUES (?, ?, ?)
-      `).run(input.runId, activationId, now);
-      return { runId: input.runId, fencingToken, leaseExpiresAt, activationId };
-    })();
+  ownsRun(runId: string, fencingToken: number, workerId?: string): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_runs
+      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
+        AND (? IS NULL OR lease_owner = ?)
+    `).get(runId, fencingToken, workerId ?? null, workerId ?? null);
+    return Boolean(row);
   }
 
   schedulerMetrics(): {
@@ -587,6 +775,55 @@ export class CoordinationV3Store {
     })();
   }
 
+  /** On single-host startup every active lease owned by another server process
+   * is orphaned. Pre-submission work is retryable; submitted or acknowledged
+   * injections fail closed until an adapter can prove provider reconciliation. */
+  recoverOrphanedRuns(workerId: string, now = new Date().toISOString()): { retried: number; outcomeUnknown: number } {
+    return this.sqlite.transaction(() => {
+      const runs = this.sqlite.prepare(`
+        SELECT id, prompt_injection_state FROM scheduler_runs
+        WHERE status IN ('leased', 'running') AND lease_owner <> ?
+      `).all(workerId) as Array<{ id: string; prompt_injection_state: string }>;
+      let retried = 0;
+      let outcomeUnknown = 0;
+      for (const run of runs) {
+        if (run.prompt_injection_state === "not_injected") {
+          this.sqlite.prepare(`
+            UPDATE scheduler_runs SET status = 'failed', updated_at = ?, terminal_at = ? WHERE id = ?
+          `).run(now, now, run.id);
+          this.sqlite.prepare(`
+            UPDATE agent_activations SET state = 'retry_pending', available_at = ?, updated_at = ?
+            WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+              AND state = 'attached'
+          `).run(now, now, run.id);
+          this.sqlite.prepare(`
+            UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
+            WHERE run_id = ? AND state = 'pending'
+          `).run(now, now, run.id);
+          retried += 1;
+        } else {
+          this.sqlite.prepare(`
+            UPDATE scheduler_runs SET status = 'outcome_unknown', updated_at = ?, terminal_at = ? WHERE id = ?
+          `).run(now, now, run.id);
+          this.sqlite.prepare(`
+            UPDATE agent_activations SET state = 'outcome_unknown', updated_at = ?
+            WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+              AND state = 'attached'
+          `).run(now, run.id);
+          this.sqlite.prepare(`
+            UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
+            WHERE run_id = ? AND state IN ('pending', 'submitted')
+          `).run(now, now, run.id);
+          this.markRelatedRequestsOutcomeUnknown(run.id, now, "server_restart_after_prompt_submission", [
+            "open", "in_progress", "waiting_dependency", "awaiting_answer",
+          ]);
+          outcomeUnknown += 1;
+        }
+      }
+      return { retried, outcomeUnknown };
+    })();
+  }
+
   cancelJoin(joinId: string, ownerAgentId: string, now = new Date().toISOString()): boolean {
     return this.sqlite.transaction(() => {
       const join = this.sqlite.prepare(`SELECT * FROM coordination_joins WHERE id = ?`).get(joinId) as JoinRow | undefined;
@@ -672,13 +909,14 @@ export class CoordinationV3Store {
       if (activations.length === 0) return undefined;
       const fencingToken = this.nextFence(candidate.agent_id);
       const runId = randomUUID();
+      const injectionId = randomUUID();
       const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
       this.sqlite.prepare(`
         INSERT INTO scheduler_runs (
           id, project_id, agent_id, status, lease_owner, lease_expires_at,
-          fencing_token, prompt_injection_state, created_at, updated_at
-        ) VALUES (?, ?, ?, 'leased', ?, ?, ?, 'not_injected', ?, ?)
-      `).run(runId, candidate.project_id, candidate.agent_id, input.workerId, leaseExpiresAt, fencingToken, now, now);
+          fencing_token, prompt_injection_state, heartbeat_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'leased', ?, ?, ?, 'not_injected', ?, ?, ?)
+      `).run(runId, candidate.project_id, candidate.agent_id, input.workerId, leaseExpiresAt, fencingToken, now, now, now);
       const attach = this.sqlite.prepare(`
         INSERT INTO scheduler_run_activations (run_id, activation_id, attached_at) VALUES (?, ?, ?)
       `);
@@ -691,6 +929,12 @@ export class CoordinationV3Store {
         if (changed !== 1) throw new Error("activation claim race");
         attach.run(runId, activation.id, now);
       }
+      this.sqlite.prepare(`
+        INSERT INTO scheduler_prompt_injections (
+          id, run_id, kind, sequence, state, prompt_hash, activation_ids_json,
+          created_at, updated_at
+        ) VALUES (?, ?, 'turn', 0, 'pending', '', ?, ?, ?)
+      `).run(injectionId, runId, stableJson(activations.map((activation) => activation.id)), now, now);
       return {
         runId,
         projectId: candidate.project_id,
@@ -698,14 +942,146 @@ export class CoordinationV3Store {
         fencingToken,
         leaseOwner: input.workerId,
         leaseExpiresAt,
+        injectionId,
         activationIds: activations.map((activation) => activation.id),
         activations: activations.map((activation) => ({
           id: activation.id,
           kind: activation.kind,
           priority: activation.priority,
+          dispatchPolicy: activation.dispatch_policy,
+          promptClass: activation.prompt_class,
           payload: JSON.parse(activation.payload_json) as unknown,
         })),
       };
+    })();
+  }
+
+  leaseNextSteering(input: { workerId: string; now?: string; coalesceLimit?: number }): SteeringLease | undefined {
+    const now = input.now ?? new Date().toISOString();
+    const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
+    return this.sqlite.transaction(() => {
+      const candidate = this.sqlite.prepare(`
+        SELECT a.agent_id, a.project_id, r.id AS run_id, r.fencing_token, r.provider_session_id
+        FROM agent_activations a
+        JOIN scheduler_runs r ON r.agent_id = a.agent_id AND r.status = 'running'
+        WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
+          AND a.dispatch_policy = 'steer_or_run'
+          AND NOT EXISTS (
+            SELECT 1 FROM scheduler_prompt_injections injection
+            WHERE injection.run_id = r.id AND injection.kind = 'steer'
+              AND injection.state IN ('pending', 'submitted')
+          )
+        ORDER BY a.priority DESC, a.created_at, a.id
+        LIMIT 1
+      `).get(now) as {
+        agent_id: string; project_id: string; run_id: string;
+        fencing_token: number; provider_session_id: string | null;
+      } | undefined;
+      if (!candidate) return undefined;
+      const activations = this.sqlite.prepare(`
+        SELECT * FROM agent_activations
+        WHERE agent_id = ? AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND dispatch_policy = 'steer_or_run'
+        ORDER BY priority DESC, created_at, id LIMIT ?
+      `).all(candidate.agent_id, now, limit) as ActivationRow[];
+      if (activations.length === 0) return undefined;
+      const injectionId = randomUUID();
+      const sequence = (this.sqlite.prepare(`
+        SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
+        FROM scheduler_prompt_injections WHERE run_id = ?
+      `).get(candidate.run_id) as { sequence: number }).sequence;
+      const attach = this.sqlite.prepare(`
+        INSERT OR IGNORE INTO scheduler_run_activations (run_id, activation_id, attached_at)
+        VALUES (?, ?, ?)
+      `);
+      const setAttached = this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'attached', updated_at = ?
+        WHERE id = ? AND state IN ('pending', 'retry_pending')
+      `);
+      for (const activation of activations) {
+        if (setAttached.run(now, activation.id).changes !== 1) throw new Error("steering activation claim race");
+        attach.run(candidate.run_id, activation.id, now);
+      }
+      this.sqlite.prepare(`
+        INSERT INTO scheduler_prompt_injections (
+          id, run_id, kind, sequence, state, prompt_hash, activation_ids_json,
+          created_at, updated_at
+        ) VALUES (?, ?, 'steer', ?, 'pending', '', ?, ?, ?)
+      `).run(
+        injectionId, candidate.run_id, sequence,
+        stableJson(activations.map((activation) => activation.id)), now, now,
+      );
+      return {
+        runId: candidate.run_id,
+        projectId: candidate.project_id,
+        agentId: candidate.agent_id,
+        fencingToken: candidate.fencing_token,
+        injectionId,
+        ...(candidate.provider_session_id ? { providerSessionId: candidate.provider_session_id } : {}),
+        activationIds: activations.map((activation) => activation.id),
+        activations: activations.map((activation) => ({
+          id: activation.id,
+          kind: activation.kind,
+          priority: activation.priority,
+          dispatchPolicy: activation.dispatch_policy,
+          promptClass: activation.prompt_class,
+          payload: JSON.parse(activation.payload_json) as unknown,
+        })),
+      };
+    })();
+  }
+
+  deferSteering(input: {
+    injectionId: string; runId: string; fencingToken: number; retryDelayMs?: number; now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    const availableAt = new Date(Date.parse(now) + (input.retryDelayMs ?? 0)).toISOString();
+    this.sqlite.transaction(() => {
+      this.getFencedRun(input.runId, input.fencingToken);
+      const injection = this.sqlite.prepare(`
+        SELECT activation_ids_json FROM scheduler_prompt_injections
+        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
+      `).get(input.injectionId, input.runId) as { activation_ids_json: string } | undefined;
+      if (!injection) throw new Error("pending steering injection not found");
+      const activationIds = JSON.parse(injection.activation_ids_json) as string[];
+      if (activationIds.length) {
+        const placeholders = activationIds.map(() => "?").join(", ");
+        this.sqlite.prepare(`
+          UPDATE agent_activations SET state = 'retry_pending', dispatch_policy = 'next_run',
+            available_at = ?, updated_at = ?
+          WHERE id IN (${placeholders}) AND state = 'attached'
+        `).run(availableAt, now, ...activationIds);
+      }
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
+      `).run(now, now, input.injectionId, input.runId);
+    })();
+  }
+
+  markSteeringOutcomeUnknown(input: {
+    injectionId: string; runId: string; fencingToken: number; now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      this.getFencedRun(input.runId, input.fencingToken);
+      const injection = this.sqlite.prepare(`
+        SELECT activation_ids_json FROM scheduler_prompt_injections
+        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
+      `).get(input.injectionId, input.runId) as { activation_ids_json: string } | undefined;
+      if (!injection) throw new Error("unsettled steering injection not found");
+      const activationIds = JSON.parse(injection.activation_ids_json) as string[];
+      if (activationIds.length) {
+        const placeholders = activationIds.map(() => "?").join(", ");
+        this.sqlite.prepare(`
+          UPDATE agent_activations SET state = 'outcome_unknown', updated_at = ?
+          WHERE id IN (${placeholders}) AND state = 'attached'
+        `).run(now, ...activationIds);
+      }
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
+        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
+      `).run(now, now, input.injectionId, input.runId);
     })();
   }
 
@@ -716,33 +1092,88 @@ export class CoordinationV3Store {
     `, [now, now, runId, fence]);
   }
 
-  markPromptInjecting(runId: string, fence: number, now = new Date().toISOString()): void {
-    this.mutateFencedRun(runId, fence, `
-      UPDATE scheduler_runs SET prompt_injection_state = 'injecting', updated_at = ?
-      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
-        AND prompt_injection_state = 'not_injected'
-    `, [now, runId, fence]);
+  preparePromptInjection(input: {
+    injectionId: string; runId: string; fencingToken: number; prompt: string; now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    const hash = createHash("sha256").update(input.prompt).digest("hex");
+    this.sqlite.transaction(() => {
+      this.getFencedRun(input.runId, input.fencingToken);
+      const row = this.sqlite.prepare(`
+        SELECT prompt_hash, state FROM scheduler_prompt_injections WHERE id = ? AND run_id = ?
+      `).get(input.injectionId, input.runId) as { prompt_hash: string; state: string } | undefined;
+      if (!row) throw new Error("prompt injection not found");
+      if (row.prompt_hash && row.prompt_hash !== hash) throw new Error("prompt injection payload changed");
+      if (row.state !== "pending" && !row.prompt_hash) throw new Error("submitted injection has no durable prompt hash");
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections SET prompt_hash = ?, updated_at = ?
+        WHERE id = ? AND run_id = ? AND state = 'pending'
+      `).run(hash, now, input.injectionId, input.runId);
+    })();
   }
 
-  markPromptInjected(runId: string, fence: number, now = new Date().toISOString()): void {
-    this.mutateFencedRun(runId, fence, `
-      UPDATE scheduler_runs SET prompt_injection_state = 'injected', updated_at = ?
-      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
-        AND prompt_injection_state IN ('injecting', 'injected')
-    `, [now, runId, fence]);
+  markPromptSubmitted(input: {
+    injectionId: string; runId: string; fencingToken: number; providerSessionId?: string; now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      const run = this.getFencedRun(input.runId, input.fencingToken);
+      const changed = this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'submitted', submitted_at = COALESCE(submitted_at, ?), updated_at = ?
+        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted') AND prompt_hash <> ''
+      `).run(now, now, input.injectionId, input.runId).changes;
+      if (changed !== 1) throw new Error("prompt injection is not submit-ready");
+      this.sqlite.prepare(`
+        UPDATE scheduler_runs SET prompt_injection_state = 'injecting',
+          provider_session_id = COALESCE(?, provider_session_id), heartbeat_at = ?, updated_at = ?
+        WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
+      `).run(input.providerSessionId ?? null, now, now, input.runId, input.fencingToken);
+      if ((run.status as string) === "leased") this.sqlite.prepare(`
+        UPDATE scheduler_runs SET status = 'running', started_at = COALESCE(started_at, ?)
+        WHERE id = ? AND fencing_token = ?
+      `).run(now, input.runId, input.fencingToken);
+    })();
+  }
+
+  acknowledgePromptInjection(input: {
+    injectionId: string; runId: string; fencingToken: number;
+    providerTurnId?: string; providerSessionId?: string; now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    this.sqlite.transaction(() => {
+      this.getFencedRun(input.runId, input.fencingToken);
+      const changed = this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'acknowledged', provider_turn_id = COALESCE(?, provider_turn_id),
+          acknowledged_at = COALESCE(acknowledged_at, ?), updated_at = ?
+        WHERE id = ? AND run_id = ? AND state IN ('submitted', 'acknowledged')
+      `).run(input.providerTurnId ?? null, now, now, input.injectionId, input.runId).changes;
+      if (changed !== 1) throw new Error("prompt injection was not submitted");
+      this.sqlite.prepare(`
+        UPDATE scheduler_runs SET prompt_injection_state = 'injected',
+          provider_session_id = COALESCE(?, provider_session_id), heartbeat_at = ?, updated_at = ?
+        WHERE id = ? AND fencing_token = ? AND status = 'running'
+      `).run(input.providerSessionId ?? null, now, now, input.runId, input.fencingToken);
+    })();
   }
 
   renewLease(runId: string, fence: number, workerId: string, leaseMs = 30_000, now = new Date().toISOString()): string {
     const expires = new Date(Date.parse(now) + leaseMs).toISOString();
     this.mutateFencedRun(runId, fence, `
-      UPDATE scheduler_runs SET lease_expires_at = ?, updated_at = ?
+      UPDATE scheduler_runs SET lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
       WHERE id = ? AND fencing_token = ? AND lease_owner = ? AND status IN ('leased', 'running')
-    `, [expires, now, runId, fence, workerId]);
+    `, [expires, now, now, runId, fence, workerId]);
     return expires;
   }
 
   completeRun(runId: string, fence: number, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {
+      const unsettled = (this.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM scheduler_prompt_injections
+        WHERE run_id = ? AND state IN ('pending', 'submitted')
+      `).get(runId) as { count: number }).count;
+      if (unsettled > 0) throw new Error("run cannot complete with an unsettled prompt injection");
       this.mutateFencedRun(runId, fence, `
         UPDATE scheduler_runs SET status = 'completed', updated_at = ?, terminal_at = ?
         WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
@@ -786,6 +1217,10 @@ export class CoordinationV3Store {
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
             AND state = 'attached'
         `).run(availableAt, now, input.runId);
+        this.sqlite.prepare(`
+          UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
+          WHERE run_id = ? AND state = 'pending'
+        `).run(now, now, input.runId);
       } else if (disposition === "resume_same_run") {
         const nextFence = this.nextFence(run.agent_id as string);
         const leaseExpiresAt = new Date(Date.parse(now) + (input.leaseMs ?? 30_000)).toISOString();
@@ -803,6 +1238,10 @@ export class CoordinationV3Store {
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
             AND state = 'attached'
         `).run(now, input.runId);
+        this.sqlite.prepare(`
+          UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
+          WHERE run_id = ? AND state IN ('pending', 'submitted')
+        `).run(now, now, input.runId);
         this.markRelatedRequestsOutcomeUnknown(input.runId, now, "provider_outcome_unknown", [
           "open", "in_progress", "waiting_dependency", "awaiting_answer",
         ]);
@@ -811,25 +1250,134 @@ export class CoordinationV3Store {
     })();
   }
 
-  cancelRun(runId: string, now = new Date().toISOString()): number {
+  cancelAgentRun(input: { agentId: string; idempotencyKey: string; now?: string }): CancellationResult {
+    if (!input.idempotencyKey.trim()) throw new Error("cancellation idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
+      const replay = this.sqlite.prepare(`
+        SELECT run_id, accepted, fencing_token FROM scheduler_cancellation_receipts
+        WHERE agent_id = ? AND idempotency_key = ?
+      `).get(input.agentId, input.idempotencyKey) as {
+        run_id: string | null; accepted: number; fencing_token: number | null;
+      } | undefined;
+      if (replay) return {
+        cancelled: replay.accepted === 1,
+        replayed: true,
+        ...(replay.run_id ? { runId: replay.run_id } : {}),
+        ...(replay.fencing_token !== null ? { fencingToken: replay.fencing_token } : {}),
+      };
       const run = this.sqlite.prepare(`
-        SELECT agent_id, fencing_token, status FROM scheduler_runs WHERE id = ?
-      `).get(runId) as { agent_id: string; fencing_token: number; status: string } | undefined;
-      if (!run) throw new Error("run not found");
-      if (!['leased', 'running'].includes(run.status)) return run.fencing_token;
-      const fence = this.nextFence(run.agent_id);
+        SELECT id, fencing_token FROM scheduler_runs
+        WHERE agent_id = ? AND status IN ('leased', 'running')
+      `).get(input.agentId) as { id: string; fencing_token: number } | undefined;
+      if (!run) {
+        this.sqlite.prepare(`
+          INSERT INTO scheduler_cancellation_receipts (
+            agent_id, idempotency_key, run_id, accepted, fencing_token, created_at
+          ) VALUES (?, ?, NULL, 0, NULL, ?)
+        `).run(input.agentId, input.idempotencyKey, now);
+        return { cancelled: false, replayed: false };
+      }
+      const fence = this.nextFence(input.agentId);
       this.sqlite.prepare(`
         UPDATE scheduler_runs SET status = 'cancelled', fencing_token = ?, updated_at = ?, terminal_at = ?
         WHERE id = ?
-      `).run(fence, now, now, runId);
+      `).run(fence, now, now, run.id);
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
           AND state = 'attached'
-      `).run(now, runId);
-      return fence;
+      `).run(now, run.id);
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND state = 'pending'
+      `).run(now, now, run.id);
+      this.sqlite.prepare(`
+        INSERT INTO scheduler_cancellation_receipts (
+          agent_id, idempotency_key, run_id, accepted, fencing_token, created_at
+        ) VALUES (?, ?, ?, 1, ?, ?)
+      `).run(input.agentId, input.idempotencyKey, run.id, fence, now);
+      const operation = this.sqlite.prepare(`
+        INSERT INTO provider_operation_outbox (
+          run_id, operation, idempotency_key, payload_json, state,
+          available_at, created_at, updated_at
+        ) VALUES (?, 'interrupt', ?, ?, 'pending', ?, ?, ?)
+      `).run(
+        run.id, `cancel:${input.agentId}:${input.idempotencyKey}`,
+        stableJson({ agentId: input.agentId, runId: run.id, fencingToken: fence }),
+        now, now, now,
+      );
+      return {
+        cancelled: true,
+        replayed: false,
+        runId: run.id,
+        fencingToken: fence,
+        operationId: Number(operation.lastInsertRowid),
+      };
     })();
+  }
+
+  /** Compatibility wrapper for store-level callers. Runtime cancellation must
+   * use cancelAgentRun so the receipt and provider interrupt are transactional. */
+  cancelRun(runId: string, now = new Date().toISOString()): number {
+    const row = this.sqlite.prepare(`SELECT agent_id FROM scheduler_runs WHERE id = ?`).get(runId) as { agent_id: string } | undefined;
+    if (!row) throw new Error("run not found");
+    const result = this.cancelAgentRun({ agentId: row.agent_id, idempotencyKey: `legacy:${runId}`, now });
+    return result.fencingToken ?? (this.sqlite.prepare(`SELECT fencing_token FROM scheduler_runs WHERE id = ?`).get(runId) as { fencing_token: number }).fencing_token;
+  }
+
+  claimProviderOperations(workerId: string, limit = 20, now = new Date().toISOString(), staleMs = 30_000): ProviderOperation[] {
+    return this.sqlite.transaction(() => {
+      const stale = new Date(Date.parse(now) - staleMs).toISOString();
+      const rows = this.sqlite.prepare(`
+        SELECT id, run_id, operation, idempotency_key, payload_json, attempts
+        FROM provider_operation_outbox
+        WHERE available_at <= ? AND (
+          state = 'pending' OR (state = 'claimed' AND claimed_at <= ?)
+        )
+        ORDER BY id LIMIT ?
+      `).all(now, stale, Math.max(1, Math.min(limit, 100))) as Array<{
+        id: number; run_id: string; operation: "interrupt"; idempotency_key: string;
+        payload_json: string; attempts: number;
+      }>;
+      const claimed: ProviderOperation[] = [];
+      for (const row of rows) {
+        const changed = this.sqlite.prepare(`
+          UPDATE provider_operation_outbox
+          SET state = 'claimed', claimed_by = ?, claimed_at = ?, attempts = attempts + 1, updated_at = ?
+          WHERE id = ? AND (state = 'pending' OR (state = 'claimed' AND claimed_at <= ?))
+        `).run(workerId, now, now, row.id, stale).changes;
+        if (changed === 1) claimed.push({
+          id: row.id,
+          runId: row.run_id,
+          operation: row.operation,
+          idempotencyKey: row.idempotency_key,
+          payload: JSON.parse(row.payload_json) as unknown,
+          attempts: row.attempts + 1,
+        });
+      }
+      return claimed;
+    })();
+  }
+
+  completeProviderOperation(id: number, workerId: string, now = new Date().toISOString()): void {
+    const changed = this.sqlite.prepare(`
+      UPDATE provider_operation_outbox
+      SET state = 'completed', completed_at = ?, updated_at = ?, claimed_by = NULL, claimed_at = NULL
+      WHERE id = ? AND state = 'claimed' AND claimed_by = ?
+    `).run(now, now, id, workerId).changes;
+    if (changed !== 1) throw new Error("provider operation claim is stale");
+  }
+
+  failProviderOperation(id: number, workerId: string, error: string, retryDelayMs = 1_000, now = new Date().toISOString()): void {
+    const availableAt = new Date(Date.parse(now) + retryDelayMs).toISOString();
+    const changed = this.sqlite.prepare(`
+      UPDATE provider_operation_outbox
+      SET state = 'pending', available_at = ?, last_error = ?, updated_at = ?,
+        claimed_by = NULL, claimed_at = NULL
+      WHERE id = ? AND state = 'claimed' AND claimed_by = ?
+    `).run(availableAt, error.slice(0, 2_000), now, id, workerId).changes;
+    if (changed !== 1) throw new Error("provider operation claim is stale");
   }
 
   claimOutbox(workerId: string, limit = 50, now = new Date().toISOString(), staleMs = 30_000): OutboxItem[] {
@@ -1053,16 +1601,20 @@ export class CoordinationV3Store {
 
   private createActivation(input: {
     projectId: string; agentId: string; kind: string; priority: number; dedupeKey: string;
+    dispatchPolicy?: ActivationDispatchPolicy; promptClass?: ActivationPromptClass;
     payload: unknown; sourceKind: string; sourceId: string; now: string;
   }): string {
     const id = randomUUID();
+    const defaults = activationDefaults(input.kind, input.priority);
     const inserted = this.sqlite.prepare(`
       INSERT OR IGNORE INTO agent_activations (
-        id, project_id, agent_id, kind, priority, state, dedupe_key,
+        id, project_id, agent_id, kind, priority, dispatch_policy, prompt_class, state, dedupe_key,
         payload_json, available_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
     `).run(
       id, input.projectId, input.agentId, input.kind, input.priority,
+      input.dispatchPolicy ?? defaults.dispatchPolicy,
+      input.promptClass ?? defaults.promptClass,
       input.dedupeKey, stableJson(input.payload), input.now, input.now, input.now,
     ).changes;
     const activationId = inserted === 1 ? id : (this.sqlite.prepare(`
@@ -1093,6 +1645,10 @@ export class CoordinationV3Store {
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
             AND state = 'attached'
         `).run(now, now, run.id);
+        this.sqlite.prepare(`
+          UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
+          WHERE run_id = ? AND state = 'pending'
+        `).run(now, now, run.id);
       } else {
         this.sqlite.prepare(`
           UPDATE scheduler_runs SET status = 'outcome_unknown', updated_at = ?, terminal_at = ? WHERE id = ?
@@ -1102,6 +1658,10 @@ export class CoordinationV3Store {
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
             AND state = 'attached'
         `).run(now, run.id);
+        this.sqlite.prepare(`
+          UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
+          WHERE run_id = ? AND state IN ('pending', 'submitted')
+        `).run(now, now, run.id);
         this.markRelatedRequestsOutcomeUnknown(run.id, now, "lease_expired_after_prompt_injection", [
           "open", "in_progress", "waiting_dependency", "awaiting_answer",
         ]);
@@ -1119,6 +1679,7 @@ export class CoordinationV3Store {
     const rows = this.sqlite.prepare(`
       SELECT DISTINCT r.id
       FROM scheduler_run_activations ra
+      JOIN scheduler_runs run ON run.id = ra.run_id
       JOIN activation_sources source ON source.activation_id = ra.activation_id
       LEFT JOIN coordination_request_updates update_record
         ON source.source_kind = 'request_update' AND update_record.id = source.source_id
@@ -1126,7 +1687,9 @@ export class CoordinationV3Store {
         WHEN source.source_kind = 'request' THEN source.source_id
         WHEN source.source_kind = 'request_update' THEN update_record.request_id
       END
-      WHERE ra.run_id = ? AND r.state IN (${placeholders})
+      WHERE ra.run_id = ?
+        AND r.recipient_agent_id = run.agent_id
+        AND r.state IN (${placeholders})
     `).all(runId, ...eligibleStates) as Array<{ id: string }>;
     for (const row of rows) this.updateRequest({
       requestId: row.id,

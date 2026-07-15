@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
-import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
@@ -2561,7 +2561,8 @@ describe("server chunk F", () => {
       method: "POST", url: `/api/agents/${requester.id}/messages`,
       payload: { text: "Coordinate the review", sourceChannel: "main", sourceConversationId: conversation.id },
     });
-    expect(started.statusCode, started.body).toBe(200);
+    expect(started.statusCode, started.body).toBe(202);
+    expect(started.json()).toMatchObject({ queued: true, position: 1 });
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
     const requesterRuntime = persistent.openedOptions[0]!;
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual([
@@ -2635,6 +2636,42 @@ describe("server chunk F", () => {
       missingProjectionMetadataEventIds: [],
     });
     persistent.completeTurn(0);
+    await app.close();
+  });
+
+  it("rebuilds a missing communication projection from SQLite before V3 scheduling starts", async () => {
+    const project = store.createProject({ label: "V3 recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Recover me", createdAt: new Date().toISOString(),
+    };
+    new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+      id: `dispatch:${event.eventId}:${agent.id}`,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: event.audience,
+      payload: { communication: event, dispatch: { text: event.text } },
+      activation: {
+        agentId: agent.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
+      },
+      now: event.createdAt,
+    });
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await app.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toEqual(event);
     await app.close();
   });
 

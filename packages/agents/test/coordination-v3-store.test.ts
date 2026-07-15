@@ -42,34 +42,62 @@ afterEach(() => opened.client.close());
 
 const indefinite = { kind: "indefinite" as const };
 
+function acknowledgeLease(lease: NonNullable<ReturnType<CoordinationV3Store["leaseNextRun"]>>, prompt = "test prompt"): void {
+  store.preparePromptInjection({
+    injectionId: lease.injectionId, runId: lease.runId,
+    fencingToken: lease.fencingToken, prompt,
+  });
+  store.markRunStarted(lease.runId, lease.fencingToken);
+  store.markPromptSubmitted({
+    injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+    providerSessionId: "provider-session",
+  });
+  store.acknowledgePromptInjection({
+    injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+    providerSessionId: "provider-session", providerTurnId: `turn:${lease.runId}`,
+  });
+}
+
 describe("CoordinationV3Store transactions", () => {
-  it("fences activations behind a registered direct provider run", () => {
+  it("records passive communication without waking and routes actionable communication only through the scheduler", () => {
     const now = "2026-07-15T00:00:00.000Z";
-    const direct = store.registerRun({
-      runId: "direct-run", projectId, agentId: requesterId,
-      workerId: "server", leaseMs: 60_000, now,
+    expect(store.recordRuntimeCommunication({
+      id: "broadcast", projectId, sender: { kind: "user" }, intent: "broadcast",
+      audience: { kind: "organization", id: projectId }, payload: { text: "FYI" }, now,
+    })).toEqual({ id: "broadcast", replayed: false });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 0 });
+
+    const direct = store.recordRuntimeCommunication({
+      id: "direct", projectId, sender: { kind: "user" }, intent: "user_dm",
+      audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, now,
       activation: {
-        kind: "human_message", priority: 100, payload: { text: "Start" },
-        sourceKind: "message", sourceId: "user-message",
+        agentId: requesterId, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
       },
     });
+    expect(direct.activationId).toBeTruthy();
     expect(opened.client.prepare(`
       SELECT state FROM agent_activations WHERE id = ?
-    `).get(direct.activationId)).toEqual({ state: "attached" });
-    store.enqueueMessageActivation({
-      projectId, agentId: requesterId, messageId: "during-run",
-      kind: "human", payload: { text: "Steer later" }, now,
-    });
-    expect(store.leaseNextRun({ workerId: "server", now })).toBeUndefined();
-    store.markPromptInjecting(direct.runId, direct.fencingToken, now);
-    store.markPromptInjected(direct.runId, direct.fencingToken, now);
-    store.completeRun(direct.runId, direct.fencingToken, now);
+    `).get(direct.activationId)).toEqual({ state: "pending" });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
+    const lease = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(lease);
+    store.completeRun(lease.runId, lease.fencingToken, now);
     expect(opened.client.prepare(`
       SELECT state FROM agent_activations WHERE id = ?
     `).get(direct.activationId)).toEqual({ state: "consumed" });
-    const resumed = store.leaseNextRun({ workerId: "server", now });
-    expect(resumed?.agentId).toBe(requesterId);
-    expect(resumed?.activationIds).toHaveLength(1);
+    expect(store.recordRuntimeCommunication({
+      id: "direct", projectId, sender: { kind: "user" }, intent: "user_dm",
+      audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, now,
+      activation: {
+        agentId: requesterId, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
+      },
+    }).replayed).toBe(true);
+    expect(store.runtimeCommunications(projectId)).toEqual([
+      { id: "broadcast", projectId, payload: { text: "FYI" }, createdAt: now },
+      { id: "direct", projectId, payload: { text: "Start" }, createdAt: now },
+    ]);
   });
 
   it("creates requests, an immutable join, activations, and an outbox atomically", () => {
@@ -95,6 +123,108 @@ describe("CoordinationV3Store transactions", () => {
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 2 });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM activation_outbox").get()).toEqual({ count: 2 });
     expect(() => store.coordinate({ ...input, requests: input.requests.slice(0, 1) })).toThrow("collision");
+  });
+
+  it("creates an immutable join over existing owned requests without duplicating them", () => {
+    const created = store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "requests-first", requests: [
+        { requestId: "existing-a", recipientAgentId: recipientA, lifetime: indefinite },
+        { requestId: "existing-b", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+    });
+    expect(created.requestIds).toEqual(["existing-a", "existing-b"]);
+    const joined = store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "join-later", requests: [],
+      join: { id: "existing-join", mode: "all", requestIds: created.requestIds },
+    });
+    expect(joined).toEqual({ requestIds: [], joinId: "existing-join", replayed: false });
+    expect(opened.client.prepare(`
+      SELECT request_id FROM coordination_join_members WHERE join_id = 'existing-join' ORDER BY position
+    `).all()).toEqual([{ request_id: "existing-a" }, { request_id: "existing-b" }]);
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_requests").get()).toEqual({ count: 2 });
+  });
+
+  it("coalesces an equivalent open join created under a new idempotency key", () => {
+    const created = store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "joined-at-create", requests: [
+        { requestId: "coalesced-a", recipientAgentId: recipientA, lifetime: indefinite },
+        { requestId: "coalesced-b", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+      join: { id: "canonical-join", mode: "all" },
+    });
+    const duplicate = store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "redundant-recovery", requests: [],
+      join: { id: "redundant-join", mode: "all", requestIds: created.requestIds.slice().reverse() },
+    });
+
+    expect(duplicate).toEqual({ requestIds: [], joinId: "canonical-join", replayed: false });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_joins").get()).toEqual({ count: 1 });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_join_members").get()).toEqual({ count: 2 });
+  });
+
+  it("normalizes new recipient IDs repeated as same-call join request IDs", () => {
+    const result = store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "recipient-id-members", requests: [
+        { requestId: "normalized-a", recipientAgentId: recipientA, lifetime: indefinite },
+        { requestId: "normalized-b", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+      join: { id: "normalized-join", mode: "all", requestIds: [recipientA, recipientB] },
+    });
+
+    expect(result).toEqual({
+      requestIds: ["normalized-a", "normalized-b"], joinId: "normalized-join", replayed: false,
+    });
+    expect(opened.client.prepare(`
+      SELECT request_id FROM coordination_join_members WHERE join_id = 'normalized-join' ORDER BY position
+    `).all()).toEqual([{ request_id: "normalized-a" }, { request_id: "normalized-b" }]);
+  });
+
+  it("does not mark a request unknown when its requester run answers a correlated question", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    store.enqueueMessageActivation({
+      projectId, agentId: requesterId, messageId: "human", kind: "human", payload: { text: "Delegate" }, now,
+    });
+    const requesterRun = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(requesterRun);
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "question-cycle", requests: [{
+        requestId: "question-request", recipientAgentId: recipientA, lifetime: indefinite,
+      }], join: { id: "question-join", mode: "all" },
+    }, now);
+    const recipientRun = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(recipientRun);
+    store.updateRequest({
+      requestId: "question-request", updateId: "question-1", kind: "question",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Which contract?" }, now,
+    });
+    const steering = store.leaseNextSteering({ workerId: "server", now })!;
+    store.preparePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId,
+      fencingToken: steering.fencingToken, prompt: "question",
+    });
+    store.markPromptSubmitted({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+    });
+    store.updateRequest({
+      requestId: "question-request", updateId: "answer-1", kind: "answer",
+      actor: { kind: "agent", id: requesterId }, inReplyToUpdateId: "question-1",
+      payload: { text: "Use the original contract" }, now,
+    });
+
+    store.completeRun(requesterRun.runId, requesterRun.fencingToken, now);
+    expect(store.getRequest("question-request")?.state).toBe("in_progress");
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates WHERE kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
   });
 
   it("rolls back the whole coordinate operation if one recipient is invalid", () => {
@@ -270,9 +400,7 @@ describe("CoordinationV3Store scheduler", () => {
       projectId, agentId: recipientA, messageId: "resume-1", kind: "ordinary", payload: { text: "Work" },
     });
     const resumable = store.leaseNextRun({ workerId: "worker-1" })!;
-    store.markRunStarted(resumable.runId, resumable.fencingToken);
-    store.markPromptInjecting(resumable.runId, resumable.fencingToken);
-    store.markPromptInjected(resumable.runId, resumable.fencingToken);
+    acknowledgeLease(resumable);
     expect(store.failRun({
       runId: resumable.runId, fencingToken: resumable.fencingToken,
       workerId: "worker-2", sameRunResumable: true,
@@ -287,8 +415,7 @@ describe("CoordinationV3Store scheduler", () => {
       projectId, agentId: recipientB, messageId: "ambiguous-1", kind: "ordinary", payload: { text: "Work" },
     });
     const ambiguous = store.leaseNextRun({ workerId: "worker-1" })!;
-    store.markPromptInjecting(ambiguous.runId, ambiguous.fencingToken);
-    store.markPromptInjected(ambiguous.runId, ambiguous.fencingToken);
+    acknowledgeLease(ambiguous);
     expect(store.failRun({
       runId: ambiguous.runId, fencingToken: ambiguous.fencingToken,
       workerId: "worker-2", sameRunResumable: false,
@@ -303,10 +430,72 @@ describe("CoordinationV3Store scheduler", () => {
       projectId, agentId: recipientA, messageId: "cancel-1", kind: "human", payload: { text: "Work" },
     });
     const lease = store.leaseNextRun({ workerId: "worker-1" })!;
-    const cancellationFence = store.cancelRun(lease.runId);
-    expect(cancellationFence).toBeGreaterThan(lease.fencingToken);
+    acknowledgeLease(lease);
+    const cancelled = store.cancelAgentRun({ agentId: recipientA, idempotencyKey: "cancel-once" });
+    expect(cancelled).toMatchObject({ cancelled: true, replayed: false, runId: lease.runId });
+    expect(cancelled.fencingToken).toBeGreaterThan(lease.fencingToken);
+    expect(store.cancelAgentRun({ agentId: recipientA, idempotencyKey: "cancel-once" }))
+      .toMatchObject({ cancelled: true, replayed: true, runId: lease.runId });
     expect(() => store.markRunStarted(lease.runId, lease.fencingToken)).toThrow("stale");
     expect(store.leaseNextRun({ workerId: "worker-2" })).toBeUndefined();
+    const operations = store.claimProviderOperations("supervisor");
+    expect(operations).toEqual([expect.objectContaining({ runId: lease.runId, operation: "interrupt", attempts: 1 })]);
+    store.completeProviderOperation(operations[0]!.id, "supervisor");
+    expect(store.claimProviderOperations("supervisor-2")).toHaveLength(0);
+  });
+
+  it("attaches urgent steering to the authoritative run without creating another run", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "initial", kind: "ordinary", payload: { text: "Work" },
+    });
+    const run = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(run);
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "steer", kind: "human", payload: { text: "Change direction" },
+    });
+    expect(store.leaseNextRun({ workerId: "worker-2" })).toBeUndefined();
+    const steering = store.leaseNextSteering({ workerId: "worker-1" })!;
+    expect(steering.runId).toBe(run.runId);
+    expect(steering.activationIds).toHaveLength(1);
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 1 });
+    store.preparePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId,
+      fencingToken: steering.fencingToken, prompt: "steering prompt",
+    });
+    store.markPromptSubmitted({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+      providerTurnId: "steer-turn",
+    });
+    store.completeRun(run.runId, run.fencingToken);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations WHERE state = 'consumed'
+    `).get()).toEqual({ count: 2 });
+  });
+
+  it("fails closed when a submitted injection cannot be reconciled", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "ambiguous-submission",
+      kind: "ordinary", payload: { text: "Work" },
+    });
+    const lease = store.leaseNextRun({ workerId: "worker-1" })!;
+    store.preparePromptInjection({
+      injectionId: lease.injectionId, runId: lease.runId,
+      fencingToken: lease.fencingToken, prompt: "durable prompt",
+    });
+    store.markPromptSubmitted({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      providerSessionId: "session",
+    });
+    expect(store.failRun({
+      runId: lease.runId, fencingToken: lease.fencingToken,
+      workerId: "recovery", sameRunResumable: false,
+    })).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM scheduler_prompt_injections WHERE id = ?
+    `).get(lease.injectionId)).toEqual({ state: "outcome_unknown" });
   });
 
   it("never leaves a correlated request parked when a run omits or loses its outcome", () => {
@@ -318,6 +507,7 @@ describe("CoordinationV3Store scheduler", () => {
       requests: [{ requestId: "omitted", recipientAgentId: recipientA, lifetime: indefinite }],
     });
     const omitted = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(omitted);
     store.completeRun(omitted.runId, omitted.fencingToken);
     expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'omitted'").get())
       .toEqual({ state: "outcome_unknown" });
@@ -334,6 +524,7 @@ describe("CoordinationV3Store scheduler", () => {
       requests: [{ requestId: "suspended", recipientAgentId: recipientB, lifetime: indefinite }],
     });
     const suspended = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(suspended);
     store.updateRequest({
       requestId: "suspended", updateId: "waiting", kind: "waiting_dependency",
       actor: { kind: "agent", id: recipientB }, payload: { dependency: "external" },
@@ -350,14 +541,44 @@ describe("CoordinationV3Store scheduler", () => {
       requests: [{ requestId: "ambiguous-request", recipientAgentId: recipientB, lifetime: indefinite }],
     });
     const ambiguous = store.leaseNextRun({ workerId: "worker-1" })!;
-    store.markPromptInjecting(ambiguous.runId, ambiguous.fencingToken);
-    store.markPromptInjected(ambiguous.runId, ambiguous.fencingToken);
+    acknowledgeLease(ambiguous);
     expect(store.failRun({
       runId: ambiguous.runId, fencingToken: ambiguous.fencingToken,
       workerId: "worker-2", sameRunResumable: false,
     })).toBe("outcome_unknown");
     expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'ambiguous-request'").get())
       .toEqual({ state: "outcome_unknown" });
+  });
+
+  it("delivers a completed no-join consultation outcome without marking it unknown", () => {
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "no-join-consultation",
+      requests: [{
+        requestId: "consultation", recipientAgentId: recipientA, lifetime: indefinite,
+        payload: { text: "Which response contract should I use?" },
+      }],
+    });
+    const recipientRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(recipientRun);
+    store.updateRequest({
+      requestId: "consultation", updateId: "consultation-result", kind: "completed",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Use the canonical envelope." },
+    });
+    store.completeRun(recipientRun.runId, recipientRun.fencingToken);
+
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'consultation'").get())
+      .toEqual({ state: "completed" });
+    expect(opened.client.prepare(`
+      SELECT kind, state FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_outcome'
+    `).all(requesterId)).toEqual([{ kind: "coordination_outcome", state: "pending" }]);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'consultation' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
   });
 
   it("reclaims a crashed outbox claim without losing the wake cause", () => {

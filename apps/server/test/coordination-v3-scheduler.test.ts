@@ -35,12 +35,17 @@ describe("Communication V3 central scheduler", () => {
     const prompt = formatActivationPrompt({
       runId: "run", projectId, agentId: agentA, fencingToken: 1,
       leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
+      injectionId: "injection",
       activationIds: ["activation"],
-      activations: [{ id: "activation", kind: "coordination_join_satisfied", priority: 70, payload: {
+      activations: [{
+        id: "activation", kind: "coordination_join_satisfied", priority: 70,
+        dispatchPolicy: "next_run", promptClass: "coordination", payload: {
         joinId: "join", state: "satisfied", outcomes: [{ requestId: "request", state: "completed" }],
       } }],
     });
     expect(prompt).toContain("For an outbound request, do not repeat or forward the recipient's update");
+    expect(prompt).toContain("If the request itself asks for information or consultation, send that reply as completed");
+    expect(prompt).toContain("send exactly one terminal request update only after all work and edits are complete");
     expect(prompt).toContain('"requestId":"request"');
   });
 
@@ -55,9 +60,15 @@ describe("Communication V3 central scheduler", () => {
     const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
       leases.push(lease);
       attempts += 1;
-      return attempts === 1
-        ? { accepted: false, retryable: true, error: "claim race" }
-        : { accepted: true };
+      if (attempts === 1) return { accepted: false, retryable: true, error: "claim race" };
+      store.markRunStarted(lease.runId, lease.fencingToken);
+      store.markPromptSubmitted({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      store.acknowledgePromptInjection({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      return { accepted: true };
     }, { workerId: "scheduler", now: () => clock, maxConcurrentRuns: 2 });
 
     expect(await scheduler.drainOnce()).toBe(1);
@@ -82,6 +93,13 @@ describe("Communication V3 central scheduler", () => {
     const leases: SchedulerLease[] = [];
     const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
       leases.push(lease);
+      store.markRunStarted(lease.runId, lease.fencingToken);
+      store.markPromptSubmitted({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      store.acknowledgePromptInjection({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
       return { accepted: true };
     }, { workerId: "scheduler", now: () => Date.parse(now), maxConcurrentRuns: 1 });
 
@@ -92,5 +110,49 @@ describe("Communication V3 central scheduler", () => {
     expect(await scheduler.drainOnce()).toBe(1);
     expect(leases).toHaveLength(2);
     expect(leases[1]!.agentId).not.toBe(leases[0]!.agentId);
+  });
+
+  it("emits explicit references instead of silently dropping oversized activation payloads", () => {
+    const prompt = formatActivationPrompt({
+      runId: "run", projectId, agentId: agentA, fencingToken: 1,
+      leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
+      injectionId: "injection", activationIds: ["large"],
+      activations: [{
+        id: "large", kind: "coordination_join_satisfied", priority: 70,
+        dispatchPolicy: "next_run", promptClass: "coordination", payload: { report: "x".repeat(20_000) },
+      }],
+    }, { maxChars: 4_000, maxInlineChars: 500 });
+    expect(prompt).toContain("overflow: explicit");
+    expect(prompt).toContain("ponderosa://activation/large");
+    expect(prompt).not.toContain("x".repeat(501));
+  });
+
+  it("waits for an in-flight drain before shutdown completes", async () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: agentA, messageId: "shutdown", kind: "human", payload: { text: "Wake" },
+    });
+    let releaseDispatch!: () => void;
+    const dispatchBlocked = new Promise<void>((resolve) => { releaseDispatch = resolve; });
+    const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
+      await dispatchBlocked;
+      store.markRunStarted(lease.runId, lease.fencingToken);
+      store.markPromptSubmitted({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      store.acknowledgePromptInjection({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      return { accepted: true };
+    }, { workerId: "scheduler" });
+
+    const drain = scheduler.drainOnce();
+    await Promise.resolve();
+    let stopped = false;
+    const stop = scheduler.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    releaseDispatch();
+    await Promise.all([drain, stop]);
+    expect(stopped).toBe(true);
   });
 });
