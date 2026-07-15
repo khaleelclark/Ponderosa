@@ -9,7 +9,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "start": "node dist/main.js",
-    "dev": "node --watch --experimental-strip-types src/main.ts"
+    "dev": "node --watch --experimental-strip-types src/main.ts",
+    "push:configure": "node dist/configure-web-push.js"
   },
   "dependencies": {
     "@ponderosa/agents": "workspace:*",
