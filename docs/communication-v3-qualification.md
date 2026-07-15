@@ -2,11 +2,13 @@
 
 ## Decision
 
-Communication V3 is ready for review behind its existing feature gate. In the
-matched real-agent feature trial it preserved implementation quality while
-reducing provider runs, tokens, and projected API cost. It did not reduce wall
-time in this sample, so the result supports a cost/reliability improvement, not
-a universal latency claim.
+Communication V3 is ready for review behind its existing feature gate. It
+consistently removes unnecessary execution turns and closes the scheduler crash
+windows exercised here. The expanded reruns do **not** prove a stable total-cost
+or wall-time advantage: provider behavior inside the same four-run execution
+shape varied enough to reverse those metrics. The evidence supports a
+reliability and execution-shape improvement; cost and latency remain workload-
+and-provider-dependent hypotheses.
 
 Production remains on V2. The isolated V3 service used a separate data
 directory and port; no production project, service, or data was reset.
@@ -98,6 +100,64 @@ four completed runs, three scheduler-claimed activation runs, zero rejected
 dispatches, zero failed runs, and zero unknown outcomes. Dispatch acceptance
 latencies were 21, 22, and 26 milliseconds.
 
+## Universal-model reruns and final refinements
+
+After the original matched result, the scheduler was made authoritative for
+every actionable cause and the same repository tree, prompt, organization, model,
+effort, grader, and Pine host were rerun repeatedly. These later trials were
+failure-finding runs rather than independent statistical samples; each run
+informed the next implementation.
+
+| Trial | Quality | Runs | Tokens | Cost | Wall time | Observation |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Live V2 control | 42/50 | 5 | 2,054,364 | $0.532786 | 280.790 s | preserved baseline |
+| V3 R5 | 42/50 | 4 | 2,541,966 | $0.576428 | 345.714 s | redundant equivalent join was coalesced into one run but duplicated prompt material |
+| V3 R6 | 42/50 | 4 | 1,718,564 | $0.478014 | 292.403 s | one canonical join; 16.4% fewer tokens and 10.3% lower cost than V2 |
+| V3 R7 | 42/50 | 6 | 2,395,772 | $0.539321 | 320.493 s | no-join consultation was answered with the wrong update kind, adding two runs and one request-level `outcome_unknown` |
+| V3 R8 | 42/50 | 4 | 2,083,469 | $0.558968 | 376.541 s | clean protocol shape; a long integration turn dominated cost and latency |
+
+R5 exposed that a provider can create the same immutable join twice under
+different idempotency keys. Open joins now have a canonical definition hash over
+owner, mode, outcomes, deadline, and sorted membership, so equivalent conditions
+return the existing join. Same-call recipient IDs accidentally supplied as join
+request IDs are normalized only when they unambiguously name the new recipients;
+all other foreign or unknown IDs still fail closed.
+
+R7 exercised a legitimate asynchronous consultation: an agent created a request
+without a join and continued working. The recipient then mistook the inbound
+request for an `answer` update instead of completing the consultation. Tool and
+activation contracts now say explicitly that a recipient replies to the request
+itself with `completed`; `question` is a recipient's blocking follow-up and
+`answer` is only the original requester's correlated response to that question.
+
+R8 restored the ideal four-run shape with one human activation, two parallel
+request activations, and one satisfied-join activation. It had one join, zero
+failed or unknown scheduler runs, zero pending activations, and no duplicate join
+wake. Its cost regression despite the cleanest protocol trace is important:
+removing coordination waste does not bound the amount of application inspection
+and integration a provider chooses to perform. The final generic prompt asks for
+targeted, bounded artifact reads and one verification pass, but further
+application-specific prompt tuning would overfit this benchmark.
+
+Across these reruns, scheduler dispatch acceptance remained 16–39 ms and the
+protocol-correct trials always used four runs instead of V2's five. End-to-end
+tokens, cost, and time did not move monotonically. A larger preregistered sample
+is required before claiming average savings.
+
+## No-join consultation smoke
+
+The final build was also exercised in a focused two-agent real-provider test.
+The requester created an indefinite consultation without a join, inspected an
+unrelated artifact, and ended its turn. The consultant received the request and
+completed it with `ALPINE`; that terminal no-join outcome activated the requester,
+which wrote `consultation.txt` with exactly `ALPINE\n` and committed `e1f1a4d`.
+
+The smoke completed in exactly three scheduler runs with one consumed human
+activation, one consumed request activation, one consumed outcome activation,
+zero failed/unknown runs, and request state `completed`. This directly validates
+correlated work that continues without waiting and the corrected consultation
+update contract.
+
 ## Real-agent reliability observations
 
 - A worker held a live scheduler lease for more than three minutes without
@@ -156,9 +216,13 @@ place until the reset/cutover procedure is explicitly authorized.
 - Failed V3 repo: `/home/phoenix/khaleel/benchmarks/communication-v3-qualification-20260715/paired/v3/repo`
 - Fixed V3 repo: `/home/phoenix/khaleel/benchmarks/communication-v3-qualification-20260715/rerun-v3/repo`
 - Final V3 smoke repo: `/home/phoenix/khaleel/benchmarks/communication-v3-qualification-20260715/final-smoke/repo`
+- V3 R5–R8 repos: `/home/phoenix/khaleel/benchmarks/communication-v3-qualification-20260715/final-v3-r5/repo` through `final-v3-r8/repo`
+- No-join consultation repo: `/home/phoenix/khaleel/benchmarks/communication-v3-qualification-20260715/no-join-consultation-smoke/repo`
 - Failed V3 data: `/home/phoenix/.ponderosa-v3-qualification-20260715-r2`
 - Fixed V3 data: `/home/phoenix/.ponderosa-v3-qualification-20260715-r3`
 - Final V3 smoke data: `/home/phoenix/.ponderosa-v3-final-smoke-20260715`
+- V3 R5–R8 data: `/home/phoenix/.ponderosa-v3-final-r5-qualification-20260715` through `/home/phoenix/.ponderosa-v3-final-r8-qualification-20260715`
+- No-join consultation data: `/home/phoenix/.ponderosa-v3-no-join-consultation-smoke-20260715`
 
 These artifacts are intentionally retained for review; cleanup requires
 separate authorization.
