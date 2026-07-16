@@ -81,7 +81,7 @@ export default function App({
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectLabel, setProjectLabel] = useState("");
   const [projectPath, setProjectPath] = useState("");
-  const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("existing");
+  const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("none");
   const [projectFolderName, setProjectFolderName] = useState("");
   const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
@@ -166,7 +166,7 @@ export default function App({
       setProjectLabel("");
       setProjectPath("");
       setProjectFolderName("");
-      setProjectFolderMode("existing");
+      setProjectFolderMode("none");
       setProjectDefaultEngine("");
       navigate(project.lastConversationId ? { kind: "conversation", projectId: project.id, conversationId: project.lastConversationId } : { kind: "project", projectId: project.id });
     },
@@ -369,9 +369,13 @@ export default function App({
               {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engine.authenticated}>{engine.displayName}{engine.authenticated ? "" : " — not signed in"}</MenuItem>)}
             </Select></FormControl>
             <FormControl fullWidth><InputLabel id="project-folder-mode-label">Working folder</InputLabel><Select labelId="project-folder-mode-label" label="Working folder" value={projectFolderMode} onChange={(event) => setProjectFolderMode(event.target.value as typeof projectFolderMode)}>
+              <MenuItem value="none">No folder yet — use a private empty workspace</MenuItem>
               <MenuItem value="existing">Choose an existing folder</MenuItem>
               <MenuItem value="create">Create a named empty folder</MenuItem>
             </Select></FormControl>
+            {projectFolderMode === "none" ? <Typography variant="body2" color="text.secondary">
+              Ponderosa will create a private empty workspace now. You can use this project for chat and agents without choosing a folder.
+            </Typography> : null}
             {projectFolderMode === "existing" ? <>
               <FormControl fullWidth><InputLabel id="existing-project-folder-label">Registered or managed folder</InputLabel><Select labelId="existing-project-folder-label" label="Registered or managed folder" value={projectPath} onChange={(event) => setProjectPath(event.target.value)}>
                 {(projectFoldersQuery.data?.folders ?? []).map((folder) => <MenuItem key={folder.hostPath} value={folder.hostPath}>{folder.name} — {folder.hostPath}</MenuItem>)}

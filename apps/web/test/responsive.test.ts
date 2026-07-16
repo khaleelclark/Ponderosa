@@ -39,7 +39,7 @@ describe("responsive compact controls", () => {
     expect(sidebar).toContain('aria-label="View all agents across projects"');
     expect(sidebar).toContain("drawer?: boolean");
     expect(sidebar).toContain('minWidth: 44, minHeight: 44');
-    expect(sidebar).toContain('aria-label={`Actions for ${conversation.title}`}');
+    expect(sidebar).toContain('aria-label={`Actions for ${displayTitle}`}');
     expect(sidebar).not.toContain("maxHeight: \"34%\"");
   });
 

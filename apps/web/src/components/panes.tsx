@@ -152,6 +152,18 @@ export function composerCapabilityDisabledReason(capability: EngineComposerCapab
   return "This capability cannot be inserted in a message.";
 }
 
+export function matchingComposerCapabilities(
+  capabilities: readonly EngineComposerCapability[],
+  query: string,
+): EngineComposerCapability[] {
+  const normalized = query.trim().toLocaleLowerCase();
+  if (!normalized) return [...capabilities];
+  return capabilities.filter((capability) =>
+    [capability.label, capability.kind, capability.description]
+      .some((value) => value.toLocaleLowerCase().includes(normalized)),
+  );
+}
+
 export function insertComposerCapability(
   text: string,
   caret: number,
@@ -320,6 +332,24 @@ function compactPath(path: string): string {
     return path;
   }
   return `${parts[0]}/.../${parts.at(-1)}`;
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+}
+
+export function artifactDisplayLabel(artifact: Pick<ArtifactDto, "kind" | "path" | "summary">): string {
+  const summary = artifact.summary?.trim();
+  const fileAction = summary?.match(/^(create|edit|delete)\s+(.+)$/i);
+  if (fileAction) {
+    const action = fileAction[1]![0]!.toUpperCase() + fileAction[1]!.slice(1).toLowerCase();
+    return `${action} · ${fileName(fileAction[2]!)}`;
+  }
+  if (artifact.kind === "log" && summary) {
+    const command = summary.replace(/^\/bin\/(?:ba)?sh\s+-lc\s+/, "");
+    return `Command · ${command.length > 56 ? `${command.slice(0, 55)}…` : command}`;
+  }
+  return summary || fileName(artifact.path) || "Result";
 }
 
 export const CHAT_BOTTOM_THRESHOLD = 48;
@@ -1417,7 +1447,7 @@ function ArtifactViewer({
   if (artifact.kind === "document" && artifact.mediaType === "application/pdf") {
     return <Box sx={{ p: 1.5, minWidth: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifact.summary ?? artifact.path}</Typography>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifactDisplayLabel(artifact)}</Typography>
         {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open preview</Button> : null}
         {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
       </Stack>
@@ -1428,7 +1458,7 @@ function ArtifactViewer({
   if (artifact.kind === "screenshot" && artifact.previewUrl) {
     return <Box sx={{ p: 1.5, minWidth: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifact.summary ?? artifact.path}</Typography>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifactDisplayLabel(artifact)}</Typography>
         <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open</Button>
         {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
       </Stack>
@@ -1454,9 +1484,10 @@ function ArtifactViewer({
 
   return (
     <Box sx={{ p: 1.5, minWidth: 0 }}>
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>
-        {content.summary ?? content.path}
-      </Typography>
+      <Stack spacing={0.25} sx={{ mb: 1, minWidth: 0 }}>
+        <Typography variant="subtitle2">{artifactDisplayLabel(content)}</Typography>
+        <Typography variant="caption" color="text.secondary" noWrap title={content.path}>{compactPath(content.path)}</Typography>
+      </Stack>
       <Paper variant="outlined" sx={{ p: 1.25, overflow: "auto", maxHeight: { xs: "55vh", md: "64vh" } }}>
         {content.contentType === "markdown" ? (
           <MarkdownViewer content={content.content} />
@@ -1532,8 +1563,9 @@ export function ArtifactsPane({
             value={artifact.id}
             icon={artifactIcon(artifact.kind)}
             iconPosition="start"
-            label={artifact.summary ?? compactPath(artifact.path)}
-            sx={{ minHeight: 44, maxWidth: 260 }}
+            label={artifactDisplayLabel(artifact)}
+            title={artifact.summary ?? artifact.path}
+            sx={{ minHeight: 44, maxWidth: 230 }}
           />
         ))}
       </Tabs>
@@ -1631,6 +1663,7 @@ export function Composer({
   const mentionListId = useId();
   const capabilityListId = useId();
   const [capabilityMenuAnchor, setCapabilityMenuAnchor] = useState<HTMLElement | null>(null);
+  const [capabilityFilter, setCapabilityFilter] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const mentionedHandles = findMentionedHandles(text, mentionHandles ?? []);
@@ -1883,6 +1916,7 @@ export function Composer({
     if (!inserted) return;
     update(inserted.text);
     setCapabilityMenuAnchor(null);
+    setCapabilityFilter("");
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
@@ -1891,6 +1925,8 @@ export function Composer({
       setCaret(inserted.caret);
     });
   };
+
+  const visibleCapabilities = matchingComposerCapabilities(capabilities ?? [], capabilityFilter);
 
   const submit = (handler: (message: string, selectedFiles: File[], stagedAttachmentIds?: string[]) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
@@ -1974,19 +2010,31 @@ export function Composer({
           aria-controls={capabilityMenuAnchor ? capabilityListId : undefined}
           disabled={disabled || running}
           onClick={(event) => {
+            setCapabilityFilter("");
             setCapabilityMenuAnchor(event.currentTarget);
             void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
           }}
           sx={{ minWidth: 44, minHeight: 44 }}
         ><AddIcon /></IconButton></span></Tooltip>
         <Popper open={Boolean(capabilityMenuAnchor)} anchorEl={capabilityMenuAnchor} placement="top-start" style={{ zIndex: 1400 }}>
-          <ClickAwayListener onClickAway={() => setCapabilityMenuAnchor(null)}>
-            <Paper elevation={5} sx={{ mb: 0.5, width: "min(360px, calc(100vw - 24px))" }}>
-              <MenuList dense id={capabilityListId} aria-label="Add attachment or runtime capability" sx={{ maxHeight: "min(56vh, 480px)", overflowY: "auto", overscrollBehavior: "contain" }}>
+          <ClickAwayListener onClickAway={() => { setCapabilityMenuAnchor(null); setCapabilityFilter(""); }}>
+            <Paper elevation={5} sx={{ mb: 0.5, width: "min(420px, calc(100vw - 24px))", maxHeight: "min(52vh, 390px)", overflow: "hidden" }}>
+              <Box sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
+                <TextField
+                  autoFocus
+                  fullWidth
+                  size="small"
+                  value={capabilityFilter}
+                  onChange={(event) => setCapabilityFilter(event.target.value)}
+                  placeholder="Find a skill, plugin, or connector"
+                  inputProps={{ "aria-label": "Filter runtime capabilities" }}
+                />
+              </Box>
+              <MenuList dense id={capabilityListId} aria-label="Add attachment or runtime capability" sx={{ maxHeight: "min(38vh, 300px)", overflowY: "auto", overscrollBehavior: "contain" }}>
                 <MenuItem
                   disabled={!attachmentsEnabled || files.length >= COMPOSER_MAX_FILES}
                   onClick={() => { setCapabilityMenuAnchor(null); fileInput.current?.click(); }}
-                  sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
+                  sx={{ whiteSpace: "normal", alignItems: "flex-start", minHeight: 54 }}
                 >
                   <Box><Typography variant="body2">Upload image or file</Typography><Typography variant="caption" color="text.secondary">{!attachmentsEnabled
                     ? attachmentsUnavailableReason ?? "Attachments are not supported in this chat."
@@ -1997,20 +2045,25 @@ export function Composer({
                 <Divider />
                 {(capabilities ?? []).length === 0 ? (
                   <MenuItem disabled sx={{ whiteSpace: "normal" }}><Typography variant="caption">No runtime skills, plugins, or connectors are currently available.</Typography></MenuItem>
-                ) : (capabilities ?? []).map((capability) => {
+                ) : visibleCapabilities.length === 0 ? (
+                  <MenuItem disabled><Typography variant="caption">No capabilities match “{capabilityFilter.trim()}”.</Typography></MenuItem>
+                ) : visibleCapabilities.map((capability) => {
                   const reason = composerCapabilityDisabledReason(capability);
                   return <MenuItem
                     key={capability.id}
                     disabled={Boolean(reason)}
                     onClick={() => applyCapability(capability)}
-                    sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
+                    sx={{ whiteSpace: "normal", alignItems: "flex-start", minHeight: 58, py: 0.75 }}
                   >
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography variant="body2">{capability.label}</Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>
-                        {capability.kind[0]!.toUpperCase() + capability.kind.slice(1)} · {capability.description}
+                    <Box sx={{ minWidth: 0, width: "100%" }}>
+                      <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
+                        <Typography variant="body2" noWrap sx={{ flex: 1, fontWeight: 650 }}>{capability.label}</Typography>
+                        <Chip size="small" variant="outlined" label={capability.kind} />
+                      </Stack>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere", lineHeight: 1.35 }}>
+                        {capability.description}
                       </Typography>
-                      {reason ? <Typography variant="caption" color="text.disabled" sx={{ display: "block", overflowWrap: "anywhere" }}>{reason}</Typography> : null}
+                      {reason ? <Typography variant="caption" color="text.disabled" noWrap sx={{ display: "block" }}>{reason}</Typography> : null}
                     </Box>
                   </MenuItem>;
                 })}

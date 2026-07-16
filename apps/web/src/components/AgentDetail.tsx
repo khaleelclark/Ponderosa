@@ -57,6 +57,7 @@ import { TokenUsageButton } from "./TokenUsageButton";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
+import { conversationDisplayTitle } from "../conversationLabels";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts";
 
@@ -75,7 +76,7 @@ export function directAgentDeliveryNotice(
   activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]> = "steer",
 ): string | undefined {
   if (response.queued) {
-    if (activeRunDelivery === "steer") return "Delivery pending provider confirmation.";
+    if (activeRunDelivery === "steer") return undefined;
     return `Queued in position ${response.position}; it will start when the current response finishes.`;
   }
   return response.steered ? "Steered into the active turn." : undefined;
@@ -731,7 +732,10 @@ export function AgentDetail({
                 multiple
                 value={membershipIds}
                 label="Project chats"
-                renderValue={(selected) => selected.map((id) => conversations.find((chat) => chat.id === id)?.title ?? id).join(", ")}
+                renderValue={(selected) => selected.map((id) => {
+                  const chat = conversations.find((candidate) => candidate.id === id);
+                  return chat ? conversationDisplayTitle(chat, conversations) : id;
+                }).join(", ")}
                 onChange={(event) => {
                   const ids = typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
                   setMembershipIds(ids);
@@ -741,7 +745,7 @@ export function AgentDetail({
                 {conversations.filter((chat) => !chat.archived || membershipIds.includes(chat.id)).map((chat) => (
                   <MenuItem key={chat.id} value={chat.id}>
                     <Checkbox checked={membershipIds.includes(chat.id)} />
-                    <ListItemText primary={chat.title} secondary={chat.archived ? "Archived" : undefined} />
+                    <ListItemText primary={conversationDisplayTitle(chat, conversations)} secondary={chat.archived ? "Archived" : undefined} />
                   </MenuItem>
                 ))}
               </Select>
@@ -749,7 +753,10 @@ export function AgentDetail({
             <FormControl fullWidth disabled={membershipIds.length === 0}>
               <InputLabel id="agent-primary-chat-label">Home chat</InputLabel>
               <Select labelId="agent-primary-chat-label" value={primaryConversationId} label="Home chat" onChange={(event) => setPrimaryConversationId(event.target.value)}>
-                {membershipIds.map((id) => <MenuItem key={id} value={id}>{conversations.find((chat) => chat.id === id)?.title ?? id}</MenuItem>)}
+                {membershipIds.map((id) => {
+                  const chat = conversations.find((candidate) => candidate.id === id);
+                  return <MenuItem key={id} value={id}>{chat ? conversationDisplayTitle(chat, conversations) : id}</MenuItem>;
+                })}
               </Select>
             </FormControl>
             <Typography variant="body2" color="text.secondary">

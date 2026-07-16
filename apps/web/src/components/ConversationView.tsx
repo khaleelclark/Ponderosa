@@ -7,6 +7,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
@@ -496,9 +497,9 @@ export function ConversationView({
         .map((recipient) => detailQuery.data?.agents.find((agent) => agent.id === recipient.agentId)?.title ?? "Agent");
       setQueuedReplyNotice(
         queuedTitles.length > 0
-          ? variables.activeRunDelivery === "steer"
-            ? `Delivery to ${queuedTitles.join(", ")} is pending provider confirmation.`
-            : `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
+          ? variables.activeRunDelivery === "queue"
+            ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
+            : undefined
           : undefined,
       );
       const activeIds = response.recipients.filter((recipient) => !recipient.queued).map((recipient) => recipient.agentId);
@@ -555,9 +556,9 @@ export function ConversationView({
       clearReply();
       invalidate();
       setQueuedReplyNotice(response.queued
-        ? variables.activeRunDelivery === "steer"
-          ? `Delivery to ${agentTitle(response.targetAuthorAgentId)} is pending provider confirmation.`
-          : `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.`
+        ? variables.activeRunDelivery === "queue"
+          ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.`
+          : undefined
         : undefined);
       if (response.queued) setActiveOperation(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
@@ -569,7 +570,7 @@ export function ConversationView({
       api.sendUserReaction({ projectId: conversation!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
     onSuccess: (response) => {
       invalidate();
-      setQueuedReplyNotice(response.queued ? `Reaction delivery to ${agentTitle(response.targetAuthorAgentId)} is pending provider confirmation.` : undefined);
+      setQueuedReplyNotice(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
@@ -1065,6 +1066,11 @@ export function ConversationView({
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
             <Typography variant="h6" sx={{ flex: 1 }}>Agents in this Project chat</Typography>
             <Chip size="small" label={agents.length} />
+            <Tooltip title="Close agent roster">
+              <IconButton aria-label="Close agent roster" onClick={() => setAgentsOpen(false)} sx={{ minWidth: 44, minHeight: 44 }}>
+                <CloseIcon />
+              </IconButton>
+            </Tooltip>
           </Stack>
           {agents.length === 0 ? (
             <Alert severity="info">No agents yet. Send a message to spawn one.</Alert>
@@ -1134,9 +1140,9 @@ export function ConversationView({
       <Box>
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
-        {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
+        {spawn.isError || reply.isError || directReply.isError || collaborate.isError || sendReaction.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
+            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error ?? sendReaction.error) as Error)}
           </Alert>
         ) : null}
         {/* Team/broadcast attachment transport is supplied by the companion

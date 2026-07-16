@@ -34,6 +34,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import { loadLastProjectId, routeProjectId, type Route } from "../routing";
+import { conversationDisplayTitle } from "../conversationLabels";
 import {
   currentProjectSnapshot,
   projectDisambiguator,
@@ -189,14 +190,17 @@ export function WorkspaceSidebar({ projects, route, notifications, drawer = fals
         </Stack>
         {selected ? <>
           <List dense disablePadding aria-label={`Project chats in ${selected.project.label}`} sx={{ mt: .5 }}>
-            {[...selected.conversations].filter((conversation) => !conversation.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((conversation) => <Stack key={conversation.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, conversation }); }} sx={{ alignItems: "center" }}>
-              <ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} aria-label={`Open ${conversation.title} in ${selected.project.label}`} onClick={() => openChat(selected.project, conversation)} sx={{ borderRadius: 1, minWidth: 0, px: 1, minHeight: 44 }}>
+            {[...selected.conversations].filter((conversation) => !conversation.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((conversation) => {
+              const displayTitle = conversationDisplayTitle(conversation, selected.conversations);
+              return <Stack key={conversation.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, conversation }); }} sx={{ alignItems: "center" }}>
+              <ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} aria-label={`Open ${displayTitle} in ${selected.project.label}`} onClick={() => openChat(selected.project, conversation)} sx={{ borderRadius: 1, minWidth: 0, px: 1, minHeight: 44 }}>
                 <ListItemIcon sx={{ minWidth: 30 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon>
-                <ListItemText primary={conversation.title} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 650 }} />
+                <ListItemText primary={displayTitle} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 650 }} />
                 {unread.get(conversation.id) ? <Badge color="primary" badgeContent={unread.get(conversation.id)} sx={{ mr: 1 }} /> : null}
               </ListItemButton>
-              <IconButton size="small" aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, conversation })} sx={{ minWidth: 44, minHeight: 44 }}><MoreHorizIcon fontSize="small" /></IconButton>
-            </Stack>)}
+              <IconButton size="small" aria-label={`Actions for ${displayTitle}`} onClick={(event) => setMenu({ anchor: event.currentTarget, conversation })} sx={{ minWidth: 44, minHeight: 44 }}><MoreHorizIcon fontSize="small" /></IconButton>
+            </Stack>;
+            })}
           </List>
           <Button size="small" startIcon={<AddIcon />} onClick={() => void createChat(selected.project)} sx={{ ml: .5 }}>New chat</Button>
         </> : null}
@@ -205,10 +209,14 @@ export function WorkspaceSidebar({ projects, route, notifications, drawer = fals
       <Box component="section" aria-labelledby="recent-chats-heading" sx={{ borderTop: 1, borderColor: "divider", py: 1, px: 1 }}>
         <Typography id="recent-chats-heading" variant="overline" color="text.secondary" sx={{ px: 1 }}>Recent chats</Typography>
         <List dense disablePadding aria-label="Recent chats across projects">
-          {recentChats.map(({ conversation, project, unread: unreadCount }) => <ListItemButton key={`${project.id}:${conversation.id}`} aria-label={`Open recent chat ${conversation.title} in ${projectDisambiguator(project, projects)}`} selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project, conversation)} sx={{ borderRadius: 1, minWidth: 0, px: 1, minHeight: 48 }}>
-            <ListItemText primary={conversation.title} secondary={projectDisambiguator(project, projects)} primaryTypographyProps={{ noWrap: true, fontSize: 13 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
+          {recentChats.map(({ conversation, project, unread: unreadCount }) => {
+            const projectConversations = snapshots.find((snapshot) => snapshot.project.id === project.id)?.conversations ?? [conversation];
+            const displayTitle = conversationDisplayTitle(conversation, projectConversations);
+            return <ListItemButton key={`${project.id}:${conversation.id}`} aria-label={`Open recent chat ${displayTitle} in ${projectDisambiguator(project, projects)}`} selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project, conversation)} sx={{ borderRadius: 1, minWidth: 0, px: 1, minHeight: 48 }}>
+            <ListItemText primary={displayTitle} secondary={projectDisambiguator(project, projects)} primaryTypographyProps={{ noWrap: true, fontSize: 13 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
             {unreadCount ? <Badge color="primary" badgeContent={unreadCount} sx={{ mr: 1 }} /> : null}
-          </ListItemButton>)}
+          </ListItemButton>;
+          })}
         </List>
       </Box>
 

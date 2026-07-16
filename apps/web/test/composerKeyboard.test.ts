@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSubmitComposerText, composerCapabilityDisabledReason, insertComposerCapability, matchingEngineCommands, shouldIgnoreComposerKey, shouldSendComposerKey, shouldShowQueueControl } from "../src/components/panes";
+import { canSubmitComposerText, composerCapabilityDisabledReason, insertComposerCapability, matchingComposerCapabilities, matchingEngineCommands, shouldIgnoreComposerKey, shouldSendComposerKey, shouldShowQueueControl } from "../src/components/panes";
 
 describe("composer keyboard behavior", () => {
   it("returns every matching inherited command instead of truncating the menu", () => {
@@ -31,6 +31,14 @@ describe("composer keyboard behavior", () => {
 });
 
 describe("runtime capability menu", () => {
+  it("filters long capability catalogs by label, kind, or description", () => {
+    const capabilities = [
+      { id: "skill:review", kind: "skill" as const, label: "Review", description: "Inspect pull requests", status: "available" as const, insertText: "$review " },
+      { id: "connector:gmail", kind: "connector" as const, label: "Gmail", description: "Read mail", status: "available" as const },
+    ];
+    expect(matchingComposerCapabilities(capabilities, "pull").map((item) => item.id)).toEqual(["skill:review"]);
+    expect(matchingComposerCapabilities(capabilities, "connector").map((item) => item.id)).toEqual(["connector:gmail"]);
+  });
   it("keeps actionable skills insertable and explains unsupported expansion", () => {
     expect(composerCapabilityDisabledReason({ id: "skill:review", kind: "skill", label: "review", description: "Review", status: "available", insertText: "$review " })).toBeUndefined();
     expect(composerCapabilityDisabledReason({ id: "plugin:github", kind: "plugin", label: "GitHub", description: "GitHub", status: "available" })).toContain("runtime-provided skills");

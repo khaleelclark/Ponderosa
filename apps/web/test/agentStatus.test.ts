@@ -19,9 +19,7 @@ function detailWith(runStatuses: Array<"running" | "completed" | "failed">, work
 
 describe("visible agent status", () => {
   it("does not claim a steer was delivered before provider acknowledgement", () => {
-    expect(directAgentDeliveryNotice({ queued: true, position: 3 })).toBe(
-      "Delivery pending provider confirmation.",
-    );
+    expect(directAgentDeliveryNotice({ queued: true, position: 3 })).toBeUndefined();
     expect(directAgentDeliveryNotice({ queued: true, position: 3 }, "queue")).toBe(
       "Queued in position 3; it will start when the current response finishes.",
     );
