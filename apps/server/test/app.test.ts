@@ -1,8 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createServer as createHttpServer } from "node:http";
+import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
+import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
@@ -140,6 +144,408 @@ describe("localhost link preview registration", () => {
     }
     expect((await app.inject({ method: "GET", url: accepted.json<{ openUrl: string }>().openUrl, headers })).statusCode).toBe(404);
     await app.close();
+  });
+
+  it("proxies bounded Vite HMR sockets bidirectionally without forwarding operator credentials", async () => {
+    const upstreamHeaders: Array<Record<string, string | string[] | undefined>> = [];
+    const upstreamUpgradePaths: string[] = [];
+    const upgradedSockets = new Set<import("node:stream").Duplex>();
+    const upstreamPaths: string[] = [];
+    let openEventsClosed!: () => void;
+    let openStreamClosed!: () => void;
+    let stubbornSocketClosed!: () => void;
+    const openEventsTeardown = new Promise<void>((resolve) => { openEventsClosed = resolve; });
+    const openStreamTeardown = new Promise<void>((resolve) => { openStreamClosed = resolve; });
+    const stubbornTeardown = new Promise<void>((resolve) => { stubbornSocketClosed = resolve; });
+    const upstreamServer = createHttpServer((request, response) => {
+      upstreamPaths.push(request.url ?? "");
+      if (request.url === "/events") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end("data: ready\n\n");
+        return;
+      }
+      if (request.url === "/open-events") {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.flushHeaders();
+        response.write("data: open\n\n");
+        request.once("close", openEventsClosed);
+        return;
+      }
+      if (request.url === "/open-stream") {
+        response.writeHead(200, { "content-type": "application/octet-stream" });
+        response.flushHeaders();
+        response.write("open");
+        request.once("close", openStreamClosed);
+        return;
+      }
+      if (request.url === "/nested/assets/main.js" || request.url === "/favicon.ico") {
+        response.writeHead(200, { "content-type": "application/javascript" });
+        response.end("export default true");
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end('<html><head><link rel="icon" href="/favicon.ico"></head><body><script src="./assets/main.js"></script></body></html>');
+    });
+    const upstreamWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
+    upstreamServer.on("upgrade", (request, socket, head) => {
+      upgradedSockets.add(socket);
+      socket.once("close", () => upgradedSockets.delete(socket));
+      upstreamHeaders.push(request.headers);
+      upstreamUpgradePaths.push(request.url ?? "");
+      if (request.url === "/stubborn") {
+        const key = request.headers["sec-websocket-key"];
+        const accept = createHash("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: ${request.headers["sec-websocket-protocol"]}\r\n\r\n`);
+        socket.once("end", stubbornSocketClosed);
+        socket.once("close", stubbornSocketClosed);
+        socket.resume();
+        return;
+      }
+      const accept = () => upstreamWss.handleUpgrade(request, socket, head, (client) => {
+        client.on("message", (data, binary) => client.send(data, { binary }));
+      });
+      if (request.url?.startsWith("/slow")) setTimeout(() => { if (!socket.destroyed) accept(); }, 250).unref();
+      else accept();
+    });
+    await new Promise<void>((resolve) => upstreamServer.listen(0, "127.0.0.1", resolve));
+    const upstreamAddress = upstreamServer.address();
+    if (!upstreamAddress || typeof upstreamAddress === "string") throw new Error("missing upstream address");
+
+    const project = store.createProject({ label: "Preview", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Preview room" });
+    const agent = store.createAgent(project.id, { title: "Previewer", engine: "codex", conversationId: room.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      authToken: "preview-secret",
+      linkPreviewScheduling: {
+        heartbeatMs: 1_000,
+        upstreamHandshakeTimeoutMs: 100,
+        maxConnectionsPerRegistration: 2,
+        maxTotalConnections: 3,
+        maxPayloadBytes: 4_096,
+        maxBufferedBytes: 1_024,
+        maxPendingFrames: 2,
+        closeGraceMs: 30,
+      },
+    });
+    adapter.mode = "hang";
+    const headers = { authorization: "Bearer preview-secret" };
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, headers, payload: { text: "Serve the app" } });
+    await waitForSeedCount(1);
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health`, headers });
+    const runId = health.json<{ agents: Array<{ runtimeActivity?: { executionId: string } }> }>().agents[0]!.runtimeActivity!.executionId;
+    const registered = await app.inject({
+      method: "POST",
+      url: "/api/link-previews",
+      headers,
+      payload: { url: `http://127.0.0.1:${upstreamAddress.port}/nested/index.html?mode=dev`, projectId: project.id, agentId: agent.id, runId, conversationId: room.id },
+    });
+    expect(registered.statusCode).toBe(200);
+    const preview = registered.json<{ id: string; openUrl: string }>();
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const appAddress = app.server.address();
+    if (!appAddress || typeof appAddress === "string") throw new Error("missing app address");
+    const wsUrl = `ws://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/hmr?token=vite-token`;
+    const connect = (url = wsUrl) => new Promise<WebSocket>((resolve, reject) => {
+      const client = new WebSocket(url, "vite-hmr", {
+        origin: "null",
+        headers: { authorization: "Bearer operator-secret", cookie: "session=operator", "x-oauth-state": "private" },
+      });
+      client.once("open", () => resolve(client));
+      client.once("error", reject);
+    });
+    const echo = (client: WebSocket, value: string) => new Promise<string>((resolve, reject) => {
+      client.once("message", (data) => resolve(data.toString()));
+      client.once("error", reject);
+      client.send(value);
+    });
+    const first = await connect();
+    const second = await connect();
+    expect(await echo(first, "hmr-update")).toBe("hmr-update");
+    expect(await echo(second, "vite-ping")).toBe("vite-ping");
+    expect(upstreamHeaders).toHaveLength(2);
+    for (const forwarded of upstreamHeaders) {
+      expect(forwarded.authorization).toBeUndefined();
+      expect(forwarded.cookie).toBeUndefined();
+      expect(forwarded["x-oauth-state"]).toBeUndefined();
+      expect(forwarded.origin).toBe(`http://127.0.0.1:${upstreamAddress.port}`);
+      expect(forwarded.host).toBe(`127.0.0.1:${upstreamAddress.port}`);
+    }
+
+    const rejectedStatus = (url: string, protocol: string, origin: string) => new Promise<number>((resolve, reject) => {
+      const client = new WebSocket(url, protocol, { origin });
+      client.once("unexpected-response", (_request, response) => { resolve(response.statusCode ?? 0); response.destroy(); });
+      client.once("open", () => { client.close(); reject(new Error("upgrade unexpectedly opened")); });
+      client.once("error", () => undefined);
+    });
+    expect(await rejectedStatus(wsUrl, "vite-hmr", "https://foreign.example")).toBe(403);
+    expect(await rejectedStatus(wsUrl, "not-vite", "null")).toBe(400);
+    expect(await rejectedStatus(`${wsUrl}&host=external.example`, "vite-hmr", "null")).toBe(400);
+    expect(await rejectedStatus(`${wsUrl}&token=duplicate`, "vite-hmr", "null")).toBe(400);
+    expect(await rejectedStatus(wsUrl.replace(preview.id, randomUUID()), "vite-hmr", "null")).toBe(404);
+    expect(await rejectedStatus(wsUrl, "vite-hmr", "null")).toBe(429);
+
+    const rawUpgradeStatus = (target: string, key = Buffer.alloc(16, 7).toString("base64")) => new Promise<number>((resolve, reject) => {
+      const tcp = connectTcp(appAddress.port, "127.0.0.1", () => {
+        tcp.write(`${[
+          `GET ${target} HTTP/1.1`,
+          `Host: 127.0.0.1:${appAddress.port}`,
+          "Connection: Upgrade",
+          "Upgrade: websocket",
+          "Origin: null",
+          "Sec-WebSocket-Version: 13",
+          `Sec-WebSocket-Key: ${key}`,
+          "Sec-WebSocket-Protocol: vite-hmr",
+          "",
+          "",
+        ].join("\r\n")}`);
+      });
+      let response = "";
+      tcp.on("data", (chunk) => {
+        response += chunk.toString("utf8");
+        if (!response.includes("\r\n")) return;
+        const status = Number(response.match(/^HTTP\/1\.1 (\d{3})/)?.[1] ?? 0);
+        tcp.destroy();
+        resolve(status);
+      });
+      tcp.once("error", reject);
+    });
+    const upgradePath = `/api/link-previews/${preview.id}/__ws/hmr?token=vite-token`;
+    expect(await rawUpgradeStatus(upgradePath, "malformed-key")).toBe(400);
+    expect(await rawUpgradeStatus(`${upgradePath.replace("/hmr", "/%ZZ")}`)).toBe(400);
+    expect(await rawUpgradeStatus(`ws://user:secret@127.0.0.1:${appAddress.port}${upgradePath}`)).toBe(400);
+    expect(await rawUpgradeStatus(`ws://external.example:${appAddress.port}${upgradePath}`)).toBe(400);
+    expect(await rawUpgradeStatus(`ws://127.0.0.1:${appAddress.port + 1}${upgradePath}`)).toBe(400);
+
+    const page = await fetch(`http://127.0.0.1:${appAddress.port}${preview.openUrl}`, { headers });
+    const html = await page.text();
+    expect(html).toContain(`<base href="/api/link-previews/${preview.id}/nested/">`);
+    expect(html).toContain(`/api/link-previews/${preview.id}/favicon.ico`);
+    expect(html).toContain(`./assets/main.js`);
+    expect(html).toContain(`/api/link-previews/${preview.id}/__ws`);
+    const bootstrap = html.match(/<script>(.*?)<\/script>/s)?.[1];
+    expect(bootstrap).toBeTruthy();
+    const websocketCalls: Array<{ url: string; protocols?: string | string[] }> = [];
+    class BrowserWebSocket {
+      constructor(url: string, protocols?: string | string[]) { websocketCalls.push({ url, protocols }); }
+    }
+    const sandbox = {
+      window: { WebSocket: BrowserWebSocket },
+      document: { baseURI: `http://127.0.0.1:${appAddress.port}${preview.openUrl}` },
+      location: { protocol: "http:", hostname: "127.0.0.1", port: String(appAddress.port), host: `127.0.0.1:${appAddress.port}` },
+      URL,
+    };
+    runInNewContext(bootstrap!, sandbox);
+    const currentOriginViteUrl = `ws://127.0.0.1:${appAddress.port}/nested/?token=vite-token`;
+    new sandbox.window.WebSocket(currentOriginViteUrl, "vite-hmr");
+    new sandbox.window.WebSocket(`ws://127.0.0.1:${upstreamAddress.port}/nested/?token=vite-token`, "vite-ping");
+    const foreignPort = upstreamAddress.port === 65_535 ? upstreamAddress.port - 1 : upstreamAddress.port + 1;
+    new sandbox.window.WebSocket(`ws://127.0.0.1:${foreignPort}/nested/?token=vite-token`, "vite-hmr");
+    expect(websocketCalls).toEqual([
+      { url: `ws://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/nested/?token=vite-token`, protocols: "vite-hmr" },
+      { url: `ws://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/nested/?token=vite-token`, protocols: "vite-ping" },
+      { url: `ws://127.0.0.1:${foreignPort}/nested/?token=vite-token`, protocols: "vite-hmr" },
+    ]);
+    const nestedAsset = await fetch(`http://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/nested/assets/main.js`, { headers });
+    expect(nestedAsset.status).toBe(200);
+    expect(upstreamPaths).toContain("/nested/assets/main.js");
+    expect((await fetch(`http://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/hmr`, { headers })).status).toBe(426);
+    const events = await fetch(`http://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/events`, { headers });
+    expect(events.headers.get("content-type")).toContain("text/event-stream");
+    expect(await events.text()).toBe("data: ready\n\n");
+
+    const oversizedClosed = new Promise<number>((resolve) => first.once("close", resolve));
+    first.send(Buffer.alloc(8_192));
+    expect([1009, 1011]).toContain(await oversizedClosed);
+    const backpressured = await connect();
+    const backpressureClosed = new Promise<number>((resolve) => backpressured.once("close", resolve));
+    backpressured.send(Buffer.alloc(2_048));
+    expect(await backpressureClosed).toBe(1013);
+    const pendingLimited = await connect(wsUrl.replace("/hmr?", "/slow?"));
+    const pendingClosed = new Promise<number>((resolve) => pendingLimited.once("close", resolve));
+    pendingLimited.send("");
+    pendingLimited.send("");
+    pendingLimited.send("");
+    expect(await pendingClosed).toBe(1013);
+    const handshakeLimited = await connect(wsUrl.replace("/hmr?", "/slow-timeout?"));
+    const handshakeClosed = new Promise<number>((resolve) => handshakeLimited.once("close", resolve));
+    expect([1006, 1011]).toContain(await handshakeClosed);
+    const replacement = await connect();
+
+    const closeRegistration = await app.inject({
+      method: "POST",
+      url: "/api/link-previews",
+      headers,
+      payload: { url: `http://127.0.0.1:${upstreamAddress.port}/stubborn`, projectId: project.id, agentId: agent.id, runId, conversationId: room.id },
+    });
+    const closePreview = closeRegistration.json<{ id: string }>();
+    const explicitlyClosedClient = await new Promise<WebSocket>((resolve, reject) => {
+      const client = new WebSocket(`ws://127.0.0.1:${appAddress.port}/api/link-previews/${closePreview.id}/__ws/stubborn`, "vite-ping", { origin: "null" });
+      client.once("open", () => resolve(client));
+      client.once("error", reject);
+    });
+    await expect.poll(() => upstreamUpgradePaths.includes("/stubborn")).toBe(true);
+    const explicitlyClosed = new Promise<number>((resolve) => explicitlyClosedClient.once("close", resolve));
+    expect((await app.inject({ method: "DELETE", url: `/api/link-previews/${closePreview.id}`, headers })).json()).toEqual({ closed: true });
+    expect(await explicitlyClosed).toBe(1001);
+    await stubbornTeardown;
+
+    const openEvents = await fetch(`http://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/open-events`, { headers });
+    const openEventsReader = openEvents.body!.getReader();
+    expect(new TextDecoder().decode((await openEventsReader.read()).value)).toContain("data: open");
+    const openStream = await fetch(`http://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/open-stream`, { headers });
+    const openStreamReader = openStream.body!.getReader();
+    expect(new TextDecoder().decode((await openStreamReader.read()).value)).toBe("open");
+
+    const secondClosed = new Promise<number>((resolve) => second.once("close", resolve));
+    const replacementClosed = new Promise<number>((resolve) => replacement.once("close", resolve));
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers })).statusCode).toBe(200);
+    expect([1001, 1008]).toContain(await secondClosed);
+    expect([1001, 1008]).toContain(await replacementClosed);
+    await Promise.all([openEventsTeardown, openStreamTeardown]);
+    await openEventsReader.cancel().catch(() => undefined);
+    await openStreamReader.cancel().catch(() => undefined);
+    expect(await rejectedStatus(wsUrl, "vite-hmr", "null")).toBe(404);
+
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const afterCancel = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health`, headers });
+      if (!afterCancel.json<{ agents: Array<{ runtimeActivity?: unknown }> }>().agents[0]?.runtimeActivity) break;
+      await sleep(10);
+    }
+    store.clearResumeSession(agent.id, "shutdown teardown test");
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, headers, payload: { text: "Serve once more" } });
+    await waitForSeedCount(2);
+    const nextHealth = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health`, headers });
+    const nextRunId = nextHealth.json<{ agents: Array<{ runtimeActivity?: { executionId: string } }> }>().agents[0]!.runtimeActivity!.executionId;
+    const shutdownRegistration = await app.inject({
+      method: "POST",
+      url: "/api/link-previews",
+      headers,
+      payload: { url: `http://127.0.0.1:${upstreamAddress.port}/`, projectId: project.id, agentId: agent.id, runId: nextRunId, conversationId: room.id },
+    });
+    const shutdownPreview = shutdownRegistration.json<{ id: string }>();
+    const shutdownClient = await new Promise<WebSocket>((resolve, reject) => {
+      const client = new WebSocket(`ws://127.0.0.1:${appAddress.port}/api/link-previews/${shutdownPreview.id}/__ws/`, "vite-hmr", { origin: "null" });
+      client.once("open", () => resolve(client));
+      client.once("error", reject);
+    });
+    const shutdownClosed = new Promise<number>((resolve) => shutdownClient.once("close", resolve));
+    await app.close();
+    expect(await shutdownClosed).toBe(1001);
+    for (const client of upstreamWss.clients) client.terminate();
+    await new Promise<void>((resolve) => upstreamWss.close(() => resolve()));
+    for (const socket of upgradedSockets) socket.destroy();
+    await new Promise<void>((resolve, reject) => upstreamServer.close((error) => error ? reject(error) : resolve()));
+  }, 20_000);
+
+  it("expires the capability and both socket legs while the owning run remains active", async () => {
+    const upstreamWss = new WebSocketServer({ port: 0, host: "127.0.0.1", perMessageDeflate: false });
+    await new Promise<void>((resolve) => upstreamWss.once("listening", resolve));
+    const upstreamAddress = upstreamWss.address();
+    if (typeof upstreamAddress === "string") throw new Error("missing upstream address");
+    const project = store.createProject({ label: "Expiring preview", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Preview room" });
+    const agent = store.createAgent(project.id, { title: "Previewer", engine: "codex", conversationId: room.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      linkPreviewScheduling: { registrationTtlMs: 80, heartbeatMs: 1_000 },
+    });
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Serve briefly" } });
+    await waitForSeedCount(1);
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    const runId = health.json<{ agents: Array<{ runtimeActivity?: { executionId: string } }> }>().agents[0]!.runtimeActivity!.executionId;
+    const registered = await app.inject({
+      method: "POST",
+      url: "/api/link-previews",
+      payload: { url: `http://127.0.0.1:${upstreamAddress.port}/`, projectId: project.id, agentId: agent.id, runId, conversationId: room.id },
+    });
+    const preview = registered.json<{ id: string }>();
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const appAddress = app.server.address();
+    if (!appAddress || typeof appAddress === "string") throw new Error("missing app address");
+    const wsUrl = `ws://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/`;
+    const client = await new Promise<WebSocket>((resolve, reject) => {
+      const candidate = new WebSocket(wsUrl, "vite-hmr", { origin: "null" });
+      candidate.once("open", () => resolve(candidate));
+      candidate.once("error", reject);
+    });
+    const expired = new Promise<number>((resolve) => client.once("close", resolve));
+    expect(await expired).toBe(1008);
+    const retryStatus = await new Promise<number>((resolve, reject) => {
+      const candidate = new WebSocket(wsUrl, "vite-hmr", { origin: "null" });
+      candidate.once("unexpected-response", (_request, response) => { resolve(response.statusCode ?? 0); response.destroy(); });
+      candidate.once("open", () => reject(new Error("expired preview unexpectedly reopened")));
+      candidate.once("error", () => undefined);
+    });
+    expect(retryStatus).toBe(404);
+    await app.close();
+    await new Promise<void>((resolve) => upstreamWss.close(() => resolve()));
+  });
+
+  it("bounds reconnects and revokes an open socket when its run completes normally", async () => {
+    const upstreamWss = new WebSocketServer({ port: 0, host: "127.0.0.1", perMessageDeflate: false });
+    await new Promise<void>((resolve) => upstreamWss.once("listening", resolve));
+    const upstreamAddress = upstreamWss.address();
+    if (typeof upstreamAddress === "string") throw new Error("missing upstream address");
+    const project = store.createProject({ label: "Completing preview", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Preview room" });
+    const agent = store.createAgent(project.id, { title: "Previewer", engine: "codex", conversationId: room.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      linkPreviewScheduling: { heartbeatMs: 1_000, maxReconnectsPerWindow: 2, reconnectWindowMs: 5_000 },
+    });
+    let finishRun!: () => void;
+    adapter.beforeResponse = () => new Promise<void>((resolve) => { finishRun = resolve; });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Serve until done" } });
+    await waitForSeedCount(1);
+    await expect.poll(() => typeof finishRun).toBe("function");
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    const runId = health.json<{ agents: Array<{ runtimeActivity?: { executionId: string } }> }>().agents[0]!.runtimeActivity!.executionId;
+    const registered = await app.inject({
+      method: "POST",
+      url: "/api/link-previews",
+      payload: { url: `http://127.0.0.1:${upstreamAddress.port}/`, projectId: project.id, agentId: agent.id, runId, conversationId: room.id },
+    });
+    const preview = registered.json<{ id: string }>();
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const appAddress = app.server.address();
+    if (!appAddress || typeof appAddress === "string") throw new Error("missing app address");
+    const wsUrl = `ws://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/`;
+    const connect = () => new Promise<WebSocket>((resolve, reject) => {
+      const client = new WebSocket(wsUrl, "vite-hmr", { origin: "null" });
+      client.once("open", () => resolve(client));
+      client.once("error", reject);
+    });
+    const first = await connect();
+    const firstClosed = new Promise<void>((resolve) => first.once("close", () => resolve()));
+    first.close();
+    await firstClosed;
+    const second = await connect();
+    const reconnectRejected = new Promise<number>((resolve, reject) => {
+      const client = new WebSocket(wsUrl, "vite-hmr", { origin: "null" });
+      client.once("unexpected-response", (_request, response) => { resolve(response.statusCode ?? 0); response.destroy(); });
+      client.once("open", () => reject(new Error("reconnect limit unexpectedly opened")));
+      client.once("error", () => undefined);
+    });
+    expect(await reconnectRejected).toBe(429);
+
+    const completedClose = new Promise<number>((resolve) => second.once("close", resolve));
+    finishRun();
+    await waitForRun(agent.id);
+    expect(await completedClose).toBe(1001);
+    await app.close();
+    for (const client of upstreamWss.clients) client.terminate();
+    await new Promise<void>((resolve) => upstreamWss.close(() => resolve()));
   });
 });
 
