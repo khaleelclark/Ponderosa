@@ -305,6 +305,9 @@ export const realApi: PonderosaApi = {
   listEngines() {
     return requestJson<EngineDto[]>("/api/engines");
   },
+  recheckEngine(engineId) {
+    return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}/recheck`, { method: "POST" });
+  },
   getEngineCapabilities(projectId) {
     return requestJson<ProjectEngineCapabilitiesDto[]>(`/api/projects/${encodeURIComponent(projectId)}/engine-capabilities`);
   },

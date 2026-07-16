@@ -31,6 +31,31 @@ beforeEach(() => {
 afterEach(() => opened.client.close());
 
 describe("Communication V3 central scheduler", () => {
+  it("leaves denied-runtime work queued without leasing or consuming attempts", async () => {
+    const now = Date.parse("2026-07-15T00:00:00.000Z");
+    store.enqueueMessageActivation({
+      projectId, agentId: agentA, messageId: "denied", kind: "human", payload: { text: "Wait" },
+      now: new Date(now).toISOString(),
+    });
+    let attempts = 0;
+    let blocked = true;
+    const scheduler = new CoordinationV3Scheduler(store, async () => {
+      attempts += 1;
+      return { accepted: true };
+    }, {
+      workerId: "scheduler",
+      now: () => now,
+      blockedAgentIds: () => blocked ? [agentA] : [],
+    });
+
+    expect(await scheduler.drainOnce()).toBe(0);
+    expect(attempts).toBe(0);
+    expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 1, activeRuns: 0 });
+    blocked = false;
+    expect(await scheduler.drainOnce()).toBe(1);
+    expect(attempts).toBe(1);
+  });
+
   it("tells requesters to consume joined outcomes without redundant updates", () => {
     const prompt = formatActivationPrompt({
       runId: "run", projectId, agentId: agentA, scopeKey: "conversation:test", fencingToken: 1,

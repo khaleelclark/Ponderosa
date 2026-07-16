@@ -8,9 +8,14 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { EngineAuthStatus } from "@ponderosa/core";
+import type { EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
 
 const execFileAsync = promisify(execFile);
+type AuthCommandRunner = (
+  bin: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string; stderr: string }>;
 
 const API_AUTH_DETAIL =
   "Codex is logged in with API-key/token auth; run `codex logout` then `codex login` for ChatGPT subscription auth";
@@ -74,6 +79,49 @@ export async function claudeAuthStatus(
     return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
   } catch {
     return { authenticated: false, detail: "run `claude` and sign in to your Claude Pro/Max account" };
+  }
+}
+
+/**
+ * Make one explicit, tool-free Claude request to prove current subscription
+ * entitlement. This is intentionally separate from auth polling: credential
+ * presence alone cannot prove that a lapsed subscription will accept work.
+ */
+export async function claudeAvailabilityStatus(
+  env: NodeJS.ProcessEnv = process.env,
+  run: AuthCommandRunner = execFileAsync,
+  readAuth: () => Promise<EngineAuthStatus> = () => claudeAuthStatus(env),
+): Promise<EngineAvailabilityStatus> {
+  const auth = await readAuth();
+  if (!auth.authenticated) return { available: false, detail: auth.detail };
+  const bin = env.PONDEROSA_CLAUDE_BIN ?? "claude";
+  try {
+    const { stdout } = await run(bin, [
+      "--print",
+      "--output-format", "json",
+      "--permission-mode", "dontAsk",
+      "--tools", "",
+      "--safe-mode",
+      "--no-session-persistence",
+      "Reply exactly PONDEROSA_RUNTIME_READY and do nothing else.",
+    ], {
+      env: { ...process.env, ...env },
+      timeout: 60_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    try {
+      const result = JSON.parse(stdout) as { is_error?: boolean; subtype?: string; error?: string };
+      if (result.is_error || result.subtype === "error") {
+        return { available: false, detail: result.error ?? "Claude rejected the subscription-backed test request" };
+      }
+    } catch {
+      if (!stdout.trim()) return { available: false, detail: "Claude returned no entitlement-test result" };
+    }
+    return { available: true, detail: "Claude accepted a subscription-backed test request" };
+  } catch (error) {
+    const failure = error as Error & { stderr?: string; stdout?: string };
+    const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message || String(error);
+    return { available: false, detail: detail.slice(0, 1_000) };
   }
 }
 

@@ -1128,7 +1128,7 @@ function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
   const manifest = run.providerInput!.sourceManifest;
   return <Box sx={{ mt: 0.75 }}>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-      Context {run.providerInput!.promptHash.slice(0, 12)} · {manifest.providerSessionDisposition.replaceAll("_", " ")} · {manifest.historyMessageCount} history · {manifest.activationIds.length} activation(s) · {manifest.artifactIds.length} artifact(s)
+      Context {run.providerInput!.promptHash.slice(0, 12)} · {manifest.providerSessionDisposition.replaceAll("_", " ")} · {manifest.historyMessageCount} submitted history · {manifest.schemaVersion === 2 ? `${manifest.retainedSessionSourceCount} retained-session source(s) · ` : ""}{manifest.activationIds.length} activation(s) · {manifest.artifactIds.length} artifact(s)
     </Typography>
     <Button size="small" sx={{ px: 0, minWidth: 0 }} onClick={() => setShowExact((value) => !value)}>
       {showExact ? "Hide exact provider input" : "Show exact provider input"}

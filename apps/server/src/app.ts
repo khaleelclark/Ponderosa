@@ -23,6 +23,7 @@ import type {
   ArtifactContentDto,
   ChatMessage,
   EngineAuthStatus,
+  EngineAvailabilityStatus,
   EngineDto,
   ProjectEngineCapabilitiesDto,
   ProjectFolderOptionsDto,
@@ -106,6 +107,7 @@ import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession 
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
+import { EngineAvailabilityStore } from "./engine-availability-store.js";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { UserReactionStore } from "./user-reactions.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
@@ -146,6 +148,7 @@ type LinkPreviewRegistration = {
 export interface EngineRegistration {
   adapter: Adapter;
   authStatus?: () => Promise<EngineAuthStatus>;
+  availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
 }
 
 export interface CreateServerOptions {
@@ -1381,12 +1384,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
-  // A credential file proves only that a login once existed. Provider-confirmed
-  // entitlement failures take precedence until a successful Run is observed.
-  // Recent evidence is rehydrated across restart and expires after a bounded
-  // quarantine so recovered provider access can be retried.
-  const engineRuntimeFailureTtlMs = 5 * 60_000;
-  const engineRuntimeFailures = new Map<string, { detail: string; observedAt: number }>();
+  const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
+  // Migrate pre-V3.1.3 provider evidence once. A credential file proves only
+  // that login existed; a later entitlement rejection remains authoritative
+  // until an explicit provider-backed probe or successful Run proves recovery.
   const latestRuntimeEvidence = new Map<string, { failure?: { detail: string; at: number }; successAt?: number }>();
   for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
     const evidence = latestRuntimeEvidence.get(agent.activeEngine) ?? {};
@@ -1400,16 +1401,69 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     latestRuntimeEvidence.set(agent.activeEngine, evidence);
   }
-  for (const [engineId, evidence] of latestRuntimeEvidence) if (evidence.failure &&
-      evidence.failure.at > (evidence.successAt ?? 0) && Date.now() - evidence.failure.at < engineRuntimeFailureTtlMs) {
-    engineRuntimeFailures.set(engineId, { detail: evidence.failure.detail, observedAt: evidence.failure.at });
+  for (const [engineId, evidence] of latestRuntimeEvidence) if (!engineAvailability.get(engineId) && evidence.failure &&
+      evidence.failure.at > (evidence.successAt ?? 0)) {
+    engineAvailability.record({
+      engineId,
+      available: false,
+      detail: evidence.failure.detail,
+      source: "legacy_recovery",
+      observedAt: new Date(evidence.failure.at).toISOString(),
+    });
   }
   const runtimeFailureDetail = (engineId: string): string | undefined => {
-    const failure = engineRuntimeFailures.get(engineId);
-    if (!failure) return undefined;
-    if (Date.now() - failure.observedAt < engineRuntimeFailureTtlMs) return failure.detail;
-    engineRuntimeFailures.delete(engineId);
-    return undefined;
+    const denial = engineAvailability.denial(engineId);
+    return denial ? denial.detail ?? "provider rejected runtime access" : undefined;
+  };
+  const runtimeStatus = async (
+    id: string,
+    registration: EngineRegistration,
+  ): Promise<{ configured: true; authenticated: boolean; available: boolean; authDetail?: string; availabilityDetail?: string }> => {
+    const auth = registration.authStatus
+      ? await engineAuthStatuses.get(id, registration.authStatus)
+      : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
+    const denial = runtimeFailureDetail(id);
+    return {
+      configured: true,
+      authenticated: auth.authenticated,
+      available: auth.authenticated && !denial,
+      ...(auth.detail ? { authDetail: auth.detail } : {}),
+      ...(!auth.authenticated
+        ? { availabilityDetail: auth.detail ?? "runtime is not authenticated" }
+        : denial ? { availabilityDetail: `provider rejected runtime access: ${denial}` }
+          : { availabilityDetail: "provider access available" }),
+    };
+  };
+  const engineDto = async (registration: EngineRegistration): Promise<EngineDto> => {
+    const { adapter } = registration;
+    let status: Awaited<ReturnType<typeof runtimeStatus>>;
+    try {
+      status = await runtimeStatus(adapter.id, registration);
+    } catch (error) {
+      status = {
+        configured: true,
+        authenticated: false,
+        available: false,
+        authDetail: error instanceof Error ? error.message : "auth status check failed",
+        availabilityDetail: "runtime authentication could not be checked",
+      };
+    }
+    const models = adapter.listModels();
+    return {
+      id: adapter.id,
+      displayName: adapter.displayName,
+      models: models.map((model) => ({
+        ...model,
+        ...(model.efforts !== undefined
+          ? { efforts: model.efforts }
+          : !adapter.modelSpecificEfforts || !model.id
+            ? { efforts: adapter.listEfforts(model.id || undefined) }
+            : {}),
+      })),
+      efforts: adapter.listEfforts(),
+      modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
+      ...status,
+    };
   };
   const engineCapabilityFingerprints = new Map<string, string>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
@@ -2368,6 +2422,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         return { accepted: true };
       },
+      blockedAgentIds: () => store.listProjects().flatMap((project) =>
+        store.listAgents(project.id)
+          .filter((candidate) => Boolean(engineAvailability.denial(candidate.activeEngine)))
+          .map((candidate) => candidate.id)),
       onMessageDeliveryChanged: publishMessageDeliveryChanged,
     },
   );
@@ -3803,19 +3861,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
     const runtimeStatuses = await Promise.all([...engines.entries()].map(async ([id, registration]) => {
       try {
-        const probed = registration.authStatus
-          ? await engineAuthStatuses.get(id, registration.authStatus)
-          : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
-        const runtimeFailure = runtimeFailureDetail(id);
-        const status = runtimeFailure
-          ? { authenticated: false, detail: `provider rejected runtime access: ${runtimeFailure}` }
-          : probed;
-        return { id, authenticated: status.authenticated, ...(status.detail ? { detail: status.detail } : {}) };
+        const status = await runtimeStatus(id, registration);
+        return {
+          id,
+          configured: true as const,
+          authenticated: status.authenticated,
+          available: status.available,
+          ...((status.available ? status.authDetail : status.availabilityDetail)
+            ? { detail: status.available ? status.authDetail : status.availabilityDetail }
+            : {}),
+        };
       } catch (error) {
-        return { id, authenticated: false, detail: `runtime check failed: ${error instanceof Error ? error.message : String(error)}` };
+        return {
+          id,
+          configured: true as const,
+          authenticated: false,
+          available: false,
+          detail: `runtime check failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
       }
     }));
-    const available = runtimeStatuses.filter((runtime) => runtime.authenticated).length;
+    const available = runtimeStatuses.filter((runtime) => runtime.available).length;
     const runtimes = {
       ok: available > 0,
       detail: engines.size === 0
@@ -6112,34 +6178,45 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...activationCommunicationEventIds,
         ...contextCommunicationEventIds,
       ])];
-      const manifestArtifactIds = history.flatMap((message) => message.attachments?.flatMap((item) => item.artifactId ? [item.artifactId] : []) ?? []);
+      const submittedHistory = resumeSessionId ? [] : history;
+      const manifestArtifactIds = [...new Set([...submittedHistory, ...contextMessages].flatMap((message) =>
+        message.attachments?.flatMap((item) => "artifactId" in item && item.artifactId ? [item.artifactId] : []) ?? []))];
+      const teamDirectoryDelivery = sessionEnvelope ? "submitted" as const : "retained_session" as const;
       const providerInputManifest = {
-        schemaVersion: 1 as const,
-        historyMessageCount: (resumeSessionId ? 0 : history.length) + contextMessages.length,
+        schemaVersion: 2 as const,
+        historyMessageCount: submittedHistory.length + contextMessages.length,
+        retainedSessionSourceCount: teamDirectoryDelivery === "retained_session" ? 1 : 0,
         activationIds: manifestActivationIds,
         communicationEventIds: manifestCommunicationEventIds,
         artifactIds: manifestArtifactIds,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
         providerSessionDisposition,
         sources: [
-          { kind: "identity" as const, ref: agent.id },
-          { kind: "team_directory" as const, ref: routingConversationId ?? agent.projectId, hash: organizationEnvelopeHash },
-          ...history.map((message, index) => ({
+          { kind: "identity" as const, ref: agent.id, delivery: "submitted" as const },
+          {
+            kind: "team_directory" as const,
+            ref: routingConversationId ?? agent.projectId,
+            hash: organizationEnvelopeHash,
+            delivery: teamDirectoryDelivery,
+          },
+          ...submittedHistory.map((message, index) => ({
             kind: "history_message" as const, ref: `${index}:${message.role}`,
+            delivery: "submitted" as const,
             hash: createHash("sha256").update(JSON.stringify(message)).digest("hex"),
             ...(message.createdAt ? { createdAt: message.createdAt } : {}),
           })),
           ...contextMessages.flatMap((message) => message.communicationEventId ? [{
             kind: "communication" as const,
             ref: message.communicationEventId,
+            delivery: "submitted" as const,
             hash: createHash("sha256").update(message.text).digest("hex"),
             createdAt: message.createdAt,
           }] : []),
-          ...manifestActivationIds.map((id) => ({ kind: "activation" as const, ref: id })),
+          ...manifestActivationIds.map((id) => ({ kind: "activation" as const, ref: id, delivery: "submitted" as const })),
           ...manifestCommunicationEventIds
             .filter((id) => !contextCommunicationEventIds.includes(id))
-            .map((id) => ({ kind: "communication" as const, ref: id })),
-          ...manifestArtifactIds.map((id) => ({ kind: "artifact" as const, ref: id })),
+            .map((id) => ({ kind: "communication" as const, ref: id, delivery: "submitted" as const })),
+          ...manifestArtifactIds.map((id) => ({ kind: "artifact" as const, ref: id, delivery: "submitted" as const })),
         ],
       };
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
@@ -6495,11 +6572,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             });
             if (runError) {
               if (classifyProviderFailure(runError) === "authentication") {
-                engineRuntimeFailures.set(agent.activeEngine, { detail: runError.slice(0, 1_000), observedAt: Date.now() });
+                engineAvailability.record({
+                  engineId: agent.activeEngine,
+                  available: false,
+                  detail: runError,
+                  source: "provider_run",
+                });
               }
               notifyManagerOfChildFailure(agent.id, runId, runError);
-            } else {
-              engineRuntimeFailures.delete(agent.activeEngine);
+            } else if (engineAvailability.denial(agent.activeEngine)) {
+              engineAvailability.record({
+                engineId: agent.activeEngine,
+                available: true,
+                detail: "provider Run completed successfully",
+                source: "provider_run",
+              });
             }
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
@@ -7309,42 +7396,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/engines", async (): Promise<EngineDto[]> => {
-    return Promise.all(
-      Array.from(engines.values()).map(async ({ adapter, authStatus }) => {
-        let status: EngineAuthStatus;
-        try {
-          const probed = authStatus
-            ? await engineAuthStatuses.get(adapter.id, authStatus)
-            : { authenticated: false };
-          const runtimeFailure = runtimeFailureDetail(adapter.id);
-          status = runtimeFailure
-            ? { authenticated: false, detail: `provider rejected runtime access: ${runtimeFailure}` }
-            : probed;
-        } catch (err) {
-          status = {
-            authenticated: false,
-            detail: err instanceof Error ? err.message : "auth status check failed",
-          };
-        }
-        const models = adapter.listModels();
-        return {
-          id: adapter.id,
-          displayName: adapter.displayName,
-          models: models.map((model) => ({
-            ...model,
-            ...(model.efforts !== undefined
-              ? { efforts: model.efforts }
-              : !adapter.modelSpecificEfforts || !model.id
-                ? { efforts: adapter.listEfforts(model.id || undefined) }
-                : {}),
-          })),
-          efforts: adapter.listEfforts(),
-          modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
-          authenticated: status.authenticated,
-          authDetail: status.detail,
-        };
-      }),
-    );
+    return Promise.all(Array.from(engines.values()).map(engineDto));
+  });
+
+  app.post<{ Params: { id: string } }>("/api/engines/:id/recheck", async (request, reply) => {
+    const registration = engines.get(request.params.id);
+    if (!registration) return reply.code(404).send({ error: "unknown engine" });
+    engineAuthStatuses.invalidate(request.params.id);
+    const auth = registration.authStatus
+      ? await engineAuthStatuses.get(request.params.id, registration.authStatus)
+      : { authenticated: true };
+    if (!auth.authenticated) return engineDto(registration);
+    if (!registration.availabilityProbe) {
+      return reply.code(409).send({ error: "this runtime does not provide an entitlement probe" });
+    }
+    let result: EngineAvailabilityStatus;
+    try {
+      result = await registration.availabilityProbe();
+    } catch (error) {
+      result = { available: false, detail: error instanceof Error ? error.message : String(error) };
+    }
+    engineAvailability.record({
+      engineId: request.params.id,
+      available: result.available,
+      ...(result.detail ? { detail: result.detail } : {}),
+      source: "operator_probe",
+    });
+    if (result.available) coordinationV3Scheduler.notify();
+    return engineDto(registration);
   });
 
   app.get<{ Params: { id: string } }>(

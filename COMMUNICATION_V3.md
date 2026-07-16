@@ -7,7 +7,7 @@ This contract is the scheduler and coordination source of truth. The executable
 request reducer lives in `packages/core/src/coordination-v3.ts`. Authorization,
 idempotency, and persistence surround that pure reducer.
 
-Communication V3.1.2 is unconditional. There is no executable V2 scheduler,
+Communication V3.1.3 is unconditional. There is no executable V2 scheduler,
 feature flag, migration reader, or compatibility delivery ledger. Deployments
 reset pre-cutover test data instead of replaying ambiguous scheduler state.
 
@@ -159,6 +159,13 @@ problem, satisfied join, new request, ordinary message, then passive progress.
 The scheduler coalesces compatible activations once, preserves every source ID,
 enforces centralized concurrency and fairness, and assigns a monotonically
 increasing fencing token to each lease.
+
+A provider-confirmed entitlement denial blocks scheduler leasing for every Agent
+configured on that engine without consuming delivery attempts or creating failed
+Runs. Authentication files remain configuration evidence only. The denial is
+durable across restarts and is cleared only by an explicit adapter-owned provider
+check or a successful provider Run; elapsed time and ordinary readiness polling
+cannot clear it.
 
 An explicit operator-selected Queue is a semantic turn boundary. Queued human
 communications are leased FIFO, exactly one per Run; compatible background

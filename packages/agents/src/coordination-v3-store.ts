@@ -1787,23 +1787,30 @@ export class CoordinationV3Store {
     now?: string;
     leaseMs?: number;
     coalesceLimit?: number;
+    /** Agents whose configured runtime has durable negative availability evidence. */
+    excludedAgentIds?: readonly string[];
   }): SchedulerLease | undefined {
     const now = input.now ?? new Date().toISOString();
     const leaseMs = input.leaseMs ?? 30_000;
     const limit = Math.max(1, Math.min(input.coalesceLimit ?? 8, 64));
+    const excludedAgentIds = [...new Set(input.excludedAgentIds ?? [])];
+    const excludedClause = excludedAgentIds.length
+      ? `AND a.agent_id NOT IN (${excludedAgentIds.map(() => "?").join(", ")})`
+      : "";
     return this.sqlite.transaction(() => {
       this.recoverExpiredUninjectedRuns(now);
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
+          ${excludedClause}
           AND NOT EXISTS (
             SELECT 1 FROM scheduler_runs r
             WHERE r.agent_id = a.agent_id AND r.status IN ('leased', 'running')
           )
         ORDER BY a.priority DESC, a.created_at, a.rowid
         LIMIT 1
-      `).get(now) as { agent_id: string; project_id: string; scope_key: string } | undefined;
+      `).get(now, ...excludedAgentIds) as { agent_id: string; project_id: string; scope_key: string } | undefined;
       if (!candidate) return undefined;
       const queuedActivations = this.sqlite.prepare(`
         SELECT * FROM agent_activations

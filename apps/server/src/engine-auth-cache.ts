@@ -38,4 +38,8 @@ export class EngineAuthStatusCache {
     this.entries.set(id, { expiresAt: now, pending });
     return pending;
   }
+
+  invalidate(id: string): void {
+    this.entries.delete(id);
+  }
 }

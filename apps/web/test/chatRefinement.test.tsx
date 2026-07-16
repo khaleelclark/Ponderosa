@@ -21,7 +21,7 @@ const baseMessage: ConversationMessageDto = {
 describe("chat interaction refinement", () => {
   it("shares selected authenticated runtime capabilities with Project and Team composer views", () => {
     const runtime = conversationComposerRuntime(
-      { id: "runtime-a", authenticated: true },
+      { id: "runtime-a", authenticated: true, available: true },
       [{
         engineId: "runtime-a",
         steering: true,
@@ -33,7 +33,7 @@ describe("chat interaction refinement", () => {
     );
     expect(runtime.commands.map((command) => command.name)).toEqual(["review"]);
     expect(runtime.capabilities.map((capability) => capability.id)).toEqual(["skill:review"]);
-    expect(conversationComposerRuntime({ id: "runtime-a", authenticated: false }, []).capabilities).toEqual([]);
+    expect(conversationComposerRuntime({ id: "runtime-a", authenticated: false, available: false }, []).capabilities).toEqual([]);
 
     const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(source).toContain("capabilities={composerRuntime.capabilities}");

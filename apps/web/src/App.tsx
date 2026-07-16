@@ -54,6 +54,7 @@ import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, 
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
 import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
+import { engineIsAvailable } from "./conversationEngine";
 
 export default function App({
   colorMode,
@@ -186,6 +187,16 @@ export default function App({
     },
   });
 
+  const recheckEngine = useMutation({
+    mutationFn: (engineId: string) => api.recheckEngine(engineId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<import("@ponderosa/core").EngineDto[]>(["engines"], (current) =>
+        current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
+      void queryClient.invalidateQueries({ queryKey: ["engines"] });
+      if (updated.available) setProjectDefaultEngine(updated.id);
+    },
+  });
+
   const updateProject = useMutation({
     mutationFn: () => api.updateProject(settingsProjectId!, { label: renamedProjectLabel.trim() }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["projects"] }); setProjectSettingsOpen(false); },
@@ -282,8 +293,8 @@ export default function App({
           </Typography>
           <Chip
             size="small"
-            label={engines.some((engine) => engine.authenticated) ? "Engine ready" : "Engine auth needed"}
-            color={engines.some((engine) => engine.authenticated) ? "success" : "warning"}
+            label={engines.some(engineIsAvailable) ? "Engine ready" : engines.some((engine) => engine.authenticated) ? "Engine unavailable" : "Engine auth needed"}
+            color={engines.some(engineIsAvailable) ? "success" : "warning"}
             variant="outlined"
             sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" } }}
           />
@@ -300,7 +311,7 @@ export default function App({
           <Tooltip title="Search chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><SearchIcon /></IconButton></Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()}><LanguageIcon /></IconButton></span></Tooltip>
-          <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
+          <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
           </Box>
@@ -315,7 +326,7 @@ export default function App({
             route={route}
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
-            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
+            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
@@ -348,7 +359,7 @@ export default function App({
               <Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 56, height: 56 }} />
               <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
               <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
+              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
             </Stack>
           </Box>
         ) : route.kind === "projects" ? (
@@ -356,7 +367,7 @@ export default function App({
             projects={projects}
             preferences={preferences}
             onNavigate={goHome}
-            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
+            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
             onPreferences={savePreferences}
           />
@@ -382,7 +393,7 @@ export default function App({
           route={route}
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
-          onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
+          onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
           onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
@@ -473,8 +484,24 @@ export default function App({
               fullWidth
             />
             <FormControl fullWidth><InputLabel id="project-default-engine-label">Default engine</InputLabel><Select labelId="project-default-engine-label" label="Default engine" value={projectDefaultEngine} onChange={(event) => setProjectDefaultEngine(event.target.value)}>
-              {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engine.authenticated}>{engine.displayName}{engine.authenticated ? "" : " — not signed in"}</MenuItem>)}
+              {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — unavailable" : " — not signed in"}</MenuItem>)}
             </Select></FormControl>
+            {engines.filter((engine) => engine.authenticated && !engineIsAvailable(engine)).map((engine) => <Alert
+              key={engine.id}
+              severity="warning"
+              action={<Button
+                color="inherit"
+                size="small"
+                disabled={recheckEngine.isPending}
+                onClick={() => {
+                  if (!window.confirm(`Test ${engine.displayName} access now? This sends one minimal subscription-backed request.`)) return;
+                  recheckEngine.mutate(engine.id);
+                }}
+              >{recheckEngine.isPending && recheckEngine.variables === engine.id ? "Testing…" : "Test access"}</Button>}
+            >
+              {engine.displayName} is configured but unavailable. {engine.availabilityDetail}
+            </Alert>)}
+            {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
             <FormControl fullWidth><InputLabel id="project-folder-mode-label">Working folder</InputLabel><Select labelId="project-folder-mode-label" label="Working folder" value={projectFolderMode} onChange={(event) => setProjectFolderMode(event.target.value as typeof projectFolderMode)}>
               <MenuItem value="none">No folder yet — use a private empty workspace</MenuItem>
               <MenuItem value="existing">Choose an existing folder</MenuItem>
