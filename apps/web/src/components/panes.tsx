@@ -160,10 +160,11 @@ export function canSubmitComposerText(input: {
 
 export function shouldShowQueueControl(input: {
   text: string;
+  hasAttachments: boolean;
   agentResponding: boolean;
   disabled: boolean;
 }): boolean {
-  return input.agentResponding && !input.disabled && input.text.trim().length > 0;
+  return input.agentResponding && !input.disabled && (input.text.trim().length > 0 || input.hasAttachments);
 }
 
 const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
@@ -1657,11 +1658,12 @@ export function Composer({
   };
   const send = () => submit(onSend);
   const queue = () => {
-    if (!onQueue || files.length > 0) return;
+    if (!onQueue) return;
     submit(onQueue);
   };
   const showQueue = Boolean(onQueue) && shouldShowQueueControl({
     text,
+    hasAttachments: files.length > 0,
     agentResponding: agentResponding || mentionedBusyHandles.length > 0,
     disabled,
   });
@@ -1836,12 +1838,12 @@ export function Composer({
           </Popper>
         </Box>
         {showQueue ? (
-          <Tooltip title={files.length > 0 ? "Attachments cannot be queued while the agent is responding" : "Send after the active response finishes"}>
+          <Tooltip title="Send after the active response finishes">
             <span>
               <Button
                 size="small"
                 variant="outlined"
-                disabled={!canSend || files.length > 0}
+                disabled={!canSend}
                 onClick={queue}
                 aria-label="Queue message"
                 sx={{ minHeight: 44 }}

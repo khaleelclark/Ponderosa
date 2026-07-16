@@ -3436,6 +3436,50 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("queues image-only follow-ups and reports their durable FIFO positions", async () => {
+    adapter.mode = "hang";
+    const { app, agent } = await createProjectAndAgent();
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "long" },
+    });
+    expect(first.statusCode).toBe(202);
+    await waitForSeedCount(1);
+
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const upload = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "follow-up.png" },
+      payload: png,
+    });
+    expect(upload.statusCode).toBe(201);
+    const attachmentId = upload.json<{ id: string }>().id;
+
+    const imageOnly = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "", attachmentIds: [attachmentId], activeRunDelivery: "queue" },
+    });
+    const textFollowUp = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "after the image", activeRunDelivery: "queue" },
+    });
+
+    expect(imageOnly.statusCode).toBe(202);
+    expect(imageOnly.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
+    expect(textFollowUp.statusCode).toBe(202);
+    expect(textFollowUp.json()).toMatchObject({ queued: true, position: 2, communicationEventId: expect.any(String) });
+    expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", text: "", attachments: [expect.objectContaining({ id: attachmentId })] }),
+      expect.objectContaining({ role: "user", text: "after the image" }),
+    ]));
+
+    await app.close();
+  });
+
   it("rejects file-browser path escapes", async () => {
     const { app, project } = await createProjectAndAgent();
     const res = await app.inject({

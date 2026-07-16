@@ -100,6 +100,131 @@ describe("composer clipboard attachments", () => {
     URL.revokeObjectURL = originalRevoke;
   });
 
+  it("queues an attachment-only draft while an agent is responding", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (value) => `blob:${(value as File).name}`;
+    URL.revokeObjectURL = () => undefined;
+    let queuedText: string | undefined;
+    let queuedFiles: File[] = [];
+    const view = renderComposer(
+      <Composer
+        disabled={false}
+        running={false}
+        agentResponding
+        onSend={() => undefined}
+        onQueue={(text, files) => {
+          queuedText = text;
+          queuedFiles = files;
+        }}
+      />,
+    );
+    const image = file("follow-up.png", "image/png");
+    pasteTarget(view).props.onPaste(clipboard([image]));
+
+    const queue = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")[0]!;
+    expect(queue.props.disabled).not.toBe(true);
+    queue.props.onClick();
+    await Promise.resolve();
+
+    expect(queuedText).toBe("");
+    expect(queuedFiles).toEqual([image]);
+    view.unmount();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
+
+  it("returns from Queue to ordinary Send after canonical busy state reconnects as available", async () => {
+    let sent: { text: string; files: File[] } | undefined;
+    const queryClient = new QueryClient();
+    const composer = (agentResponding: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <Composer
+          disabled={false}
+          running={false}
+          agentResponding={agentResponding}
+          onSend={(text, files) => { sent = { text, files }; }}
+          onQueue={() => undefined}
+        />
+      </QueryClientProvider>
+    );
+    const view = create(composer(true));
+    const textarea = pasteTarget(view);
+    textarea.props.onChange({ target: { value: "keep this draft", selectionStart: 15 } });
+
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")).toHaveLength(1);
+    expect(textarea.props.inputProps["aria-label"]).toBe("Message");
+    expect(textarea.props.inputProps.enterKeyHint).toBe("send");
+
+    view.update(composer(false));
+    const reconnectedTextarea = pasteTarget(view);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")).toHaveLength(0);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")).toHaveLength(1);
+    expect(reconnectedTextarea.props.value).toBe("keep this draft");
+    expect(reconnectedTextarea.props.inputProps["aria-label"]).toBe("Message");
+    expect(reconnectedTextarea.props.inputProps.enterKeyHint).toBe("send");
+
+    let prevented = 0;
+    reconnectedTextarea.props.onKeyDown({
+      key: "Enter", shiftKey: false, repeat: false, metaKey: false, ctrlKey: false,
+      nativeEvent: { isComposing: true }, preventDefault: () => { prevented += 1; },
+    });
+    expect(sent).toBeUndefined();
+    expect(prevented).toBe(0);
+
+    reconnectedTextarea.props.onKeyDown({
+      key: "Enter", shiftKey: false, repeat: false, metaKey: false, ctrlKey: false,
+      nativeEvent: { isComposing: false }, preventDefault: () => { prevented += 1; },
+    });
+    await Promise.resolve();
+    expect(prevented).toBe(1);
+    expect(sent).toEqual({ text: "keep this draft", files: [] });
+    view.unmount();
+  });
+
+  it("preserves queued text and attachments after failure so the draft can be retried", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (value) => `blob:${(value as File).name}`;
+    URL.revokeObjectURL = () => undefined;
+    const attempts: Array<{ text: string; files: File[] }> = [];
+    let rejectFirst: ((reason: Error) => void) | undefined;
+    const firstAttempt = new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+    const view = renderComposer(
+      <Composer
+        disabled={false}
+        running={false}
+        agentResponding
+        onSend={() => undefined}
+        onQueue={(text, files) => {
+          attempts.push({ text, files });
+          return attempts.length === 1 ? firstAttempt : Promise.resolve();
+        }}
+      />,
+    );
+    const image = file("retry.png", "image/png");
+    const textarea = pasteTarget(view);
+    textarea.props.onChange({ target: { value: "after this", selectionStart: 10 } });
+    textarea.props.onPaste(clipboard([image]));
+    view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")[0]!.props.onClick();
+    rejectFirst!(new Error("temporary queue failure"));
+    await firstAttempt.catch(() => undefined);
+    await Promise.resolve();
+
+    expect(pasteTarget(view).props.value).toBe("after this");
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Remove retry.png").length).toBeGreaterThan(0);
+    view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")[0]!.props.onClick();
+    await Promise.resolve();
+
+    expect(attempts).toEqual([
+      { text: "after this", files: [image] },
+      { text: "after this", files: [image] },
+    ]);
+    view.unmount();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
+
   it("atomically caps rapid paste events at the 24 MiB aggregate and exposes rejection", async () => {
     const originalCreate = URL.createObjectURL;
     const originalRevoke = URL.revokeObjectURL;
