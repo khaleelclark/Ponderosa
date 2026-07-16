@@ -173,6 +173,7 @@ export interface PonderosaApi {
   deleteTrigger(triggerId: string): Promise<void>;
   rotateTriggerSecret(triggerId: string): Promise<CreateTriggerResponse>;
   listTriggerOccurrences(triggerId: string, limit?: number): Promise<TriggerOccurrenceDto[]>;
+  listAgentTriggerOccurrences(agentId: string, limit?: number): Promise<TriggerOccurrenceDto[]>;
   listEngines(): Promise<EngineDto[]>;
   recheckEngine(engineId: string): Promise<EngineDto>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;

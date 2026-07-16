@@ -11,6 +11,35 @@ afterEach(() => {
 });
 
 describe("Communication V3 agent deletion", () => {
+  it("atomically removes chat-owned Triggers and cancels their pending work when deleting a Project chat", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-v3-trigger-chat-delete-"));
+    directories.push(directory);
+    const agents = new AgentStore(directory);
+    try {
+      const project = agents.createProject({ label: "Trigger chat", hostPath: "/repo" });
+      const chat = agents.createConversation(project.id, { title: "Automation" });
+      const agent = agents.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: chat.id });
+      const coordination = new CoordinationV3Store(agents.sqlite);
+      coordination.createTriggerDefinition({
+        id: "chat-trigger", projectId: project.id, conversationId: chat.id, agentId: agent.id,
+        name: "Chat trigger", instructions: "Handle it", sourceKind: "webhook",
+        sourceConfig: { replayWindowSeconds: 300 },
+      });
+      const occurrence = coordination.recordTriggerOccurrence({
+        triggerId: "chat-trigger", occurrenceKey: "delivery", payload: {}, provenance: { source: "test" },
+      });
+      expect(agents.deleteConversation(chat.id, (agentId, conversationId) => {
+        coordination.handleAgentConversationRemoval(agentId, conversationId);
+      })).toBe(true);
+      expect(coordination.getTriggerDefinition("chat-trigger")).toBeUndefined();
+      expect(coordination.getTriggerOccurrence(occurrence.occurrenceId)?.state).toBe("cancelled");
+      expect(coordination.schedulerMetrics()).toMatchObject({ pendingActivations: 0 });
+      expect(agents.getAgent(agent.id)?.conversationIds).toEqual([]);
+    } finally {
+      agents.close();
+    }
+  });
+
   it("settles only the removed Team Chat scope when an Agent has multiple memberships", () => {
     const directory = mkdtempSync(join(tmpdir(), "ponderosa-v3-membership-delete-"));
     directories.push(directory);

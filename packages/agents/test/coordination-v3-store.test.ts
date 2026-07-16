@@ -1316,6 +1316,15 @@ describe("CoordinationV3Store scheduler", () => {
     const first = store.recordTriggerOccurrence(input);
     expect(first).toMatchObject({ state: "activated", replayed: false, activationId: expect.any(String) });
     expect(store.recordTriggerOccurrence(input)).toEqual({ ...first, replayed: true });
+    store.updateTriggerDefinition("github:push", { instructions: "Use the edited instructions" });
+    expect(store.recordTriggerOccurrence({
+      ...input,
+      provenance: { source: "github", deliveryId: "delivery-1", remoteAddress: "127.0.0.2" },
+      now: "2026-07-15T00:05:00.000Z",
+    })).toEqual({ ...first, replayed: true });
+    expect(store.getTriggerOccurrence(first.occurrenceId)?.triggerSnapshot).toMatchObject({
+      instructions: "Handle this occurrence safely.",
+    });
     expect(store.activeRunCount()).toBe(0);
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM trigger_occurrences").get()).toEqual({ count: 1 });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
@@ -1403,6 +1412,18 @@ describe("CoordinationV3Store scheduler", () => {
     })).toThrow("disabled");
     expect(store.deleteTriggerDefinition("webhook:disable")).toBe(true);
     expect(store.getTriggerOccurrence(occurrence.occurrenceId)).toMatchObject({ state: "cancelled" });
+  });
+
+  it("fences an attached Trigger Run if the definition is disabled before injection", () => {
+    createTrigger("webhook:fence");
+    store.recordTriggerOccurrence({
+      triggerId: "webhook:fence", occurrenceKey: "delivery", payload: {}, provenance: { source: "test" },
+    });
+    const lease = store.leaseNextRun({ workerId: "worker" })!;
+    store.updateTriggerDefinition("webhook:fence", { enabled: false });
+    expect(() => store.markPromptSubmitted({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+    })).toThrow("disabled or deleted");
   });
 
   it("recovers a pre-injection lease after a process restart", () => {

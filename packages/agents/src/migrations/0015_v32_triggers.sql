@@ -63,14 +63,31 @@ INSERT INTO trigger_occurrences (
 SELECT
   id, trigger_id, occurrence_key, project_id, agent_id, scope_key,
   payload_json, provenance_json, input_hash, activation_config_json,
-  CASE WHEN state = 'debounced' THEN 'cancelled' ELSE state END,
+  CASE WHEN state IN ('pending', 'debounced') THEN 'cancelled' ELSE state END,
   attempts, available_at, activation_id, last_error, occurred_at,
   created_at, updated_at,
-  CASE WHEN state = 'debounced' THEN updated_at ELSE NULL END,
+  CASE WHEN state IN ('pending', 'debounced') THEN updated_at ELSE NULL END,
   dead_lettered_at
 FROM trigger_occurrences_v31;
 
 DROP TABLE trigger_occurrences_v31;
+
+-- V3.1 contained no user-owned Trigger definitions. Any legacy Activation that
+-- has not begun therefore has no authorized V3.2 owner/instructions and must
+-- fail closed instead of executing an empty snapshot after upgrade.
+UPDATE agent_activations
+SET state = 'cancelled', terminal_outcome = NULL, terminal_at = updated_at,
+    last_delivery_error = 'legacy Trigger intake cancelled at V3.2 cutover'
+WHERE state IN ('pending', 'retry_pending') AND id IN (
+  SELECT activation_id FROM trigger_occurrences WHERE activation_id IS NOT NULL
+);
+
+UPDATE trigger_occurrences
+SET state = 'cancelled', cancelled_at = updated_at,
+    last_error = 'legacy Trigger intake cancelled at V3.2 cutover'
+WHERE state = 'activated' AND activation_id IN (
+  SELECT id FROM agent_activations WHERE state = 'cancelled'
+);
 
 CREATE INDEX trigger_occurrences_due
   ON trigger_occurrences(state, available_at, id)

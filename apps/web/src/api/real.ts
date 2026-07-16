@@ -320,6 +320,9 @@ export const realApi: PonderosaApi = {
   listTriggerOccurrences(triggerId, limit = 100) {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/occurrences?limit=${encodeURIComponent(String(limit))}`);
   },
+  listAgentTriggerOccurrences(agentId, limit = 100) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/trigger-occurrences?limit=${encodeURIComponent(String(limit))}`);
+  },
   listEngines() {
     return requestJson<EngineDto[]>("/api/engines");
   },

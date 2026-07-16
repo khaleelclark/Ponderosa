@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 /** Host-local envelope encryption for durable webhook signing secrets. The key
@@ -11,6 +11,9 @@ export class TriggerSecretStore {
     mkdirSync(dataDir, { recursive: true });
     const keyPath = path.join(dataDir, "trigger-secrets.key");
     try {
+      const keyStat = statSync(keyPath);
+      if (!keyStat.isFile()) throw new Error("Trigger secret encryption key must be a regular file");
+      if ((keyStat.mode & 0o077) !== 0) throw new Error("Trigger secret encryption key must be owner-only (0600)");
       this.key = readFileSync(keyPath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

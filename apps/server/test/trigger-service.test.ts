@@ -1,10 +1,11 @@
 import { createHmac } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "../src/trigger-service.js";
+import { TriggerSecretStore } from "../src/trigger-secrets.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -30,6 +31,16 @@ function setup(now: Date) {
 }
 
 describe("V3.2 Trigger sources", () => {
+  it("keeps webhook encryption keys owner-only", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-trigger-key-"));
+    directories.push(directory);
+    const store = new TriggerSecretStore(directory);
+    const generated = store.create();
+    expect(generated.ciphertext).not.toContain(generated.secret);
+    chmodSync(join(directory, "trigger-secrets.key"), 0o644);
+    expect(() => new TriggerSecretStore(directory)).toThrow("owner-only");
+  });
+
   it("validates schedules and filesystem bundling bounds", () => {
     const now = new Date("2026-07-16T12:00:00.000Z");
     expect(normalizeTriggerSourceConfig("schedule", {
@@ -60,7 +71,9 @@ describe("V3.2 Trigger sources", () => {
       const intake = { triggerId: trigger.id, eventId: "delivery-1", timestamp, signature, rawBody, payload: { action: "opened" } };
       expect(context.service.verifyAndRecordWebhook(intake)).toMatchObject({ replayed: false });
       expect(context.service.verifyAndRecordWebhook(intake)).toMatchObject({ replayed: true });
-      expect(context.notifications()).toBe(2);
+      expect(context.notifications()).toBe(1);
+      context.coordination.updateTriggerDefinition(trigger.id, { instructions: "Use the edited instructions" });
+      expect(context.service.verifyAndRecordWebhook({ ...intake, remoteAddress: "127.0.0.2" })).toMatchObject({ replayed: true });
       expect(() => context.service.verifyAndRecordWebhook({ ...intake, rawBody: Buffer.from('{"action":"closed"}'), payload: { action: "closed" } }))
         .toThrow("invalid webhook signature");
       expect(() => context.service.verifyAndRecordWebhook({ ...intake, eventId: "delivery-2" }))

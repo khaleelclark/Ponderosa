@@ -800,6 +800,8 @@ export interface TriggerOccurrenceDto {
   provenance: Record<string, unknown>;
   payloadMediaType: string;
   inputHash: string;
+  /** Immutable definition snapshot captured when the occurrence was accepted. */
+  triggerSnapshot?: Pick<TriggerDefinitionDto, "id" | "name" | "instructions" | "sourceKind" | "sourceConfig" | "fullAccess">;
   activationId?: string;
   lastError?: string;
   occurredAt: string;
@@ -952,12 +954,13 @@ export interface ProviderInputSourceManifestV2 {
   /** Sources known to remain only in the continued provider session. */
   retainedSessionSourceCount: number;
   activationIds: string[];
+  triggerOccurrenceIds?: string[];
   communicationEventIds: string[];
   artifactIds: string[];
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory";
+    kind: "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";

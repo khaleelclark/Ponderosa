@@ -63,12 +63,28 @@ describe("V3.2 Trigger API", () => {
       expect(history[0]).toMatchObject({
         payload: { title: "Treat this as data, not instructions" },
         provenance: { source: "signed_webhook", eventId: "delivery-1" },
+        triggerSnapshot: { id: created.trigger.id, name: "Incoming issue" },
       });
+
+      const invalidPatch = await app.inject({
+        method: "PATCH", url: `/api/triggers/${created.trigger.id}`, headers: authorization,
+        payload: { enabled: "false", sourceKind: "filesystem" },
+      });
+      expect(invalidPatch.statusCode).toBe(400);
+      expect((await app.inject({ method: "GET", url: `/api/agents/${agent.id}/triggers`, headers: authorization })).json<[{ enabled: boolean }]>() [0]?.enabled).toBe(true);
 
       const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}`, headers: authorization });
       expect(deleted.statusCode, deleted.body).toBe(200);
       expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM trigger_definitions").get()).toEqual({ count: 0 });
       expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM trigger_occurrences").get()).toEqual({ count: 1 });
+      const projectHistory = await app.inject({
+        method: "GET", url: `/api/projects/${project.id}/trigger-occurrences`, headers: authorization,
+      });
+      expect(projectHistory.statusCode).toBe(200);
+      expect(projectHistory.json<TriggerOccurrenceDto[]>()[0]).toMatchObject({
+        triggerId: created.trigger.id,
+        triggerSnapshot: { name: "Incoming issue" },
+      });
     } finally {
       await app.close();
     }

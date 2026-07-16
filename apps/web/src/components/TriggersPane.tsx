@@ -25,7 +25,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDto, CreateTriggerRequest, TriggerDefinitionDto, TriggerSourceKind } from "@ponderosa/core";
+import type { AgentDto, CreateTriggerRequest, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceKind } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -40,11 +40,34 @@ function lines(value: string): string[] {
   return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
 }
 
+function OccurrenceAudit({ occurrence }: { occurrence: TriggerOccurrenceDto }): JSX.Element {
+  return <Box sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
+    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+      <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
+      <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
+    </Stack>
+    {occurrence.lastError ? <Typography variant="caption" color="error" display="block">{occurrence.lastError}</Typography> : null}
+    <Box component="details" sx={{ mt: 0.5 }}>
+      <Typography component="summary" variant="caption" sx={{ cursor: "pointer" }}>Inspect payload and provenance</Typography>
+      <Alert severity="warning" sx={{ mt: 1 }}>Occurrence data is untrusted and may contain sensitive external content.</Alert>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Input hash: {occurrence.inputHash}</Typography>
+      <Typography variant="caption" sx={{ fontWeight: 700 }}>Definition snapshot</Typography>
+      <Box component="pre" sx={{ m: 0, p: 1, overflow: "auto", fontSize: 12, bgcolor: "action.hover" }}>{JSON.stringify(occurrence.triggerSnapshot ?? {}, null, 2)}</Box>
+      <Typography variant="caption" sx={{ fontWeight: 700 }}>Payload</Typography>
+      <Box component="pre" sx={{ m: 0, p: 1, overflow: "auto", fontSize: 12, bgcolor: "action.hover" }}>{JSON.stringify(occurrence.payload, null, 2)}</Box>
+      <Typography variant="caption" sx={{ fontWeight: 700 }}>Provenance</Typography>
+      <Box component="pre" sx={{ m: 0, p: 1, overflow: "auto", fontSize: 12, bgcolor: "action.hover" }}>{JSON.stringify(occurrence.provenance, null, 2)}</Box>
+    </Box>
+  </Box>;
+}
+
 export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
   const queryKey = ["triggers", agent.id] as const;
   const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<TriggerDefinitionDto>();
   const [secret, setSecret] = useState<{ trigger: TriggerDefinitionDto; value: string }>();
   const [expandedId, setExpandedId] = useState<string>();
   const [name, setName] = useState("");
@@ -65,22 +88,54 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     if (!agent.conversationIds.includes(conversationId)) setConversationId(agent.conversationId ?? agent.conversationIds[0] ?? "");
   }, [agent, conversationId]);
 
+  const sourceConfig = (): CreateTriggerRequest["sourceConfig"] => {
+    if (sourceKind === "webhook") return { replayWindowSeconds: 300 };
+    if (sourceKind === "filesystem") return {
+      include: lines(include), exclude: lines(exclude),
+      quietMs: Math.round(Number(quietSeconds) * 1_000),
+      maxWindowMs: Math.round(Number(maxWindowSeconds) * 1_000),
+    };
+    if (scheduleKind === "once") return { scheduleKind: "once", at: new Date(onceAt).toISOString() };
+    if (scheduleKind === "cron") return { scheduleKind: "cron", expression: cronExpression, timezone };
+    return { scheduleKind: "interval", everyMs: Math.round(Number(intervalMinutes) * 60_000), startsAt: new Date().toISOString() };
+  };
+
+  const resetEditor = (): void => {
+    setEditing(undefined);
+    setName("");
+    setInstructions("");
+    setConversationId(agent.conversationId ?? agent.conversationIds[0] ?? "");
+    setSourceKind("schedule");
+    setScheduleKind("interval");
+    setOnceAt(localFuture());
+    setIntervalMinutes("60");
+  };
+
+  const openEditor = (trigger: TriggerDefinitionDto): void => {
+    setEditing(trigger);
+    setName(trigger.name);
+    setInstructions(trigger.instructions);
+    setConversationId(trigger.conversationId);
+    setSourceKind(trigger.sourceKind);
+    if (trigger.sourceKind === "schedule") {
+      const config = trigger.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>;
+      setScheduleKind(config.scheduleKind);
+      if (config.scheduleKind === "once") setOnceAt(config.at.slice(0, 16));
+      else if (config.scheduleKind === "interval") setIntervalMinutes(String(config.everyMs / 60_000));
+      else { setCronExpression(config.expression); setTimezone(config.timezone); }
+    } else if (trigger.sourceKind === "filesystem") {
+      const config = trigger.sourceConfig as { include: string[]; exclude: string[]; quietMs: number; maxWindowMs: number };
+      setInclude(config.include.join("\n"));
+      setExclude(config.exclude.join("\n"));
+      setQuietSeconds(String(config.quietMs / 1_000));
+      setMaxWindowSeconds(String(config.maxWindowMs / 1_000));
+    }
+    setCreateOpen(true);
+  };
+
   const create = useMutation({
     mutationFn: async () => {
-      let sourceConfig: CreateTriggerRequest["sourceConfig"];
-      if (sourceKind === "webhook") sourceConfig = { replayWindowSeconds: 300 };
-      else if (sourceKind === "filesystem") sourceConfig = {
-        include: lines(include), exclude: lines(exclude),
-        quietMs: Math.round(Number(quietSeconds) * 1_000),
-        maxWindowMs: Math.round(Number(maxWindowSeconds) * 1_000),
-      };
-      else if (scheduleKind === "once") sourceConfig = { scheduleKind: "once", at: new Date(onceAt).toISOString() };
-      else if (scheduleKind === "cron") sourceConfig = { scheduleKind: "cron", expression: cronExpression, timezone };
-      else sourceConfig = {
-        scheduleKind: "interval", everyMs: Math.round(Number(intervalMinutes) * 60_000),
-        startsAt: new Date().toISOString(),
-      };
-      return api.createTrigger(agent.id, { conversationId, name, instructions, sourceKind, sourceConfig });
+      return api.createTrigger(agent.id, { conversationId, name, instructions, sourceKind, sourceConfig: sourceConfig() });
     },
     onSuccess: (response) => {
       void queryClient.invalidateQueries({ queryKey });
@@ -88,6 +143,14 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
       setName("");
       setInstructions("");
       if (response.webhookSecret) setSecret({ trigger: response.trigger, value: response.webhookSecret });
+    },
+  });
+  const saveEdit = useMutation({
+    mutationFn: () => api.updateTrigger(editing!.id, { name, instructions, sourceConfig: sourceConfig() }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey });
+      setCreateOpen(false);
+      setEditing(undefined);
     },
   });
   const update = useMutation({
@@ -110,6 +173,11 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     queryFn: () => api.listTriggerOccurrences(expandedId!, 50),
     enabled: Boolean(expandedId),
   });
+  const allOccurrences = useQuery({
+    queryKey: ["agent-trigger-occurrences", agent.id],
+    queryFn: () => api.listAgentTriggerOccurrences(agent.id, 100),
+  });
+  const deletedTriggerOccurrences = (allOccurrences.data ?? []).filter((occurrence) => !(triggers.data ?? []).some((trigger) => trigger.id === occurrence.triggerId));
 
   const copy = async (value: string): Promise<void> => {
     await navigator.clipboard.writeText(value);
@@ -125,7 +193,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
           <Typography variant="h6">Triggers</Typography>
           <Typography variant="body2" color="text.secondary">Each Trigger belongs to this Agent and one of its Project chats. Work is always queued.</Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} disabled={agent.conversationIds.length === 0} onClick={() => setCreateOpen(true)}>New Trigger</Button>
+        <Button variant="contained" startIcon={<AddIcon />} disabled={agent.conversationIds.length === 0} onClick={() => { resetEditor(); setCreateOpen(true); }}>New Trigger</Button>
       </Stack>
       {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating a Trigger.</Alert> : null}
       {triggers.isLoading ? <Typography color="text.secondary">Loading Triggers…</Typography> : null}
@@ -139,12 +207,14 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
             <Chip size="small" color={trigger.enabled ? "success" : "default"} label={trigger.enabled ? "Enabled" : "Disabled"} />
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
           {trigger.nextFireAt ? <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Next: {new Date(trigger.nextFireAt).toLocaleString()}</Typography> : null}
           {trigger.webhookPath ? <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, overflowWrap: "anywhere" }}>Webhook: {trigger.webhookPath} · secret {trigger.secretFingerprint}</Typography> : null}
         </CardContent>
         <CardActions sx={{ flexWrap: "wrap" }}>
           <FormControlLabel control={<Switch checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "On" : "Off"} />
           <Button size="small" onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide history" : "History"}</Button>
+          <Button size="small" onClick={() => openEditor(trigger)}>Edit</Button>
           {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => {
             if (window.confirm("Rotate this webhook secret? Existing senders will stop working immediately.")) rotate.mutate(trigger);
           }}>Rotate secret</Button> : null}
@@ -155,29 +225,29 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
         <Collapse in={expandedId === trigger.id}>
           <Box sx={{ px: 2, pb: 2 }}>
             {occurrences.isLoading ? <Typography variant="body2">Loading history…</Typography> : null}
-            {(occurrences.data ?? []).map((occurrence) => <Box key={occurrence.id} sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
-              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
-                <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
-              </Stack>
-              {occurrence.lastError ? <Typography variant="caption" color="error">{occurrence.lastError}</Typography> : null}
-            </Box>)}
+            {(occurrences.data ?? []).map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} />)}
             {(occurrences.data ?? []).length === 0 && !occurrences.isLoading ? <Typography variant="body2" color="text.secondary">No occurrences recorded.</Typography> : null}
           </Box>
         </Collapse>
       </Card>)}
+      {deletedTriggerOccurrences.length ? <Card variant="outlined">
+        <CardContent>
+          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Trigger history</Typography>
+          <Typography variant="body2" color="text.secondary">Immutable occurrence records remain inspectable after their Trigger is deleted.</Typography>
+          {deletedTriggerOccurrences.map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} />)}
+        </CardContent>
+      </Card> : null}
     </Stack>
 
-    <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="sm">
-      <DialogTitle>Create Trigger</DialogTitle>
+    <Dialog open={createOpen} onClose={() => { setCreateOpen(false); setEditing(undefined); }} fullWidth maxWidth="sm">
+      <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
           <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
           <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-          <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{id === agent.conversationId ? `Primary · ${id}` : id}</MenuItem>)}</Select></FormControl>
-          <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed webhook</MenuItem><MenuItem value="filesystem">Project folder changes</MenuItem></Select></FormControl>
+          <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{id === agent.conversationId ? `Primary · ${id}` : id}</MenuItem>)}</Select></FormControl>
+          <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed webhook</MenuItem><MenuItem value="filesystem">Project folder changes</MenuItem></Select></FormControl>
           {sourceKind === "schedule" ? <>
             <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
             {scheduleKind === "interval" ? <TextField label="Every (minutes)" type="number" value={intervalMinutes} onChange={(event) => setIntervalMinutes(event.target.value)} inputProps={{ min: 1 }} /> : null}
@@ -186,10 +256,10 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
           </> : null}
           {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
           {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
-          {create.isError ? <Alert severity="error">{create.error.message}</Alert> : null}
+          {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => setCreateOpen(false)}>Cancel</Button><Button variant="contained" disabled={create.isPending || !name.trim() || !instructions.trim() || !conversationId} onClick={() => create.mutate()}>{create.isPending ? "Creating…" : "Create Trigger"}</Button></DialogActions>
+      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save changes" : "Create Trigger"}</Button></DialogActions>
     </Dialog>
 
     <Dialog open={Boolean(secret)} onClose={() => setSecret(undefined)} fullWidth maxWidth="sm">

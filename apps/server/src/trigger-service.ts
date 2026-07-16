@@ -88,7 +88,9 @@ export function normalizeTriggerSourceConfig(
 interface FileBurst {
   startedAt: string;
   lastAt: string;
-  events: Array<{ path: string; type: string; at: string }>;
+  eventCount: number;
+  changes: Map<string, Set<string>>;
+  droppedPathEventCount: number;
   quietTimer: NodeJS.Timeout;
   maxTimer: NodeJS.Timeout;
 }
@@ -98,6 +100,8 @@ export class TriggerSourceService {
   private readonly watchers = new Map<string, { watcher: FSWatcher; configKey: string; ready: Promise<void> }>();
   private readonly bursts = new Map<string, FileBurst>();
   private scheduleTimer?: NodeJS.Timeout;
+  private refreshChain: Promise<void> = Promise.resolve();
+  private stopping = false;
 
   constructor(private readonly options: {
     store: AgentStore;
@@ -111,12 +115,14 @@ export class TriggerSourceService {
 
   async start(): Promise<void> {
     await this.refresh();
-    this.scheduleTimer = setInterval(() => { void this.processDueSchedules(); }, 1_000);
+    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => undefined); }, 1_000);
     this.scheduleTimer.unref();
     await this.processDueSchedules();
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    await this.refreshChain;
     if (this.scheduleTimer) clearInterval(this.scheduleTimer);
     this.scheduleTimer = undefined;
     for (const burst of this.bursts.values()) {
@@ -129,8 +135,22 @@ export class TriggerSourceService {
   }
 
   async refresh(): Promise<void> {
+    if (this.stopping) return;
+    const operation = this.refreshChain.then(() => this.refreshNow());
+    this.refreshChain = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async refreshNow(): Promise<void> {
+    if (this.stopping) return;
     const desired = new Map(this.options.coordination.listTriggerDefinitions()
-      .filter((trigger) => trigger.enabled && trigger.sourceKind === "filesystem")
+      .filter((trigger) => {
+        const agent = this.options.store.getAgent(trigger.agentId);
+        const conversation = this.options.store.getConversation(trigger.conversationId);
+        return trigger.enabled && trigger.sourceKind === "filesystem" && Boolean(
+          agent && !agent.archived && conversation && !conversation.archived && agent.conversationIds.includes(conversation.id),
+        );
+      })
       .map((trigger) => [trigger.id, trigger]));
     for (const [id, active] of this.watchers) {
       const trigger = desired.get(id);
@@ -147,9 +167,23 @@ export class TriggerSourceService {
       const config = trigger.sourceConfig as TriggerFilesystemConfig;
       const include = picomatch(config.include, { dot: true });
       const exclude = picomatch(config.exclude, { dot: true });
-      const watcher = watch(project.hostPath, { ignoreInitial: true, persistent: true, followSymlinks: false });
+      const watcher = watch(project.hostPath, {
+        ignoreInitial: true,
+        persistent: true,
+        followSymlinks: false,
+        ignored: (candidate) => {
+          const relative = path.relative(project.hostPath, candidate).split(path.sep).join("/");
+          return Boolean(relative && !relative.startsWith("../") && (exclude(relative) || exclude(`${relative}/`)));
+        },
+      });
       const ready = new Promise<void>((resolve) => watcher.once("ready", resolve));
-      watcher.on("error", () => undefined);
+      watcher.on("error", () => {
+        // Fail closed and make the inert source visible as disabled instead of
+        // silently presenting an enabled automation that cannot observe files.
+        this.options.coordination.updateTriggerDefinition(trigger.id, { enabled: false });
+        this.options.notify(trigger.id);
+        void this.refresh().catch(() => undefined);
+      });
       watcher.on("all", (event, changedPath) => {
         const relative = path.relative(project.hostPath, changedPath).split(path.sep).join("/");
         if (!relative || relative.startsWith("../") || !include(relative) || exclude(relative)) return;
@@ -180,6 +214,11 @@ export class TriggerSourceService {
   }): { occurrenceId: string; replayed: boolean } {
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Trigger not found");
+    const agent = this.options.store.getAgent(trigger.agentId);
+    const conversation = this.options.store.getConversation(trigger.conversationId);
+    if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) {
+      throw new Error("webhook Trigger owner is unavailable");
+    }
     if (!input.eventId.trim() || input.eventId.length > 200) throw new Error("X-Ponderosa-Event-Id is required");
     const timestampSeconds = Number(input.timestamp);
     const config = trigger.sourceConfig as TriggerWebhookConfig;
@@ -205,7 +244,7 @@ export class TriggerSourceService {
       },
       now: this.now().toISOString(),
     });
-    this.options.notify(trigger.id);
+    if (!result.replayed) this.options.notify(trigger.id);
     return { occurrenceId: result.occurrenceId, replayed: result.replayed };
   }
 
@@ -213,6 +252,9 @@ export class TriggerSourceService {
     const now = this.now();
     for (const trigger of this.options.coordination.listDueScheduleTriggers(now.toISOString())) {
       try {
+        const agent = this.options.store.getAgent(trigger.agentId);
+        const conversation = this.options.store.getConversation(trigger.conversationId);
+        if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) continue;
         this.fireSchedule(trigger, now);
       } catch {
         // A concurrent edit or one malformed historical definition must not
@@ -274,7 +316,7 @@ export class TriggerSourceService {
       lastFiredAt: last,
       payload: {
         ...(exactIntervalRange ? { exactIntervalRange } : { scheduledTimes: missed }),
-        missedCount: missedCount || missed.length,
+        ...(truncatedCron ? { enumeratedCount: missed.length } : { missedCount: missedCount || missed.length }),
         collapsedRecovery: (missedCount || missed.length) > 1,
         ...(truncatedCron ? { truncatedCronHistory: true, enumeratedLimit: MAX_MISSED_TIMES } : {}),
       },
@@ -290,7 +332,11 @@ export class TriggerSourceService {
     const current = this.bursts.get(trigger.id);
     if (current) {
       current.lastAt = now;
-      current.events.push({ path: changedPath, type, at: now });
+      current.eventCount += 1;
+      const kinds = current.changes.get(changedPath);
+      if (kinds) kinds.add(type);
+      else if (current.changes.size < MAX_FILES_PER_OCCURRENCE) current.changes.set(changedPath, new Set([type]));
+      else current.droppedPathEventCount += 1;
       clearTimeout(current.quietTimer);
       current.quietTimer = setTimeout(() => this.flushFileBurst(trigger), config.quietMs);
       return;
@@ -298,7 +344,9 @@ export class TriggerSourceService {
     const burst: FileBurst = {
       startedAt: now,
       lastAt: now,
-      events: [{ path: changedPath, type, at: now }],
+      eventCount: 1,
+      changes: new Map([[changedPath, new Set([type])]]),
+      droppedPathEventCount: 0,
       quietTimer: setTimeout(() => this.flushFileBurst(trigger), config.quietMs),
       maxTimer: setTimeout(() => this.flushFileBurst(trigger), config.maxWindowMs),
     };
@@ -309,24 +357,21 @@ export class TriggerSourceService {
     const burst = this.bursts.get(trigger.id);
     if (!burst) return;
     this.clearBurst(trigger.id);
-    const paths = new Map<string, Set<string>>();
-    for (const event of burst.events) {
-      const kinds = paths.get(event.path) ?? new Set<string>();
-      kinds.add(event.type);
-      paths.set(event.path, kinds);
-    }
-    const changed = [...paths].slice(0, MAX_FILES_PER_OCCURRENCE).map(([filePath, types]) => ({ path: filePath, types: [...types] }));
+    const changed = [...burst.changes].map(([filePath, types]) => ({ path: filePath, types: [...types] }));
     try {
       this.options.coordination.recordTriggerOccurrence({
         triggerId: trigger.id,
         occurrenceKey: `filesystem:${randomUUID()}`,
         payload: {
           changes: changed,
-          lowLevelEventCount: burst.events.length,
-          uniquePathCount: paths.size,
+          lowLevelEventCount: burst.eventCount,
+          capturedPathCount: burst.changes.size,
           startedAt: burst.startedAt,
           endedAt: burst.lastAt,
-          ...(paths.size > changed.length ? { truncatedPathCount: paths.size - changed.length } : {}),
+          ...(burst.droppedPathEventCount ? {
+            pathLimitReached: true,
+            droppedPathEventCount: burst.droppedPathEventCount,
+          } : {}),
         },
         provenance: { source: "project_filesystem", watcher: "project_root", contentInjected: false },
         now: burst.lastAt,

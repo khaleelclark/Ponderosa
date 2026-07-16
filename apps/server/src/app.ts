@@ -93,6 +93,8 @@ import type {
   UpdateTriggerRequest,
   TriggerDefinitionDto,
   TriggerOccurrenceDto,
+  TriggerSourceConfig,
+  TriggerSourceKind,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -4408,7 +4410,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (selectionError) return reply.code(400).send({ error: selectionError });
     }
     const conversation = store.updateConversation(request.params.id, request.body ?? {});
-    if (conversation) appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+    if (conversation) {
+      if (request.body?.archived !== undefined) await triggerSources.refresh();
+      appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+    }
     return conversation;
   });
 
@@ -4418,9 +4423,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationIds.includes(current.id));
       const active = linkedAgents.some((agent) => activeRuns.has(agent.id));
       if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
-      for (const agent of linkedAgents) coordinationV3.handleAgentConversationRemoval(agent.id, current.id);
     }
-    const deleted = store.deleteConversation(request.params.id);
+    const deleted = store.deleteConversation(request.params.id, (agentId, conversationId) => {
+      coordinationV3.handleAgentConversationRemoval(agentId, conversationId);
+    });
     if (deleted && current) {
       await triggerSources.refresh();
       const cursor = workspace.cursor();
@@ -5470,27 +5476,85 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  const triggerObject = (value: unknown, label: string): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+    return value as Record<string, unknown>;
+  };
+  const exactTriggerFields = (value: Record<string, unknown>, allowed: string[], label: string): void => {
+    const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+    if (unknown.length) throw new Error(`unknown ${label} field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
+  };
+  const triggerSourceConfig = (kind: TriggerSourceKind, value: unknown): TriggerSourceConfig => {
+    const config = triggerObject(value, "sourceConfig");
+    if (kind === "schedule") {
+      const scheduleKind = config.scheduleKind;
+      if (scheduleKind === "once") {
+        exactTriggerFields(config, ["scheduleKind", "at"], "one-time schedule");
+        if (typeof config.at !== "string") throw new Error("one-time schedule at must be a string");
+      } else if (scheduleKind === "interval") {
+        exactTriggerFields(config, ["scheduleKind", "everyMs", "startsAt"], "interval schedule");
+        if (typeof config.everyMs !== "number" || typeof config.startsAt !== "string") throw new Error("interval everyMs must be a number and startsAt must be a string");
+      } else if (scheduleKind === "cron") {
+        exactTriggerFields(config, ["scheduleKind", "expression", "timezone"], "cron schedule");
+        if (typeof config.expression !== "string" || typeof config.timezone !== "string") throw new Error("cron expression and timezone must be strings");
+      } else throw new Error("invalid scheduleKind");
+    } else if (kind === "webhook") {
+      exactTriggerFields(config, ["replayWindowSeconds"], "webhook config");
+      if (config.replayWindowSeconds !== undefined && typeof config.replayWindowSeconds !== "number") throw new Error("replayWindowSeconds must be a number");
+    } else {
+      exactTriggerFields(config, ["include", "exclude", "quietMs", "maxWindowMs"], "filesystem config");
+      for (const field of ["include", "exclude"] as const) {
+        if (config[field] !== undefined && (!Array.isArray(config[field]) || !(config[field] as unknown[]).every((item) => typeof item === "string"))) {
+          throw new Error(`${field} must be an array of strings`);
+        }
+      }
+      for (const field of ["quietMs", "maxWindowMs"] as const) if (config[field] !== undefined && typeof config[field] !== "number") throw new Error(`${field} must be a number`);
+    }
+    return config as unknown as TriggerSourceConfig;
+  };
+  const parseCreateTrigger = (value: unknown): CreateTriggerRequest => {
+    const body = triggerObject(value, "Trigger body");
+    exactTriggerFields(body, ["conversationId", "name", "instructions", "sourceKind", "sourceConfig", "enabled"], "Trigger");
+    if (typeof body.conversationId !== "string" || typeof body.name !== "string" || typeof body.instructions !== "string") throw new Error("conversationId, name, and instructions must be strings");
+    if (body.sourceKind !== "schedule" && body.sourceKind !== "webhook" && body.sourceKind !== "filesystem") throw new Error("sourceKind must be schedule, webhook, or filesystem");
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
+    return { conversationId: body.conversationId, name: body.name, instructions: body.instructions, sourceKind: body.sourceKind, sourceConfig: triggerSourceConfig(body.sourceKind, body.sourceConfig), ...(body.enabled === undefined ? {} : { enabled: body.enabled }) };
+  };
+  const parseUpdateTrigger = (value: unknown, sourceKind: TriggerSourceKind): UpdateTriggerRequest => {
+    const body = triggerObject(value, "Trigger patch");
+    exactTriggerFields(body, ["name", "instructions", "sourceConfig", "enabled"], "Trigger patch");
+    if (body.name !== undefined && typeof body.name !== "string") throw new Error("name must be a string");
+    if (body.instructions !== undefined && typeof body.instructions !== "string") throw new Error("instructions must be a string");
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
+    return {
+      ...(body.name === undefined ? {} : { name: body.name }),
+      ...(body.instructions === undefined ? {} : { instructions: body.instructions }),
+      ...(body.sourceConfig === undefined ? {} : { sourceConfig: triggerSourceConfig(sourceKind, body.sourceConfig) }),
+      ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+    };
+  };
+
   app.get<{ Params: { id: string } }>("/api/agents/:id/triggers", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     return coordinationV3.listTriggerDefinitions(request.params.id);
   });
 
-  app.post<{ Params: { id: string }; Body: CreateTriggerRequest }>("/api/agents/:id/triggers", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/agents/:id/triggers", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
     try {
-      if (!request.body || !request.body.sourceKind || !request.body.sourceConfig) throw new Error("sourceKind and sourceConfig are required");
-      const normalized = normalizeTriggerSourceConfig(request.body.sourceKind, request.body.sourceConfig);
-      const webhookSecret = request.body.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
+      const body = parseCreateTrigger(request.body);
+      const normalized = normalizeTriggerSourceConfig(body.sourceKind, body.sourceConfig);
+      const webhookSecret = body.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
       const trigger = coordinationV3.createTriggerDefinition({
         projectId: agent.projectId,
-        conversationId: request.body.conversationId,
+        conversationId: body.conversationId,
         agentId: agent.id,
-        name: request.body.name,
-        instructions: request.body.instructions,
-        sourceKind: request.body.sourceKind,
+        name: body.name,
+        instructions: body.instructions,
+        sourceKind: body.sourceKind,
         sourceConfig: normalized.config,
-        enabled: request.body.enabled,
+        enabled: body.enabled,
         nextFireAt: normalized.nextFireAt,
         secretCiphertext: webhookSecret?.ciphertext,
         secretFingerprint: webhookSecret?.fingerprint,
@@ -5503,16 +5567,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   });
 
-  app.patch<{ Params: { id: string }; Body: UpdateTriggerRequest }>("/api/triggers/:id", async (request, reply) => {
+  app.patch<{ Params: { id: string }; Body: unknown }>("/api/triggers/:id", async (request, reply) => {
     const current = coordinationV3.getTriggerDefinition(request.params.id);
     if (!current) return reply.code(404).send({ error: "Trigger not found" });
     try {
-      const needsReschedule = request.body?.sourceConfig !== undefined || (request.body?.enabled === true && !current.enabled);
+      const body = parseUpdateTrigger(request.body, current.sourceKind);
+      const needsReschedule = body.sourceConfig !== undefined || (body.enabled === true && !current.enabled);
       const normalized = needsReschedule
-        ? normalizeTriggerSourceConfig(current.sourceKind, request.body.sourceConfig ?? current.sourceConfig)
+        ? normalizeTriggerSourceConfig(current.sourceKind, body.sourceConfig ?? current.sourceConfig)
         : undefined;
       const trigger = coordinationV3.updateTriggerDefinition(current.id, {
-        ...request.body,
+        ...body,
         ...(normalized ? { sourceConfig: normalized.config, nextFireAt: normalized.nextFireAt ?? null } : {}),
       });
       await triggerSources.refresh();
@@ -5546,9 +5611,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/triggers/:id/occurrences", async (request, reply) => {
-    if (!coordinationV3.getTriggerDefinition(request.params.id)) return reply.code(404).send({ error: "Trigger not found" });
     const limit = Number(request.query.limit ?? "100");
     return coordinationV3.listTriggerOccurrences(request.params.id, Number.isFinite(limit) ? limit : 100);
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/agents/:id/trigger-occurrences", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "Agent not found" });
+    const limit = Number(request.query.limit ?? "100");
+    return coordinationV3.listAgentTriggerOccurrences(request.params.id, Number.isFinite(limit) ? limit : 100);
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/projects/:id/trigger-occurrences", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "Project not found" });
+    const limit = Number(request.query.limit ?? "100");
+    return coordinationV3.listProjectTriggerOccurrences(request.params.id, Number.isFinite(limit) ? limit : 100);
   });
 
   app.get<{ Params: { id: string } }>("/api/trigger-occurrences/:id", async (request, reply) => {
@@ -5565,6 +5641,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const occurrence = coordinationV3.getTriggerOccurrence(request.params.id);
     if (!occurrence || occurrence.agentId !== capability.agentId) return reply.code(404).send({ error: "Trigger occurrence not found" });
+    if (!occurrence.activationId || coordinationV3.activationPayloads(capability.agentId, [occurrence.activationId], capability.runId).length !== 1) {
+      return reply.code(404).send({ error: "Trigger occurrence is not attached to this Run" });
+    }
     return occurrence;
   });
 
@@ -5582,8 +5661,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         payload: request.body,
         remoteAddress: request.ip,
       });
-      const trigger = coordinationV3.getTriggerDefinition(request.params.id)!;
-      appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "occurrence" });
       return reply.code(result.replayed ? 200 : 202).send(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : "webhook rejected";
@@ -5607,6 +5684,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     "/api/agents/:id",
     async (request, reply) => {
       const agent = store.updateAgent(request.params.id, request.body ?? {});
+      if (agent && request.body?.archived !== undefined) await triggerSources.refresh();
       return agent ?? reply.code(404).send({ error: "agent not found" });
     },
   );
@@ -6328,6 +6406,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const exactProviderInput = resumeSessionId ? prompt : renderSeedPrompt(history, prompt);
       const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
       const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+      const manifestTriggerOccurrences = manifestActivationPayloads.flatMap(({ payload }) => {
+        if (!payload || typeof payload !== "object") return [];
+        const occurrence = (payload as { occurrence?: { id?: unknown; artifactId?: unknown } }).occurrence;
+        if (!occurrence || typeof occurrence.id !== "string") return [];
+        const stored = coordinationV3.getTriggerOccurrence(occurrence.id);
+        return stored ? [stored] : [];
+      });
       const activationCommunicationEventIds = manifestActivationPayloads.flatMap(({ payload }) => {
         if (!payload || typeof payload !== "object") return [];
         const communication = (payload as { communication?: unknown }).communication;
@@ -6353,6 +6438,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         historyMessageCount: submittedHistory.length + contextMessages.length,
         retainedSessionSourceCount: teamDirectoryDelivery === "retained_session" ? 1 : 0,
         activationIds: manifestActivationIds,
+        triggerOccurrenceIds: manifestTriggerOccurrences.map((occurrence) => occurrence.id),
         communicationEventIds: manifestCommunicationEventIds,
         artifactIds: manifestArtifactIds,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
@@ -6379,6 +6465,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: message.createdAt,
           }] : []),
           ...manifestActivationIds.map((id) => ({ kind: "activation" as const, ref: id, delivery: "submitted" as const })),
+          ...manifestTriggerOccurrences.map((occurrence) => ({
+            kind: "trigger_occurrence" as const,
+            ref: occurrence.artifactId,
+            delivery: "submitted" as const,
+            hash: occurrence.inputHash,
+            createdAt: occurrence.createdAt,
+          })),
           ...manifestCommunicationEventIds
             .filter((id) => !contextCommunicationEventIds.includes(id))
             .map((id) => ({ kind: "communication" as const, ref: id, delivery: "submitted" as const })),

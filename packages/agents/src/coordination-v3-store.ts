@@ -326,6 +326,7 @@ interface TriggerDefinitionRow {
 interface TriggerOccurrenceRow {
   id: string; trigger_id: string; project_id: string; agent_id: string; state: TriggerOccurrenceState;
   payload_json: string; provenance_json: string; payload_media_type: string; input_hash: string;
+  trigger_snapshot_json: string;
   activation_id: string | null; last_error: string | null; occurred_at: string;
   created_at: string; updated_at: string;
 }
@@ -1201,12 +1202,29 @@ export class CoordinationV3Store {
     return rows.map((row) => this.triggerOccurrenceDto(row));
   }
 
+  listAgentTriggerOccurrences(agentId: string, limit = 100): TriggerOccurrenceDto[] {
+    const rows = this.sqlite.prepare(`
+      SELECT * FROM trigger_occurrences WHERE agent_id = ?
+      ORDER BY occurred_at DESC, id DESC LIMIT ?
+    `).all(agentId, Math.max(1, Math.min(limit, 500))) as TriggerOccurrenceRow[];
+    return rows.map((row) => this.triggerOccurrenceDto(row));
+  }
+
+  listProjectTriggerOccurrences(projectId: string, limit = 100): TriggerOccurrenceDto[] {
+    const rows = this.sqlite.prepare(`
+      SELECT * FROM trigger_occurrences WHERE project_id = ?
+      ORDER BY occurred_at DESC, id DESC LIMIT ?
+    `).all(projectId, Math.max(1, Math.min(limit, 500))) as TriggerOccurrenceRow[];
+    return rows.map((row) => this.triggerOccurrenceDto(row));
+  }
+
   getTriggerOccurrence(id: string): TriggerOccurrenceDto | undefined {
     const row = this.sqlite.prepare(`SELECT * FROM trigger_occurrences WHERE id = ?`).get(id) as TriggerOccurrenceRow | undefined;
     return row ? this.triggerOccurrenceDto(row) : undefined;
   }
 
   private triggerOccurrenceDto(row: TriggerOccurrenceRow): TriggerOccurrenceDto {
+    const triggerSnapshot = JSON.parse(row.trigger_snapshot_json) as TriggerOccurrenceDto["triggerSnapshot"];
     return {
       id: row.id,
       artifactId: `trigger-occurrence:${row.id}`,
@@ -1218,6 +1236,7 @@ export class CoordinationV3Store {
       provenance: JSON.parse(row.provenance_json) as Record<string, unknown>,
       payloadMediaType: row.payload_media_type,
       inputHash: row.input_hash,
+      ...(triggerSnapshot ? { triggerSnapshot } : {}),
       ...(row.activation_id ? { activationId: row.activation_id } : {}),
       ...(row.last_error ? { lastError: row.last_error } : {}),
       occurredAt: row.occurred_at,
@@ -1268,13 +1287,14 @@ export class CoordinationV3Store {
         sourceConfig: JSON.parse(definition.source_config_json) as TriggerSourceConfig,
         fullAccess: true as const,
       };
+      // Idempotency describes the source occurrence, not mutable definition or
+      // transport metadata. The first accepted snapshot/provenance remains the
+      // historical record when a source retries after an edit.
       const hash = payloadHash({
         triggerId: definition.id,
         occurrenceKey: input.occurrenceKey,
         payload: input.payload,
-        provenance: input.provenance,
         payloadMediaType: input.payloadMediaType ?? "application/json",
-        triggerSnapshot,
       });
       const existing = this.sqlite.prepare(`
         SELECT id, input_hash, state, activation_id FROM trigger_occurrences
@@ -2472,6 +2492,17 @@ export class CoordinationV3Store {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
       const run = this.getFencedRun(input.runId, input.fencingToken);
+      const unavailableTrigger = this.sqlite.prepare(`
+        SELECT occurrence.trigger_id AS trigger_id
+        FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id = attached.activation_id
+        JOIN trigger_occurrences occurrence ON occurrence.activation_id = activation.id
+        LEFT JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
+        WHERE attached.run_id = ? AND activation.kind = 'trigger_occurrence'
+          AND (definition.id IS NULL OR definition.enabled = 0)
+        LIMIT 1
+      `).get(input.runId) as { trigger_id: string } | undefined;
+      if (unavailableTrigger) throw new Error(`Trigger ${unavailableTrigger.trigger_id} was disabled or deleted before prompt injection`);
       const changed = this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections
         SET state = 'submitted', submitted_at = COALESCE(submitted_at, ?), updated_at = ?
@@ -3167,6 +3198,16 @@ export class CoordinationV3Store {
       attempts: number;
     } | undefined;
     if (!row) return this.triggerOccurrenceResult(occurrenceId, false).state;
+    const definition = this.triggerDefinitionRow(row.trigger_id);
+    if (!definition || !definition.enabled || definition.project_id !== row.project_id || definition.agent_id !== row.agent_id) {
+      this.sqlite.prepare(`
+        UPDATE trigger_occurrences
+        SET state = 'cancelled', last_error = 'Trigger definition is unavailable',
+            cancelled_at = ?, updated_at = ?
+        WHERE id = ? AND state = 'pending'
+      `).run(now, now, occurrenceId);
+      return "cancelled";
+    }
     const attempts = row.attempts + 1;
     try {
       const config = JSON.parse(row.activation_config_json) as {

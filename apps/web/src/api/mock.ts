@@ -734,6 +734,9 @@ export const mockApi: PonderosaApi = {
   listTriggerOccurrences(triggerId) {
     return delay(triggerOccurrences.get(triggerId) ?? []);
   },
+  listAgentTriggerOccurrences() {
+    return delay([...triggerOccurrences.values()].flat());
+  },
   listEngines() {
     return delay(engines);
   },

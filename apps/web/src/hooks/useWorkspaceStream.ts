@@ -144,6 +144,7 @@ export function useWorkspaceStream(): void {
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: ["triggers", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences", event.triggerId] });
+        void queryClient.invalidateQueries({ queryKey: ["agent-trigger-occurrences", event.agentId] });
       }
       else if (event.type === "agent_event") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
