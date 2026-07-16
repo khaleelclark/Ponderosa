@@ -6813,7 +6813,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runError = message;
         } finally {
           const owned = ownsActiveRun(agent.id, activeRun);
-          schedulerCancelled ||= Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
+          schedulerCancelled ||= Boolean(!closed && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
           if (schedulerCancelled && !owned && !closed && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {
             const cancelled = store.appendEvent(agent.id, {
               type: "agent_lifecycle",
