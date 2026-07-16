@@ -5,6 +5,8 @@
 export { AgentStore } from "./store.js";
 export { WorkspaceStore } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
+export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
+export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";
 export { CoordinationV3Store } from "./coordination-v3-store.js";
 export type {
   CoordinateV3Input,

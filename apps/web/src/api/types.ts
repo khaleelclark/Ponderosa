@@ -59,6 +59,7 @@ import type {
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
   CancelAgentRunResponse,
+  GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -108,6 +109,7 @@ export interface PonderosaApi {
   deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto>;
+  searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto>;
   listConversations(projectId: string): Promise<ConversationDto[]>;
   createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto>;
   getConversation(conversationId: string): Promise<ConversationDetailDto>;

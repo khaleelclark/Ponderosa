@@ -32,6 +32,7 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "agent_conversation_memberships",
     "agents",
     "messages",
+    "chat_search_messages",
     "runs",
     "work_items",
     "artifacts",
@@ -43,6 +44,8 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
       ? "agent_id, position"
       : t === "runs"
         ? "agent_id, id"
+        : t === "chat_search_messages"
+          ? "row_key"
         : "id";
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
@@ -96,6 +99,136 @@ function appendCanonicalConversationMessage(
 }
 
 describe("AgentStore — V1 layout", () => {
+  it("searches human-facing projections globally while excluding runtime detail", () => {
+    const first = store.createProject({ label: "Alpha", hostPath: "/alpha" });
+    const firstChat = store.getConversation(first.lastConversationId!)!;
+    const firstAgent = store.createAgent(first.id, { title: "Alpha Agent", engine: "codex", conversationId: firstChat.id });
+    const firstMessage = appendCanonicalConversationMessage(firstChat.id, { text: "Investigate the rare cache needle" });
+    store.appendEvent(firstAgent.id, { type: "command", command: "echo secret-needle", cwd: "/alpha" });
+    store.appendEvent(firstAgent.id, { type: "text", delta: "runtime-needle must stay out of Chat" });
+
+    const second = store.createProject({ label: "Beta", hostPath: "/beta" });
+    const secondChat = store.getConversation(second.lastConversationId!)!;
+    appendCanonicalConversationMessage(secondChat.id, { text: "A second needle across projects" });
+
+    const response = store.searchGlobalChats({
+      query: "needle",
+      notifications: [{ conversationId: firstChat.id, communicationEventId: firstMessage!.communicationEventId }],
+    });
+    expect(response.results.map((result) => result.project.label)).toEqual(expect.arrayContaining(["Alpha", "Beta"]));
+    expect(response.results.some((result) => result.snippet.includes("runtime-needle") || result.snippet.includes("secret-needle"))).toBe(false);
+    expect(response.results.find((result) => result.messageId === firstMessage!.id)).toMatchObject({
+      unread: true,
+      chat: { kind: "conversation", id: firstChat.id, title: firstChat.title },
+      author: { kind: "user", label: "User" },
+    });
+
+    const empty = store.searchGlobalChats({ notifications: [{ conversationId: firstChat.id, communicationEventId: firstMessage!.communicationEventId }] });
+    expect(empty.results).toHaveLength(1);
+    expect(empty.recentChats.map((item) => item.project.label)).toEqual(expect.arrayContaining(["Alpha", "Beta"]));
+  });
+
+  it("bounds global search reads before timeline materialization on large histories", () => {
+    const project = store.createProject({ label: "Bounded", hostPath: "/bounded" });
+    const conversationId = project.lastConversationId!;
+    const insert = store.sqlite.prepare(`
+      INSERT INTO chat_search_messages (
+        row_key, project_id, chat_kind, chat_id, message_id,
+        communication_event_id, role, timestamp, text
+      ) VALUES (?, ?, 'conversation', ?, ?, ?, 'user', ?, ?)
+    `);
+    store.sqlite.transaction(() => {
+      for (let index = 0; index < 500; index += 1) {
+        const id = `bounded-${String(index).padStart(4, "0")}`;
+        insert.run(id, project.id, conversationId, id, id, new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(), `bounded needle ${index}`);
+      }
+    })();
+    const conversationRead = vi.spyOn(store, "getConversationMessages").mockImplementation(() => {
+      throw new Error("search must not materialize conversation timelines");
+    });
+    const agentRead = vi.spyOn(store, "getProjectedAgentMessages").mockImplementation(() => {
+      throw new Error("search must not materialize agent timelines");
+    });
+
+    const result = store.searchGlobalChats({ query: "needle", limit: 10, maxScannedMessages: 25 });
+
+    expect(result.results).toHaveLength(10);
+    expect(result.scannedMessages).toBe(25);
+    expect(result.truncated).toBe(true);
+    expect(conversationRead).not.toHaveBeenCalled();
+    expect(agentRead).not.toHaveBeenCalled();
+    const queryPlan = store.sqlite.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT search.row_key
+      FROM chat_search_messages search
+      JOIN projects project ON project.id = search.project_id
+      LEFT JOIN conversations conversation
+        ON search.chat_kind = 'conversation' AND conversation.id = search.chat_id AND conversation.archived = 0
+      LEFT JOIN agents chat_agent
+        ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+      WHERE (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+        AND NOT (
+          search.chat_kind = 'agent' AND EXISTS (
+            SELECT 1
+            FROM chat_search_messages preferred
+            JOIN conversations preferred_conversation
+              ON preferred_conversation.id = preferred.chat_id AND preferred_conversation.archived = 0
+            WHERE preferred.project_id = search.project_id
+              AND preferred.communication_event_id = search.communication_event_id
+              AND preferred.chat_kind = 'conversation'
+          )
+        )
+      ORDER BY search.timestamp DESC, search.chat_kind DESC, search.row_key DESC
+      LIMIT 26
+    `).all() as Array<{ detail: string }>;
+    expect(queryPlan.some((row) => row.detail.includes("idx_chat_search_newest"))).toBe(true);
+    expect(queryPlan.some((row) => row.detail.includes("USE TEMP B-TREE FOR ORDER BY"))).toBe(false);
+  });
+
+  it("rebuilds the latest passive display text after reconnect without changing message identity", () => {
+    const project = store.createProject({ label: "Edited", hostPath: "/edited" });
+    const conversationId = project.lastConversationId!;
+    const eventId = "passive-edit-event";
+    const createdAt = "2026-07-16T12:00:00.000Z";
+    store.appendCommunicationEvent({
+      eventId,
+      schemaVersion: 1,
+      projectId: project.id,
+      conversationId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Original display text",
+      createdAt,
+    });
+    store.appendCommunicationProjection(project.id, {
+      eventId,
+      surface: "conversation",
+      projectionKey: conversationId,
+      projectedAt: createdAt,
+      message: {
+        messageId: "projected-passive-edit-message",
+        role: "user",
+        renderedText: "Latest passive edit text",
+        createdAt,
+      },
+    });
+
+    expect(store.searchGlobalChats({ query: "latest passive" }).results[0]).toMatchObject({
+      messageId: "projected-passive-edit-message",
+      communicationEventId: eventId,
+      snippet: "Latest passive edit text",
+    });
+
+    store.close();
+    store = new AgentStore(dir);
+    expect(store.searchGlobalChats({ query: "latest passive" }).results[0]).toMatchObject({
+      messageId: "projected-passive-edit-message",
+      communicationEventId: eventId,
+      snippet: "Latest passive edit text",
+    });
+  });
+
   it("enforces exclusive live ownership of a data directory", () => {
     expect(() => new AgentStore(dir)).toThrow("already owned");
     store.close();

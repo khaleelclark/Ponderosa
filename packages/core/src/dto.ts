@@ -1165,7 +1165,7 @@ export interface ReadinessDto {
   runtimes: Array<{ id: string; authenticated: boolean; detail?: string }>;
 }
 
-// ─── v2 (stubbed 501 in v1 — SPEC §8) ────────────────────────────────────────
+// ─── Legacy engine switch + global chat search ─────────────────────────────
 
 /** POST /api/agents/:id/switch-engine body (v2). */
 export interface SwitchEngineRequest {
@@ -1174,17 +1174,49 @@ export interface SwitchEngineRequest {
   effort?: string;
 }
 
-/** GET /api/agents/:id/search?q= result (v2). */
-export interface SearchResultDto {
-  seq: number;
-  ts: string;
-  event: AgentEvent;
-  /** Optional match highlight/snippet. */
-  snippet?: string;
+export interface GlobalChatTargetDto {
+  kind: "conversation" | "agent";
+  id: string;
+  title: string;
 }
 
-/** GET /api/agents/:id/search?q= response (v2). */
-export interface SearchResponse {
+export interface GlobalChatSearchAuthorDto {
+  kind: "user" | "agent" | "system";
+  label: string;
+  agentId?: string;
+}
+
+export interface SearchHighlightRangeDto {
+  start: number;
+  length: number;
+}
+
+/** One human-facing message match from a rebuildable communication projection. */
+export interface GlobalChatSearchResultDto {
+  project: Pick<ProjectDto, "id" | "label">;
+  chat: GlobalChatTargetDto;
+  messageId: string;
+  communicationEventId?: string;
+  author: GlobalChatSearchAuthorDto;
+  timestamp: string;
+  snippet: string;
+  highlights: SearchHighlightRangeDto[];
+  unread: boolean;
+}
+
+export interface RecentGlobalChatDto {
+  project: Pick<ProjectDto, "id" | "label">;
+  chat: GlobalChatTargetDto;
+  lastActivityAt: string;
+  snippet?: string;
+  unreadCount: number;
+}
+
+/** GET /api/search?q= response. Empty queries return unread messages + recent chats. */
+export interface GlobalChatSearchResponseDto {
   query: string;
-  results: SearchResultDto[];
+  results: GlobalChatSearchResultDto[];
+  recentChats: RecentGlobalChatDto[];
+  scannedMessages: number;
+  truncated: boolean;
 }

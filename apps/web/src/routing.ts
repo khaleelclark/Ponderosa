@@ -17,15 +17,17 @@ export type Route =
   | { kind: "projects" }
   | { kind: "allAgents" }
   | { kind: "project"; projectId: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; messageId?: string }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string }
   | { kind: "agents"; projectId: string }
-  | { kind: "agent"; projectId: string; agentId: string };
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
 
-export function parseRoute(input: string): Route {
-  const [pathname = "/", query = ""] = input.split("?", 2);
-  const parts = pathname.split("/").filter(Boolean);
+export function parseRoute(pathname: string, search = ""): Route {
+  const [cleanPathname, inlineSearch = ""] = pathname.split("?", 2);
+  const query = new URLSearchParams(search || (inlineSearch ? `?${inlineSearch}` : ""));
+  const focusMessageId = query.get("message")?.trim() || undefined;
+  const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
   if (parts[0] !== "projects" || !parts[1]) {
@@ -33,11 +35,10 @@ export function parseRoute(input: string): Route {
   }
   const projectId = decodeURIComponent(parts[1]);
   if (parts[2] === "chats" && parts[3]) {
-    const messageId = new URLSearchParams(query).get("message")?.trim();
-    return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]), ...(messageId ? { messageId } : {}) };
+    return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]), ...(focusMessageId ? { focusMessageId } : {}) };
   }
   if (parts[2] === "agents" && parts[3]) {
-    return { kind: "agent", projectId, agentId: decodeURIComponent(parts[3]) };
+    return { kind: "agent", projectId, agentId: decodeURIComponent(parts[3]), ...(focusMessageId ? { focusMessageId } : {}) };
   }
   if (parts[2] === "agents") {
     return { kind: "agents", projectId };
@@ -54,11 +55,11 @@ export function routeToPath(route: Route): string {
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
     case "conversation":
-      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${route.messageId ? `?message=${encodeURIComponent(route.messageId)}` : ""}`;
+      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}` : ""}`;
     case "agents":
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
     case "agent":
-      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}`;
+      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}` : ""}`;
     default:
       return "/";
   }
@@ -88,10 +89,10 @@ export function useRoute(): {
   route: Route;
   navigate(route: Route, options?: { replace?: boolean }): void;
 } {
-  const [route, setRoute] = useState<Route>(() => parseRoute(`${window.location.pathname}${window.location.search}`));
+  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.pathname, window.location.search));
 
   useEffect(() => {
-    const onPop = () => setRoute(parseRoute(`${window.location.pathname}${window.location.search}`));
+    const onPop = () => setRoute(parseRoute(window.location.pathname, window.location.search));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);

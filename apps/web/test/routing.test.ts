@@ -7,7 +7,7 @@ describe("mobile-critical durable navigation", () => {
     { kind: "allAgents" },
     { kind: "project", projectId: "project / one" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },
-    { kind: "conversation", projectId: "project / one", conversationId: "control room", messageId: "event #1" },
+    { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1" },
     { kind: "agents", projectId: "project / one" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {
@@ -30,5 +30,12 @@ describe("mobile-critical durable navigation", () => {
       .toBe("/projects/project/chats/planning");
     expect(parseRoute("/projects/project/conversations/planning"))
       .toEqual({ kind: "project", projectId: "project" });
+  });
+
+  it("round-trips exact-message focus for Project and Agent chats", () => {
+    const conversation: Route = { kind: "conversation", projectId: "project", conversationId: "planning", focusMessageId: "message / 1" };
+    const agent: Route = { kind: "agent", projectId: "project", agentId: "agent", focusMessageId: "message #2" };
+    expect(parseRoute(routeToPath(conversation))).toEqual(conversation);
+    expect(parseRoute(routeToPath(agent))).toEqual(agent);
   });
 });
