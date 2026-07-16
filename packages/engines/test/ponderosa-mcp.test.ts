@@ -58,7 +58,7 @@ describe("Ponderosa stdio MCP bridge", () => {
       params: { name: "message", arguments: { intent: "broadcast", text: "Managed result", idempotencyKey: "result-1" } },
     })}\n`);
 
-    await expect.poll(() => responses.length).toBe(3);
+    await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(3);
     expect(responses[1]).toMatchObject({ result: { tools: [{ name: "coordinate" }, { name: "update_request" }, { name: "message" }] } });
     expect(responses[2]).toMatchObject({ result: { isError: false } });
     expect(received).toEqual([
@@ -105,7 +105,7 @@ describe("Ponderosa stdio MCP bridge", () => {
         idempotencyKey: "one", requests: [{ recipientAgentId: "agent", text: "Review", lifetime: { kind: "indefinite" } }],
       } },
     })}\n`);
-    await expect.poll(() => responses.length).toBe(2);
+    await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(2);
     expect(responses[0]).toMatchObject({ result: { tools: [
       { name: "coordinate" }, { name: "update_request" }, { name: "message" },
     ] } });

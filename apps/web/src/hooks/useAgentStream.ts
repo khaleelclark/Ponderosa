@@ -39,7 +39,31 @@ export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope
   return current || event.type === "session" || event.type === "work_item_update" || executionTypes.has(event.type);
 }
 
-const streamCursors = new Map<string, { lastSeq?: number; seenSeqs: Set<number> }>();
+const MAX_CACHED_AGENT_CURSORS = 100;
+const streamCursors = new Map<string, { lastSeq?: number; instanceId?: string }>();
+
+export interface AgentCursorReconciliation {
+  cursor: number;
+  duplicate: boolean;
+  gap: boolean;
+}
+
+/** Agent events are strictly ordered, so one cursor replaces an unbounded set
+ * of every sequence number ever observed. */
+export function reconcileAgentCursor(current: number, envelope: Pick<SseEventEnvelope, "seq">): AgentCursorReconciliation {
+  if (envelope.seq <= current) return { cursor: current, duplicate: true, gap: false };
+  return { cursor: envelope.seq, duplicate: false, gap: envelope.seq !== current + 1 };
+}
+
+function rememberCursor(agentId: string, cursor: { lastSeq?: number; instanceId?: string }): void {
+  streamCursors.delete(agentId);
+  streamCursors.set(agentId, cursor);
+  while (streamCursors.size > MAX_CACHED_AGENT_CURSORS) {
+    const oldest = streamCursors.keys().next().value as string | undefined;
+    if (!oldest) break;
+    streamCursors.delete(oldest);
+  }
+}
 
 function projectedArtifactId(agentId: string, seq: number): string {
   return `${agentId}:a:${seq}:0`;
@@ -235,21 +259,24 @@ export function useAgentStream(agentId: string | undefined): StreamState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>(initialStreamState);
   const lastSeqRef = useRef<number | undefined>(undefined);
-  const seenSeqRef = useRef(new Set<number>());
 
   useEffect(() => {
     if (!agentId) {
       lastSeqRef.current = undefined;
-      seenSeqRef.current = new Set<number>();
       setState(initialStreamState);
       return undefined;
     }
 
-    const cursor = streamCursors.get(agentId) ?? { seenSeqs: new Set<number>() };
-    streamCursors.set(agentId, cursor);
+    const cursor = streamCursors.get(agentId) ?? {};
+    rememberCursor(agentId, cursor);
     lastSeqRef.current = cursor.lastSeq;
-    seenSeqRef.current = new Set(cursor.seenSeqs);
     setState({ ...initialStreamState, lastSeq: cursor.lastSeq });
+
+    const invalidateAgent = () => {
+      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-health"] });
+    };
 
     const subscription = api.subscribeAgent(agentId, lastSeqRef.current, {
       onOpen() {
@@ -258,14 +285,24 @@ export function useAgentStream(agentId: string | undefined): StreamState {
       onError() {
         setState((current) => ({ ...current, connected: false }));
       },
-      onEvent(envelope) {
-        if (seenSeqRef.current.has(envelope.seq)) {
-          return;
+      onStatus(status) {
+        const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
+        if (status.reset || changedInstance || (lastSeqRef.current ?? 0) > status.cursor) {
+          lastSeqRef.current = 0;
+          cursor.lastSeq = 0;
+          setState({ ...initialStreamState, connected: true, lastSeq: 0 });
+          invalidateAgent();
         }
-        seenSeqRef.current.add(envelope.seq);
-        lastSeqRef.current = envelope.seq;
-        cursor.seenSeqs.add(envelope.seq);
-        cursor.lastSeq = envelope.seq;
+        cursor.instanceId = status.instanceId;
+        rememberCursor(agentId, cursor);
+      },
+      onEvent(envelope) {
+        const reconciliation = reconcileAgentCursor(lastSeqRef.current ?? 0, envelope);
+        if (reconciliation.duplicate) return;
+        if (reconciliation.gap) invalidateAgent();
+        lastSeqRef.current = reconciliation.cursor;
+        cursor.lastSeq = reconciliation.cursor;
+        rememberCursor(agentId, cursor);
 
         setState((current) => ({
           ...current,

@@ -711,6 +711,12 @@ export const mockApi: PonderosaApi = {
     handlersForAgent.add(handlers);
     subscribers.set(agentId, handlersForAgent);
     window.setTimeout(() => handlers.onOpen?.(), 0);
+    window.setTimeout(() => handlers.onStatus?.({
+      agentId,
+      instanceId: "mock-instance",
+      cursor: agentSeq.get(agentId) ?? 0,
+      reset: false,
+    }), 0);
 
     if (lastSeenSeq !== undefined && lastSeenSeq < (agentSeq.get(agentId) ?? 0)) {
       window.setTimeout(() => {

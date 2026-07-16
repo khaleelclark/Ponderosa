@@ -20,6 +20,7 @@ export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
   private draining = false;
   private stopped = false;
+  private maintenanceDrains = 0;
   private readonly stopWaiters = new Set<() => void>();
   private readonly metrics: CoordinationV3SchedulerMetrics = {
     claimedRuns: 0,
@@ -48,6 +49,7 @@ export class CoordinationV3Scheduler {
 
   start(): void {
     if (this.stopped) throw new Error("scheduler has been stopped");
+    this.store.pruneSettledOutboxes();
     this.schedule(0);
   }
 
@@ -75,6 +77,7 @@ export class CoordinationV3Scheduler {
     try {
       const now = new Date((this.options.now ?? Date.now)()).toISOString();
       this.store.expireDue(now);
+      this.store.processDueTriggerOccurrences(now);
       for (const item of this.store.claimOutbox(this.options.workerId, 500, now)) {
         this.store.completeOutbox(item.id, this.options.workerId, now);
         this.metrics.outboxSignals += 1;
@@ -88,11 +91,11 @@ export class CoordinationV3Scheduler {
             result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
           }
           if (result.accepted) this.store.completeProviderOperation(operation.id, this.options.workerId);
+          else if (result.retryable === false) this.store.deadLetterProviderOperation(
+            operation.id, this.options.workerId, result.error ?? "provider operation rejected",
+          );
           else this.store.failProviderOperation(
-            operation.id,
-            this.options.workerId,
-            result.error ?? "provider operation rejected",
-            result.retryable === false ? 30_000 : 500,
+            operation.id, this.options.workerId, result.error ?? "provider operation rejected", 500,
           );
         }
       }
@@ -189,6 +192,8 @@ export class CoordinationV3Scheduler {
           }
         }
       }
+      this.maintenanceDrains += 1;
+      if (this.maintenanceDrains % 256 === 0) this.store.pruneSettledOutboxes();
     } finally {
       this.draining = false;
       for (const resolve of this.stopWaiters) resolve();

@@ -112,6 +112,58 @@ describe("Communication V3 central scheduler", () => {
     expect(leases[1]!.agentId).not.toBe(leases[0]!.agentId);
   });
 
+  it("dead-letters a non-retryable provider operation instead of polling forever", async () => {
+    store.enqueueMessageActivation({ projectId, agentId: agentA, messageId: "cancel", kind: "human", payload: {} });
+    const lease = store.leaseNextRun({ workerId: "scheduler" })!;
+    store.preparePromptInjection({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, prompt: "work",
+    });
+    store.markRunStarted(lease.runId, lease.fencingToken);
+    store.markPromptSubmitted({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken });
+    store.acknowledgePromptInjection({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken });
+    store.cancelAgentRun({ agentId: agentA, idempotencyKey: "cancel" });
+    const scheduler = new CoordinationV3Scheduler(store, async () => ({ accepted: true }), {
+      workerId: "scheduler",
+      dispatchProviderOperation: async () => ({ accepted: false, retryable: false, error: "unsupported interrupt" }),
+    });
+    await scheduler.drainOnce();
+    expect(store.schedulerMetrics()).toMatchObject({ deadLetteredProviderOperations: 1, pendingProviderOperations: 0 });
+    await scheduler.drainOnce();
+    expect(store.schedulerMetrics()).toMatchObject({ deadLetteredProviderOperations: 1, pendingProviderOperations: 0 });
+  });
+
+  it("promotes due trigger occurrences through Activations before scheduling", async () => {
+    const base = Date.parse("2026-07-15T00:00:00.000Z");
+    store = new CoordinationV3Store(opened.client, { maxPendingActivationsPerAgent: 1 });
+    store.enqueueMessageActivation({
+      projectId, agentId: agentA, messageId: "occupy", kind: "ordinary", payload: {},
+      now: new Date(base).toISOString(),
+    });
+    expect(store.recordTriggerOccurrence({
+      projectId,
+      triggerId: "timer:refresh",
+      occurrenceKey: "tick-1",
+      agentId: agentA,
+      payload: { task: "refresh" },
+      provenance: { source: "timer" },
+      retryDelayMs: 1,
+      now: new Date(base).toISOString(),
+    }).state).toBe("pending");
+    opened.client.prepare("UPDATE agent_activations SET state = 'cancelled'").run();
+    const leases: SchedulerLease[] = [];
+    const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
+      leases.push(lease);
+      return { accepted: true };
+    }, { workerId: "scheduler", now: () => base + 2, maxConcurrentRuns: 1 });
+
+    expect(await scheduler.drainOnce()).toBe(1);
+    expect(leases).toHaveLength(1);
+    expect(leases[0]!.activations).toEqual([
+      expect.objectContaining({ kind: "trigger_occurrence" }),
+    ]);
+    expect(store.schedulerMetrics()).toMatchObject({ pendingTriggerOccurrences: 0, activeRuns: 1 });
+  });
+
   it("emits explicit references instead of silently dropping oversized activation payloads", () => {
     const prompt = formatActivationPrompt({
       runId: "run", projectId, agentId: agentA, scopeKey: "conversation:test", fencingToken: 1,

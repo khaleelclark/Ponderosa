@@ -266,6 +266,45 @@ export interface EnqueueMessageActivationInput {
   now?: string;
 }
 
+export type TriggerOccurrenceState = "pending" | "activated" | "debounced" | "dead_lettered";
+
+export interface RecordTriggerOccurrenceInput {
+  projectId: string;
+  triggerId: string;
+  occurrenceKey: string;
+  agentId: string;
+  conversationId?: string;
+  payload: unknown;
+  provenance: { source: string; [key: string]: unknown };
+  debounceMs?: number;
+  retryDelayMs?: number;
+  priority?: number;
+  dispatchPolicy?: ActivationDispatchPolicy;
+  promptClass?: ActivationPromptClass;
+  now?: string;
+}
+
+export interface TriggerOccurrenceResult {
+  occurrenceId: string;
+  state: TriggerOccurrenceState;
+  activationId?: string;
+  replayed: boolean;
+}
+
+export interface CoordinationV3StoreOptions {
+  /** Backpressure only applies to new external/model-authored intake. Internal
+   * terminal outcomes remain writable so quota pressure cannot strand work. */
+  maxPendingActivationsPerAgent?: number;
+  maxOutboxAttempts?: number;
+  maxPendingTriggerOccurrencesPerAgent?: number;
+  maxTriggerAttempts?: number;
+}
+
+const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
+const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
+const DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT = 1_000;
+const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
+
 const PRIORITY = {
   human: 100,
   urgent: 90,
@@ -317,7 +356,10 @@ function terminalAt(state: CoordinationRequestState, now: string): string | null
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
 export class CoordinationV3Store {
-  constructor(private readonly sqlite: Database.Database) {}
+  constructor(
+    private readonly sqlite: Database.Database,
+    private readonly options: CoordinationV3StoreOptions = {},
+  ) {}
 
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
     const now = input.now ?? new Date().toISOString();
@@ -375,6 +417,7 @@ export class CoordinationV3Store {
         payload: input.payload,
         sourceKind: "communication",
         sourceId: input.id,
+        externalIntake: true,
         now,
       }));
       return {
@@ -693,6 +736,7 @@ export class CoordinationV3Store {
           payload: { requestId, requesterAgentId: input.requesterAgentId ?? null, request: request.payload ?? null },
           sourceKind: "request",
           sourceId: requestId,
+          externalIntake: true,
           now,
         });
       }
@@ -812,8 +856,134 @@ export class CoordinationV3Store {
         payload: input.payload,
         sourceKind: "message",
         sourceId: input.messageId,
+        externalIntake: true,
         now,
       });
+    })();
+  }
+
+  /** Persist external trigger intake before it can affect scheduling. The only
+   * executable state this path may create is an Activation; Run ownership stays
+   * exclusively in leaseNextRun(). */
+  recordTriggerOccurrence(input: RecordTriggerOccurrenceInput): TriggerOccurrenceResult {
+    if (!input.triggerId.trim()) throw new Error("triggerId is required");
+    if (!input.occurrenceKey.trim()) throw new Error("occurrenceKey is required");
+    if (!input.provenance.source?.trim()) throw new Error("trigger provenance source is required");
+    const debounceMs = input.debounceMs ?? 0;
+    const retryDelayMs = input.retryDelayMs ?? 1_000;
+    if (!Number.isInteger(debounceMs) || debounceMs < 0 || debounceMs > 86_400_000) {
+      throw new Error("trigger debounceMs must be an integer between 0 and 86400000");
+    }
+    if (!Number.isInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 3_600_000) {
+      throw new Error("trigger retryDelayMs must be an integer between 1 and 3600000");
+    }
+    const priority = input.priority ?? PRIORITY.actionable;
+    if (!Number.isInteger(priority) || priority < 0) throw new Error("trigger priority must be a non-negative integer");
+    const now = input.now ?? new Date().toISOString();
+    const scopeKey = input.conversationId ? `conversation:${input.conversationId}` : `agent:${input.agentId}`;
+    const activationConfig = {
+      conversationId: input.conversationId ?? null,
+      priority,
+      dispatchPolicy: input.dispatchPolicy ?? "next_run",
+      promptClass: input.promptClass ?? "ordinary",
+      retryDelayMs,
+    };
+    const hash = payloadHash({
+      projectId: input.projectId,
+      triggerId: input.triggerId,
+      occurrenceKey: input.occurrenceKey,
+      agentId: input.agentId,
+      scopeKey,
+      payload: input.payload,
+      provenance: input.provenance,
+      debounceMs,
+      activationConfig,
+    });
+
+    return this.sqlite.transaction(() => {
+      const existing = this.sqlite.prepare(`
+        SELECT id, input_hash, state, activation_id FROM trigger_occurrences
+        WHERE trigger_id = ? AND occurrence_key = ?
+      `).get(input.triggerId, input.occurrenceKey) as {
+        id: string; input_hash: string; state: TriggerOccurrenceState; activation_id: string | null;
+      } | undefined;
+      if (existing) {
+        if (existing.input_hash !== hash) throw new Error("trigger occurrence idempotency conflict");
+        return {
+          occurrenceId: existing.id,
+          state: existing.state,
+          ...(existing.activation_id ? { activationId: existing.activation_id } : {}),
+          replayed: true,
+        };
+      }
+
+      this.requireProject(input.projectId);
+      this.requireAgent(input.projectId, input.agentId);
+      if (input.conversationId) {
+        this.requireConversation(input.projectId, input.conversationId);
+        this.requireConversationMember(input.conversationId, input.agentId);
+      }
+
+      const occurrenceId = randomUUID();
+      const cutoff = new Date(Date.parse(now) - debounceMs).toISOString();
+      const debounced = debounceMs > 0 && Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM trigger_occurrences
+        WHERE trigger_id = ? AND agent_id = ? AND scope_key = ? AND occurred_at >= ?
+          AND state IN ('pending', 'activated', 'debounced')
+        LIMIT 1
+      `).get(input.triggerId, input.agentId, scopeKey, cutoff));
+      const maximumPending = Math.max(
+        1,
+        this.options.maxPendingTriggerOccurrencesPerAgent
+          ?? DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT,
+      );
+      const pending = (this.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM trigger_occurrences
+        WHERE agent_id = ? AND state = 'pending'
+      `).get(input.agentId) as { count: number }).count;
+      const overflow = !debounced && pending >= maximumPending;
+      const initialState: TriggerOccurrenceState = debounced
+        ? "debounced"
+        : overflow ? "dead_lettered" : "pending";
+      this.sqlite.prepare(`
+        INSERT INTO trigger_occurrences (
+          id, trigger_id, occurrence_key, project_id, agent_id, scope_key,
+          payload_json, provenance_json, input_hash, activation_config_json,
+          state, attempts, available_at, last_error, occurred_at, created_at,
+          updated_at, dead_lettered_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+      `).run(
+        occurrenceId, input.triggerId, input.occurrenceKey, input.projectId, input.agentId, scopeKey,
+        stableJson(input.payload), stableJson(input.provenance), hash, stableJson(activationConfig),
+        initialState, now,
+        overflow ? `pending trigger occurrence limit reached for Agent (${maximumPending})` : null,
+        now, now, now, overflow ? now : null,
+      );
+      if (initialState === "pending") this.processTriggerOccurrence(occurrenceId, now);
+      return this.triggerOccurrenceResult(occurrenceId, false);
+    })();
+  }
+
+  processDueTriggerOccurrences(
+    now = new Date().toISOString(),
+    limit = 100,
+  ): { activated: number; pending: number; deadLettered: number } {
+    return this.sqlite.transaction(() => {
+      const rows = this.sqlite.prepare(`
+        SELECT id FROM trigger_occurrences
+        WHERE state = 'pending' AND available_at <= ?
+        ORDER BY available_at, id LIMIT ?
+      `).all(now, Math.max(1, Math.min(limit, 500))) as Array<{ id: string }>;
+      let activated = 0;
+      let pending = 0;
+      let deadLettered = 0;
+      for (const row of rows) {
+        const state = this.processTriggerOccurrence(row.id, now);
+        if (state === "activated") activated += 1;
+        else if (state === "pending") pending += 1;
+        else if (state === "dead_lettered") deadLettered += 1;
+      }
+      return { activated, pending, deadLettered };
     })();
   }
 
@@ -856,6 +1026,12 @@ export class CoordinationV3Store {
     completedRuns: number;
     failedRuns: number;
     outcomeUnknownRuns: number;
+    pendingActivationOutbox: number;
+    deadLetteredActivationOutbox: number;
+    pendingProviderOperations: number;
+    deadLetteredProviderOperations: number;
+    pendingTriggerOccurrences: number;
+    deadLetteredTriggerOccurrences: number;
   } {
     const count = (table: string, predicate: string): number => (this.sqlite.prepare(
       `SELECT COUNT(*) AS count FROM ${table} WHERE ${predicate}`,
@@ -866,6 +1042,12 @@ export class CoordinationV3Store {
       completedRuns: count("scheduler_runs", "status = 'completed'"),
       failedRuns: count("scheduler_runs", "status = 'failed'"),
       outcomeUnknownRuns: count("scheduler_runs", "status = 'outcome_unknown'"),
+      pendingActivationOutbox: count("activation_outbox", "processed_at IS NULL AND dead_lettered_at IS NULL"),
+      deadLetteredActivationOutbox: count("activation_outbox", "dead_lettered_at IS NOT NULL"),
+      pendingProviderOperations: count("provider_operation_outbox", "state IN ('pending', 'claimed')"),
+      deadLetteredProviderOperations: count("provider_operation_outbox", "state = 'failed'"),
+      pendingTriggerOccurrences: count("trigger_occurrences", "state = 'pending'"),
+      deadLetteredTriggerOccurrences: count("trigger_occurrences", "state = 'dead_lettered'"),
     };
   }
 
@@ -1243,6 +1425,12 @@ export class CoordinationV3Store {
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
       `).run(now, agentId);
+      this.sqlite.prepare(`
+        UPDATE trigger_occurrences
+        SET state = 'dead_lettered', last_error = 'recipient Agent deleted',
+          updated_at = ?, dead_lettered_at = ?
+        WHERE agent_id = ? AND state = 'pending'
+      `).run(now, now, agentId);
     })();
   }
 
@@ -1299,6 +1487,12 @@ export class CoordinationV3Store {
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE agent_id = ? AND scope_key = ? AND state IN ('pending', 'retry_pending')
       `).run(now, agentId, scopeKey);
+      this.sqlite.prepare(`
+        UPDATE trigger_occurrences
+        SET state = 'dead_lettered', last_error = 'Team Chat membership removed',
+          updated_at = ?, dead_lettered_at = ?
+        WHERE agent_id = ? AND scope_key = ? AND state = 'pending'
+      `).run(now, now, agentId, scopeKey);
     })();
   }
 
@@ -1331,6 +1525,12 @@ export class CoordinationV3Store {
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE project_id = ? AND state IN ('pending', 'retry_pending', 'attached')
       `).run(now, projectId);
+      this.sqlite.prepare(`
+        UPDATE trigger_occurrences
+        SET state = 'dead_lettered', last_error = 'Project deleted',
+          updated_at = ?, dead_lettered_at = ?
+        WHERE project_id = ? AND state = 'pending'
+      `).run(now, now, projectId);
     })();
   }
 
@@ -1338,6 +1538,7 @@ export class CoordinationV3Store {
    * SQLite transaction that deletes the canonical project projections. */
   purgeProject(projectId: string): void {
     this.sqlite.transaction(() => {
+      this.sqlite.prepare(`DELETE FROM trigger_occurrences WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM activation_outbox WHERE activation_id IN (
         SELECT id FROM agent_activations WHERE project_id = ?
       )`).run(projectId);
@@ -1872,6 +2073,18 @@ export class CoordinationV3Store {
       }>;
       const claimed: ProviderOperation[] = [];
       for (const row of rows) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(row.payload_json) as unknown;
+        } catch {
+          this.sqlite.prepare(`
+            UPDATE provider_operation_outbox
+            SET state = 'failed', dead_lettered_at = ?, last_error = ?, updated_at = ?,
+              claimed_by = NULL, claimed_at = NULL
+            WHERE id = ?
+          `).run(now, "invalid provider-operation payload", now, row.id);
+          continue;
+        }
         const changed = this.sqlite.prepare(`
           UPDATE provider_operation_outbox
           SET state = 'claimed', claimed_by = ?, claimed_at = ?, attempts = attempts + 1, updated_at = ?
@@ -1882,7 +2095,7 @@ export class CoordinationV3Store {
           runId: row.run_id,
           operation: row.operation,
           idempotencyKey: row.idempotency_key,
-          payload: JSON.parse(row.payload_json) as unknown,
+          payload,
           attempts: row.attempts + 1,
         });
       }
@@ -1901,12 +2114,25 @@ export class CoordinationV3Store {
 
   failProviderOperation(id: number, workerId: string, error: string, retryDelayMs = 1_000, now = new Date().toISOString()): void {
     const availableAt = new Date(Date.parse(now) + retryDelayMs).toISOString();
+    const maximumAttempts = Math.max(1, this.options.maxOutboxAttempts ?? DEFAULT_MAX_OUTBOX_ATTEMPTS);
     const changed = this.sqlite.prepare(`
       UPDATE provider_operation_outbox
-      SET state = 'pending', available_at = ?, last_error = ?, updated_at = ?,
+      SET state = CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END,
+        dead_lettered_at = CASE WHEN attempts >= ? THEN ? ELSE NULL END,
+        available_at = ?, last_error = ?, updated_at = ?,
         claimed_by = NULL, claimed_at = NULL
       WHERE id = ? AND state = 'claimed' AND claimed_by = ?
-    `).run(availableAt, error.slice(0, 2_000), now, id, workerId).changes;
+    `).run(maximumAttempts, maximumAttempts, now, availableAt, error.slice(0, 2_000), now, id, workerId).changes;
+    if (changed !== 1) throw new Error("provider operation claim is stale");
+  }
+
+  deadLetterProviderOperation(id: number, workerId: string, error: string, now = new Date().toISOString()): void {
+    const changed = this.sqlite.prepare(`
+      UPDATE provider_operation_outbox
+      SET state = 'failed', dead_lettered_at = ?, last_error = ?, updated_at = ?,
+        claimed_by = NULL, claimed_at = NULL
+      WHERE id = ? AND state = 'claimed' AND claimed_by = ?
+    `).run(now, error.slice(0, 2_000), now, id, workerId).changes;
     if (changed !== 1) throw new Error("provider operation claim is stale");
   }
 
@@ -1916,23 +2142,36 @@ export class CoordinationV3Store {
       const rows = this.sqlite.prepare(`
         SELECT id, activation_id, event_kind, payload_json, attempts
         FROM activation_outbox
-        WHERE processed_at IS NULL AND (claimed_at IS NULL OR claimed_at <= ?)
+        WHERE processed_at IS NULL AND dead_lettered_at IS NULL
+          AND (claimed_at IS NULL OR claimed_at <= ?)
         ORDER BY id LIMIT ?
       `).all(stale, Math.max(1, Math.min(limit, 500))) as Array<{
         id: number; activation_id: string; event_kind: string; payload_json: string; attempts: number;
       }>;
       const claim = this.sqlite.prepare(`
         UPDATE activation_outbox SET claimed_by = ?, claimed_at = ?, attempts = attempts + 1
-        WHERE id = ? AND processed_at IS NULL AND (claimed_at IS NULL OR claimed_at <= ?)
+        WHERE id = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
+          AND (claimed_at IS NULL OR claimed_at <= ?)
       `);
       const claimed: OutboxItem[] = [];
       for (const row of rows) {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(row.payload_json) as unknown;
+        } catch {
+          this.sqlite.prepare(`
+            UPDATE activation_outbox
+            SET dead_lettered_at = ?, last_error = ?, claimed_by = NULL, claimed_at = NULL
+            WHERE id = ? AND processed_at IS NULL
+          `).run(now, "invalid activation-outbox payload", row.id);
+          continue;
+        }
         if (claim.run(workerId, now, row.id, stale).changes !== 1) continue;
         claimed.push({
           id: row.id,
           activationId: row.activation_id,
           eventKind: row.event_kind,
-          payload: JSON.parse(row.payload_json) as unknown,
+          payload,
           attempts: row.attempts + 1,
         });
       }
@@ -1943,17 +2182,43 @@ export class CoordinationV3Store {
   completeOutbox(id: number, workerId: string, now = new Date().toISOString()): void {
     const changed = this.sqlite.prepare(`
       UPDATE activation_outbox SET processed_at = ?, claimed_by = NULL, claimed_at = NULL
-      WHERE id = ? AND claimed_by = ? AND processed_at IS NULL
+      WHERE id = ? AND claimed_by = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
     `).run(now, id, workerId).changes;
     if (changed !== 1) throw new Error("outbox claim is stale");
   }
 
   failOutbox(id: number, workerId: string, error: string): void {
+    const maximumAttempts = Math.max(1, this.options.maxOutboxAttempts ?? DEFAULT_MAX_OUTBOX_ATTEMPTS);
+    const now = new Date().toISOString();
     const changed = this.sqlite.prepare(`
-      UPDATE activation_outbox SET claimed_by = NULL, claimed_at = NULL, last_error = ?
-      WHERE id = ? AND claimed_by = ? AND processed_at IS NULL
-    `).run(error.slice(0, 2_000), id, workerId).changes;
+      UPDATE activation_outbox
+      SET claimed_by = NULL, claimed_at = NULL, last_error = ?,
+        dead_lettered_at = CASE WHEN attempts >= ? THEN ? ELSE dead_lettered_at END
+      WHERE id = ? AND claimed_by = ? AND processed_at IS NULL AND dead_lettered_at IS NULL
+    `).run(error.slice(0, 2_000), maximumAttempts, now, id, workerId).changes;
     if (changed !== 1) throw new Error("outbox claim is stale");
+  }
+
+  /** Settled delivery receipts are operational bookkeeping, not semantic
+   * communication history. Keep a bounded diagnostic tail while preserving all
+   * pending and dead-lettered work. */
+  pruneSettledOutboxes(retain = 10_000): { activationOutbox: number; providerOperations: number } {
+    const keep = Math.max(100, Math.floor(retain));
+    return this.sqlite.transaction(() => {
+      const activationOutbox = this.sqlite.prepare(`
+        DELETE FROM activation_outbox
+        WHERE processed_at IS NOT NULL AND id NOT IN (
+          SELECT id FROM activation_outbox WHERE processed_at IS NOT NULL ORDER BY id DESC LIMIT ?
+        )
+      `).run(keep).changes;
+      const providerOperations = this.sqlite.prepare(`
+        DELETE FROM provider_operation_outbox
+        WHERE state = 'completed' AND id NOT IN (
+          SELECT id FROM provider_operation_outbox WHERE state = 'completed' ORDER BY id DESC LIMIT ?
+        )
+      `).run(keep).changes;
+      return { activationOutbox, providerOperations };
+    })();
   }
 
   private validateLifetime(lifetime: RequestLifetime, now: string): void {
@@ -2178,12 +2443,131 @@ export class CoordinationV3Store {
     });
   }
 
+  private triggerOccurrenceResult(occurrenceId: string, replayed: boolean): TriggerOccurrenceResult {
+    const row = this.sqlite.prepare(`
+      SELECT state, activation_id FROM trigger_occurrences WHERE id = ?
+    `).get(occurrenceId) as { state: TriggerOccurrenceState; activation_id: string | null } | undefined;
+    if (!row) throw new Error("trigger occurrence not found");
+    return {
+      occurrenceId,
+      state: row.state,
+      ...(row.activation_id ? { activationId: row.activation_id } : {}),
+      replayed,
+    };
+  }
+
+  private processTriggerOccurrence(occurrenceId: string, now: string): TriggerOccurrenceState {
+    const row = this.sqlite.prepare(`
+      SELECT trigger_id, occurrence_key, project_id, agent_id, scope_key,
+        payload_json, provenance_json, activation_config_json, attempts
+      FROM trigger_occurrences WHERE id = ? AND state = 'pending'
+    `).get(occurrenceId) as {
+      trigger_id: string;
+      occurrence_key: string;
+      project_id: string;
+      agent_id: string;
+      scope_key: string;
+      payload_json: string;
+      provenance_json: string;
+      activation_config_json: string;
+      attempts: number;
+    } | undefined;
+    if (!row) return this.triggerOccurrenceResult(occurrenceId, false).state;
+    const attempts = row.attempts + 1;
+    try {
+      const config = JSON.parse(row.activation_config_json) as {
+        conversationId: string | null;
+        priority: number;
+        dispatchPolicy: ActivationDispatchPolicy;
+        promptClass: ActivationPromptClass;
+        retryDelayMs: number;
+      };
+      const payload = JSON.parse(row.payload_json) as unknown;
+      const provenance = JSON.parse(row.provenance_json) as unknown;
+      this.requireProject(row.project_id);
+      this.requireAgent(row.project_id, row.agent_id);
+      if (config.conversationId) {
+        this.requireConversation(row.project_id, config.conversationId);
+        this.requireConversationMember(config.conversationId, row.agent_id);
+      }
+      const activationId = this.createActivation({
+        projectId: row.project_id,
+        agentId: row.agent_id,
+        scopeKey: row.scope_key,
+        kind: "trigger_occurrence",
+        priority: config.priority,
+        dispatchPolicy: config.dispatchPolicy,
+        promptClass: config.promptClass,
+        dedupeKey: `trigger:${row.trigger_id}:${row.occurrence_key}`,
+        payload: { occurrenceId, triggerId: row.trigger_id, payload, provenance },
+        sourceKind: "trigger_occurrence",
+        sourceId: occurrenceId,
+        externalIntake: true,
+        now,
+      });
+      this.sqlite.prepare(`
+        UPDATE trigger_occurrences
+        SET state = 'activated', attempts = ?, activation_id = ?, last_error = NULL, updated_at = ?
+        WHERE id = ? AND state = 'pending'
+      `).run(attempts, activationId, now, occurrenceId);
+      return "activated";
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+      const maximumAttempts = Math.max(1, this.options.maxTriggerAttempts ?? DEFAULT_MAX_TRIGGER_ATTEMPTS);
+      let retryDelayMs = 1_000;
+      try {
+        const config = JSON.parse(row.activation_config_json) as { retryDelayMs?: unknown };
+        if (typeof config.retryDelayMs === "number" && Number.isFinite(config.retryDelayMs)) {
+          retryDelayMs = Math.max(1, Math.min(3_600_000, Math.floor(config.retryDelayMs)));
+        }
+      } catch {
+        // The malformed config is itself the failure and will be dead-lettered
+        // after the bounded attempt count.
+      }
+      const deadLettered = attempts >= maximumAttempts;
+      this.sqlite.prepare(`
+        UPDATE trigger_occurrences
+        SET state = ?, attempts = ?, available_at = ?, last_error = ?, updated_at = ?, dead_lettered_at = ?
+        WHERE id = ? AND state = 'pending'
+      `).run(
+        deadLettered ? "dead_lettered" : "pending",
+        attempts,
+        new Date(Date.parse(now) + retryDelayMs).toISOString(),
+        message,
+        now,
+        deadLettered ? now : null,
+        occurrenceId,
+      );
+      return deadLettered ? "dead_lettered" : "pending";
+    }
+  }
+
   private createActivation(input: {
     projectId: string; agentId: string; kind: string; priority: number; dedupeKey: string;
     scopeKey: string;
     dispatchPolicy?: ActivationDispatchPolicy; promptClass?: ActivationPromptClass;
     payload: unknown; sourceKind: string; sourceId: string; now: string;
+    externalIntake?: boolean;
   }): string {
+    const existing = this.sqlite.prepare(`
+      SELECT id FROM agent_activations WHERE project_id = ? AND agent_id = ? AND dedupe_key = ?
+    `).get(input.projectId, input.agentId, input.dedupeKey) as { id: string } | undefined;
+    if (existing) {
+      this.sqlite.prepare(`
+        INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id) VALUES (?, ?, ?)
+      `).run(existing.id, input.sourceKind, input.sourceId);
+      return existing.id;
+    }
+    if (input.externalIntake) {
+      const maximum = Math.max(1, this.options.maxPendingActivationsPerAgent ?? DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT);
+      const pending = (this.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM agent_activations
+        WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
+      `).get(input.agentId) as { count: number }).count;
+      if (pending >= maximum) {
+        throw new Error(`pending activation limit reached for Agent (${maximum})`);
+      }
+    }
     const id = randomUUID();
     const defaults = activationDefaults(input.kind, input.priority);
     const inserted = this.sqlite.prepare(`
