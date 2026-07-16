@@ -6,6 +6,7 @@ import type { AgentEvent } from "@ponderosa/core";
 import {
   BrowserSessionError,
   BrowserSessionManager,
+  chromeBrowserDriverFactory,
   redactBrowserUrl,
   validateBrowserUrl,
   type BrowserDriver,
@@ -78,6 +79,14 @@ describe("run-scoped browser sessions", () => {
     expect(validateBrowserUrl("https://example.com/a")).toBe("https://example.com/a");
     expect(() => validateBrowserUrl("file:///etc/passwd")).toThrow(BrowserSessionError);
     expect(() => validateBrowserUrl("https://user:secret@example.com")).toThrow(/credentialed/);
+  });
+
+  it("rejects CDP startup when the browser exits without an unhandled pipe error", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const createDriver = chromeBrowserDriverFactory(dataDir, process.execPath);
+
+    await expect(createDriver("exiting-browser", () => undefined)).rejects.toThrow();
   });
 
   it("redacts credential-bearing current and redirect URLs before DTOs, audit, and snapshots", async () => {

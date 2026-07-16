@@ -662,6 +662,7 @@ class CdpConnection {
   private readonly listeners = new Set<(message: CdpReply) => void>();
 
   constructor(private readonly input: Writable, output: Readable) {
+    input.on("error", (error) => this.fail(error));
     output.on("data", (chunk: Buffer) => this.consume(chunk));
     output.on("error", (error) => this.fail(error));
     output.on("end", () => this.fail(new Error("browser debugging pipe closed")));
