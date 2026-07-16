@@ -68,6 +68,15 @@ export function linkPresentation(href: string): { url: URL; hostname: string; de
 
 export interface LinkPreviewScope { projectId: string; agentId: string; runId: string; conversationId?: string }
 
+export function linkPreviewScopeForMessage(
+  message: Pick<MessageDto, "role" | "authorAgentId" | "executionId">,
+  activeScope?: LinkPreviewScope,
+): LinkPreviewScope | undefined {
+  if (!activeScope || message.role !== "assistant") return undefined;
+  if (message.authorAgentId !== activeScope.agentId || message.executionId !== activeScope.runId) return undefined;
+  return activeScope;
+}
+
 function ChatLink({ href, children, previewScope }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope }): JSX.Element {
   const link = linkPresentation(href);
   const [chooserOpen, setChooserOpen] = useState(false);
@@ -671,7 +680,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={message.role === "assistant" ? previewScope : undefined} />
+            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={linkPreviewScopeForMessage(message, previewScope)} />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>

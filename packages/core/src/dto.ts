@@ -628,6 +628,8 @@ export interface MessageDto {
   createdAt: string;
   /** Stable agent author for explicit agent communication shown in this audit. */
   authorAgentId?: string;
+  /** Originating provider execution for agent-authored communication. */
+  executionId?: string;
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];

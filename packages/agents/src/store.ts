@@ -1625,6 +1625,7 @@ export class AgentStore {
           text: message.text,
           createdAt: message.createdAt,
           ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
+          ...(message.executionId ? { executionId: message.executionId } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(message.document ? { document: message.document } : {}),
