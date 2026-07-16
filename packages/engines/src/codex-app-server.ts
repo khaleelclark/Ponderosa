@@ -9,6 +9,7 @@ import type {
 import { mapFileChangeKind } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import type { SpawnFn } from "./process.js";
+import { renderSeedPrompt } from "./seed-history.js";
 
 interface ThreadResponse { thread: { id: string } }
 interface TurnResponse { turn: { id: string } }
@@ -40,6 +41,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly rpc: JsonRpcProcess,
     private readonly cwd: string,
     fresh: boolean,
+    private readonly seedHistory: OpenRuntimeSessionOptions["history"],
   ) {
     if (fresh) this.baselineTotal = zeroUsage();
     this.events = this.eventStream();
@@ -97,13 +99,22 @@ export class CodexAppServerSession implements RuntimeSession {
             inputSchema: tool.inputSchema,
           })) ?? null,
         });
-    return new CodexAppServerSession(response.thread.id, rpc, opts.cwd, !opts.resumeSessionId);
+    return new CodexAppServerSession(
+      response.thread.id,
+      rpc,
+      opts.cwd,
+      !opts.resumeSessionId,
+      opts.resumeSessionId ? [] : [...opts.history],
+    );
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    const prompt = this.seedHistory.length > 0
+      ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
+      : input.prompt;
     const response = await this.rpc.request<TurnResponse>("turn/start", {
       threadId: this.engineAgentId,
-      input: [{ type: "text", text: input.prompt, text_elements: [] }],
+      input: [{ type: "text", text: prompt, text_elements: [] }],
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),

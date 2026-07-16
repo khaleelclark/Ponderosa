@@ -9,6 +9,23 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
 
 describe("Codex app-server persistent runtime", () => {
+  it("injects canonical history into the first turn of a fresh persistent session", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "history", cwd: here, history: [{ role: "assistant", text: "History marker" }],
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+    });
+    const text: string[] = [];
+    const collecting = (async () => { for await (const event of session.events) {
+      if (event.type === "text") text.push(event.delta);
+      if (event.type === "turn_done") return;
+    } })();
+    await session.startTurn({ prompt: "Current work", kind: "user_message" });
+    await collecting;
+    expect(text.join("")).toContain("Conversation so far:\nAssistant: History marker\n\nCurrent request:\nCurrent work");
+    await session.close();
+  });
   it("normalizes the per-turn usage breakdown without double-counting cached tokens", () => {
     expect(mapCodexTokenUsage({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 }))
       .toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });

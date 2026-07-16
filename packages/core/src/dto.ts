@@ -796,6 +796,38 @@ export interface AgentRunDto {
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
+  /** Hash and sources of the exact text Ponderosa submitted to the provider. */
+  providerInput?: {
+    promptHash: string;
+    sourceManifest: ProviderInputSourceManifest;
+    exactPromptAvailable: true;
+  };
+}
+
+export interface ProviderInputSourceManifest {
+  schemaVersion: 1;
+  historyMessageCount: number;
+  activationIds: string[];
+  communicationEventIds: string[];
+  artifactIds: string[];
+  conversationId?: string;
+  providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
+  sources: Array<{
+    kind: "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory";
+    ref: string;
+    hash?: string;
+    createdAt?: string;
+  }>;
+}
+
+export interface ProviderInputDto {
+  executionId: string;
+  schedulerRunId: string;
+  promptHash: string;
+  sourceManifest: ProviderInputSourceManifest;
+  exactPrompt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type TokenUsageScope = "overall" | "project" | "agent";
@@ -910,7 +942,7 @@ export interface WorkItemDto {
 }
 
 /** Kind of artifact (SPEC §2/§12): the "what changed". */
-export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document" | "screenshot";
+export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document" | "screenshot" | "generated_file";
 
 export type AgentActivityEvent = Extract<AgentEvent, {
   type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
@@ -949,9 +981,14 @@ export interface ArtifactDto {
   summary?: string;
   createdAt: string;
   /** Generated files are served through opaque, project-scoped URLs. */
-  mediaType?: "application/pdf" | "image/png";
+  mediaType?: string;
   previewUrl?: string;
   downloadUrl?: string;
+  /** Project-scoped visibility; generated files are private unless explicitly published. */
+  visibility?: "project" | "published";
+  pinned?: boolean;
+  sourcePath?: string;
+  size?: number;
 }
 
 /** GET /api/agents/:id/artifacts/:aid — the artifact plus its rendered content. */

@@ -39,7 +39,7 @@ import {
   Typography,
 } from "@mui/material";
 import { unifiedDiffLineTotals } from "@ponderosa/core";
-import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, ProviderInputDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -914,7 +914,7 @@ export function RunsPane({
         ) : null}
       </Stack>
       {coordinationV3 ? (
-        <Alert severity={coordinationV3.availability === "waiting" ? "info" : "success"}>
+        <Alert severity={coordinationV3.requests.some((request) => request.state === "outcome_unknown") ? "warning" : coordinationV3.availability === "waiting" ? "info" : "success"}>
           Communication V3: {coordinationV3.availability}
           {coordinationV3.joins.some((join) => join.state === "open")
             ? ` · ${coordinationV3.joins.filter((join) => join.state === "open").length} open join(s)`
@@ -925,6 +925,9 @@ export function RunsPane({
           {coordinationV3.activeRun
             ? ` · fence ${coordinationV3.activeRun.fencingToken} · ${coordinationV3.activeRun.promptInjectionState.replaceAll("_", " ")}`
             : ""}
+          {coordinationV3.requests.filter((request) => request.direction === "outbound" && ["outcome_unknown", "failed", "recipient_unavailable"].includes(request.state)).map((request) => (
+            <RetryRequestButton key={request.id} requestId={request.id} />
+          ))}
         </Alert>
       ) : null}
       {runs.length === 0 ? (
@@ -965,6 +968,7 @@ export function RunsPane({
                   ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
                   : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
               </Typography>
+              {run.providerInput ? <RunProviderInput run={run} /> : null}
             </Paper>
           ))}
         </Box>
@@ -1010,6 +1014,56 @@ export function RunsPane({
       )}
     </Stack>
   );
+}
+
+function RetryRequestButton({ requestId }: { requestId: string }): JSX.Element {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  return <Box sx={{ mt: 0.5 }}>
+    <Button size="small" variant="outlined" disabled={busy} onClick={async () => {
+      setBusy(true); setError(undefined);
+      try {
+        const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ idempotencyKey: `operator-retry:${requestId}`, createJoin: true }),
+        });
+        const body = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "Retry failed");
+        await queryClient.invalidateQueries();
+      } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+      finally { setBusy(false); }
+    }}>{busy ? "Retrying…" : `Retry request ${requestId.slice(0, 8)}`}</Button>
+    {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
+  </Box>;
+}
+
+function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
+  const [showExact, setShowExact] = useState(false);
+  const exact = useQuery({
+    queryKey: ["provider-input", run.id],
+    queryFn: async () => {
+      const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/provider-input?exact=1`);
+      if (!response.ok) throw new Error("Provider input is unavailable");
+      return await response.json() as ProviderInputDto;
+    },
+    enabled: showExact,
+    staleTime: Infinity,
+  });
+  const manifest = run.providerInput!.sourceManifest;
+  return <Box sx={{ mt: 0.75 }}>
+    <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+      Context {run.providerInput!.promptHash.slice(0, 12)} · {manifest.providerSessionDisposition.replaceAll("_", " ")} · {manifest.historyMessageCount} history · {manifest.activationIds.length} activation(s) · {manifest.artifactIds.length} artifact(s)
+    </Typography>
+    <Button size="small" sx={{ px: 0, minWidth: 0 }} onClick={() => setShowExact((value) => !value)}>
+      {showExact ? "Hide exact provider input" : "Show exact provider input"}
+    </Button>
+    {showExact ? <Paper variant="outlined" sx={{ p: 1, mt: 0.5, maxHeight: 260, overflow: "auto" }}>
+      <Typography variant="caption" component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+        {exact.isPending ? "Loading…" : exact.isError ? exact.error.message : exact.data?.exactPrompt}
+      </Typography>
+    </Paper> : null}
+  </Box>;
 }
 
 /** The "Live Log" tab: a running feed of commands, tools, tests, files, errors. */

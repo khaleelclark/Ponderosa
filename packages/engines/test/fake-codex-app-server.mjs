@@ -15,6 +15,11 @@ lines.on("line", (line) => {
   if (message.method === "turn/start") {
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "inProgress" } } });
+    if (message.params?.input?.[0]?.text?.includes("History marker")) {
+      send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "agentMessage", id: "history", text: message.params.input[0].text } } });
+      send({ method: "turn/completed", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "completed", error: null } } });
+      return;
+    }
     if (dynamicToolEnabled) {
       send({ method: "item/started", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "tool-1", tool: "ponderosa_message", arguments: { intent: "broadcast", text: "Managed result" }, status: "inProgress" } } });
       send({

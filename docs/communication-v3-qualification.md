@@ -14,6 +14,25 @@ The comparisons below are retained historical qualification evidence. Their
 isolated data directories, ports, feature flags, and V2 service descriptions do
 not describe the current executable product.
 
+## Current V3.1.1 integration contract
+
+V3.1.1 now treats the operational failures discovered after the original
+qualification as one integrated reliability boundary:
+
+- deleted recipients dead-letter pending Activations instead of retrying forever;
+- uncertain human steering has a ten-second grace period followed by exact-Run
+  interruption and recovery unless the operator selects **Let current Run finish**;
+- fresh persistent Codex and Claude sessions receive bounded canonical history;
+- referenced, pinned, or published generated artifacts retain stable managed IDs;
+- visible managed-Agent creation includes its opening Request and optional Join;
+- terminal Request updates are canonical handoffs, correlated Retry Request is
+  the recovery action, and acknowledgement-only execution cascades are suppressed;
+- provider inputs are stored exactly with a source manifest and hash; and
+- explicit capacity rejection uses backoff and safe fallback selection.
+
+This implementation work does not retroactively strengthen the benchmark claims
+below. User-authored Triggers remain deliberately deferred.
+
 ## V3.1.1 activation-delivery lifecycle
 
 A scheduler Run is one delivery attempt; its failure is not itself the durable

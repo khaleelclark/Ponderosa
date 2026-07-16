@@ -132,6 +132,7 @@ export interface RequestUpdateV3Result {
 export interface CoordinationRequestV3View {
   id: string;
   projectId: string;
+  conversationId?: string;
   requesterAgentId?: string;
   recipientAgentId: string;
   state: CoordinationRequestState;
@@ -156,6 +157,8 @@ export interface SchedulerLease {
     dispatchPolicy: ActivationDispatchPolicy;
     promptClass: ActivationPromptClass;
     payload: unknown;
+    deliveryFailures: number;
+    lastDeliveryError?: string;
   }>;
 }
 
@@ -1463,6 +1466,7 @@ export class CoordinationV3Store {
     return {
       id: row.id,
       projectId: row.project_id,
+      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
       ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
       recipientAgentId: row.recipient_agent_id,
       state: row.state,
@@ -1854,6 +1858,8 @@ export class CoordinationV3Store {
           dispatchPolicy: activation.dispatch_policy,
           promptClass: activation.prompt_class,
           payload: JSON.parse(activation.payload_json) as unknown,
+          deliveryFailures: activation.delivery_failures,
+          ...(activation.last_delivery_error ? { lastDeliveryError: activation.last_delivery_error } : {}),
         })),
       };
     })();
@@ -1931,6 +1937,8 @@ export class CoordinationV3Store {
           dispatchPolicy: activation.dispatch_policy,
           promptClass: activation.prompt_class,
           payload: JSON.parse(activation.payload_json) as unknown,
+          deliveryFailures: activation.delivery_failures,
+          ...(activation.last_delivery_error ? { lastDeliveryError: activation.last_delivery_error } : {}),
         })),
       };
     })();
@@ -2148,6 +2156,39 @@ export class CoordinationV3Store {
     `, [disposition, now, runId, fence]);
   }
 
+  /** Persist exactly what Ponderosa submitted, plus the reconstructible source recipe. */
+  recordProviderInput(input: {
+    executionId: string;
+    schedulerRunId: string;
+    fencingToken: number;
+    agentId: string;
+    projectId: string;
+    prompt: string;
+    sourceManifest: import("@ponderosa/core").ProviderInputSourceManifest;
+    now?: string;
+  }): void {
+    const now = input.now ?? new Date().toISOString();
+    const run = this.getFencedRun(input.schedulerRunId, input.fencingToken);
+    if (run.agent_id !== input.agentId || run.project_id !== input.projectId) {
+      throw new Error("provider input scope does not match its scheduler run");
+    }
+    const hash = createHash("sha256").update(input.prompt).digest("hex");
+    this.sqlite.prepare(`
+      INSERT INTO provider_inputs (
+        execution_id, scheduler_run_id, agent_id, project_id, provider_prompt,
+        prompt_hash, source_manifest_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(execution_id) DO UPDATE SET
+        provider_prompt = excluded.provider_prompt,
+        prompt_hash = excluded.prompt_hash,
+        source_manifest_json = excluded.source_manifest_json,
+        updated_at = excluded.updated_at
+    `).run(
+      input.executionId, input.schedulerRunId, input.agentId, input.projectId,
+      input.prompt, hash, stableJson(input.sourceManifest), now, now,
+    );
+  }
+
   preparePromptInjection(input: {
     injectionId: string; runId: string; fencingToken: number; prompt: string; now?: string;
   }): void {
@@ -2166,6 +2207,13 @@ export class CoordinationV3Store {
         WHERE id = ? AND run_id = ? AND state = 'pending'
       `).run(hash, now, input.injectionId, input.runId);
     })();
+  }
+
+  activationIdsForInjection(injectionId: string, runId: string): string[] {
+    const row = this.sqlite.prepare(`
+      SELECT activation_ids_json FROM scheduler_prompt_injections WHERE id = ? AND run_id = ?
+    `).get(injectionId, runId) as { activation_ids_json: string } | undefined;
+    return row ? JSON.parse(row.activation_ids_json) as string[] : [];
   }
 
   markPromptSubmitted(input: {
@@ -2264,11 +2312,14 @@ export class CoordinationV3Store {
     terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
     error?: string;
     maxDeliveryFailures?: number;
+    /** Explicit provider rejection proves the prompt did not execute despite submission. */
+    confirmedNotExecuted?: boolean;
+    failureKind?: "capacity" | "rate_limit" | "authentication" | "context" | "unknown";
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
       const run = this.getFencedRun(input.runId, input.fencingToken);
-      const disposition = activationRetryDisposition({
+      const disposition = input.confirmedNotExecuted ? "retry" : activationRetryDisposition({
         promptInjectionState: run.prompt_injection_state as "not_injected" | "injecting" | "injected",
         sameRunResumable: input.sameRunResumable,
       });
@@ -2280,7 +2331,14 @@ export class CoordinationV3Store {
         const terminalOutcome = input.retryable === false
           ? input.terminalOutcome ?? "permanent_failure"
           : undefined;
-        const availableAt = new Date(Date.parse(now) + (input.retryDelayMs ?? 1_000)).toISOString();
+        const currentFailures = (this.sqlite.prepare(`
+          SELECT COALESCE(MAX(delivery_failures), 0) AS failures FROM agent_activations
+          WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+        `).get(input.runId) as { failures: number }).failures;
+        const capacityBackoff = input.failureKind === "capacity" || input.failureKind === "rate_limit"
+          ? Math.min(120_000, 2_000 * (2 ** Math.min(currentFailures, 6)))
+          : 1_000;
+        const availableAt = new Date(Date.parse(now) + (input.retryDelayMs ?? capacityBackoff)).toISOString();
         this.sqlite.prepare(`
           UPDATE scheduler_runs SET status = 'failed', updated_at = ?, terminal_at = ?
           WHERE id = ? AND fencing_token = ?
@@ -2315,6 +2373,10 @@ export class CoordinationV3Store {
         this.sqlite.prepare(`
           UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state = 'pending'
+        `).run(now, now, input.runId);
+        if (input.confirmedNotExecuted) this.sqlite.prepare(`
+          UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
+          WHERE run_id = ? AND state IN ('submitted', 'injected')
         `).run(now, now, input.runId);
         const pending = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM agent_activations

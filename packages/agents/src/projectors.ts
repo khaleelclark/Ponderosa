@@ -269,6 +269,18 @@ export function projectEvent(
       break;
     }
 
+    case "generated_artifact": {
+      ops.push({
+        kind: "insert_artifact",
+        row: {
+          id: artifactId(agentId, seq, 0), agentId, executionId: event.executionId,
+          kind: "generated_file", path: event.path, summary: event.name, createdAt: ts,
+        },
+      });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
+      break;
+    }
+
     case "browser_session":
     case "browser_action":
     case "browser_console":

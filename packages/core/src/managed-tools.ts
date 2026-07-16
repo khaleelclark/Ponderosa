@@ -70,7 +70,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Append one authorized, idempotent update to a correlated request. Omit requestId when the current run has exactly one attached correlated request; Ponderosa resolves it authoritatively. Supply the exact requestId only when the run contains multiple correlated requests. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
+  description: "Append one authorized, idempotent update to a correlated request. A terminal update is the canonical final handoff: completed, blocked, or failed requires a self-contained text result and replaces a separate ordinary report/message. Omit requestId when the current run has exactly one attached correlated request; Ponderosa resolves it authoritatively. Supply the exact requestId only when the run contains multiple correlated requests. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -134,6 +134,26 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
       if: { properties: { intent: { const: "collaboration" } }, required: ["intent"] },
       then: { required: ["recipientAgentIds"] },
     }],
+  },
+};
+
+/** Organization capability, deliberately distinct from provider-native/internal helpers. */
+export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_create_managed_agent",
+  description: "Create one visible Ponderosa-managed Agent in the current Team Chat. This is the required capability when the user asks for Agents, workers, reviewers, or a visible team; never substitute a provider-native/internal helper. The Agent, its opening correlated Request, and (by default) an all-results Join are created together. Set awaitResult:false only when no Join is desired.",
+  inputSchema: {
+    type: "object", additionalProperties: false,
+    required: ["idempotencyKey", "title", "engine", "text", "lifetime"],
+    properties: {
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+      title: { type: "string", minLength: 2, maxLength: 60 },
+      engine: { type: "string", enum: ["codex", "claude"] },
+      model: { type: "string", maxLength: 200 },
+      effort: { type: "string", maxLength: 40 },
+      text: { type: "string", minLength: 1, maxLength: 4000, description: "Self-contained assignment and acceptance criteria." },
+      lifetime: REQUEST_LIFETIME_SCHEMA,
+      awaitResult: { type: "boolean", description: "Defaults true; creates a durable all-results Join owned by the manager." },
+    },
   },
 };
 

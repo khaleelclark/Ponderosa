@@ -659,6 +659,46 @@ describe("CoordinationV3Store scheduler", () => {
     expect(() => store.completeRun(first.runId, first.fencingToken)).toThrow("stale");
   });
 
+  it("persists exact provider input with a structured source manifest", () => {
+    store.enqueueMessageActivation({ projectId, agentId: recipientA, messageId: "context", kind: "ordinary", payload: { text: "Work" } });
+    const lease = store.leaseNextRun({ workerId: "worker-1" })!;
+    const manifest = {
+      schemaVersion: 1 as const, historyMessageCount: 2, activationIds: lease.activationIds,
+      communicationEventIds: ["communication-1"], artifactIds: ["artifact-1"],
+      providerSessionDisposition: "fresh_task" as const,
+      sources: [{ kind: "identity" as const, ref: recipientA }],
+    };
+    store.recordProviderInput({
+      executionId: "execution-1", schedulerRunId: lease.runId, fencingToken: lease.fencingToken,
+      agentId: recipientA, projectId, prompt: "exact sensitive prompt", sourceManifest: manifest,
+    });
+    const recorded = opened.client.prepare(`SELECT provider_prompt, prompt_hash, source_manifest_json FROM provider_inputs WHERE execution_id = 'execution-1'`).get() as {
+      provider_prompt: string; prompt_hash: string; source_manifest_json: string;
+    };
+    expect(recorded.provider_prompt).toBe("exact sensitive prompt");
+    expect(recorded.prompt_hash).toBe("12c83c3a0cae0a2af5e25837bf52de0ffc91e6267925d6f20e41c401e0af6d98");
+    expect(JSON.parse(recorded.source_manifest_json)).toEqual(manifest);
+  });
+
+  it("retries an explicit capacity rejection after submission with backoff", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "capacity", kind: "ordinary", payload: { text: "Work" },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const lease = store.leaseNextRun({ workerId: "worker-1", now: "2026-07-15T00:00:00.000Z" })!;
+    store.preparePromptInjection({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, prompt: "Work" });
+    store.markRunStarted(lease.runId, lease.fencingToken, "2026-07-15T00:00:00.000Z");
+    store.markPromptSubmitted({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, now: "2026-07-15T00:00:00.000Z" });
+    expect(store.failRun({
+      runId: lease.runId, fencingToken: lease.fencingToken, workerId: "worker-1", sameRunResumable: false,
+      confirmedNotExecuted: true, failureKind: "capacity", error: "[capacity] Selected model is at capacity",
+      now: "2026-07-15T00:00:01.000Z",
+    })).toBe("retry");
+    expect(opened.client.prepare(`SELECT state FROM scheduler_prompt_injections WHERE id = ?`).get(lease.injectionId)).toEqual({ state: "cancelled" });
+    expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:02.999Z" })).toBeUndefined();
+    expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:03.000Z" })?.activationIds).toEqual(lease.activationIds);
+  });
+
   it("terminalizes a permanent dispatch rejection with an operator-visible outcome", () => {
     store.enqueueMessageActivation({
       projectId, agentId: recipientA, messageId: "missing-recipient", kind: "human", payload: { text: "Wake" },

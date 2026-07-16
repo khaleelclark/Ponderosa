@@ -97,6 +97,16 @@ pay-per-token provider API keys.
    Message for a question or private manager update, and explicit Collaboration
    for agent recipients. Its ordinary runtime response is not communication.
 
+   A fresh provider session must receive the bounded canonical history selected
+   for that turn even when the adapter uses a persistent transport. Generated
+   files are copied into Ponderosa-managed storage and enter context only when a
+   message references their stable artifact ID, or when the operator pins or
+   publishes them. Never replay the entire artifact library.
+
+   Every provider turn records the exact submitted text, its SHA-256 hash, and a
+   structured source manifest. The manifest is the default inspection surface;
+   exact text is sensitive and remains behind an explicit operator action.
+
 6. **Project chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool
    calls, terminal output, file changes, or lifecycle noise into it. Different
@@ -121,6 +131,12 @@ pay-per-token provider API keys.
    optional provider-reported progress inside or across Runs, not a synonym for
    either the prompt or execution. Artifacts, output, and activity retain their
    originating execution ID.
+
+   A visible managed Agent is not a provider-native helper. Provider runtimes
+   must use the host-owned managed-Agent capability, which creates the Agent and
+   its opening Request plus optional Join together. A terminal Request update is
+   the canonical final handoff; ordinary follow-up reports are passive audit
+   copies and acknowledgement-only collaboration must not create new work.
 
    Broadcasts inherited as context are shown through the originating execution's
    inspectable context manifest, not manufactured as Agent-chat messages.

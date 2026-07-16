@@ -47,6 +47,8 @@ import type {
   MessageDto,
   ProjectDto,
   AgentRunDto,
+  ProviderInputDto,
+  ProviderInputSourceManifest,
   WorkItemDto,
   WorkItemStatus,
   AgentLifecycleReason,
@@ -1141,6 +1143,7 @@ export class AgentStore {
           .run(id);
         this.client.prepare(`DELETE FROM runs WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
+        this.client.prepare(`DELETE FROM provider_inputs WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM messages WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
         this.client.prepare(`DELETE FROM agent_conversation_memberships WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
@@ -1787,6 +1790,7 @@ export class AgentStore {
       tx.delete(artifacts).where(eq(artifacts.agentId, id)).run();
       tx.delete(workItems).where(eq(workItems.agentId, id)).run();
       tx.delete(runs).where(eq(runs.agentId, id)).run();
+      this.client.prepare(`DELETE FROM provider_inputs WHERE agent_id = ?`).run(id);
       tx.delete(messages).where(eq(messages.agentId, id)).run();
       tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
       tx.delete(agents).where(eq(agents.id, id)).run();
@@ -2159,7 +2163,11 @@ export class AgentStore {
       .where(eq(runs.agentId, agentId))
       .orderBy(asc(runs.startedAt))
       .all()
-      .map((r) => ({
+      .map((r) => {
+        const providerInput = this.client.prepare(`
+          SELECT prompt_hash, source_manifest_json FROM provider_inputs WHERE execution_id = ? AND agent_id = ?
+        `).get(r.id, agentId) as { prompt_hash: string; source_manifest_json: string } | undefined;
+        return ({
         id: r.id,
         agentId: r.agentId,
         title: r.title,
@@ -2183,7 +2191,34 @@ export class AgentStore {
         startedAt: r.startedAt,
         updatedAt: r.updatedAt,
         completedAt: r.completedAt ?? undefined,
-      }));
+        ...(providerInput ? { providerInput: {
+          promptHash: providerInput.prompt_hash,
+          sourceManifest: JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest,
+          exactPromptAvailable: true as const,
+        } } : {}),
+      });
+      });
+  }
+
+  getProviderInput(executionId: string, includeExactPrompt = false): ProviderInputDto | undefined {
+    const row = this.client.prepare(`
+      SELECT execution_id, scheduler_run_id, provider_prompt, prompt_hash,
+        source_manifest_json, created_at, updated_at
+      FROM provider_inputs WHERE execution_id = ?
+    `).get(executionId) as {
+      execution_id: string; scheduler_run_id: string; provider_prompt: string; prompt_hash: string;
+      source_manifest_json: string; created_at: string; updated_at: string;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      executionId: row.execution_id,
+      schedulerRunId: row.scheduler_run_id,
+      promptHash: row.prompt_hash,
+      sourceManifest: JSON.parse(row.source_manifest_json) as ProviderInputSourceManifest,
+      ...(includeExactPrompt ? { exactPrompt: row.provider_prompt } : {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
   }
 
   getTokenUsage(
@@ -2358,19 +2393,47 @@ export class AgentStore {
   }
 
   getArtifacts(agentId: string): ArtifactDto[] {
-    const generatedPdfs = new Map(this.readEvents(agentId).flatMap((stored) =>
+    const eventLog = this.readEvents(agentId);
+    const capturedSourcePaths = new Set(eventLog.flatMap((stored) =>
+      stored.event.type === "generated_artifact" ? [stored.event.sourcePath] : [],
+    ));
+    const generatedPdfs = new Map(eventLog.flatMap((stored) =>
       stored.event.type === "file_change" && stored.event.path.toLowerCase().endsWith(".pdf")
+        && !capturedSourcePaths.has(stored.event.path)
         ? [[artifactId(agentId, stored.seq, 0), stored.event.path] as const]
         : [],
     ));
     const agent = this.getAgent(agentId);
+    const generatedFiles = new Map(eventLog.flatMap((stored) =>
+      stored.event.type === "generated_artifact"
+        ? [[artifactId(agentId, stored.seq, 0), stored.event] as const]
+        : [],
+    ));
+    const visibility = new Map<string, { visibility: "project" | "published"; pinned: boolean }>();
+    for (const stored of eventLog) if (stored.event.type === "artifact_visibility") {
+      visibility.set(stored.event.artifactId, { visibility: stored.event.visibility, pinned: stored.event.pinned });
+    }
     return this.db
       .select()
       .from(artifacts)
       .where(eq(artifacts.agentId, agentId))
       .orderBy(asc(artifacts.createdAt))
       .all()
+      .filter((row) => !(row.kind === "diff" && [...capturedSourcePaths].some((source) => row.summary === `create ${source}` || row.summary === `edit ${source}`)))
       .map((r) => {
+        const generated = generatedFiles.get(r.id);
+        if (generated && agent) {
+          const scope = visibility.get(r.id);
+          const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
+          return {
+            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
+            kind: "generated_file" as const, path: generated.path, sourcePath: generated.sourcePath,
+            summary: generated.name, createdAt: r.createdAt, mediaType: generated.mediaType,
+            visibility: scope?.visibility ?? generated.visibility, pinned: scope?.pinned ?? generated.pinned ?? false,
+            size: generated.size,
+            previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+          };
+        }
         const generatedPath = generatedPdfs.get(r.id);
         if (generatedPath && agent) {
           const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
@@ -2407,6 +2470,13 @@ export class AgentStore {
     return stored?.event.type === "file_change"
       ? stored.event.path
       : undefined;
+  }
+
+  getGeneratedArtifact(agentId: string, artifactIdValue: string): Extract<LogEvent, { type: "generated_artifact" }> | undefined {
+    const stored = this.readEvents(agentId).find((candidate) =>
+      artifactId(agentId, candidate.seq, 0) === artifactIdValue && candidate.event.type === "generated_artifact"
+    );
+    return stored?.event.type === "generated_artifact" ? stored.event : undefined;
   }
 
   getArtifact(agentId: string, artifactId: string): ArtifactDto | undefined {

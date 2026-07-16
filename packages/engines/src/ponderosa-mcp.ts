@@ -4,6 +4,7 @@ import {
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_BROWSER_TOOLS,
+  PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
 } from "@ponderosa/core";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
@@ -12,6 +13,7 @@ const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
 const browserUrl = process.env.PONDEROSA_AGENT_BROWSER_URL;
+const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
 function send(value: unknown): void {
@@ -38,6 +40,11 @@ async function handle(request: RpcRequest): Promise<void> {
       id: request.id,
       result: {
         tools: [
+          {
+            name: "create_managed_agent",
+            description: PONDEROSA_CREATE_MANAGED_AGENT_TOOL.description,
+            inputSchema: PONDEROSA_CREATE_MANAGED_AGENT_TOOL.inputSchema,
+          },
           {
             name: "coordinate",
             description: PONDEROSA_COORDINATE_TOOL.description,
@@ -68,7 +75,9 @@ async function handle(request: RpcRequest): Promise<void> {
     const browserOperation = typeof params?.name === "string" && params.name.startsWith("browser_")
       ? params.name.slice("browser_".length)
       : undefined;
-    const targetUrl = params?.name === "coordinate"
+    const targetUrl = params?.name === "create_managed_agent"
+      ? spawnUrl
+      : params?.name === "coordinate"
       ? coordinateUrl
       : params?.name === "update_request"
         ? updateRequestUrl

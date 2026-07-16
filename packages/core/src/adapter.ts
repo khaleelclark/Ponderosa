@@ -24,6 +24,10 @@ export interface ChatMessage {
     size: number;
     localPath: string;
     available: boolean;
+    /** Stable Ponderosa artifact identity for referenced generated output. */
+    artifactId?: string;
+    /** Project-scoped retrieval location supplied to fresh provider sessions. */
+    retrievalUrl?: string;
   }>;
 }
 
