@@ -84,7 +84,7 @@ function ChatLink({ href, children, previewScope }: { href: string; children: Re
   const [faviconFailed, setFaviconFailed] = useState(false);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string>();
-  if (!link) return <a href={href}>{children}</a>;
+  if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
   const activate = (event: React.MouseEvent) => { event.preventDefault(); setChooserOpen(true); setError(undefined); };
   const openInside = async () => {
     setOpening(true); setError(undefined);
@@ -99,7 +99,7 @@ function ChatLink({ href, children, previewScope }: { href: string; children: Re
     finally { setOpening(false); }
   };
   return <>
-    <Box component="a" href={href} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+    <Box className="chat-text-navigation" component="a" href={href} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
       {!faviconFailed && !link.loopback && link.url.protocol === "https:"
         ? <Box component="img" src={`/api/link-favicon?url=${encodeURIComponent(link.url.href)}`} alt="" onError={() => setFaviconFailed(true)} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
         : <LanguageIcon aria-hidden fontSize="inherit" />}
@@ -333,6 +333,20 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
   element.scrollTop = element.scrollHeight;
 }
 
+const scrollActivityTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
+
+/** Reveal the already-reserved scrollbar thumb for touch, wheel, and keyboard scrolling. */
+export function revealChatScrollbar(element: HTMLElement): void {
+  element.classList.add("is-scrolling");
+  const activeTimer = scrollActivityTimers.get(element);
+  if (activeTimer) clearTimeout(activeTimer);
+  const timer = setTimeout(() => {
+    element.classList.remove("is-scrolling");
+    scrollActivityTimers.delete(element);
+  }, 700);
+  scrollActivityTimers.set(element, timer);
+}
+
 export function replyFallbackText(text: string): string {
   return text.trim() || "Original message unavailable";
 }
@@ -471,10 +485,10 @@ export function ChatMarkdown({
         whiteSpace: "pre-wrap",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
-        fontSize: 14,
-        lineHeight: "20px",
-        "& p": { my: 0.35 },
-        "& h1, & h2, & h3, & h4": { mt: 1.5, mb: 0.75, lineHeight: 1.25 },
+        fontSize: "0.9375rem",
+        lineHeight: 1.55,
+        "& p": { my: 0.5 },
+        "& h1, & h2, & h3, & h4": { mt: 1.35, mb: 0.6, lineHeight: 1.25 },
         "& h1": { fontSize: "1.35rem" },
         "& h2": { fontSize: "1.2rem" },
         "& h3, & h4": { fontSize: "1.05rem" },
@@ -500,7 +514,7 @@ export function ChatMarkdown({
             if (!agentId || !onOpenAgent) {
               return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={{ fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 2 }}>{label}</Box>;
             }
-            return <Box component="button" type="button" aria-label={`Open agent ${handle}`} onClick={() => onOpenAgent(agentId)} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${handle}`} onClick={() => onOpenAgent(agentId)} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
           },
         }}
       >
@@ -533,10 +547,10 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
         <Typography variant="subtitle2" noWrap>{document.title}</Typography>
         <Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography>
       </Box>
-      <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)}>{expanded ? "Hide" : "Preview"}</Button>
-      <Button size="small" component="a" href={document.downloadUrl} download>Download</Button>
+      <Button className="chat-text-navigation" size="small" color="inherit" onClick={() => setExpanded((value) => !value)}>{expanded ? "Hide" : "Preview"}</Button>
+      <Button className="chat-text-navigation" size="small" component="a" href={document.downloadUrl} download>Download</Button>
     </Stack>
-    {expanded ? <Box sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider", maxHeight: "60vh", overflow: "auto" }}>
+    {expanded ? <Box sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}>
       {query.isLoading ? <CircularProgress size={20} /> : query.data ? <ChatMarkdown>{query.data.content}</ChatMarkdown> : <Alert severity="error">Document preview is unavailable.</Alert>}
     </Box> : null}
   </Paper>;
@@ -564,6 +578,7 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent
       </Box>
       {collapsible ? (
         <Button
+          className="chat-text-navigation"
           size="small"
           color="inherit"
           startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
@@ -584,7 +599,7 @@ export function UserMessageLabel(): JSX.Element {
     <Typography
       variant="caption"
       component="div"
-      sx={{ mb: 0.25, mr: 0.5, fontWeight: 700, color: "text.secondary", textAlign: "right" }}
+      sx={{ mb: 0.25, px: { xs: 1, sm: 1.5 }, fontWeight: 700, color: "text.secondary" }}
     >
       User
     </Typography>
@@ -641,14 +656,16 @@ export function ChatPane({
       aria-label="Conversation"
       className="chat-scroll-region"
       ref={scrollRef}
-      spacing={1.25}
-      onScroll={() => {
+      spacing={1}
+      tabIndex={0}
+      onScroll={(event) => {
+        revealChatScrollbar(event.currentTarget);
         if (scrollRef.current) {
           shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
           if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
-      sx={{ p: 1.5, pb: 3, height: "100%", minHeight: 0, overflowY: "auto" }}
+      sx={{ p: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(760px, 100%)", alignSelf: "center" } }}
     >
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
@@ -673,21 +690,20 @@ export function ChatPane({
             minWidth: 0,
           }}
         >
-          {message.role === "user" ? <UserMessageLabel /> : null}
+          {message.role === "user" ? <UserMessageLabel /> : <Box sx={{ px: { xs: 1, sm: 1.5 } }}><MessageSenderLabel name={senderLabel} /></Box>}
           <Box
             data-message-bubble="true"
             sx={{
               px: { xs: 1, sm: 1.5 },
               py: { xs: 0.75, sm: 1 },
               borderRadius: 2,
-              bgcolor: message.role === "user" ? "action.selected" : "background.paper",
+              bgcolor: message.role === "user" ? "action.hover" : "transparent",
               color: "text.primary",
               border: 1,
-              borderColor: "divider",
-              boxShadow: "0 1px 2px rgba(0,0,0,0.03)",
+              borderColor: "transparent",
             }}
           >
-            <MessageSenderLabel name={senderLabel} />
+            {message.role === "user" ? <MessageSenderLabel name={senderLabel} /> : null}
             {message.replyTo ? (
               <Box
                 component="button"

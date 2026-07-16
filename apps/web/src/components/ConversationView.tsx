@@ -48,7 +48,7 @@ import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCom
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles, uploadFilesForRecipients } from "../conversationReply";
-import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
@@ -137,34 +137,34 @@ export function ConversationMessage({
       tabIndex={-1}
       sx={{ alignSelf: "center", width: "min(760px, 100%)", maxWidth: "100%", minWidth: 0 }}
     >
-      {showUserLabel ? <UserMessageLabel /> : null}
+      <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", minWidth: 0 }}>
+        <Box sx={{ flex: 1, minWidth: 0, px: showUserLabel ? 0 : { xs: 1, sm: 1.5 } }}>
+          {showUserLabel ? <UserMessageLabel /> : <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorAgentId)} />}
+        </Box>
+        {message.authorAgentId ? (
+          <IconButton
+            size="small"
+            aria-label={`Open agent ${agentTitle(message.authorAgentId)}`}
+            onClick={() => onOpenAgent(message.authorAgentId!)}
+            sx={{ color: "text.secondary", minWidth: 44, minHeight: 44 }}
+          >
+            <OpenInNewIcon fontSize="inherit" />
+          </IconButton>
+        ) : null}
+      </Stack>
       <Box
         data-message-bubble="true"
         sx={{
           px: { xs: 1, sm: 1.5 },
           py: { xs: 0.75, sm: 1 },
           borderRadius: 2,
-          bgcolor: fromManager ? "action.selected" : "background.paper",
+          bgcolor: fromManager ? "action.hover" : "transparent",
           color: "text.primary",
           border: 1,
-          borderColor: "divider",
+          borderColor: "transparent",
         }}
       >
-        <Stack direction="row" spacing={0.5} sx={{ alignItems: "flex-start", minWidth: 0 }}>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorAgentId)} />
-          </Box>
-          {message.authorAgentId ? (
-            <IconButton
-              size="small"
-              aria-label={`Open agent ${agentTitle(message.authorAgentId)}`}
-              onClick={() => onOpenAgent(message.authorAgentId!)}
-              sx={{ color: "inherit", minWidth: 44, minHeight: 44, mt: -1, mr: -1 }}
-            >
-              <OpenInNewIcon fontSize="inherit" />
-            </IconButton>
-          ) : null}
-        </Stack>
+        {fromManager ? <MessageSenderLabel name="You" /> : null}
         {message.replyTo ? (
           <Box component="button" aria-label="Go to replied-to message" onClick={() => {
             const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
@@ -928,7 +928,11 @@ export function ConversationView({
       <Box
         ref={chatScrollRef}
         className="chat-scroll-region"
-        onScroll={() => {
+        role="region"
+        aria-label={activeView === "collaboration" ? "Team chat messages" : "Project chat messages"}
+        tabIndex={0}
+        onScroll={(event) => {
+          revealChatScrollbar(event.currentTarget);
           if (chatScrollRef.current) {
             shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
             writeChatState(
@@ -939,7 +943,14 @@ export function ConversationView({
         }}
         sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
       >
-        <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
+        <Box data-chat-column sx={{ width: "min(800px, 100%)", mx: "auto", p: { xs: 1, sm: 1.5 }, pb: 3 }}>
+          <Alert severity="info" sx={{ mb: 1.5 }}>
+            {activeView === "collaboration" ? (
+              <>Agent-to-agent messages appear here. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> to notify every agent in this Project chat.</>
+            ) : (
+              <>Chat normally to start a fresh agent with this Project chat's shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file.</>
+            )}
+          </Alert>
           {activeView === "main" && !engineReady ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
               {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
@@ -968,7 +979,7 @@ export function ConversationView({
             </Stack>
           ) : null}
 
-          <Stack spacing={1.25} sx={{ mb: 2 }}>
+          <Stack spacing={1} sx={{ mb: 2 }}>
             {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {activeView === "collaboration"

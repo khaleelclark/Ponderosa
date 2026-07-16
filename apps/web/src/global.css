@@ -37,9 +37,11 @@ body {
 }
 
 .chat-scroll-region {
+  /* Keep the gutter allocated while only changing the thumb's visibility. This
+     avoids the document column moving when a scrollbar appears on hover. */
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  scrollbar-gutter: stable;
 }
 
 .chat-scroll-region::-webkit-scrollbar {
@@ -47,9 +49,53 @@ body {
   height: 8px;
 }
 
+.chat-scroll-region::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-scroll-region::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
 .chat-scroll-region:hover,
-.chat-scroll-region:focus-within {
-  scrollbar-color: auto;
+.chat-scroll-region:focus-within,
+.chat-scroll-region.is-scrolling {
+  scrollbar-color: rgba(127, 127, 127, 0.55) transparent;
+}
+
+.chat-scroll-region:hover::-webkit-scrollbar,
+.chat-scroll-region:focus-within::-webkit-scrollbar,
+.chat-scroll-region.is-scrolling::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.chat-scroll-region:hover::-webkit-scrollbar-thumb,
+.chat-scroll-region:focus-within::-webkit-scrollbar-thumb,
+.chat-scroll-region.is-scrolling::-webkit-scrollbar-thumb {
+  background-color: rgba(127, 127, 127, 0.55);
+}
+
+.chat-scroll-region:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+
+/* Text navigation should read as part of the document, while keeping a useful
+   target and an unmistakable keyboard-focus state. */
+.chat-text-navigation.MuiButton-root:hover {
+  background-color: transparent;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.chat-text-navigation:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -86,14 +132,32 @@ code {
 /* Keep dense panes calm while idle, but restore native scrolling affordances
  * when a pointer or keyboard user is interacting with them. */
 .ponderosa-scroll {
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  scrollbar-gutter: stable;
 }
 .ponderosa-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.ponderosa-scroll::-webkit-scrollbar-track { background: transparent; }
+.ponderosa-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
 .ponderosa-scroll:hover,
 .ponderosa-scroll:focus-within {
-  scrollbar-color: auto;
+  scrollbar-color: rgba(127, 127, 127, 0.55) transparent;
+  scrollbar-width: thin;
+}
+.ponderosa-scroll:hover::-webkit-scrollbar,
+.ponderosa-scroll:focus-within::-webkit-scrollbar { width: 8px; height: 8px; }
+.ponderosa-scroll:hover::-webkit-scrollbar-thumb,
+.ponderosa-scroll:focus-within::-webkit-scrollbar-thumb { background-color: rgba(127, 127, 127, 0.55); }
+
+@media (pointer: coarse) {
+  .chat-text-navigation.MuiButton-root {
+    min-height: 44px;
+  }
 }
 
 .emoji-category { padding: 4px 8px; background: var(--mui-palette-background-paper); font-size: 12px; font-weight: 700; }
