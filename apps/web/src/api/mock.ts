@@ -56,6 +56,7 @@ const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const agentPresets: AgentPresetDto[] = [];
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
+const uploadedAttachments = new Map<string, import("@ponderosa/core").ImageAttachmentDto>();
 let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", updatedAt: now };
 
 const agents: AgentDto[] = [
@@ -427,7 +428,12 @@ export const mockApi: PonderosaApi = {
   async sendConversationMessage(conversationId, request) {
     if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
     const text = request.text.replace(/^#broadcast(?=$|\s)\s*/iu, "").trim();
-    masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), { id: "master-message-" + Date.now(), conversationId, role: request.role ?? "user", text: `#broadcast ${text}`, createdAt: new Date().toISOString() }];
+    masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), {
+      id: "master-message-" + Date.now(), conversationId, role: request.role ?? "user",
+      text: text ? `#broadcast ${text}` : "#broadcast",
+      createdAt: new Date().toISOString(),
+      ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+    }];
     await delay(undefined, 80);
   },
   getConversationDraft(conversationId) {
@@ -527,12 +533,16 @@ export const mockApi: PonderosaApi = {
   async sendCollaborationMessage(conversationId, request) {
     if (!conversations.some((master) => master.id === conversationId)) throw new Error("Master chat not found");
     if (request.recipientAgentIds.length === 0) throw new Error("Select at least one active recipient");
+    const firstRecipientAttachments = request.recipientAttachments?.[0]?.attachmentIds
+      .map((id) => uploadedAttachments.get(id))
+      .filter((item): item is import("@ponderosa/core").ImageAttachmentDto => Boolean(item)) ?? [];
     const message = {
       id: "collaboration-message-" + Date.now(),
       conversationId,
       role: "user" as const,
       text: request.text,
       createdAt: new Date().toISOString(),
+      ...(firstRecipientAttachments.length ? { attachments: firstRecipientAttachments } : {}),
     };
     collaborationMessages[conversationId] = [
       ...(collaborationMessages[conversationId] ?? []),
@@ -681,9 +691,14 @@ export const mockApi: PonderosaApi = {
     return delay({ queued: false, runId: `mock-run-${Date.now()}`, mode: "continue" });
   },
   uploadAttachment(agentId, file) {
-    return Promise.resolve({ id: `mock-${Date.now()}`, agentId, name: file.name, mediaType: (file.type || "image/png") as "image/png", size: file.size, width: 1, height: 1, url: URL.createObjectURL(file) });
+    const attachment = { id: `mock-${Date.now()}-${Math.random()}`, agentId, name: file.name, mediaType: (file.type || "image/png") as "image/png", size: file.size, width: 1, height: 1, url: URL.createObjectURL(file) };
+    uploadedAttachments.set(attachment.id, attachment);
+    return Promise.resolve(attachment);
   },
-  deleteAttachment() { return Promise.resolve(); },
+  deleteAttachment(_agentId, attachmentId) {
+    uploadedAttachments.delete(attachmentId);
+    return Promise.resolve();
+  },
   async cancelRun(agentId): Promise<CancelAgentRunResponse> {
     emit(agentId, { type: "error", message: "Mock run cancelled." });
     emit(agentId, { type: "turn_done" });

@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
-import type { WorkspaceEventEnvelope } from "@ponderosa/core";
+import type { WorkspaceEvent, WorkspaceEventEnvelope } from "@ponderosa/core";
 import { api } from "../api";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
@@ -21,6 +21,17 @@ export interface WorkspaceCursorReconciliation {
 export function reconcileWorkspaceCursor(current: number, envelope: Pick<WorkspaceEventEnvelope, "id">): WorkspaceCursorReconciliation {
   if (envelope.id <= current) return { cursor: current, duplicate: true, gap: false };
   return { cursor: envelope.id, duplicate: false, gap: envelope.id !== current + 1 };
+}
+
+/** Every tab invalidates both chat projections from the same canonical change. */
+export function conversationChangedQueryKeys(
+  event: Extract<WorkspaceEvent, { type: "conversation_changed" }>,
+): ReadonlyArray<readonly unknown[]> {
+  return [
+    ["conversations", event.projectId],
+    ["conversation", event.conversationId],
+    ["collaboration-chat", event.conversationId],
+  ];
 }
 
 /** One authoritative live stream invalidates only caches affected by each event. */
@@ -51,9 +62,9 @@ export function useWorkspaceStream(): void {
       if (event.type === "preferences_updated") queryClient.setQueryData(["workspace-preferences"], event.preferences);
       else if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: ["projects"] });
       else if (event.type === "conversation_changed") {
-        void queryClient.invalidateQueries({ queryKey: ["conversations", event.projectId] });
-        void queryClient.invalidateQueries({ queryKey: ["conversation", event.conversationId] });
-        void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", event.conversationId] });
+        for (const queryKey of conversationChangedQueryKeys(event)) {
+          void queryClient.invalidateQueries({ queryKey });
+        }
       } else if (event.type === "draft_changed" || event.type === "draft_conflict") void queryClient.invalidateQueries({ queryKey: ["conversation-draft", event.conversationId] });
       else if (event.type === "queued_message_changed") {
         void queryClient.invalidateQueries({ queryKey: ["queued-messages", event.conversationId] });
