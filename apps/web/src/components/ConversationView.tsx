@@ -444,7 +444,7 @@ export function ConversationView({
   });
 
   const spawn = useMutation({
-    mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
+    mutationFn: async ({ text, draftAttachmentIds }: { text: string; draftAttachmentIds: string[] }) => {
       if (!conversation) {
         throw new Error("Project chat not loaded");
       }
@@ -454,27 +454,16 @@ export function ConversationView({
       const compatibleModel = modelSelectionIsCompatible(selectedEngine, model) ? model : "";
       const compatibleEffort = effortSelectionIsCompatible(selectedEngine, compatibleModel, effort) ? effort : "";
       const runConfig = selectedRunConfig(compatibleModel, compatibleEffort);
+      setActiveOperation({ agentIds: [], state: "starting" });
       const agent = await api.createAgent(conversation.projectId, conversationId, {
         title: pickAgentName((detailQuery.data?.agents ?? []).map((agent) => agent.title)),
         engine,
         ...runConfig,
+        initialMessage: text,
+        draftAttachmentIds,
+        replyToMessageId: replyTo?.id,
       });
       setActiveOperation({ agentIds: [agent.id], state: "starting" });
-      try {
-        const attachments = await Promise.all(files.map((file) => api.uploadAttachment(agent.id, file)));
-        await api.sendMessage(agent.id, {
-          text,
-          attachmentIds: attachments.map((item) => item.id),
-          sourceChannel: "main",
-          shareWithOrganization: true,
-          sourceConversationId: conversationId,
-          replyToMessageId: replyTo?.id,
-          ...runConfig,
-        });
-      } catch (error) {
-        await api.deleteAgent(agent.id).catch(() => undefined);
-        throw error;
-      }
       return agent;
     },
     onSuccess: () => {
@@ -786,7 +775,7 @@ export function ConversationView({
     invalidate();
   };
 
-  const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer") => {
+  const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer", draftAttachmentIds: string[] = []) => {
     if (activeView === "collaboration") {
       const activeAgents = agents.filter((agent) => !agent.archived);
       let targets = hasEveryoneMention(text) ? activeAgents : findMentionedAgentsStrict(text, activeAgents);
@@ -837,7 +826,7 @@ export function ConversationView({
       });
     } else {
       setActiveOperation({ agentIds: [], state: "starting" });
-      await spawn.mutateAsync({ text, files });
+      await spawn.mutateAsync({ text, draftAttachmentIds });
     }
   };
 
@@ -1177,8 +1166,8 @@ export function ConversationView({
               ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
               : "#tag an agent or use #broadcast for shared context"
           }
-          onSend={submit}
-          onQueue={activeView === "main" ? (text, files) => submit(text, files, "queue") : undefined}
+          onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
+          onQueue={activeView === "main" ? (text, files, stagedIds) => submit(text, files, "queue", stagedIds) : undefined}
           agentResponding={activeView === "main" && Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}

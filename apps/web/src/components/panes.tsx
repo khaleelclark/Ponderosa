@@ -945,6 +945,9 @@ export function RunsPane({
           {coordinationV3.requests.filter((request) => request.direction === "outbound" && ["outcome_unknown", "failed", "recipient_unavailable"].includes(request.state)).map((request) => (
             <RetryRequestButton key={request.id} requestId={request.id} />
           ))}
+          {coordinationV3.requests.filter((request) => request.direction === "outbound" && !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).map((request) => (
+            <CancelRequestButton key={request.id} requestId={request.id} />
+          ))}
         </Alert>
       ) : null}
       {runs.length === 0 ? (
@@ -1051,6 +1054,28 @@ function RetryRequestButton({ requestId }: { requestId: string }): JSX.Element {
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
       finally { setBusy(false); }
     }}>{busy ? "Retrying…" : `Retry request ${requestId.slice(0, 8)}`}</Button>
+    {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
+  </Box>;
+}
+
+function CancelRequestButton({ requestId }: { requestId: string }): JSX.Element {
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  return <Box sx={{ mt: 0.5, ml: 0.5, display: "inline-block" }}>
+    <Button size="small" color="warning" variant="outlined" disabled={busy} onClick={async () => {
+      setBusy(true); setError(undefined);
+      try {
+        const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/cancel`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ idempotencyKey: `operator-cancel:${requestId}` }),
+        });
+        const body = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "Cancellation failed");
+        await queryClient.invalidateQueries();
+      } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+      finally { setBusy(false); }
+    }}>{busy ? "Cancelling…" : `Cancel request ${requestId.slice(0, 8)}`}</Button>
     {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
   </Box>;
 }
@@ -1563,9 +1588,9 @@ export function Composer({
   busyMentionHandles?: string[];
   /** Whether text without a valid mention may be submitted. */
   allowUnmentionedSend?: boolean;
-  onSend(text: string, files: File[]): Promise<unknown> | unknown;
+  onSend(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
   /** Explicitly enqueue this draft instead of steering the active agent turn. */
-  onQueue?(text: string, files: File[]): Promise<unknown> | unknown;
+  onQueue?(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
   /** Canonical server-owned activity; used only to reveal the explicit Queue action. */
   agentResponding?: boolean;
   onCancel?(): void;
@@ -1867,12 +1892,12 @@ export function Composer({
     });
   };
 
-  const submit = (handler: (message: string, selectedFiles: File[]) => Promise<unknown> | unknown) => {
+  const submit = (handler: (message: string, selectedFiles: File[], stagedAttachmentIds?: string[]) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
     sendingRef.current = true;
     setSendError(undefined);
     const stagedIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
-    void Promise.resolve(handler(text.trim(), files)).then(() => {
+    void Promise.resolve(handler(text.trim(), files, stagedIds)).then(() => {
       update("");
       dispatchAttachments({ type: "clear" });
       draftAttachmentIds.current.clear();

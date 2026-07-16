@@ -56,6 +56,8 @@ export interface CoordinationV3ChangedEvent {
 /** Provider-created output copied into stable Ponderosa-managed storage. */
 export interface GeneratedArtifactEvent {
   type: "generated_artifact";
+  /** New captures use a Project-stable id; absent only on legacy events. */
+  artifactId?: string;
   executionId: string;
   path: string;
   sourcePath: string;

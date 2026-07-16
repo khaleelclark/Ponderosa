@@ -7,7 +7,7 @@ export interface ContextCursor {
   model: string;
   sessionId: string;
   conversationId: string;
-  channel: "main" | "collaboration";
+  channel: "main" | "collaboration" | "broadcast";
   lastMessageId?: string;
   routingHash: string;
   updatedAt: string;

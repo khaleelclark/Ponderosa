@@ -129,9 +129,11 @@ This proves what Ponderosa supplied; it does not expose opaque provider-native
 session state.
 
 Supported provider-generated files are copied into project-scoped managed
-storage. Stable artifact identity records the owning Agent and Run, media type,
-source path, visibility, and retrieval location. Fresh context receives artifact
-metadata only when a message references it or the operator pins or publishes it.
+storage. Stable artifact identity records the owning Project, originating Agent
+and Run, media type, source path, visibility, and retrieval location. Rebuild and
+origin-Agent deletion cannot remove the Project copy. Fresh context receives
+artifact metadata only when a message references it or the operator pins or
+publishes it.
 
 Visible managed Agents are created through a host-owned organization capability,
 not provider-native helper spawning. Creation establishes the Agent and opening
@@ -145,7 +147,7 @@ non-execution and retried with bounded exponential backoff. After repeated
 capacity failures Ponderosa may select a fallback only when no model was
 explicitly chosen. Other post-submission uncertainty continues to fail closed.
 
-User-authored Triggers remain deferred from V3.1.1 until their broader product
+User-authored Triggers remain deferred from V3.1.2 until their broader product
 contract is settled; trigger safety records are not a completed scheduling UI.
 
 ### 3.4 Runtime and network boundaries

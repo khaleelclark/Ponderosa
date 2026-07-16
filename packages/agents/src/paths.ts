@@ -144,6 +144,22 @@ export function artifactContentPath(
   throw new Error("artifact path escapes artifacts directory");
 }
 
+/** Project-owned generated artifacts survive origin-Agent deletion and rebuild. */
+export function managedArtifactsDir(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "artifacts");
+}
+
+export function managedArtifactsLogPath(dataDir: string, projectId: string): string {
+  return path.join(managedArtifactsDir(dataDir, projectId), "artifacts.jsonl");
+}
+
+export function managedArtifactContentPath(dataDir: string, projectId: string, artifactId: string): string {
+  const base = path.join(managedArtifactsDir(dataDir, projectId), "content");
+  const target = path.resolve(base, artifactId);
+  if (target !== base && target.startsWith(base + path.sep)) return target;
+  throw new Error("artifact id escapes managed artifact storage");
+}
+
 export function attachmentsDir(
   dataDir: string,
   projectId: string,

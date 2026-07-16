@@ -7,6 +7,11 @@ describe("classifyProviderFailure", () => {
     expect(classifyProviderFailure("429 Too Many Requests: rate limit exceeded")).toBe("rate_limit");
     expect(classifyProviderFailure("compiler exited")).toBe("unknown");
   });
+
+  it("recognizes provider-confirmed subscription entitlement failures", () => {
+    expect(classifyProviderFailure("Your organization has disabled Claude subscription access"))
+      .toBe("authentication");
+  });
 });
 
 describe("shouldRolloverEngineSession", () => {
