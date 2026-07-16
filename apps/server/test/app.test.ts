@@ -805,6 +805,45 @@ describe("generated artifact endpoints", () => {
   });
 });
 
+describe("human-facing chat projection boundary", () => {
+  it("keeps execution details out of the Agent chat source used for transcripts", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const communicationEventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId: communicationEventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Human-facing request",
+      createdAt: new Date().toISOString(),
+    });
+    store.appendEvent(agent.id, { type: "user_message", text: "Human-facing request", communicationEventId });
+    store.appendEvent(agent.id, { type: "command", command: "secret-command --flag", cwd: repoDir });
+    store.appendEvent(agent.id, {
+      type: "agent_output",
+      executionId: "execution-1",
+      text: "Ordinary work-log output",
+      sourceSeqStart: 2,
+      sourceSeqEnd: 3,
+    });
+    store.appendEvent(agent.id, { type: "file_change", path: "src/private.ts", kind: "edit", diff: "+private diff" });
+
+    const response = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
+    expect(response.statusCode).toBe(200);
+    const detail = response.json<{ messages: Array<{ text: string }>; runOutput: Array<{ text: string }>; activity: unknown[]; changedFiles: unknown[] }>();
+    expect(detail.messages).toEqual([expect.objectContaining({ text: "Human-facing request" })]);
+    expect(JSON.stringify(detail.messages)).not.toContain("secret-command");
+    expect(JSON.stringify(detail.messages)).not.toContain("private diff");
+    expect(JSON.stringify(detail.messages)).not.toContain("Ordinary work-log output");
+    expect(detail.runOutput).toEqual([expect.objectContaining({ text: "Ordinary work-log output" })]);
+    expect(detail.activity.length).toBeGreaterThan(0);
+    expect(detail.changedFiles.length).toBeGreaterThan(0);
+    await app.close();
+  });
+});
+
 describe("token usage API", () => {
   it("applies long-context pricing to individual provider requests", () => {
     const profile: ApiPriceProfile = {

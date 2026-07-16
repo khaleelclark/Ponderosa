@@ -8,7 +8,6 @@ import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutli
 import TimelineIcon from "@mui/icons-material/Timeline";
 import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
-import TuneIcon from "@mui/icons-material/Tune";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import {
@@ -36,8 +35,6 @@ import {
   TextField,
   Tooltip,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
@@ -49,11 +46,12 @@ import { useAgent } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle } from "../mentions";
-import { compactViewportQuery } from "../responsive";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 import { TokenUsageButton } from "./TokenUsageButton";
+import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts";
 
@@ -74,17 +72,33 @@ export function directAgentDeliveryNotice(response: SendMessageResponse): string
   return response.steered ? "Steered into the active turn." : undefined;
 }
 
-function RespondingIndicator({ agentName, startedAt }: { agentName: string; startedAt: string }): JSX.Element {
+function AgentRunState({
+  status,
+  connected,
+  startedAt,
+}: {
+  status: AgentStatus;
+  connected: boolean;
+  startedAt?: string;
+}): JSX.Element {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
+    if (!startedAt) return;
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [startedAt]);
-  return (
-    <Typography variant="body2" color="info.main" role="status" aria-live="polite">
-      {agentName} is responding · {formatExecutionElapsed(startedAt, now)}
-    </Typography>
-  );
+  const runState = startedAt
+    ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
+    : agentStatusLabel(status);
+  const connectionState = connected ? "Live" : "Reconnecting";
+  return <Chip
+    size="small"
+    label={`${runState} · ${connectionState}`}
+    color={connected ? agentStatusColor(status) : "warning"}
+    variant={connected ? "filled" : "outlined"}
+    aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
+  />;
 }
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
@@ -165,9 +179,6 @@ export function AgentDetail({
   const [primaryConversationId, setPrimaryConversationId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
-  const [runSetupOpen, setRunSetupOpen] = useState(false);
-  const theme = useTheme();
-  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   useEffect(() => {
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -347,6 +358,21 @@ export function AgentDetail({
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
   const agentNameForId = (candidateId: string): string | undefined =>
     agents.find((candidate) => candidate.id === candidateId)?.title;
+  const transcriptTitle = `${detail.agent.title} — Agent chat`;
+  const transcriptMarkdown = buildMarkdownTranscript(
+    transcriptTitle,
+    detail.messages.map((message) => ({
+      author: message.role === "user"
+        ? "You"
+        : message.authorAgentId
+          ? agentNameForId(message.authorAgentId) ?? "Agent"
+          : detail.agent.title,
+      text: message.text,
+      createdAt: message.createdAt,
+      attachments: message.attachments,
+      document: message.document,
+    })),
+  );
   const organizationalParent = detail.agent.managerAgentId
     ? agents.find((candidate) => candidate.id === detail.agent.managerAgentId)
     : undefined;
@@ -421,48 +447,14 @@ export function AgentDetail({
             <Typography variant="h6" noWrap>
               {detail.agent.title}
             </Typography>
-            <Typography variant="body2" color="text.secondary" noWrap>
-              {detail.state.branch ?? "No branch"} {detail.state.commit ? `· ${detail.state.commit}` : ""}
-              {master ? (
-                <>
-                  {" · "}
-                  <Link component="button" variant="body2" onClick={() => onOpenMaster(master.id)}>
-                    {master.title}
-                  </Link>
-                </>
-              ) : (
-                " · Unassigned"
-              )}
-            </Typography>
+            {detail.agent.spawnedByAgentId ? <Typography variant="caption" color="text.secondary" noWrap>
+              Created by{" "}
+              {spawningAgent ? <Link component="button" variant="caption" onClick={() => onOpenAgent(spawningAgent.id)}>
+                {spawningAgent.title}
+              </Link> : detail.agent.spawnedByAgentId}
+            </Typography> : null}
           </Box>
-          <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
-          <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} aria-label={`Agent status: ${agentStatusLabel(status)}`} />
-          {engineCapability?.steering ? <Chip size="small" color="info" variant="outlined" label="Steerable" /> : null}
-          <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}>
-            <Chip
-              size="small"
-              variant="outlined"
-              color={connectedMcps.length > 0 ? "success" : "default"}
-              label={`${connectedMcps.length}/${engineCapability?.mcpServers.length ?? 0} MCPs`}
-              aria-label={`${connectedMcps.length} of ${engineCapability?.mcpServers.length ?? 0} inherited MCP servers connected`}
-            />
-          </Tooltip>
-          {organizationalParent ? (
-            <Chip
-              size="small"
-              variant="outlined"
-              icon={<AccountTreeOutlinedIcon />}
-              label={`Reports to ${organizationalParent.title}`}
-              clickable
-              onClick={() => onOpenAgent(organizationalParent.id)}
-            />
-          ) : <Chip size="small" variant="outlined" icon={<AccountTreeOutlinedIcon />} label="Top level" />}
-          <Chip
-            size="small"
-            label={stream.connected ? "Live" : "Reconnecting"}
-            color={stream.connected ? "success" : "warning"}
-            variant={stream.connected ? "filled" : "outlined"}
-          />
+          <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />
           {running ? (
             <Button
               size="small"
@@ -470,125 +462,113 @@ export function AgentDetail({
               variant="outlined"
               disabled={cancelRun.isPending}
               onClick={() => stopActiveRun()}
-              sx={{ minHeight: compactViewport ? 44 : undefined }}
+              sx={{ minHeight: 36 }}
             >
-              {cancelRun.isPending ? "Stopping…" : "Cancel"}
+              {cancelRun.isPending ? "Stopping…" : "Stop"}
             </Button>
           ) : null}
-          <Tooltip title="Rename agent">
-            <IconButton
-              aria-label="Rename agent"
-              sx={{ minWidth: 44, minHeight: 44 }}
-              onClick={() => {
-                setRenameValue(detail.agent.title);
-                setRenameOpen(true);
-              }}
-            >
-              <DriveFileRenameOutlineIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Delete agent">
-            <IconButton aria-label="Delete agent" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
-              <DeleteOutlineIcon />
-            </IconButton>
-          </Tooltip>
-          <Button size="small" variant="outlined" sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
-            setMembershipIds(detail.agent.conversationIds);
-            setPrimaryConversationId(detail.agent.conversationId ?? "");
-            setMembershipOpen(true);
-          }}>
-            Assign chats
-          </Button>
-          <Button size="small" variant="outlined" startIcon={<AccountTreeOutlinedIcon />} sx={{ minHeight: compactViewport ? 44 : undefined }} onClick={() => {
-            setOrganizationParentId(detail.agent.managerAgentId ?? "");
-            setOrganizationOpen(true);
-          }}>
-            Organize
-          </Button>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<PersonAddAlt1Icon />}
-            sx={{ minHeight: compactViewport ? 44 : undefined }}
-            onClick={() => onNewSubagent(agentId)}
-          >
-            Add report
-          </Button>
-          {compactViewport ? (
-            <Button
-              size="small"
-              variant={runSetupOpen ? "contained" : "outlined"}
-              startIcon={<TuneIcon />}
-              onClick={() => setRunSetupOpen((open) => !open)}
-              aria-expanded={runSetupOpen}
-              aria-controls="agent-run-setup"
-              sx={{ minHeight: 44 }}
-            >
-              Setup
-            </Button>
-          ) : null}
-        </Stack>
-        <Stack
-          id="agent-run-setup"
-          direction={{ xs: "column", sm: "row" }}
-          spacing={1}
-          sx={{ mt: 1, display: compactViewport && !runSetupOpen ? "none" : "flex" }}
-        >
-          <Chip
-            label={`${engine?.displayName ?? detail.agent.activeEngine}${engine?.authenticated ? "" : " · not signed in"}`}
-            color={engine?.authenticated ? "default" : "warning"}
-            sx={{ justifyContent: "flex-start" }}
+          <ChatOverflowMenu
+            label="Agent chat actions"
+            transcriptMarkdown={transcriptMarkdown}
+            transcriptFileName={transcriptFileName(transcriptTitle)}
+            detailsLabel="Run setup"
+            details={<Stack spacing={1.25} aria-label="Agent setup">
+              <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+                <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run setup</Typography>
+                <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
+              </Stack>
+              <Chip
+                size="small"
+                label={`${engine?.displayName ?? detail.agent.activeEngine}${engine?.authenticated ? "" : " · not signed in"}`}
+                color={engine?.authenticated ? "default" : "warning"}
+                sx={{ justifyContent: "flex-start" }}
+              />
+              <FormControl size="small" fullWidth>
+                <InputLabel id="agent-detail-model-label">Model</InputLabel>
+                <Select
+                  labelId="agent-detail-model-label"
+                  value={models.some((option) => option.id === model) ? model : ""}
+                  label="Model"
+                  onChange={(event: SelectChangeEvent) => {
+                    const nextModel = event.target.value;
+                    setModel(nextModel);
+                    if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
+                  }}
+                >
+                  <MenuItem value="">Engine default</MenuItem>
+                  {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <FormControl size="small" fullWidth>
+                <InputLabel id="agent-detail-effort-label">Effort</InputLabel>
+                <Select
+                  labelId="agent-detail-effort-label"
+                  value={efforts.some((option) => option.id === effort) ? effort : ""}
+                  label="Effort"
+                  onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
+                >
+                  <MenuItem value="">Engine default</MenuItem>
+                  {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                {detail.state.branch ?? "No branch"}{detail.state.commit ? ` · ${detail.state.commit}` : ""}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {master ? <>Assigned to <Link component="button" variant="caption" onClick={() => onOpenMaster(master.id)}>{master.title}</Link></> : "Unassigned"}
+                {" · "}{organizationalParent
+                  ? <>Reports to <Link component="button" variant="caption" onClick={() => onOpenAgent(organizationalParent.id)}>{organizationalParent.title}</Link></>
+                  : "Top level"}
+              </Typography>
+              <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color={connectedMcps.length > 0 ? "success" : "default"}
+                  label={`${connectedMcps.length}/${engineCapability?.mcpServers.length ?? 0} MCPs${engineCapability?.steering ? " · Steerable" : ""}`}
+                />
+              </Tooltip>
+            </Stack>}
+            actions={[
+              {
+                label: "Rename",
+                icon: <DriveFileRenameOutlineIcon fontSize="small" />,
+                onSelect: () => {
+                  setRenameValue(detail.agent.title);
+                  setRenameOpen(true);
+                },
+              },
+              {
+                label: "Create agent",
+                icon: <PersonAddAlt1Icon fontSize="small" />,
+                onSelect: () => onNewSubagent(agentId),
+              },
+              {
+                label: "Assign chats",
+                onSelect: () => {
+                  setMembershipIds(detail.agent.conversationIds);
+                  setPrimaryConversationId(detail.agent.conversationId ?? "");
+                  setMembershipOpen(true);
+                },
+              },
+              {
+                label: "Reports to",
+                icon: <AccountTreeOutlinedIcon fontSize="small" />,
+                onSelect: () => {
+                  setOrganizationParentId(detail.agent.managerAgentId ?? "");
+                  setOrganizationOpen(true);
+                },
+              },
+              {
+                label: "Delete",
+                icon: <DeleteOutlineIcon fontSize="small" />,
+                destructive: true,
+                onSelect: () => setDeleteOpen(true),
+              },
+            ]}
           />
-          <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 180 } }}>
-            <InputLabel id="agent-detail-model-label">Model</InputLabel>
-            <Select
-              labelId="agent-detail-model-label"
-              value={models.some((o) => o.id === model) ? model : ""}
-              label="Model"
-              onChange={(event: SelectChangeEvent) => {
-                const nextModel = event.target.value;
-                setModel(nextModel);
-                if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
-              }}
-            >
-              <MenuItem value="">Engine default</MenuItem>
-              {models.map((option) => (
-                <MenuItem key={option.id} value={option.id}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <FormControl size="small" sx={{ minWidth: { xs: "100%", sm: 140 } }}>
-            <InputLabel id="agent-detail-effort-label">Effort</InputLabel>
-            <Select
-              labelId="agent-detail-effort-label"
-              value={efforts.some((o) => o.id === effort) ? effort : ""}
-              label="Effort"
-              onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
-            >
-              <MenuItem value="">Engine default</MenuItem>
-              {efforts.map((option) => (
-                <MenuItem key={option.id} value={option.id}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
-        {runtimeActivity ? <RespondingIndicator agentName={detail.agent.title} startedAt={runtimeActivity.startedAt} /> : null}
-        {detail.agent.spawnedByAgentId ? <Box component="section" aria-label="Agent creation" sx={{ mt: 1.5, p: 1.5, border: 1, borderColor: "divider", borderRadius: 1 }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
-            <Typography fontWeight={700} sx={{ flex: 1 }}>Created by {spawningAgent?.title ?? detail.agent.spawnedByAgentId}</Typography>
-            {spawningAgent ? <Button size="small" onClick={() => onOpenAgent(spawningAgent.id)}>Open manager</Button> : null}
-          </Stack>
-          <Typography variant="overline" color="text.secondary">Original message</Typography>
-          <Typography component="pre" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", m: 0 }}>
-            {detail.agent.spawnPrompt ?? "No initial message — this agent was created idle."}
-          </Typography>
-          {detail.agent.spawnedByExecutionId ? <Typography variant="caption" color="text.secondary">Created during run {detail.agent.spawnedByExecutionId}</Typography> : null}
-        </Box> : null}
       </Box>
 
       <Tabs
