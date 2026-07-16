@@ -59,6 +59,19 @@ export function conversationChangedQueryKeys(
   ];
 }
 
+/** Chat mutations (including passive edits) and unread changes refresh search. */
+export function workspaceEventInvalidatesGlobalSearch(event: WorkspaceEvent): boolean {
+  return event.type === "conversation_changed" || event.type === "notification_changed";
+}
+
+export function workspaceReconnectRequiresRefresh(
+  cursor: number,
+  previousInstance: string | null,
+  status: { cursor: number; instanceId: string; reset: boolean },
+): boolean {
+  return status.reset || Boolean(previousInstance && previousInstance !== status.instanceId) || cursor > status.cursor;
+}
+
 /** One authoritative live stream invalidates only caches affected by each event. */
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
@@ -86,13 +99,13 @@ export function useWorkspaceStream(): void {
       cursor.current = reconciliation.cursor;
       window.localStorage.setItem(CURSOR_KEY, String(envelope.id));
       const event = envelope.event;
+      if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       if (event.type === "preferences_updated") queryClient.setQueryData(["workspace-preferences"], event.preferences);
       else if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: ["projects"] });
       else if (event.type === "conversation_changed") {
         for (const queryKey of conversationChangedQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
         }
-        void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       } else if (event.type === "draft_changed" || event.type === "draft_conflict") void queryClient.invalidateQueries({ queryKey: ["conversation-draft", event.conversationId] });
       else if (event.type === "queued_message_changed") {
         void queryClient.invalidateQueries({ queryKey: ["queued-messages", event.conversationId] });
@@ -119,7 +132,6 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: ["notifications"] });
-        void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       }
     };
     const subscription = api.subscribeWorkspace(cursor.current, {
@@ -129,7 +141,7 @@ export function useWorkspaceStream(): void {
         // change while a phone is backgrounded or the server is unavailable.
         void invalidateWorkspaceCapabilities(queryClient, { kind: "reconnect" });
         const previousInstance = window.localStorage.getItem(INSTANCE_KEY);
-        if (status.reset || (previousInstance && previousInstance !== status.instanceId) || cursor.current > status.cursor) {
+        if (workspaceReconnectRequiresRefresh(cursor.current, previousInstance, status)) {
           cursor.current = 0;
           window.localStorage.setItem(CURSOR_KEY, "0");
           invalidateAll();

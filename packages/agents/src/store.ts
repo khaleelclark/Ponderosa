@@ -101,6 +101,7 @@ import {
   events,
   conversations,
   messages,
+  chatSearchMessages,
   projects,
   runs,
   workItems,
@@ -460,6 +461,67 @@ export class AgentStore {
     return cached;
   }
 
+  private globalChatSearchRowKey(projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey">): string {
+    return JSON.stringify([projection.surface, projection.projectionKey, projection.eventId]);
+  }
+
+  /** Increment one rebuildable search row from one bounded projection record. */
+  private upsertGlobalChatSearchProjection(projectId: string, projection: CommunicationProjection): void {
+    const rowKey = this.globalChatSearchRowKey(projection);
+    const chatKind = projection.surface === "conversation"
+      ? "conversation"
+      : projection.surface === "direct_agent_audit"
+        ? "agent"
+        : undefined;
+    const message = projection.message;
+    const event = this.communicationIndex(projectId).byId.get(projection.eventId);
+    if (!chatKind || !message || !event || !this.communicationProjectionAllowed(projectId, projection)) {
+      this.db.delete(chatSearchMessages).where(eq(chatSearchMessages.rowKey, rowKey)).run();
+      return;
+    }
+    const canonicalRole = event.sender.kind === "agent"
+      ? "assistant"
+      : event.sender.kind === "user"
+        ? "user"
+        : message.role;
+    const authorAgentId = event.sender.kind === "agent" ? event.sender.agentId : message.authorAgentId;
+    this.db.insert(chatSearchMessages).values({
+      rowKey,
+      projectId,
+      chatKind,
+      chatId: projection.projectionKey,
+      messageId: message.messageId,
+      communicationEventId: event.eventId,
+      role: canonicalRole,
+      authorAgentId: authorAgentId ?? null,
+      timestamp: message.createdAt,
+      text: message.renderedText ?? event.text,
+    }).onConflictDoUpdate({
+      target: chatSearchMessages.rowKey,
+      set: {
+        projectId,
+        chatKind,
+        chatId: projection.projectionKey,
+        messageId: message.messageId,
+        communicationEventId: event.eventId,
+        role: canonicalRole,
+        authorAgentId: authorAgentId ?? null,
+        timestamp: message.createdAt,
+        text: message.renderedText ?? event.text,
+      },
+    }).run();
+  }
+
+  /** Rebuild the disposable global Chat search index from canonical ledgers. */
+  private rebuildGlobalChatSearchProjection(): void {
+    this.db.delete(chatSearchMessages).run();
+    for (const project of this.listProjects()) {
+      for (const projection of this.projectionIndex(project.id).projections) {
+        this.upsertGlobalChatSearchProjection(project.id, projection);
+      }
+    }
+  }
+
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
   get database(): Db {
     return this.db;
@@ -726,6 +788,7 @@ export class AgentStore {
         const position = index.projections.findIndex((candidate) => candidate === existing);
         if (position >= 0) index.projections[position] = enriched;
         index.byTuple.set(tuple, enriched);
+        this.upsertGlobalChatSearchProjection(projectId, enriched);
         return { projection: enriched, replayed: false };
       }
       if (existing.message && projection.message) {
@@ -751,6 +814,7 @@ export class AgentStore {
           const position = index.projections.findIndex((candidate) => candidate === existing);
           if (position >= 0) index.projections[position] = enriched;
           index.byTuple.set(tuple, enriched);
+          this.upsertGlobalChatSearchProjection(projectId, enriched);
           return { projection: enriched, replayed: false };
         }
       }
@@ -762,11 +826,13 @@ export class AgentStore {
       }
       // Delivery retries may create new runtime-local IDs and timestamps. Keep
       // the first placement when the visible role and text are identical.
+      this.upsertGlobalChatSearchProjection(projectId, existing);
       return { projection: existing, replayed: true };
     }
     appendFsyncedJsonl(file, [projection]);
     index.projections.push(projection);
     index.byTuple.set(tuple, projection);
+    this.upsertGlobalChatSearchProjection(projectId, projection);
     return { projection, replayed: false };
   }
 
@@ -1945,86 +2011,139 @@ export class AgentStore {
       unreadConversationCounts.set(notification.conversationId, (unreadConversationCounts.get(notification.conversationId) ?? 0) + 1);
     }
 
-    const candidates: ProjectedChatSearchCandidate[] = [];
-    const recentChats: GlobalChatSearchResponseDto["recentChats"] = [];
-    const projectedEventIds = new Set<string>();
-
-    for (const project of this.listProjects()) {
-      const projectRef = { id: project.id, label: project.label };
-      const projectAgents = this.listAgents(project.id).filter((agent) => !agent.archived);
-      const agentsById = new Map(projectAgents.map((agent) => [agent.id, agent]));
-      const authorFor = (role: "user" | "assistant" | "system", authorAgentId?: string): GlobalChatSearchAuthorDto => {
-        if (authorAgentId) return { kind: "agent", label: agentsById.get(authorAgentId)?.title ?? "Agent", agentId: authorAgentId };
-        if (role === "user") return { kind: "user", label: "User" };
-        if (role === "system") return { kind: "system", label: "System" };
-        return { kind: "agent", label: "Agent" };
+    type SearchProjectionRow = {
+      projectId: string;
+      projectLabel: string;
+      chatKind: "conversation" | "agent";
+      chatId: string;
+      chatTitle: string;
+      messageId: string;
+      communicationEventId: string;
+      role: "user" | "assistant" | "system";
+      authorAgentId: string | null;
+      authorTitle: string | null;
+      timestamp: string;
+      text: string;
+    };
+    // LIMIT is applied by SQLite while walking idx_chat_search_newest. The one
+    // extra row is only a truncation sentinel; it never reaches result DTOs.
+    const rows = this.client.prepare(`
+      SELECT
+        search.project_id AS projectId,
+        project.label AS projectLabel,
+        search.chat_kind AS chatKind,
+        search.chat_id AS chatId,
+        COALESCE(conversation.title, chat_agent.title) AS chatTitle,
+        search.message_id AS messageId,
+        search.communication_event_id AS communicationEventId,
+        search.role AS role,
+        search.author_agent_id AS authorAgentId,
+        author_agent.title AS authorTitle,
+        search.timestamp AS timestamp,
+        search.text AS text
+      FROM chat_search_messages search
+      JOIN projects project ON project.id = search.project_id
+      LEFT JOIN conversations conversation
+        ON search.chat_kind = 'conversation' AND conversation.id = search.chat_id AND conversation.archived = 0
+      LEFT JOIN agents chat_agent
+        ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+      LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
+      WHERE (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+        AND NOT (
+          search.chat_kind = 'agent' AND EXISTS (
+            SELECT 1
+            FROM chat_search_messages preferred
+            JOIN conversations preferred_conversation
+              ON preferred_conversation.id = preferred.chat_id AND preferred_conversation.archived = 0
+            WHERE preferred.project_id = search.project_id
+              AND preferred.communication_event_id = search.communication_event_id
+              AND preferred.chat_kind = 'conversation'
+          )
+        )
+      ORDER BY search.timestamp DESC, search.chat_kind DESC, search.row_key DESC
+      LIMIT ?
+    `).all(maxScannedMessages + 1) as SearchProjectionRow[];
+    const candidates: ProjectedChatSearchCandidate[] = rows.map((row) => {
+      const author: GlobalChatSearchAuthorDto = row.authorAgentId
+        ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
+        : row.role === "user"
+          ? { kind: "user", label: "User" }
+          : row.role === "system"
+            ? { kind: "system", label: "System" }
+            : { kind: "agent", label: "Agent" };
+      return {
+        project: { id: row.projectId, label: row.projectLabel },
+        chat: { kind: row.chatKind, id: row.chatId, title: row.chatTitle },
+        messageId: row.messageId,
+        communicationEventId: row.communicationEventId,
+        author,
+        timestamp: row.timestamp,
+        text: row.text,
+        unread: unreadEventIds.has(row.communicationEventId),
       };
-
-      for (const conversation of this.listConversations(project.id).filter((item) => !item.archived)) {
-        const chat = { kind: "conversation" as const, id: conversation.id, title: conversation.title };
-        const visibleMessages = this.getConversationMessages(conversation.id, "main");
-        for (const message of visibleMessages) {
-          if (message.communicationEventId) projectedEventIds.add(message.communicationEventId);
-          candidates.push({
-            project: projectRef,
-            chat,
-            messageId: message.id,
-            ...(message.communicationEventId ? { communicationEventId: message.communicationEventId } : {}),
-            author: authorFor(message.role, message.authorAgentId),
-            timestamp: message.createdAt,
-            text: message.text,
-            unread: Boolean(message.communicationEventId && unreadEventIds.has(message.communicationEventId)),
-          });
-        }
-        const latest = visibleMessages.at(-1);
-        recentChats.push({
-          project: projectRef,
-          chat,
-          lastActivityAt: latest?.createdAt ?? conversation.updatedAt,
-          ...(latest?.text ? { snippet: highlightedSearchSnippet(latest.text, "").snippet } : {}),
-          unreadCount: unreadConversationCounts.get(conversation.id) ?? 0,
-        });
-      }
-
-      for (const agent of projectAgents) {
-        const chat = { kind: "agent" as const, id: agent.id, title: agent.title };
-        const visibleMessages = this.getProjectedAgentMessages(agent.id);
-        const uniqueMessages = visibleMessages.filter((message) => {
-          if (!message.communicationEventId) return true;
-          if (projectedEventIds.has(message.communicationEventId)) return false;
-          projectedEventIds.add(message.communicationEventId);
-          return true;
-        });
-        for (const message of uniqueMessages) {
-          candidates.push({
-            project: projectRef,
-            chat,
-            messageId: message.id,
-            ...(message.communicationEventId ? { communicationEventId: message.communicationEventId } : {}),
-            author: authorFor(message.role, message.authorAgentId),
-            timestamp: message.createdAt,
-            text: message.text,
-            unread: Boolean(message.communicationEventId && unreadEventIds.has(message.communicationEventId)),
-          });
-        }
-        const latest = visibleMessages.at(-1);
-        if (latest) recentChats.push({
-          project: projectRef,
-          chat,
-          lastActivityAt: latest.createdAt,
-          ...(latest.text ? { snippet: highlightedSearchSnippet(latest.text, "").snippet } : {}),
-          unreadCount: new Set(visibleMessages.flatMap((message) =>
-            message.communicationEventId && unreadEventIds.has(message.communicationEventId) ? [message.communicationEventId] : [])).size,
-        });
-      }
-    }
+    });
 
     const searched = searchProjectedChatMessages(candidates, { query, limit, maxScannedMessages });
+    const recentChats: GlobalChatSearchResponseDto["recentChats"] = [];
+    const recentKeys = new Set<string>();
+    const unreadAgentCounts = new Map<string, number>();
+    for (const candidate of candidates.slice(0, maxScannedMessages)) {
+      if (candidate.chat.kind === "agent" && candidate.unread) {
+        unreadAgentCounts.set(candidate.chat.id, (unreadAgentCounts.get(candidate.chat.id) ?? 0) + 1);
+      }
+    }
+    for (const candidate of candidates.slice(0, maxScannedMessages)) {
+      const key = `${candidate.project.id}\u0000${candidate.chat.kind}\u0000${candidate.chat.id}`;
+      if (recentKeys.has(key)) continue;
+      recentKeys.add(key);
+      recentChats.push({
+        project: candidate.project,
+        chat: candidate.chat,
+        lastActivityAt: candidate.timestamp,
+        ...(candidate.text ? { snippet: highlightedSearchSnippet(candidate.text, "").snippet } : {}),
+        unreadCount: candidate.chat.kind === "conversation"
+          ? unreadConversationCounts.get(candidate.chat.id) ?? 0
+          : unreadAgentCounts.get(candidate.chat.id) ?? 0,
+      });
+      if (recentChats.length >= recentLimit) break;
+    }
+    if (!query) {
+      const emptyConversationCandidates = this.client.prepare(`
+        SELECT
+          conversation.id AS chatId,
+          conversation.title AS chatTitle,
+          conversation.project_id AS projectId,
+          project.label AS projectLabel,
+          conversation.updated_at AS updatedAt
+        FROM conversations conversation
+        JOIN projects project ON project.id = conversation.project_id
+        WHERE conversation.archived = 0
+        ORDER BY conversation.updated_at DESC, conversation.id DESC
+        LIMIT ?
+      `).all(recentLimit) as Array<{
+        chatId: string;
+        chatTitle: string;
+        projectId: string;
+        projectLabel: string;
+        updatedAt: string;
+      }>;
+      for (const conversation of emptyConversationCandidates) {
+        const key = `${conversation.projectId}\u0000conversation\u0000${conversation.chatId}`;
+        if (recentKeys.has(key)) continue;
+        recentKeys.add(key);
+        recentChats.push({
+          project: { id: conversation.projectId, label: conversation.projectLabel },
+          chat: { kind: "conversation", id: conversation.chatId, title: conversation.chatTitle },
+          lastActivityAt: conversation.updatedAt,
+          unreadCount: unreadConversationCounts.get(conversation.chatId) ?? 0,
+        });
+      }
+      recentChats.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+      recentChats.splice(recentLimit);
+    }
     return {
       ...searched,
-      recentChats: query ? [] : recentChats
-        .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
-        .slice(0, recentLimit),
+      recentChats: query ? [] : recentChats,
     };
   }
 
@@ -2361,6 +2480,7 @@ export class AgentStore {
     this.db.delete(workItems).run();
     this.db.delete(runs).run();
     this.db.delete(messages).run();
+    this.db.delete(chatSearchMessages).run();
     this.db.delete(agents).run();
     this.db.delete(agentConversationMemberships).run();
     this.db.delete(conversations).run();
@@ -2476,6 +2596,7 @@ export class AgentStore {
       }
       this.sanitizeOrganizationProjection(projectId);
     }
+    this.rebuildGlobalChatSearchProjection();
   }
 
   close(): void {

@@ -88,6 +88,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
 }
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
+import { projectedMessageIdForFocus } from "../messageFocus";
 
 export function ConversationMessage({
   message,
@@ -365,7 +366,9 @@ export function ConversationView({
       setActiveView("main");
       return;
     }
-    const target = document.getElementById(`master-message-${focusMessageId}`);
+    const projectedId = projectedMessageIdForFocus(messages, focusMessageId);
+    if (!projectedId) return;
+    const target = document.getElementById(`master-message-${projectedId}`);
     if (!target) return;
     shouldFollowNewMessages.current = false;
     target.scrollIntoView({ behavior: "smooth", block: "center" });

@@ -74,6 +74,25 @@ export const messages = sqliteTable("messages", {
   attachmentsJson: text("attachments_json"),
 });
 
+/**
+ * Rebuildable, human-facing global Chat search projection. This deliberately
+ * excludes runtime events and collaboration-only surfaces. Search reads this
+ * table newest-first through a bounded index instead of materializing every
+ * conversation and agent timeline from the canonical JSONL files.
+ */
+export const chatSearchMessages = sqliteTable("chat_search_messages", {
+  rowKey: text("row_key").primaryKey(),
+  projectId: text("project_id").notNull(),
+  chatKind: text("chat_kind").notNull(), // "conversation" | "agent"
+  chatId: text("chat_id").notNull(),
+  messageId: text("message_id").notNull(),
+  communicationEventId: text("communication_event_id").notNull(),
+  role: text("role").notNull(),
+  authorAgentId: text("author_agent_id"),
+  timestamp: text("timestamp").notNull(),
+  text: text("text").notNull(),
+});
+
 export const runs = sqliteTable("runs", {
   id: text("id").notNull(),
   agentId: text("agent_id").notNull(),

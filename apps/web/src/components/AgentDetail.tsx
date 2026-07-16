@@ -47,6 +47,7 @@ import { useSendMessage } from "../hooks/useSendMessage";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
+import { projectedMessageIdForFocus } from "../messageFocus";
 import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 import { TokenUsageButton } from "./TokenUsageButton";
@@ -201,7 +202,9 @@ export function AgentDetail({
       setTab("chat");
       return;
     }
-    const target = document.getElementById(`message-${focusMessageId}`);
+    const projectedId = projectedMessageIdForFocus(agentQuery.data?.messages ?? [], focusMessageId);
+    if (!projectedId) return;
+    const target = document.getElementById(`message-${projectedId}`);
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });

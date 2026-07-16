@@ -407,7 +407,7 @@ export default function App({
                 <Button fullWidth sx={{ justifyContent: "flex-start", px: 1.5 }} onClick={() => { if (conversationId && conversationId !== "project") { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId, conversationId }); } }}>
                   {project?.label ?? "Project"} · {conversationId && conversationId !== "project" ? "Project chat" : "Project"} ({items.length})
                 </Button>
-                <List dense disablePadding>{items.map((item) => <ListItem key={item.id} disablePadding><ListItemButton selected={!item.readAt} onClick={() => { if (item.conversationId) { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId: item.projectId, conversationId: item.conversationId, ...(item.communicationEventId ? { messageId: item.communicationEventId } : {}) }); } }}><ListItemText primary={item.title} secondary={item.body} /></ListItemButton></ListItem>)}</List>
+                <List dense disablePadding>{items.map((item) => <ListItem key={item.id} disablePadding><ListItemButton selected={!item.readAt} onClick={() => { if (item.conversationId) { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId: item.projectId, conversationId: item.conversationId, ...(item.communicationEventId ? { focusMessageId: item.communicationEventId } : {}) }); } }}><ListItemText primary={item.title} secondary={item.body} /></ListItemButton></ListItem>)}</List>
               </Box>;
             })}
             {(notificationsQuery.data ?? []).length === 0 ? <Typography color="text.secondary">No notifications.</Typography> : null}

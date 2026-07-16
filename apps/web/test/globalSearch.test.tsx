@@ -8,6 +8,7 @@ import {
   isGlobalSearchShortcut,
   routeForGlobalSearchSelection,
 } from "../src/components/GlobalChatSearch";
+import { projectedMessageIdForFocus } from "../src/messageFocus";
 
 const result: GlobalChatSearchResultDto = {
   project: { id: "project-two", label: "Second Project" },
@@ -46,9 +47,16 @@ describe("global chat search", () => {
     ]);
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     const agent = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
-    expect(conversation).toContain("master-message-${focusMessageId}");
-    expect(agent).toContain("message-${focusMessageId}");
+    expect(conversation).toContain("projectedMessageIdForFocus(messages, focusMessageId)");
+    expect(agent).toContain("projectedMessageIdForFocus(agentQuery.data?.messages ?? [], focusMessageId)");
     expect(conversation).toContain("target.focus({ preventScroll: true })");
+  });
+
+  it("normalizes projected search IDs and canonical notification IDs to one message", () => {
+    const messages = [{ id: "agent-event-42", communicationEventId: "communication-42" }];
+    expect(projectedMessageIdForFocus(messages, "agent-event-42")).toBe("agent-event-42");
+    expect(projectedMessageIdForFocus(messages, "communication-42")).toBe("agent-event-42");
+    expect(projectedMessageIdForFocus(messages, "foreign")).toBeUndefined();
   });
 
   it("keeps search debounced, responsive, and reconnect-aware", () => {

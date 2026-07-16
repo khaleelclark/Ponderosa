@@ -33,7 +33,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
-import type { Route } from "../routing";
+import { routeProjectId, type Route } from "../routing";
 import {
   currentProjectSnapshot,
   projectDisambiguator,
@@ -99,7 +99,7 @@ export function WorkspaceSidebar({ projects, route, notifications, drawer = fals
   onManageProject(project: ProjectDto): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const selectedProjectId = "projectId" in route ? route.projectId : undefined;
+  const selectedProjectId = routeProjectId(route);
   const conversationQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["conversations", project.id], queryFn: () => api.listConversations(project.id), staleTime: 10_000 })) });
   const agentQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agents", project.id], queryFn: () => api.listAgents(project.id), staleTime: 4_000 })) });
   const healthQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agent-health", project.id], queryFn: () => api.getAgentHealth(project.id), staleTime: 5_000 })) });

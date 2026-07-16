@@ -66,4 +66,37 @@ describe("global chat search end to end", () => {
       await app.close();
     }
   });
+
+  it("applies the global scan bound in SQLite before API result materialization", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ponderosa-global-search-bound-"));
+    cleanup.push(dataDir);
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: "Large history", hostPath: "/large-history" });
+    const conversationId = project.lastConversationId!;
+    const insert = store.sqlite.prepare(`
+      INSERT INTO chat_search_messages (
+        row_key, project_id, chat_kind, chat_id, message_id,
+        communication_event_id, role, timestamp, text
+      ) VALUES (?, ?, 'conversation', ?, ?, ?, 'user', ?, ?)
+    `);
+    store.sqlite.transaction(() => {
+      for (let index = 0; index < 10_025; index += 1) {
+        const id = `api-bound-${String(index).padStart(5, "0")}`;
+        insert.run(id, project.id, conversationId, id, id, new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(), `API bounded needle ${index}`);
+      }
+    })();
+    const app = createServer({ dataDir, store, engines: [], logger: false });
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/search?q=needle&limit=5" });
+      expect(response.statusCode).toBe(200);
+      const body = response.json<{ query: string; results: Array<{ chat: { id: string } }>; scannedMessages: number; truncated: boolean }>();
+      expect(body.query).toBe("needle");
+      expect(body.results).toHaveLength(5);
+      expect(body.results.every((result) => result.chat.id === conversationId)).toBe(true);
+      expect(body.scannedMessages).toBe(10_000);
+      expect(body.truncated).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
 });

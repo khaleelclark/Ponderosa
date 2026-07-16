@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { conversationChangedQueryKeys, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh } from "../src/hooks/useWorkspaceStream";
 
 describe("workspace stream cursor recovery", () => {
   it("invalidates only the changed project's runtime discovery cache", async () => {
@@ -89,5 +89,24 @@ describe("workspace stream cursor recovery", () => {
       type: "agent_event", projectId: "project", agentId: "agent", conversationIds: ["one"],
       seq: 11, eventType: "agent_lifecycle", category: "lifecycle", executionId: "run",
     })).toEqual([["conversation", "one"]]);
+  });
+
+  it("refetches latest passive edits and unread state after mutations or reconnect", () => {
+    expect(workspaceEventInvalidatesGlobalSearch({
+      type: "conversation_changed",
+      projectId: "project",
+      conversationId: "chat",
+      action: "updated",
+    })).toBe(true);
+    expect(workspaceEventInvalidatesGlobalSearch({
+      type: "notification_changed",
+      action: "created",
+      notificationId: "notification",
+    })).toBe(true);
+    expect(workspaceReconnectRequiresRefresh(12, "old-instance", {
+      cursor: 3,
+      instanceId: "new-instance",
+      reset: false,
+    })).toBe(true);
   });
 });

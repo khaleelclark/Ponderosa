@@ -32,6 +32,7 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "agent_conversation_memberships",
     "agents",
     "messages",
+    "chat_search_messages",
     "runs",
     "work_items",
     "artifacts",
@@ -43,6 +44,8 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
       ? "agent_id, position"
       : t === "runs"
         ? "agent_id, id"
+        : t === "chat_search_messages"
+          ? "row_key"
         : "id";
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
@@ -123,6 +126,63 @@ describe("AgentStore — V1 layout", () => {
     const empty = store.searchGlobalChats({ notifications: [{ conversationId: firstChat.id, communicationEventId: firstMessage!.communicationEventId }] });
     expect(empty.results).toHaveLength(1);
     expect(empty.recentChats.map((item) => item.project.label)).toEqual(expect.arrayContaining(["Alpha", "Beta"]));
+  });
+
+  it("bounds global search reads before timeline materialization on large histories", () => {
+    const project = store.createProject({ label: "Bounded", hostPath: "/bounded" });
+    const conversationId = project.lastConversationId!;
+    const insert = store.sqlite.prepare(`
+      INSERT INTO chat_search_messages (
+        row_key, project_id, chat_kind, chat_id, message_id,
+        communication_event_id, role, timestamp, text
+      ) VALUES (?, ?, 'conversation', ?, ?, ?, 'user', ?, ?)
+    `);
+    store.sqlite.transaction(() => {
+      for (let index = 0; index < 500; index += 1) {
+        const id = `bounded-${String(index).padStart(4, "0")}`;
+        insert.run(id, project.id, conversationId, id, id, new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(), `bounded needle ${index}`);
+      }
+    })();
+    const conversationRead = vi.spyOn(store, "getConversationMessages").mockImplementation(() => {
+      throw new Error("search must not materialize conversation timelines");
+    });
+    const agentRead = vi.spyOn(store, "getProjectedAgentMessages").mockImplementation(() => {
+      throw new Error("search must not materialize agent timelines");
+    });
+
+    const result = store.searchGlobalChats({ query: "needle", limit: 10, maxScannedMessages: 25 });
+
+    expect(result.results).toHaveLength(10);
+    expect(result.scannedMessages).toBe(25);
+    expect(result.truncated).toBe(true);
+    expect(conversationRead).not.toHaveBeenCalled();
+    expect(agentRead).not.toHaveBeenCalled();
+    const queryPlan = store.sqlite.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT search.row_key
+      FROM chat_search_messages search
+      JOIN projects project ON project.id = search.project_id
+      LEFT JOIN conversations conversation
+        ON search.chat_kind = 'conversation' AND conversation.id = search.chat_id AND conversation.archived = 0
+      LEFT JOIN agents chat_agent
+        ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+      WHERE (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+        AND NOT (
+          search.chat_kind = 'agent' AND EXISTS (
+            SELECT 1
+            FROM chat_search_messages preferred
+            JOIN conversations preferred_conversation
+              ON preferred_conversation.id = preferred.chat_id AND preferred_conversation.archived = 0
+            WHERE preferred.project_id = search.project_id
+              AND preferred.communication_event_id = search.communication_event_id
+              AND preferred.chat_kind = 'conversation'
+          )
+        )
+      ORDER BY search.timestamp DESC, search.chat_kind DESC, search.row_key DESC
+      LIMIT 26
+    `).all() as Array<{ detail: string }>;
+    expect(queryPlan.some((row) => row.detail.includes("idx_chat_search_newest"))).toBe(true);
+    expect(queryPlan.some((row) => row.detail.includes("USE TEMP B-TREE FOR ORDER BY"))).toBe(false);
   });
 
   it("enforces exclusive live ownership of a data directory", () => {
