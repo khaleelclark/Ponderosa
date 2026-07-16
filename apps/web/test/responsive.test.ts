@@ -40,6 +40,9 @@ describe("responsive compact controls", () => {
     expect(sidebar).toContain("drawer?: boolean");
     expect(sidebar).toContain('minWidth: 44, minHeight: 44');
     expect(sidebar).toContain('aria-label={`Actions for ${displayTitle}`}');
+    expect(app).toContain('onRenameConversation={(conversation) => { setMobileNavOpen(false);');
+    expect(app).toContain('onDeleteConversation={(conversation) => { setMobileNavOpen(false);');
+    expect(sidebar).not.toContain("<Dialog");
     expect(sidebar).not.toContain("maxHeight: \"34%\"");
   });
 

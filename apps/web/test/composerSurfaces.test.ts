@@ -15,9 +15,15 @@ describe("composer surface ownership", () => {
   });
 
   it("keeps Team chat read-only", () => {
-    expect(conversation).toContain("Team chat is read-only. Agent collaboration appears here; message an agent from its Agent chat.");
+    expect(conversation).toContain("Team chat is a read-only audit trail of agent-to-agent coordination.");
     expect(conversation).not.toContain("TeamCollaborationComposer");
     expect(conversation).not.toContain("api.sendCollaborationMessage");
+  });
+
+  it("keeps managed-agent lineage visible beside the agent title", () => {
+    expect(agentDetail).toContain('const lineageAgent = spawningAgent ?? organizationalParent;');
+    expect(agentDetail).toContain('const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Reports to";');
+    expect(agentDetail).toContain('{lineageAgentId ? <Typography variant="caption"');
   });
 
   it("floats the shared composer above the viewport edge", () => {

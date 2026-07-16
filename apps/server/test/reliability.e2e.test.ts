@@ -72,7 +72,7 @@ describe("V1 reliability safety net", () => {
     expect(store.readEvents(agent.id).map(({ event }) => event.type)).toEqual(
       expect.arrayContaining(["session", "text"]),
     );
-    expect(store.getConversationMessages(master.id)).toContainEqual(expect.objectContaining({ text: "#Reliability-Agent first turn" }));
+    expect(store.getConversationMessages(master.id)).toContainEqual(expect.objectContaining({ text: "first turn" }));
 
     const queued = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second turn" } });
     expect(queued.statusCode).toBe(202);

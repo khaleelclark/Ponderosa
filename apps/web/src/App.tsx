@@ -28,7 +28,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ProjectDto } from "@ponderosa/core";
+import type { ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "./api";
@@ -95,6 +95,8 @@ export default function App({
   const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
+  const [sidebarConversationTitle, setSidebarConversationTitle] = useState("");
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
 
   useEffect(() => {
@@ -189,6 +191,33 @@ export default function App({
     },
   });
 
+  const renameSidebarConversation = useMutation({
+    mutationFn: ({ conversation, title }: { conversation: ConversationDto; title: string }) =>
+      api.updateConversation(conversation.id, { title }),
+    onSuccess: (_updated, { conversation }) => {
+      void queryClient.invalidateQueries({ queryKey: ["conversations", conversation.projectId] });
+      setSidebarConversationAction(undefined);
+    },
+  });
+
+  const deleteSidebarConversation = useMutation({
+    mutationFn: (conversation: ConversationDto) => api.deleteConversation(conversation.id),
+    onSuccess: (_deleted, conversation) => {
+      void queryClient.invalidateQueries({ queryKey: ["conversations", conversation.projectId] });
+      setSidebarConversationAction(undefined);
+      if (route.kind === "conversation" && route.conversationId === conversation.id) {
+        navigate({ kind: "project", projectId: conversation.projectId }, { replace: true });
+      }
+    },
+  });
+
+  const openSidebarConversationAction = (kind: "rename" | "delete", conversation: ConversationDto) => {
+    renameSidebarConversation.reset();
+    deleteSidebarConversation.reset();
+    setSidebarConversationTitle(conversation.title);
+    setSidebarConversationAction({ kind, conversation });
+  };
+
   const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
@@ -274,6 +303,8 @@ export default function App({
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+            onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
+            onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
@@ -339,8 +370,70 @@ export default function App({
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
           onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+          onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
+          onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
         />
       </Drawer>
+
+      <Dialog
+        open={sidebarConversationAction?.kind === "rename"}
+        onClose={() => setSidebarConversationAction(undefined)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Rename Project chat</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Project chat name"
+            value={sidebarConversationTitle}
+            onChange={(event) => setSidebarConversationTitle(event.target.value)}
+            sx={{ mt: 1 }}
+          />
+          {renameSidebarConversation.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(renameSidebarConversation.error)}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSidebarConversationAction(undefined)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!sidebarConversationTitle.trim() || renameSidebarConversation.isPending}
+            onClick={() => {
+              if (sidebarConversationAction?.kind === "rename") {
+                renameSidebarConversation.mutate({ conversation: sidebarConversationAction.conversation, title: sidebarConversationTitle.trim() });
+              }
+            }}
+          >
+            {renameSidebarConversation.isPending ? "Saving…" : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={sidebarConversationAction?.kind === "delete"}
+        onClose={() => setSidebarConversationAction(undefined)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Delete Project chat?</DialogTitle>
+        <DialogContent>
+          <Typography>This permanently deletes this Project chat and refuses deletion while an assigned agent is running.</Typography>
+          {deleteSidebarConversation.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteSidebarConversation.error)}</Alert> : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSidebarConversationAction(undefined)}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            disabled={deleteSidebarConversation.isPending}
+            onClick={() => {
+              if (sidebarConversationAction?.kind === "delete") deleteSidebarConversation.mutate(sidebarConversationAction.conversation);
+            }}
+          >
+            {deleteSidebarConversation.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <GlobalChatSearch
         open={globalSearchOpen}

@@ -5227,6 +5227,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             communication,
             dispatch: {
               conversationId: agent.conversationId ?? null,
+              ...(sharedOpening ? {
+                sourceConversationId: agent.conversationId,
+                sourceChannel: "main" as const,
+                shareWithOrganization: true,
+              } : {}),
               text: initialMessage,
               replyToMessageId: request.body.replyToMessageId ?? null,
               attachments: openingAttachments.map((item) => ({
@@ -5258,7 +5263,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             agent.conversationId,
             {
               role: "user",
-              text: managed ? `#${agentMentionHandle(agent.title)} ${initialMessage}` : `#${agentMentionHandle(agent.title)} ${initialMessage}`,
+              // A normal Project-chat send is shared conversation text, not a
+              // user-authored DM. Keep the spawned Agent association in the
+              // canonical communication/activation instead of mutating the
+              // user's visible prose with a stale display-name tag.
+              text: managed ? `#${agentMentionHandle(agent.title)} ${initialMessage}` : initialMessage,
               replyToMessageId: request.body.replyToMessageId,
               attachments: openingAttachments,
             },
