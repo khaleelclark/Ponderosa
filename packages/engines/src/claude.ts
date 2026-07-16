@@ -24,7 +24,7 @@ import { claudeApiPriceProfile } from "./api-pricing.js";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./codex.js";
 import { streamProcess, type SpawnFn } from "./process.js";
-import { discoverCliMcps, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
+import { composerCapabilities, discoverCliMcps, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";
 
 export interface ClaudeAdapterOptions {
@@ -91,17 +91,23 @@ export class ClaudeAdapter implements Adapter {
 
   async capabilities(cwd: string): Promise<EngineCapabilities> {
     const claudeHome = path.join(homedir(), ".claude");
-    const commands = discoverMarkdownCommands([
+    const plugins = discoverEnginePlugins([
+      { path: path.join(cwd, ".claude", "plugins"), requireInstallMarker: false },
+      { path: path.join(claudeHome, "plugins"), requireInstallMarker: false },
+    ]);
+    const commands = [...discoverMarkdownCommands([
       { path: path.join(cwd, ".claude", "commands"), source: "engine" },
       { path: path.join(cwd, ".claude", "skills"), source: "skill", skillFilesOnly: true },
       { path: path.join(claudeHome, "commands"), source: "engine" },
       { path: path.join(claudeHome, "skills"), source: "skill", skillFilesOnly: true },
-    ]);
+    ]), ...plugins.flatMap((plugin) => plugin.commands)];
+    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList);
     return {
       steering: true,
       persistentSessions: true,
       commands,
-      mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList),
+      mcpServers,
+      composerCapabilities: composerCapabilities(commands, plugins, mcpServers, "/"),
     };
   }
 

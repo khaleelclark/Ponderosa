@@ -51,6 +51,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
       void queryClient.invalidateQueries({ queryKey: ["workspace-file"] });
       void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
+      void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
       const reconciliation = reconcileWorkspaceCursor(cursor.current, envelope);
@@ -83,11 +84,17 @@ export function useWorkspaceStream(): void {
         if (event.category === "usage") void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       }
       else if (event.type === "usage_changed") void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
+      else if (event.type === "runtime_capabilities_changed") {
+        void queryClient.invalidateQueries({ queryKey: ["engine-capabilities", event.projectId] });
+      }
       else void queryClient.invalidateQueries({ queryKey: ["notifications"] });
     };
     const subscription = api.subscribeWorkspace(cursor.current, {
       onEvent: apply,
       onStatus: (status) => {
+        // Reconnect is a capability boundary: skills/plugins/connectors can
+        // change while a phone is backgrounded or the server is unavailable.
+        void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
         const previousInstance = window.localStorage.getItem(INSTANCE_KEY);
         if (status.reset || (previousInstance && previousInstance !== status.instanceId) || cursor.current > status.cursor) {
           cursor.current = 0;

@@ -656,6 +656,7 @@ export const mockApi: PonderosaApi = {
       persistentSessions: engine.id === "codex" || engine.id === "claude",
       commands: [],
       mcpServers: [],
+      composerCapabilities: [],
     })));
   },
   async getFiles(_projectId, path = "") {

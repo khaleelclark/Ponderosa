@@ -8,7 +8,8 @@ describe("general asset UI contract", () => {
   it("offers only server-supported formats and retains 44px attachment actions", () => {
     expect(panes).toContain("application/pdf,text/plain,application/json,application/zip");
     expect(panes).not.toContain("image/gif");
-    expect(panes).toContain('aria-label="Attach assets"');
+    expect(panes).toContain('aria-label="Add attachment or capability"');
+    expect(panes).toContain("Upload image or file");
     expect(panes).toContain("minWidth: 44, minHeight: 44");
   });
 

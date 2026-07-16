@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { discoverMarkdownCommands, parseClaudeMcpList, parseCodexMcpList } from "../src/capabilities.js";
+import { composerCapabilities, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList, parseCodexMcpList } from "../src/capabilities.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -38,5 +38,39 @@ describe("engine capability discovery", () => {
       { name: "Expedia", status: "connected", detail: "Connected" },
       { name: "Broken", status: "disconnected", detail: "Failed to connect" },
     ]);
+  });
+
+  it("discovers installed plugin manifests and normalizes composer actions", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pond-plugins-"));
+    roots.push(root);
+    const plugin = path.join(root, "remote", "github");
+    const version = path.join(plugin, "1.0.0");
+    const skill = path.join(version, "skills", "review");
+    mkdirSync(path.join(version, ".codex-plugin"), { recursive: true });
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(path.join(plugin, ".codex-remote-plugin-install.json"), "{}");
+    writeFileSync(path.join(version, ".codex-plugin", "plugin.json"), JSON.stringify({
+      name: "github",
+      description: "GitHub tools",
+      skills: "./skills",
+      interface: { displayName: "GitHub", shortDescription: "Review repositories" },
+    }));
+    writeFileSync(path.join(skill, "SKILL.md"), "---\nname: review-pr\ndescription: Review a pull request\n---\n");
+
+    const plugins = discoverEnginePlugins([{ path: root, requireInstallMarker: true }]);
+    expect(plugins).toHaveLength(1);
+    expect(plugins[0]?.capability).toMatchObject({ id: "plugin:github", kind: "plugin", label: "GitHub" });
+    const capabilities = composerCapabilities(
+      plugins.flatMap((item) => item.commands),
+      plugins,
+      [{ name: "gmail", status: "connected", detail: "Connected" }, { name: "offline", status: "disconnected" }],
+      "$",
+    );
+    expect(capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "skill:github:review-pr", kind: "skill", insertText: "$github:review-pr " }),
+      expect.objectContaining({ id: "plugin:github", kind: "plugin" }),
+      expect.objectContaining({ id: "connector:gmail", kind: "connector", status: "available" }),
+    ]));
+    expect(capabilities.some((capability) => capability.id === "connector:offline")).toBe(false);
   });
 });

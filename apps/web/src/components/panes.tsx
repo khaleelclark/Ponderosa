@@ -6,9 +6,9 @@ import DifferenceIcon from "@mui/icons-material/Difference";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import AddIcon from "@mui/icons-material/Add";
 import ReplyIcon from "@mui/icons-material/Reply";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import TerminalIcon from "@mui/icons-material/Terminal";
@@ -38,7 +38,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -140,6 +140,26 @@ export function shouldIgnoreComposerKey(event: { key: string; isComposing: boole
 export function matchingEngineCommands(commands: EngineCommand[], prefix: string): EngineCommand[] {
   const normalized = prefix.toLocaleLowerCase();
   return commands.filter((command) => command.name.toLocaleLowerCase().startsWith(normalized));
+}
+
+export function composerCapabilityDisabledReason(capability: EngineComposerCapability): string | undefined {
+  if (capability.status === "unavailable") return capability.unavailableReason ?? "This capability is not currently available.";
+  if (capability.insertText) return undefined;
+  if (capability.kind === "connector") return "Available to the runtime; direct connector expansion is not supported yet.";
+  if (capability.kind === "plugin") return "Available through its runtime-provided skills and connectors.";
+  return "This capability cannot be inserted in a message.";
+}
+
+export function insertComposerCapability(
+  text: string,
+  caret: number,
+  capability: EngineComposerCapability,
+): { text: string; caret: number } | undefined {
+  if (!capability.insertText || composerCapabilityDisabledReason(capability)) return undefined;
+  return {
+    text: `${text.slice(0, caret)}${capability.insertText}${text.slice(caret)}`,
+    caret: caret + capability.insertText.length,
+  };
 }
 
 export function canSubmitComposerText(input: {
@@ -1328,6 +1348,10 @@ export function Composer({
   projectId,
   mentionHandles,
   commands,
+  capabilities,
+  onCapabilitiesOpen,
+  attachmentsEnabled = true,
+  attachmentsUnavailableReason,
   busyMentionHandles,
   allowUnmentionedSend = true,
   onSend,
@@ -1340,6 +1364,7 @@ export function Composer({
   draftStorageKey,
   conversationDraftId,
   controls,
+  guidance,
   focusReply = false,
 }: {
   disabled: boolean;
@@ -1351,6 +1376,13 @@ export function Composer({
   mentionHandles?: string[];
   /** Engine/system capabilities shown when the composer starts with `/`. */
   commands?: EngineCommand[];
+  /** Adapter-normalized capabilities for the selected authenticated runtime. */
+  capabilities?: EngineComposerCapability[];
+  /** Refresh discovery immediately before the capability menu is shown. */
+  onCapabilitiesOpen?(): Promise<unknown> | unknown;
+  /** Whether this communication surface currently accepts staged assets. */
+  attachmentsEnabled?: boolean;
+  attachmentsUnavailableReason?: string;
   /** Mentioned agents that cannot accept a new turn yet. */
   busyMentionHandles?: string[];
   /** Whether text without a valid mention may be submitted. */
@@ -1370,6 +1402,8 @@ export function Composer({
   conversationDraftId?: string;
   /** Compact engine/model/effort controls rendered in the bottom action row. */
   controls?: ReactNode;
+  /** Context-specific targeting/file guidance rendered inside the shared shell. */
+  guidance?: ReactNode;
   /** Focus the normal composer when a direct reply is selected. */
   focusReply?: boolean;
 }): JSX.Element {
@@ -1394,6 +1428,8 @@ export function Composer({
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
   const mentionListId = useId();
+  const capabilityListId = useId();
+  const [capabilityMenuAnchor, setCapabilityMenuAnchor] = useState<HTMLElement | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const mentionedHandles = findMentionedHandles(text, mentionHandles ?? []);
@@ -1641,6 +1677,20 @@ export function Composer({
     });
   };
 
+  const applyCapability = (capability: EngineComposerCapability) => {
+    const inserted = insertComposerCapability(text, caret, capability);
+    if (!inserted) return;
+    update(inserted.text);
+    setCapabilityMenuAnchor(null);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(inserted.caret, inserted.caret);
+      setCaret(inserted.caret);
+    });
+  };
+
   const submit = (handler: (message: string, selectedFiles: File[]) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
     sendingRef.current = true;
@@ -1688,6 +1738,11 @@ export function Composer({
         pb: "max(8px, env(safe-area-inset-bottom))",
       }}
     >
+      {guidance ? (
+        <Box sx={{ px: 0.5, pb: 0.75, color: "text.secondary" }}>
+          {typeof guidance === "string" ? <Typography variant="caption">{guidance}</Typography> : guidance}
+        </Box>
+      ) : null}
       {replyTo ? (
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5, minWidth: 0, width: "100%", overflow: "hidden" }}>
           <Box sx={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
@@ -1711,18 +1766,70 @@ export function Composer({
           addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
         }} />
-        <Tooltip title="Attach or paste assets (PNG, JPEG, WebP, PDF, text, JSON, or ZIP; 8 MiB each)"><span><IconButton aria-label="Attach assets" disabled={disabled || running || files.length >= COMPOSER_MAX_FILES} onClick={() => fileInput.current?.click()} sx={{ minWidth: 44, minHeight: 44 }}><AttachFileIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Add an image, file, skill, plugin, or connector"><span><IconButton
+          aria-label="Add attachment or capability"
+          aria-haspopup="menu"
+          aria-expanded={Boolean(capabilityMenuAnchor)}
+          aria-controls={capabilityMenuAnchor ? capabilityListId : undefined}
+          disabled={disabled || running}
+          onClick={(event) => {
+            setCapabilityMenuAnchor(event.currentTarget);
+            void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
+          }}
+          sx={{ minWidth: 44, minHeight: 44 }}
+        ><AddIcon /></IconButton></span></Tooltip>
+        <Popper open={Boolean(capabilityMenuAnchor)} anchorEl={capabilityMenuAnchor} placement="top-start" style={{ zIndex: 1400 }}>
+          <ClickAwayListener onClickAway={() => setCapabilityMenuAnchor(null)}>
+            <Paper elevation={5} sx={{ mb: 0.5, width: "min(360px, calc(100vw - 24px))" }}>
+              <MenuList dense id={capabilityListId} aria-label="Add attachment or runtime capability" sx={{ maxHeight: "min(56vh, 480px)", overflowY: "auto", overscrollBehavior: "contain" }}>
+                <MenuItem
+                  disabled={!attachmentsEnabled || files.length >= COMPOSER_MAX_FILES}
+                  onClick={() => { setCapabilityMenuAnchor(null); fileInput.current?.click(); }}
+                  sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
+                >
+                  <Box><Typography variant="body2">Upload image or file</Typography><Typography variant="caption" color="text.secondary">{!attachmentsEnabled
+                    ? attachmentsUnavailableReason ?? "Attachments are not supported in this chat."
+                    : files.length >= COMPOSER_MAX_FILES
+                      ? "Remove an attachment before adding another."
+                      : "PNG, JPEG, WebP, PDF, text, JSON, or ZIP · 8 MiB each"}</Typography></Box>
+                </MenuItem>
+                <Divider />
+                {(capabilities ?? []).length === 0 ? (
+                  <MenuItem disabled sx={{ whiteSpace: "normal" }}><Typography variant="caption">No runtime skills, plugins, or connectors are currently available.</Typography></MenuItem>
+                ) : (capabilities ?? []).map((capability) => {
+                  const reason = composerCapabilityDisabledReason(capability);
+                  return <MenuItem
+                    key={capability.id}
+                    disabled={Boolean(reason)}
+                    onClick={() => applyCapability(capability)}
+                    sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2">{capability.label}</Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>
+                        {capability.kind[0]!.toUpperCase() + capability.kind.slice(1)} · {capability.description}
+                      </Typography>
+                      {reason ? <Typography variant="caption" color="text.disabled" sx={{ display: "block", overflowWrap: "anywhere" }}>{reason}</Typography> : null}
+                    </Box>
+                  </MenuItem>;
+                })}
+              </MenuList>
+            </Paper>
+          </ClickAwayListener>
+        </Popper>
         {controls ? <Box sx={{ minWidth: 0, flex: "1 1 0", overflowX: "auto" }}>{controls}</Box> : null}
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <TextField
             fullWidth
             multiline
+            variant="standard"
             minRows={1}
             maxRows={5}
             sx={{
-              "& .MuiInputBase-root": { alignItems: "flex-end", borderRadius: 2, bgcolor: "background.paper" },
+              "& .MuiInputBase-root": { alignItems: "flex-end", bgcolor: "transparent", px: 0.5 },
               "& textarea": { fontSize: 14, lineHeight: "20px" },
             }}
+            InputProps={{ disableUnderline: true }}
             value={text}
             inputRef={inputRef}
             disabled={disabled || running}
@@ -1743,7 +1850,7 @@ export function Composer({
               setSuppressMenu(false);
             }}
             onPaste={(event) => {
-              if (disabled || running) return;
+              if (disabled || running || !attachmentsEnabled) return;
               const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
               if (pasted.length === 0) return;
               event.preventDefault();

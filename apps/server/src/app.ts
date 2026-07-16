@@ -1332,7 +1332,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
-  const engineCapabilityCache = new Map<string, { expiresAt: number; value: Promise<ProjectEngineCapabilitiesDto> }>();
+  const engineCapabilityFingerprints = new Map<string, string>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const draftAttachmentsRoot = path.resolve(opts.dataDir, "draft-attachments");
@@ -3581,7 +3581,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     store.deleteProject(project.id, (projectId) => coordinationV3.purgeProject(projectId));
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
     for (const agentId of agentIds) deletingAgentIds.delete(agentId);
-    engineCapabilityCache.clear();
+    engineCapabilityFingerprints.clear();
     return { deleted: true };
   });
 
@@ -6061,16 +6061,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
-      return Promise.all([...engines.values()].map(({ adapter }) => {
-        const key = `${project.hostPath}\0${adapter.id}`;
-        const cached = engineCapabilityCache.get(key);
-        if (cached && cached.expiresAt > Date.now()) return cached.value;
-        const value = Promise.resolve(adapter.capabilities
+      return Promise.all([...engines.values()].map(async ({ adapter }) => {
+        const key = `${project.id}\0${project.hostPath}\0${adapter.id}`;
+        const capabilities = await Promise.resolve(adapter.capabilities
           ? adapter.capabilities(project.hostPath)
-          : { steering: false, persistentSessions: false, commands: [], mcpServers: [] })
-          .then((capabilities) => ({ engineId: adapter.id, ...capabilities }));
-        engineCapabilityCache.set(key, { expiresAt: Date.now() + 5 * 60_000, value });
-        void value.catch(() => engineCapabilityCache.delete(key));
+          : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
+        const value = { engineId: adapter.id, ...capabilities };
+        const fingerprint = JSON.stringify(value);
+        const previous = engineCapabilityFingerprints.get(key);
+        engineCapabilityFingerprints.set(key, fingerprint);
+        if (previous !== undefined && previous !== fingerprint) {
+          appendWorkspace({ type: "runtime_capabilities_changed", projectId: project.id, engineId: adapter.id });
+        }
         return value;
       }));
     },

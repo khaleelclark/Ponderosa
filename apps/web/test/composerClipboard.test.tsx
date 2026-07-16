@@ -18,6 +18,20 @@ const pasteTarget = (view: ReturnType<typeof create>) => view.root.findAll((node
 const renderComposer = (element: ReactElement) => create(<QueryClientProvider client={new QueryClient()}>{element}</QueryClientProvider>);
 
 describe("composer clipboard attachments", () => {
+  it("keeps context guidance and the capability trigger inside the shared composer shell", () => {
+    const view = renderComposer(<Composer
+      disabled={false}
+      running={false}
+      guidance="Use #agent to target an agent and @ to reference a file."
+      capabilities={[{ id: "skill:review", kind: "skill", label: "review", description: "Review changes", status: "available", insertText: "$review " }]}
+      onSend={() => undefined}
+    />);
+    expect(view.root.findAll((node) => node.children.includes("Use #agent to target an agent and @ to reference a file."))).not.toHaveLength(0);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Add attachment or capability")).toHaveLength(1);
+    expect(view.root.findAll((node) => node.props.variant === "standard" && node.props.multiline)).toHaveLength(1);
+    view.unmount();
+  });
+
   it("bounds long reply previews so the cancel action remains reachable", () => {
     const preview = replyPreviewText(`  ${"long reply segment ".repeat(80)}  `);
     expect(preview.length).toBeLessThanOrEqual(240);

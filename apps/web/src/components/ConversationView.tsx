@@ -246,6 +246,7 @@ export function ConversationView({
   conversationId,
   engines,
   engineCapabilities,
+  onRefreshCapabilities,
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
@@ -256,6 +257,7 @@ export function ConversationView({
   conversationId: string;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
+  onRefreshCapabilities(): Promise<unknown> | unknown;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
@@ -657,8 +659,9 @@ export function ConversationView({
   }
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
+  const activeEngineCapabilities = engineCapabilities.find((item) => item.engineId === activeEngine?.id);
   const commands: EngineCommand[] = [
-    ...(engineCapabilities.find((item) => item.engineId === activeEngine?.id)?.commands ?? []),
+    ...(activeEngineCapabilities?.commands ?? []),
   ];
   const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
   const models = activeEngine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
@@ -896,13 +899,6 @@ export function ConversationView({
         sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
       >
         <Box sx={{ p: { xs: 1, sm: 1.5 } }}>
-          <Alert severity="info" sx={{ mb: 1.5 }}>
-            {activeView === "collaboration" ? (
-              <>Agent-to-agent messages appear here. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> to notify every agent in this Project chat.</>
-            ) : (
-              <>Chat normally to start a fresh agent with this Project chat's shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file.</>
-            )}
-          </Alert>
           {activeView === "main" && !engineReady ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
               {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
@@ -1059,57 +1055,49 @@ export function ConversationView({
       </Drawer>
 
       <Box>
-        {queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
-        {stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
+        {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
+        {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
-        {agents.length > 0 ? (
-          <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
-            <Typography variant="caption" color="text.secondary">
-              {activeView === "collaboration"
-                ? <>Tag <Box component="strong">#agent</Box> or <Box component="strong">#everyone</Box>, then send text, attachments, or both to the Team chat.</>
-                : <>Type <Box component="strong">#agent</Box> to message an existing agent, <Box component="strong">@</Box> to reference a file, or just send to start a new agent.</>}
-            </Typography>
-          </Box>
-        ) : null}
-        {activeView === "collaboration" ? <TeamCollaborationComposer
-          conversationId={conversationId}
-          projectId={conversation.projectId}
-          mentionHandles={mentionHandles}
-          disabled={agents.filter((agent) => !agent.archived).length === 0}
-          replyTo={replyTo}
-          onSend={submit}
-          onCancelReply={clearReply}
-        /> : <Composer
+        <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
-          conversationDraftId={conversationId}
+          conversationDraftId={activeView === "collaboration" ? `collaboration:${conversationId}` : conversationId}
           controls={runtimeControls}
-          disabled={busy && !operationRunning}
-          running={operationRunning}
+          guidance={activeView === "collaboration"
+            ? "Tag an agent with #name, reply to an agent message, or use #everyone. Team chat stays private to its agent recipients."
+            : agents.length > 0
+              ? "Send normally to start a fresh agent, use #agent to target an existing agent, or @ to reference a project file."
+              : "Send normally to start a fresh agent, or use @ to reference a project file."}
+          disabled={activeView === "main" ? busy && !operationRunning : collaborate.isPending}
+          running={activeView === "main" && operationRunning}
           mentionHandles={mentionHandles}
-          commands={commands}
+          commands={activeView === "main" ? commands : []}
+          capabilities={activeView === "main" && activeEngine?.authenticated ? activeEngineCapabilities?.composerCapabilities : []}
+          onCapabilitiesOpen={activeView === "main" ? onRefreshCapabilities : undefined}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={engineReady}
+          allowUnmentionedSend={activeView === "main" ? engineReady || Boolean(directReplyTargetId) : Boolean(replyTo?.authorAgentId)}
           placeholder={
-            engineReady
+            activeView === "collaboration"
+              ? "Message agents with #name or #everyone"
+              : engineReady
               ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
               : "#tag an agent or use #broadcast for shared context"
           }
           onSend={submit}
-          onQueue={(text, files) => submit(text, files, "queue")}
-          agentResponding={Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
+          onQueue={activeView === "main" ? (text, files) => submit(text, files, "queue") : undefined}
+          agentResponding={activeView === "main" && Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
           projectId={conversation.projectId}
           focusReply={Boolean(directReplyTargetId)}
-          onCancel={stopOperation}
+          onCancel={activeView === "main" ? stopOperation : undefined}
           onCancelReply={() => {
             clearReply();
           }}
-        />}
+        />
       </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">

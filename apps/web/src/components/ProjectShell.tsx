@@ -209,6 +209,7 @@ export function ProjectShell({
         conversationId={route.conversationId}
         engines={engines}
         engineCapabilities={engineCapabilities}
+        onRefreshCapabilities={() => capabilitiesQuery.refetch()}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
@@ -224,6 +225,7 @@ export function ProjectShell({
         agentId={route.agentId}
         engines={engines}
         engineCapabilities={engineCapabilities}
+        onRefreshCapabilities={() => capabilitiesQuery.refetch()}
         projectedStatus={statusByAgentId.get(route.agentId)}
         projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}
