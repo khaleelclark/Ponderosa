@@ -906,6 +906,7 @@ export interface AgentCoordinationV3Dto {
     status: string;
     fencingToken: number;
     promptInjectionState: "not_injected" | "injecting" | "injected";
+    providerContextDisposition: "fresh_task" | "continued_session" | "reseeded";
     leaseExpiresAt: string;
   };
 }

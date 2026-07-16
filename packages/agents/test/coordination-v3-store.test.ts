@@ -262,6 +262,34 @@ describe("CoordinationV3Store transactions", () => {
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM activation_outbox").get()).toEqual({ count: 0 });
   });
 
+  it("diagnoses long-lived indefinite coordination cycles without rejecting them", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "cycle-a", requests: [
+        { requestId: "cycle-a", recipientAgentId: recipientA, lifetime: indefinite },
+      ],
+    }, now);
+    store.coordinate({
+      projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}`,
+      idempotencyKey: "cycle-b", requests: [
+        { requestId: "cycle-b", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+    }, now);
+    store.coordinate({
+      projectId, requesterAgentId: recipientB, actorScope: `agent:${recipientB}`,
+      idempotencyKey: "cycle-c", requests: [
+        { requestId: "cycle-c", recipientAgentId: requesterId, lifetime: indefinite },
+      ],
+    }, now);
+
+    expect(store.waitGraphCycles("2026-07-15T00:10:00.000Z")).toEqual([{
+      agentIds: [requesterId, recipientA, recipientB].sort(),
+      requestIds: ["cycle-a", "cycle-b", "cycle-c"],
+      oldestRequestAt: now,
+    }]);
+  });
+
   it("authorizes updates, correlates questions, and wakes a join owner exactly once", () => {
     store.coordinate({
       projectId,
@@ -555,6 +583,28 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.runStartsNewRecipientRequest(requestLease.runId, recipientA)).toBe(true);
   });
 
+  it("never coalesces or steers Activations across Team Chat scopes", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "chat-a", scopeKey: "conversation:chat-a",
+      kind: "ordinary", payload: { text: "A" },
+    });
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "chat-b", scopeKey: "conversation:chat-b",
+      kind: "human", payload: { text: "B" },
+    });
+    const first = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
+    expect(first.scopeKey).toBe("conversation:chat-b");
+    expect(first.activations).toHaveLength(1);
+    acknowledgeLease(first);
+    expect(store.leaseNextSteering({ workerId: "worker-1" })).toBeUndefined();
+    store.completeRun(first.runId, first.fencingToken);
+
+    const second = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
+    expect(second.scopeKey).toBe("conversation:chat-a");
+    expect(second.activations).toHaveLength(1);
+    expect(store.runChangesScope(second.runId, recipientA)).toBe(true);
+  });
+
   it("retries only before injection and rejects stale fencing tokens", () => {
     store.enqueueMessageActivation({
       projectId, agentId: recipientA, messageId: "retry-1", kind: "ordinary", payload: { text: "Work" },
@@ -621,6 +671,77 @@ describe("CoordinationV3Store scheduler", () => {
     expect(operations).toEqual([expect.objectContaining({ runId: lease.runId, operation: "interrupt", attempts: 1 })]);
     store.completeProviderOperation(operations[0]!.id, "supervisor");
     expect(store.claimProviderOperations("supervisor-2")).toHaveLength(0);
+  });
+
+  it("rejects every provider mutation after cancellation inside the mutation transaction", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "authorize-run", kind: "human", payload: { text: "Work" },
+    });
+    const lease = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(lease);
+    const authorization = { runId: lease.runId, agentId: recipientA, fencingToken: lease.fencingToken };
+    store.cancelAgentRun({ agentId: recipientA, idempotencyKey: "cancel-authorized-run" });
+
+    expect(() => store.recordRuntimeCommunication({
+      id: "late-message", projectId, sender: { kind: "agent", id: recipientA },
+      intent: "collaboration", audience: { agentId: recipientB }, payload: { text: "late" },
+      runAuthorization: authorization,
+    })).toThrow("no longer authoritative");
+    expect(() => store.coordinate({
+      projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}:run:${lease.runId}`,
+      idempotencyKey: "late-coordinate", runAuthorization: authorization,
+      requests: [{ requestId: "late-request", recipientAgentId: recipientB, lifetime: indefinite }],
+    })).toThrow("no longer authoritative");
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM runtime_communications WHERE id = 'late-message'").get())
+      .toEqual({ count: 0 });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_requests WHERE id = 'late-request'").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("requires provider request updates to be attached to the current run", () => {
+    store.coordinate({
+      projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}`,
+      idempotencyKey: "historical-request", requests: [
+        { requestId: "historical-request", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+    });
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "current-work", kind: "human", payload: { text: "Current" },
+    });
+    const lease = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(lease);
+    expect(store.requestIdsAttachedToRun(lease.runId, recipientA)).toEqual([]);
+    expect(() => store.updateRequest({
+      requestId: "historical-request", updateId: "late-cancel", kind: "cancelled",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: { runId: lease.runId, agentId: recipientA, fencingToken: lease.fencingToken },
+    })).toThrow("not attached");
+    expect(store.getRequest("historical-request")?.state).toBe("open");
+  });
+
+  it("settles pending and submitted steering distinctly during cancellation", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "base", kind: "ordinary", payload: { text: "Base" },
+    });
+    const run = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(run);
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "submitted-steer", kind: "human", payload: { text: "Steer" },
+    });
+    const steering = store.leaseNextSteering({ workerId: "worker-1" })!;
+    store.preparePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId,
+      fencingToken: steering.fencingToken, prompt: "steering",
+    });
+    store.markPromptSubmitted({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+    });
+
+    store.cancelAgentRun({ agentId: recipientA, idempotencyKey: "cancel-submitted-steer" });
+    expect(opened.client.prepare("SELECT state FROM scheduler_prompt_injections WHERE id = ?").get(steering.injectionId))
+      .toEqual({ state: "outcome_unknown" });
+    expect(opened.client.prepare("SELECT state FROM agent_activations WHERE id = ?").get(steering.activationIds[0]))
+      .toEqual({ state: "outcome_unknown" });
   });
 
   it("attaches urgent steering to the authoritative run without creating another run", () => {

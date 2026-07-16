@@ -33,7 +33,7 @@ afterEach(() => opened.client.close());
 describe("Communication V3 central scheduler", () => {
   it("tells requesters to consume joined outcomes without redundant updates", () => {
     const prompt = formatActivationPrompt({
-      runId: "run", projectId, agentId: agentA, fencingToken: 1,
+      runId: "run", projectId, agentId: agentA, scopeKey: "conversation:test", fencingToken: 1,
       leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
       injectionId: "injection",
       activationIds: ["activation"],
@@ -114,7 +114,7 @@ describe("Communication V3 central scheduler", () => {
 
   it("emits explicit references instead of silently dropping oversized activation payloads", () => {
     const prompt = formatActivationPrompt({
-      runId: "run", projectId, agentId: agentA, fencingToken: 1,
+      runId: "run", projectId, agentId: agentA, scopeKey: "conversation:test", fencingToken: 1,
       leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
       injectionId: "injection", activationIds: ["large"],
       activations: [{
@@ -154,5 +154,45 @@ describe("Communication V3 central scheduler", () => {
     releaseDispatch();
     await Promise.all([drain, stop]);
     expect(stopped).toBe(true);
+  });
+
+  it("contains a cancellation race after submitted steering without rejecting the drain", async () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: agentA, messageId: "base-run", kind: "ordinary", payload: { text: "Base" },
+    });
+    const run = store.leaseNextRun({ workerId: "scheduler" })!;
+    store.preparePromptInjection({
+      injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken, prompt: "base",
+    });
+    store.markRunStarted(run.runId, run.fencingToken);
+    store.markPromptSubmitted({
+      injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: run.injectionId, runId: run.runId, fencingToken: run.fencingToken,
+    });
+    store.enqueueMessageActivation({
+      projectId, agentId: agentA, messageId: "racing-steer", kind: "human", payload: { text: "Steer" },
+    });
+    const scheduler = new CoordinationV3Scheduler(store, async () => {
+      throw new Error("new Run dispatch should not occur");
+    }, {
+      workerId: "scheduler",
+      maxConcurrentRuns: 1,
+      dispatchSteering: async (steering) => {
+        store.markPromptSubmitted({
+          injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+        });
+        store.cancelAgentRun({ agentId: agentA, idempotencyKey: "race-cancel" });
+        return { accepted: false, outcomeUnknown: true, error: "provider completion raced cancellation" };
+      },
+    });
+
+    await expect(scheduler.drainOnce()).resolves.toBe(0);
+    expect(store.activeRunCount()).toBe(0);
+    expect(opened.client.prepare(`
+      SELECT state FROM scheduler_prompt_injections
+      WHERE run_id = ? AND kind = 'steer'
+    `).get(run.runId)).toEqual({ state: "outcome_unknown" });
   });
 });

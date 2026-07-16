@@ -401,7 +401,7 @@ describe("token usage API", () => {
 
 describe("idempotent runtime controls", () => {
   it("replays a stop receipt without appending a second cancellation", async () => {
-    const { app, agent } = await createProjectAndAgent();
+    const { app, project, agent } = await createProjectAndAgent();
     const first = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-retry" } });
     const second = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-retry" } });
     expect(first.json()).toEqual({ cancelled: false, replayed: false });
@@ -857,9 +857,10 @@ describe("server chunk F", () => {
     adapter.mode = "hang";
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Directory", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Directory room" });
     const preset = store.listAgentPresets(project.id).find((item) => item.name === "Frontend")!;
-    const parent = store.createAgent(project.id, { title: "Lead", engine: "codex", presetId: preset.id });
-    const child = store.createAgent(project.id, { title: "Reviewer", engine: "codex" }, {
+    const parent = store.createAgent(project.id, { title: "Lead", engine: "codex", presetId: preset.id, conversationId: room.id });
+    const child = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: room.id }, {
       agentId: parent.id, executionId: "directory-run",
       prompt: "Challenge release safety and report concise findings.", idempotencyKey: "directory-reviewer",
     });
@@ -1593,7 +1594,9 @@ describe("server chunk F", () => {
   });
 
   it("seeds first message, then continues with the captured session id", async () => {
-    const { app, agent } = await createProjectAndAgent();
+    const { app, project, agent } = await createProjectAndAgent();
+    const room = store.createConversation(project.id, { title: "Scoped directory" });
+    store.updateAgentConversationMemberships(agent.id, { conversationIds: [room.id], primaryConversationId: room.id });
     const first = await app.inject({
       method: "POST",
       url: `/api/agents/${agent.id}/messages`,
@@ -1646,7 +1649,7 @@ describe("server chunk F", () => {
       contentType: "diff",
     });
 
-    store.createAgent(agent.projectId, { title: "New Specialist", engine: "codex" });
+    store.createAgent(project.id, { title: "New Specialist", engine: "codex", conversationId: room.id });
     await app.inject({
       method: "POST",
       url: `/api/agents/${agent.id}/messages`,
@@ -1899,9 +1902,9 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceConversationId: second.id } });
     await waitForRun(agent.id, 2);
-    expect(adapter.continues[0]?.prompt).toContain("second-room secret");
-    expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
-    expect(adapter.continues[0]?.prompt).toContain("second-room secret");
+    expect(adapter.seeds[1]?.prompt).toContain("second-room secret");
+    expect(adapter.seeds[1]?.prompt).not.toContain("first-room secret");
+    expect(adapter.seeds[1]?.resumeSessionId).toBeUndefined();
     await app.close();
   });
 
@@ -2287,6 +2290,21 @@ describe("server chunk F", () => {
       currentRequestIds: ["review-request"],
       hint: "Retry without requestId to target the current run's attached request",
     });
+    const earlyOutcomeMessage = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_message",
+      arguments: {
+        intent: "collaboration",
+        recipientAgentIds: [requester.id],
+        text: "Audit copy sent before the terminal Request update.",
+        idempotencyKey: "early-review-outcome",
+      },
+    });
+    expect(earlyOutcomeMessage.success, earlyOutcomeMessage.text).toBe(true);
+    expect(JSON.parse(earlyOutcomeMessage.text)).toMatchObject({ passiveRecipientAgentIds: [requester.id] });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'ordinary_message' AND agent_id = ?
+    `).get(requester.id)).toEqual({ count: 0 });
     const completed = await recipientRuntime.handleDynamicToolCall!({
       name: "ponderosa_update_request",
       arguments: {
@@ -2380,6 +2398,76 @@ describe("server chunk F", () => {
     await vi.waitFor(() => expect(store.sqlite.prepare(
       "SELECT state FROM coordination_requests WHERE id = 'second-review-request'",
     ).get()).toEqual({ state: "completed" }));
+    await app.close();
+  });
+
+  it("blocks cross-chat coordination until the user explicitly adds the recipient to that Team Chat", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4 },
+    });
+    const project = store.createProject({ label: "Chat boundaries", hostPath: repoDir });
+    const veteransChat = store.createConversation(project.id, { title: "Veterans Memorial" });
+    const bigHoleChat = store.createConversation(project.id, { title: "Big Hole" });
+    const veterans = store.createAgent(project.id, {
+      title: "Vietnam Veterans Memorial", engine: "codex", conversationId: veteransChat.id,
+    });
+    const bigHole = store.createAgent(project.id, {
+      title: "Big Hole", engine: "codex", conversationId: bigHoleChat.id,
+    });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${veterans.id}/messages`,
+      payload: { text: "Work within this chat", sourceConversationId: veteransChat.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const token = runtime.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const directory = await app.inject({
+      method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` },
+    });
+    expect(directory.statusCode, directory.body).toBe(200);
+    expect(directory.json<{ agents: Array<{ agentId: string }> }>().agents.map((agent) => agent.agentId))
+      .toEqual([veterans.id]);
+
+    const blocked = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "cross-chat-blocked",
+        requests: [{
+          requestId: "cross-chat-request", recipientAgentId: bigHole.id,
+          text: "Build unrelated UI", lifetime: { kind: "indefinite" },
+        }],
+      },
+    });
+    expect(blocked.success).toBe(false);
+    expect(JSON.parse(blocked.text)).toMatchObject({
+      error: "every recipient must be a different active agent in this Team Chat",
+    });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_requests WHERE id = 'cross-chat-request'").get())
+      .toEqual({ count: 0 });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ?").get(bigHole.id))
+      .toEqual({ count: 0 });
+
+    store.updateAgentConversationMemberships(bigHole.id, {
+      conversationIds: [bigHoleChat.id, veteransChat.id], primaryConversationId: bigHoleChat.id,
+    });
+    const allowed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "shared-chat-allowed",
+        requests: [{
+          requestId: "shared-chat-request", recipientAgentId: bigHole.id,
+          text: "Collaborate in the shared chat", lifetime: { kind: "indefinite" },
+        }],
+      },
+    });
+    expect(allowed.success, allowed.text).toBe(true);
+    expect(store.sqlite.prepare(`
+      SELECT conversation_id FROM coordination_requests WHERE id = 'shared-chat-request'
+    `).get()).toEqual({ conversation_id: veteransChat.id });
     await app.close();
   });
 
