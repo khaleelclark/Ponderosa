@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -102,12 +102,19 @@ describe("V3.2 Trigger Run context", () => {
       triggerId: "disable-race", occurrenceKey: "one", payload: {}, provenance: { source: "test" },
     });
     const disabled = deferred<void>();
-    const app = createServer({
-      dataDir, store, engines: [{ adapter: new CaptureAdapter(), authStatus: async () => ({ authenticated: true }) }],
+    let app!: ReturnType<typeof createServer>;
+    app = createServer({
+      dataDir, store, engines: [{
+        adapter: new CaptureAdapter(),
+        authStatus: async () => ({ authenticated: true }),
+        availabilityProbe: async () => ({ available: false, detail: "subscription inactive" }),
+      }],
       logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 1 },
       messageLifecycleFaults: {
-        afterRunClaim: ({ agentId }) => {
+        afterRunClaim: async ({ agentId }) => {
           if (agentId === worker.id) {
+            const denial = await app.inject({ method: "POST", url: "/api/engines/codex/recheck" });
+            expect(denial.statusCode).toBe(200);
             coordination.updateTriggerDefinition("disable-race", { enabled: false });
             disabled.resolve();
           }
@@ -125,6 +132,8 @@ describe("V3.2 Trigger Run context", () => {
       expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ?`).get(manager.id)).toEqual({ count: 0 });
       expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM scheduler_runs WHERE agent_id = ?`).get(manager.id)).toEqual({ count: 0 });
       expect(store.getRuns(worker.id).at(-1)).toMatchObject({ status: "cancelled" });
+      const evidence = readFileSync(path.join(dataDir, "engine-availability.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { available: boolean });
+      expect(evidence.at(-1)).toMatchObject({ available: false });
     } finally {
       await app.close();
     }

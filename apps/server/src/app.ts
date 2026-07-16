@@ -6859,7 +6859,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 });
               }
               notifyManagerOfChildFailure(agent.id, runId, runError);
-            } else if (engineAvailability.denial(agent.activeEngine)) {
+            } else if (!schedulerCancelled && engineAvailability.denial(agent.activeEngine)) {
               engineAvailability.record({
                 engineId: agent.activeEngine,
                 available: true,
