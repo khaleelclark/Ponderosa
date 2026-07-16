@@ -48,6 +48,21 @@ export function intervalSourceConfig(everyMs: number, original?: { startsAt: str
   return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
 }
 
+export function filesystemWindowErrors(quietValue: string, maxValue: string): { quiet?: string; max?: string } {
+  const quiet = Number(quietValue);
+  const max = Number(maxValue);
+  const errors: { quiet?: string; max?: string } = {};
+  if (!quietValue.trim() || !Number.isFinite(quiet) || quiet < 0.1 || quiet > 3_600) {
+    errors.quiet = "Quiet window must be between 0.1 seconds and 1 hour.";
+  }
+  if (!maxValue.trim() || !Number.isFinite(max) || max < 0.1 || max > 3_600) {
+    errors.max = "Maximum window must be between 0.1 seconds and 1 hour.";
+  } else if (!errors.quiet && max < quiet) {
+    errors.max = "Maximum window must be at least the quiet window.";
+  }
+  return errors;
+}
+
 function lines(value: string): string[] {
   return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
 }
@@ -95,6 +110,8 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
   const [exclude, setExclude] = useState(".git/**\nnode_modules/**\n.ponderosa/**");
   const [quietSeconds, setQuietSeconds] = useState("1");
   const [maxWindowSeconds, setMaxWindowSeconds] = useState("10");
+  const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
+  const sourceConfigurationInvalid = sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max);
 
   useEffect(() => {
     if (!agent.conversationIds.includes(conversationId)) setConversationId(agent.conversationId ?? agent.conversationIds[0] ?? "");
@@ -280,12 +297,12 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
             {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
             {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
           </> : null}
-          {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
+          {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
           {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
           {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save changes" : "Create Trigger"}</Button></DialogActions>
+      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save changes" : "Create Trigger"}</Button></DialogActions>
     </Dialog>
 
     <Dialog open={Boolean(secret)} onClose={() => setSecret(undefined)} fullWidth maxWidth="sm">

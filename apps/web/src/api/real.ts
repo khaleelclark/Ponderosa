@@ -65,7 +65,16 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    let message = `${response.status} ${response.statusText}`;
+    if (response.headers.get("content-type")?.includes("application/json")) {
+      try {
+        const body = await response.json() as { error?: unknown };
+        if (typeof body.error === "string" && body.error.trim()) message = body.error.trim();
+      } catch {
+        // Preserve the stable HTTP fallback when an upstream JSON error is malformed.
+      }
+    }
+    throw new ApiRequestError(response.status, message);
   }
 
   if (response.status === 204 || response.headers.get("content-length") === "0") {

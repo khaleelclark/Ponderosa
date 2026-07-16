@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { changedSourceConfig, intervalSourceConfig, isoToDatetimeLocal, TriggersPane } from "../src/components/TriggersPane";
+import { changedSourceConfig, filesystemWindowErrors, intervalSourceConfig, isoToDatetimeLocal, TriggersPane } from "../src/components/TriggersPane";
 
 describe("Agent Triggers", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -16,6 +16,17 @@ describe("Agent Triggers", () => {
 
     const instant = "2026-07-16T18:23:45.678Z";
     expect(new Date(isoToDatetimeLocal(instant)).toISOString()).toBe(instant);
+  });
+
+  it("rejects filesystem windows the server cannot accept", () => {
+    expect(filesystemWindowErrors("5", "60")).toEqual({});
+    expect(filesystemWindowErrors("5", "4")).toEqual({
+      max: "Maximum window must be at least the quiet window.",
+    });
+    expect(filesystemWindowErrors("5", "3600.1")).toEqual({
+      max: "Maximum window must be between 0.1 seconds and 1 hour.",
+    });
+    expect(filesystemWindowErrors("0.1", "3600")).toEqual({});
   });
 
   it("makes full authority prominent and renders Agent-owned Trigger status", async () => {
