@@ -176,6 +176,7 @@ export interface RuntimeCommunicationV3Result {
 export interface RuntimeCommunicationV3View {
   id: string;
   projectId: string;
+  audience: unknown;
   payload: unknown;
   createdAt: string;
 }
@@ -357,16 +358,17 @@ export class CoordinationV3Store {
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, project_id, payload_json, created_at
+      SELECT id, project_id, audience_json, payload_json, created_at
       FROM runtime_communications
       WHERE (? IS NULL OR project_id = ?)
       ORDER BY created_at, id
     `).all(projectId ?? null, projectId ?? null) as Array<{
-      id: string; project_id: string; payload_json: string; created_at: string;
+      id: string; project_id: string; audience_json: string; payload_json: string; created_at: string;
     }>;
     return rows.map((row) => ({
       id: row.id,
       projectId: row.project_id,
+      audience: JSON.parse(row.audience_json) as unknown,
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
     }));
@@ -374,11 +376,12 @@ export class CoordinationV3Store {
 
   runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
     const row = this.sqlite.prepare(`
-      SELECT id, project_id, payload_json, created_at FROM runtime_communications WHERE id = ?
-    `).get(id) as { id: string; project_id: string; payload_json: string; created_at: string } | undefined;
+      SELECT id, project_id, audience_json, payload_json, created_at FROM runtime_communications WHERE id = ?
+    `).get(id) as { id: string; project_id: string; audience_json: string; payload_json: string; created_at: string } | undefined;
     return row ? {
       id: row.id,
       projectId: row.project_id,
+      audience: JSON.parse(row.audience_json) as unknown,
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
     } : undefined;

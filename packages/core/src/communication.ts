@@ -41,6 +41,8 @@ interface CommunicationEventBase {
   conversationId?: string;
   sender: CommunicationActor;
   text: string;
+  /** Immutable, server-validated artifact references authored with this event. */
+  attachments?: ImageAttachmentDto[];
   document?: CommunicationDocumentRecord;
   citations?: VerifiedCitationRecord[];
   createdAt: string;

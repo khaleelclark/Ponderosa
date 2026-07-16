@@ -390,7 +390,24 @@ export class AgentStore {
         : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
     if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
-    if (!event.eventId || !event.text.trim() || !event.createdAt) throw new Error("communication event is incomplete");
+    if (!event.eventId || (!event.text.trim() && !event.attachments?.length) || !event.createdAt) {
+      throw new Error("communication event is incomplete");
+    }
+    if (event.attachments) {
+      if (new Set(event.attachments.map((attachment) => attachment.id)).size !== event.attachments.length) {
+        throw new Error("communication attachments must have unique IDs");
+      }
+      for (const attachment of event.attachments) {
+        if (!attachment.id || !attachment.agentId || !attachment.name.trim() || !attachment.mediaType ||
+            !Number.isSafeInteger(attachment.size) || attachment.size < 1 || !attachment.url.trim()) {
+          throw new Error("communication attachment is incomplete");
+        }
+        const owner = this.getAgent(attachment.agentId);
+        if (!owner || owner.projectId !== event.projectId || owner.archived) {
+          throw new Error("communication attachment owner must be an active agent in its project");
+        }
+      }
+    }
     if (event.document) {
       if (event.sender.kind !== "agent" || event.document.authorAgentId !== event.sender.agentId ||
           event.document.executionId !== event.sender.executionId || event.document.mediaType !== "text/markdown" ||
@@ -452,7 +469,8 @@ export class AgentStore {
     if (idempotent) {
       const equivalent = idempotent.projectId === event.projectId && idempotent.conversationId === event.conversationId &&
         idempotent.intent === event.intent && JSON.stringify(idempotent.audience) === JSON.stringify(event.audience) &&
-        idempotent.text === event.text && JSON.stringify(idempotent.document) === JSON.stringify(event.document);
+        idempotent.text === event.text && JSON.stringify(idempotent.attachments) === JSON.stringify(event.attachments) &&
+        JSON.stringify(idempotent.document) === JSON.stringify(event.document);
       if (!equivalent) throw new Error("communication idempotency collision");
       this.appendContextClassification(event.projectId, {
         eventId: idempotent.eventId,
