@@ -5,6 +5,24 @@ import { api } from "../api";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
+const REFRESH_KEY = "ponderosa.workspace.refresh.v1";
+const REFRESH_CHANNEL = "ponderosa.workspace.refresh.v1";
+
+export function workspaceRefreshStorageKey(key: string | null): boolean {
+  return key === REFRESH_KEY;
+}
+
+/** Notify sibling tabs after this tab commits a canonical workspace mutation. */
+export function announceWorkspaceRefresh(): void {
+  if (typeof window === "undefined") return;
+  const stamp = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  window.localStorage.setItem(REFRESH_KEY, stamp);
+  if (typeof BroadcastChannel !== "undefined") {
+    const channel = new BroadcastChannel(REFRESH_CHANNEL);
+    channel.postMessage(stamp);
+    channel.close();
+  }
+}
 
 export function workspaceStorageCursor(key: string | null, value: string | null, current: number): number | undefined {
   if (key !== CURSOR_KEY) return undefined;
@@ -161,7 +179,13 @@ export function useWorkspaceStream(): void {
       onError: () => undefined,
     });
     const onVisible = () => { if (document.visibilityState === "visible") invalidateAll(); };
+    const refreshChannel = typeof BroadcastChannel === "undefined" ? undefined : new BroadcastChannel(REFRESH_CHANNEL);
+    if (refreshChannel) refreshChannel.onmessage = () => invalidateAll();
     const onStorage = (event: StorageEvent) => {
+      if (workspaceRefreshStorageKey(event.key)) {
+        invalidateAll();
+        return;
+      }
       const next = workspaceStorageCursor(event.key, event.newValue, cursor.current);
       if (next === undefined) return;
       // Background tabs can receive the shared localStorage cursor before
@@ -176,6 +200,7 @@ export function useWorkspaceStream(): void {
       subscription.close();
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("storage", onStorage);
+      refreshChannel?.close();
     };
   }, [queryClient]);
 }

@@ -23,6 +23,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
+import { announceWorkspaceRefresh } from "../hooks/useWorkspaceStream";
 
 export interface NotificationGroup {
   key: string;
@@ -106,6 +107,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     );
     try {
       await api.markAllNotificationsRead();
+      announceWorkspaceRefresh();
       await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await queryClient.invalidateQueries({ queryKey: ["global-search"] });
     } catch (reason) {
@@ -122,6 +124,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], []);
     try {
       await api.clearAllNotifications();
+      announceWorkspaceRefresh();
       await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await queryClient.invalidateQueries({ queryKey: ["global-search"] });
     } catch (reason) {

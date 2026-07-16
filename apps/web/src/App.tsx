@@ -40,7 +40,7 @@ import { HostFolderPicker } from "./components/HostFolderPicker";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { NotificationPanel } from "./components/NotificationPanel";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
-import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
+import { announceWorkspaceRefresh, useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
   routeProjectId,
@@ -102,7 +102,10 @@ export default function App({
     const conversationId = route.conversationId;
     queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(["notifications"], (current = []) =>
       current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt: new Date().toISOString() } : item));
-    void api.clearConversationNotifications(conversationId).then(() => queryClient.invalidateQueries({ queryKey: ["notifications"] }));
+    void api.clearConversationNotifications(conversationId).then(() => {
+      announceWorkspaceRefresh();
+      return queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    });
   }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, queryClient]);
 
   useEffect(() => {
