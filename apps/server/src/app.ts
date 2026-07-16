@@ -1654,9 +1654,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
-  function closeRunBrowser(agentId: string, run: ActiveRun, reason: string): void {
+  function closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void> {
     const scope = browserScopeForRun(agentId, run);
-    if (scope) void browserSessions.closeRun(scope, reason);
+    return scope ? browserSessions.closeRun(scope, reason) : Promise.resolve();
   }
 
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
@@ -1729,7 +1729,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
     // Delete the claim and revoke capabilities before aborting. Any synchronous
     // or late async continuation from this generation therefore fails its CAS.
-    closeRunBrowser(agentId, run, "run_lease_expired");
+    void closeRunBrowser(agentId, run, "run_lease_expired");
     activeRuns.delete(agentId);
     closeLinkPreviewsForAgent(agentId, "run lease expired");
     clearRunLeaseTimer(run);
@@ -1782,7 +1782,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function releaseActiveRun(agentId: string, run: ActiveRun, state: "completed" | "failed" | "cancelled"): boolean {
     if (!ownsActiveRun(agentId, run)) return false;
-    closeRunBrowser(agentId, run, `run_${state}`);
+    void closeRunBrowser(agentId, run, `run_${state}`);
     activeRuns.delete(agentId);
     closeLinkPreviewsForAgent(agentId, `run ${state}`);
     clearRunLeaseTimer(run);
@@ -2178,7 +2178,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
         if (!entry) return { accepted: true };
         const [agentId, run] = entry;
-        closeRunBrowser(agentId, run, "run_cancelled");
+        void closeRunBrowser(agentId, run, "run_cancelled");
         activeRuns.delete(agentId);
         closeLinkPreviewsForAgent(agentId, "run cancelled");
         clearRunLeaseTimer(run);
@@ -2453,7 +2453,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     await coordinationV3Scheduler.stop();
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
-      closeRunBrowser(agentId, run, "server_shutdown");
+      await closeRunBrowser(agentId, run, "server_shutdown");
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
       if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
@@ -3731,7 +3731,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       closeLinkPreviewsForAgent(agentId, "project deleted");
       const active = activeRuns.get(agentId);
       if (active) {
-        closeRunBrowser(agentId, active, "project_deleted");
+        await closeRunBrowser(agentId, active, "project_deleted");
         clearRunLeaseTimer(active);
         clearRunLivenessTimer(active);
         active.controller.abort();
@@ -4864,7 +4864,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       closeLinkPreviewsForAgent(agent.id, "agent deleted");
       const run = activeRuns.get(agent.id);
       if (run) {
-        closeRunBrowser(agent.id, run, "agent_deleted");
+        await closeRunBrowser(agent.id, run, "agent_deleted");
         activeRuns.delete(agent.id);
         clearRunLeaseTimer(run);
         clearRunLivenessTimer(run);
@@ -6185,7 +6185,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agentId: request.params.id,
       idempotencyKey: idempotencyKey ?? `run:${current?.runId ?? "idle"}`,
     });
-    if (result.cancelled && !result.replayed && current) closeRunBrowser(request.params.id, current, "run_cancelled");
+    if (result.cancelled && !result.replayed && current) void closeRunBrowser(request.params.id, current, "run_cancelled");
     if (result.cancelled && !result.replayed && store.getAgent(request.params.id)) {
       const lifecycle = store.appendEvent(request.params.id, {
         type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",

@@ -579,6 +579,7 @@ class MockAdapter implements Adapter {
   beforeResponse?: (opts: SeedOptions) => Promise<void>;
   failuresRemaining = 0;
   failNextTurn = false;
+  failureAfterBeforeResponse?: string;
   turnUsage?: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
 
   listModels(): ModelOption[] {
@@ -626,6 +627,12 @@ class MockAdapter implements Adapter {
     const beforeResponse = this.beforeResponse;
     this.beforeResponse = undefined;
     if (beforeResponse) await beforeResponse(opts);
+    if (this.failureAfterBeforeResponse) {
+      const message = this.failureAfterBeforeResponse;
+      this.failureAfterBeforeResponse = undefined;
+      yield { type: "error", message };
+      return;
+    }
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
     yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
@@ -846,6 +853,40 @@ describe("human-facing chat projection boundary", () => {
 });
 
 describe("interactive browser API", () => {
+  const trackedBrowserDriver = (): BrowserDriver => ({
+    pageInfo: async () => ({ url: "about:blank", title: "Blank" }),
+    navigate: async (url) => ({ url, title: "Page" }),
+    inspect: async () => JSON.stringify({ url: "about:blank", controls: [] }),
+    click: async () => ({ url: "about:blank", title: "Blank" }),
+    fill: async () => ({ url: "about:blank", title: "Blank" }),
+    key: async () => ({ url: "about:blank", title: "Blank" }),
+    pointer: async () => ({ url: "about:blank", title: "Blank" }),
+    type: async () => ({ url: "about:blank", title: "Blank" }),
+    scroll: async () => ({ url: "about:blank", title: "Blank" }),
+    capture: async () => Buffer.from("89504e470d0a1a0a", "hex"),
+    close: vi.fn(async () => undefined),
+  });
+
+  const startBrowserRun = async (app: ReturnType<typeof createServer>) => {
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects",
+      payload: { label: "Browser lifecycle", hostPath: repoDir, defaultEngine: "codex" },
+    })).json<{ id: string }>();
+    const agent = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Browser lifecycle agent", engine: "codex" },
+    })).json<{ id: string }>();
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Use the browser" },
+    })).statusCode).toBe(202);
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("running");
+    await waitForSeedCount(1);
+    const runId = store.getRuns(agent.id)[0]!.id;
+    const browserUrl = `/api/projects/${project.id}/agents/${agent.id}/runs/${runId}/browser`;
+    expect((await app.inject({ method: "POST", url: browserUrl })).statusCode).toBe(200);
+    return { project, agent, runId, browserUrl };
+  };
+
   it("authenticates and scopes operator/agent control to the exact active run", async () => {
     adapter.mode = "hang";
     const png = Buffer.from("89504e470d0a1a0a", "hex");
@@ -919,6 +960,76 @@ describe("interactive browser API", () => {
     await expect.poll(async () => (await app.inject({ method: "GET", url: root, headers: operator })).statusCode).toBe(404);
     expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "browser_session", status: "closed" }) }));
     await app.close();
+  });
+
+  it.each([
+    { terminal: "completed" as const, failure: undefined, reason: "run_completed" },
+    { terminal: "failed" as const, failure: "browser owner failed", reason: "run_failed" },
+  ])("tears down on normal $terminal run termination", async ({ terminal, failure, reason }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    adapter.beforeResponse = async () => gate;
+    adapter.failureAfterBeforeResponse = failure;
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { agent } = await startBrowserRun(app);
+
+    release();
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe(terminal);
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason }),
+    }));
+    await app.close();
+  });
+
+  it("tears down the browser when the owning execution lease expires", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({
+      dataDir, store, engines, logger: false, browserDriverFactory: async () => driver,
+      executionLeaseScheduling: { leaseMs: 80, heartbeatMs: 1_000 },
+    });
+    const { agent } = await startBrowserRun(app);
+
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status, { timeout: 2_000 }).toBe("failed");
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason: "run_lease_expired" }),
+    }));
+    await app.close();
+  });
+
+  it("tears down the browser before deleting its owning project", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { project } = await startBrowserRun(app);
+
+    expect((await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` })).statusCode).toBe(200);
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    await app.close();
+  });
+
+  it("tears down the browser before deleting its owning agent", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { agent } = await startBrowserRun(app);
+
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    await app.close();
+  });
+
+  it("tears down the browser during daemon shutdown", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    await startBrowserRun(app);
+
+    await app.close();
+    expect(driver.close).toHaveBeenCalledTimes(1);
   });
 });
 

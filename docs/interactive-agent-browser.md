@@ -43,13 +43,23 @@ non-credentialed `http:` and `https:` URLs. Agents already have intentional host
 access; this rule prevents turning operator-facing browser endpoints into a file
 reader or client-selected general host proxy.
 
+Redirect and current-page URLs are treated as untrusted. Before they enter a
+DTO, canonical audit event, snapshot, console record, or displayed failure,
+fragments are removed and credential-bearing query values are redacted. A URL
+containing an OAuth code/state, token, secret, SAML payload, or signed query is
+not retained as a reconnect target.
+
 ## Control arbitration
 
 Exactly one principal owns input at a time: `agent` or `operator`. A monotonic
 control epoch fences every operator input request. Taking or returning control
 increments the epoch, so stale tabs receive `409` rather than continuing to type.
-Browser commands are serialized per session. Agent input fails while the
-operator owns control; the agent must explicitly take control back.
+Browser commands and control transfers share one per-session FIFO. Every action
+is fenced by both the process lifecycle epoch and control epoch before execution
+and before committing its result. An old-owner action queued behind a transfer
+therefore fails, while a transfer waits for an already in-flight action. Agent
+input fails while the operator owns control; the agent must explicitly take
+control back.
 
 The UI always displays the current owner and provides explicit Open, Collapse,
 Reconnect, Close, Take control, and Return control actions. Unmounting Agent
@@ -92,7 +102,8 @@ or Agent chat. They remain in Activity and Files & results.
 - session close on Run completion, failure, cancellation, lease expiry, Agent or
   Project deletion, explicit close, or server shutdown;
 - reconnect creates a new browser process for the same immutable scope and
-  restores only the last non-credentialed HTTP(S) URL;
+  restores only a fragment-free URL with no credential-bearing query; otherwise
+  it opens a blank page;
 - no provider API key, browser credential store, or reusable login profile.
 
 The first implementation is headless and screenshot-driven. It does not provide

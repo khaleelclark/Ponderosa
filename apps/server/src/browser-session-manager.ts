@@ -57,6 +57,10 @@ interface ManagedSession {
   dto: BrowserSessionDto;
   driver?: BrowserDriver;
   queue: Promise<unknown>;
+  lifecycleEpoch: number;
+  opening?: Promise<BrowserSessionDto>;
+  /** A URL is replayable only when it contains no credential-bearing query. */
+  replayUrl?: string;
   lastFrame?: { body: Buffer; revision: number; capturedAt: number };
   frameCapture?: Promise<{ body: Buffer; revision: number }>;
 }
@@ -93,6 +97,72 @@ export function validateBrowserUrl(value: string): string {
   return parsed.toString();
 }
 
+const SENSITIVE_QUERY_NAME = /(?:^|[_-])(?:access|auth|authorization|bearer|code|credential|jwt|key|oauth|password|policy|refresh|secret|session|sig|signature|signed|sso|state|ticket|token)(?:$|[_-])/i;
+const SENSITIVE_COMPACT_QUERY_NAMES = new Set([
+  "accesstoken", "apikey", "authorizationcode", "awsaccesskeyid", "clientsecret",
+  "idtoken", "keypairid", "oauthcode", "refreshtoken", "relaystate", "samlrequest",
+  "samlresponse", "sessiontoken", "sharedaccesssignature",
+]);
+
+function isSensitiveQueryName(name: string): boolean {
+  const compact = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return SENSITIVE_QUERY_NAME.test(name) || SENSITIVE_COMPACT_QUERY_NAMES.has(compact) ||
+    compact.startsWith("xamz") || compact.startsWith("xgoog");
+}
+
+export interface RedactedBrowserUrl {
+  url: string;
+  /** Undefined when replay could repeat an OAuth callback, token, or signed URL. */
+  replayUrl?: string;
+}
+
+/**
+ * Browser URLs cross a canonical persistence and operator-display boundary.
+ * Fragments never cross it. Known credential-bearing query values are visibly
+ * redacted, and any URL containing one becomes non-replayable.
+ */
+export function redactBrowserUrl(value: string): RedactedBrowserUrl {
+  if (value.length > MAX_NAVIGATION_URL) return { url: "redacted-browser-url" };
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { url: "invalid-browser-url" };
+  }
+  if (parsed.protocol === "about:" && parsed.pathname === "blank") return { url: "about:blank", replayUrl: "about:blank" };
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return { url: `${parsed.protocol}redacted` };
+  parsed.hash = "";
+  let sensitive = false;
+  for (const name of [...parsed.searchParams.keys()]) {
+    if (!isSensitiveQueryName(name)) continue;
+    sensitive = true;
+    parsed.searchParams.set(name, "[REDACTED]");
+  }
+  return {
+    url: parsed.toString(),
+    ...(!sensitive ? { replayUrl: parsed.toString() } : {}),
+  };
+}
+
+function redactBrowserText(value: string): string {
+  return value.replace(/https?:\/\/[^\s<>"']+/gi, (candidate) => redactBrowserUrl(candidate).url);
+}
+
+function redactPageInfo(info: BrowserPageInfo): BrowserPageInfo & { replayUrl?: string } {
+  const redacted = redactBrowserUrl(info.url);
+  return { url: redacted.url, title: redactBrowserText(info.title), ...(redacted.replayUrl ? { replayUrl: redacted.replayUrl } : {}) };
+}
+
+function redactSnapshot(snapshot: string): string {
+  try {
+    const parsed = JSON.parse(snapshot) as { url?: unknown };
+    if (typeof parsed.url === "string") parsed.url = redactBrowserUrl(parsed.url).url;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return redactBrowserText(snapshot);
+  }
+}
+
 function sameScope(dto: BrowserSessionDto, scope: BrowserScope): boolean {
   return dto.projectId === scope.projectId && dto.agentId === scope.agentId && dto.runId === scope.runId &&
     (dto.conversationId ?? "") === (scope.conversationId ?? "");
@@ -100,6 +170,7 @@ function sameScope(dto: BrowserSessionDto, scope: BrowserScope): boolean {
 
 export class BrowserSessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
+  private readonly closingDrivers = new WeakMap<BrowserDriver, Promise<void>>();
 
   constructor(
     private readonly dataDir: string,
@@ -148,16 +219,77 @@ export class BrowserSessionManager {
     return result;
   }
 
-  async open(scope: BrowserScope, url?: string): Promise<BrowserSessionDto> {
+  private async closeDriver(driver: BrowserDriver | undefined): Promise<void> {
+    if (!driver) return;
+    const inProgress = this.closingDrivers.get(driver);
+    if (inProgress) return inProgress;
+    const closing = driver.close().catch(() => undefined);
+    this.closingDrivers.set(driver, closing);
+    await closing;
+  }
+
+  private assertLifecycle(
+    scope: BrowserScope,
+    session: ManagedSession,
+    driver: BrowserDriver,
+    lifecycleEpoch: number,
+  ): void {
+    if (this.sessions.get(scope.agentId) !== session || session.driver !== driver ||
+        session.dto.status !== "ready" || session.lifecycleEpoch !== lifecycleEpoch) {
+      throw new BrowserSessionError("browser session changed while the action was running", 409);
+    }
+  }
+
+  private pageAction<T>(
+    scope: BrowserScope,
+    session: ManagedSession & { driver: BrowserDriver },
+    owner: BrowserControlOwner | undefined,
+    expectedControlEpoch: number | undefined,
+    work: (driver: BrowserDriver) => Promise<T>,
+  ): Promise<T>;
+  private pageAction<T, U>(
+    scope: BrowserScope,
+    session: ManagedSession & { driver: BrowserDriver },
+    owner: BrowserControlOwner | undefined,
+    expectedControlEpoch: number | undefined,
+    work: (driver: BrowserDriver) => Promise<T>,
+    commit: (result: T) => U,
+  ): Promise<U>;
+  private async pageAction<T, U>(
+    scope: BrowserScope,
+    session: ManagedSession & { driver: BrowserDriver },
+    owner: BrowserControlOwner | undefined,
+    expectedControlEpoch: number | undefined,
+    work: (driver: BrowserDriver) => Promise<T>,
+    commit?: (result: T) => U,
+  ): Promise<T | U> {
+    const driver = session.driver;
+    const lifecycleEpoch = session.lifecycleEpoch;
+    const controlEpoch = expectedControlEpoch ?? session.dto.controlEpoch;
+    return this.serialized(session, async (): Promise<T | U> => {
+      this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+      if (owner) this.assertControl(session, owner, controlEpoch);
+      const result = await work(driver);
+      this.assertLifecycle(scope, session, driver, lifecycleEpoch);
+      if (owner) this.assertControl(session, owner, controlEpoch);
+      return commit ? commit(result) : result;
+    });
+  }
+
+  open(scope: BrowserScope, url?: string): Promise<BrowserSessionDto> {
     const existing = this.sessions.get(scope.agentId);
     if (existing?.dto.status === "ready") {
       if (!sameScope(existing.dto, scope)) {
-        throw new BrowserSessionError("another run owns this agent's browser session", 409);
+        return Promise.reject(new BrowserSessionError("another run owns this agent's browser session", 409));
       }
-      if (url) await this.navigate(scope, url, "agent");
-      return publicDto(existing);
+      return url ? this.navigate(scope, url, "agent") : Promise.resolve(publicDto(existing));
     }
-    if (existing?.driver) await existing.driver.close().catch(() => undefined);
+    if (existing?.dto.status === "opening" && existing.opening) {
+      if (!sameScope(existing.dto, scope)) {
+        return Promise.reject(new BrowserSessionError("another run owns this agent's browser session", 409));
+      }
+      return existing.opening;
+    }
     const now = new Date().toISOString();
     const session: ManagedSession = {
       dto: {
@@ -171,40 +303,65 @@ export class BrowserSessionManager {
         updatedAt: now,
       },
       queue: Promise.resolve(),
+      lifecycleEpoch: 1,
     };
     this.sessions.set(scope.agentId, session);
     this.lifecycle(session, "open_requested");
-    try {
-      session.driver = await this.createDriver(session.dto.id, (level, text) => {
-        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
-        this.emit(scope, {
-          type: "browser_console",
-          sessionId: session.dto.id,
-          executionId: scope.runId,
-          level,
-          text: text.slice(0, MAX_CONSOLE_TEXT),
+    const opening = (async () => {
+      let createdDriver: BrowserDriver | undefined;
+      try {
+        await this.closeDriver(existing?.driver);
+        createdDriver = await this.createDriver(session.dto.id, (level, text) => {
+          if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
+          this.emit(scope, {
+            type: "browser_console",
+            sessionId: session.dto.id,
+            executionId: scope.runId,
+            level,
+            text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
+          });
         });
-      });
-      if (url) await session.driver.navigate(validateBrowserUrl(url));
-      const info = await session.driver.pageInfo();
-      session.dto = { ...session.dto, status: "ready", ...info, updatedAt: new Date().toISOString() };
-      this.lifecycle(session, "opened");
-      return publicDto(session);
-    } catch (error) {
-      const failure = error instanceof Error ? error.message : String(error);
-      await session.driver?.close().catch(() => undefined);
-      session.driver = undefined;
-      session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
-      this.lifecycle(session, failure);
-      throw new BrowserSessionError(failure, 503);
-    }
+        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
+          throw new BrowserSessionError("browser session closed while it was opening", 409);
+        }
+        session.driver = createdDriver;
+        if (url) await createdDriver.navigate(validateBrowserUrl(url));
+        if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
+          throw new BrowserSessionError("browser session closed while it was opening", 409);
+        }
+        const info = redactPageInfo(await createdDriver.pageInfo());
+        if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
+          throw new BrowserSessionError("browser session closed while it was opening", 409);
+        }
+        session.replayUrl = info.replayUrl;
+        session.dto = { ...session.dto, status: "ready", url: info.url, title: info.title, updatedAt: new Date().toISOString() };
+        this.lifecycle(session, "opened");
+        return publicDto(session);
+      } catch (error) {
+        await this.closeDriver(createdDriver);
+        if (session.driver === createdDriver) session.driver = undefined;
+        const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
+        if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
+          session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
+          this.lifecycle(session, failure);
+        }
+        if (error instanceof BrowserSessionError) throw error;
+        throw new BrowserSessionError(failure, 503);
+      } finally {
+        session.opening = undefined;
+      }
+    })();
+    session.opening = opening;
+    return opening;
   }
 
   async reconnect(scope: BrowserScope): Promise<BrowserSessionDto> {
     const session = this.owned(scope);
-    const previousUrl = session.dto.url;
+    if (session.dto.status === "opening" && session.opening) return session.opening;
+    const previousUrl = session.replayUrl;
     const previousDriver = session.driver;
     session.driver = undefined;
+    session.lifecycleEpoch += 1;
     session.dto = {
       ...session.dto,
       status: "opening",
@@ -216,32 +373,55 @@ export class BrowserSessionManager {
     session.lastFrame = undefined;
     session.frameCapture = undefined;
     this.lifecycle(session, "reconnect_requested");
-    try {
-      // Fence new commands before waiting for an in-flight command to settle,
-      // then replace the process. This keeps reconnect from racing a frame or
-      // input request issued by another tab.
-      await session.queue.catch(() => undefined);
-      await previousDriver?.close().catch(() => undefined);
-      session.driver = await this.createDriver(session.dto.id, (level, text) => {
-        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
-        this.emit(scope, {
-          type: "browser_console", sessionId: session.dto.id, executionId: scope.runId,
-          level, text: text.slice(0, MAX_CONSOLE_TEXT),
+    const reconnecting = (async () => {
+      let createdDriver: BrowserDriver | undefined;
+      try {
+        // The epoch/status fence rejects completion from the old driver before
+        // we wait for its queued command and replace the process.
+        await session.queue.catch(() => undefined);
+        await this.closeDriver(previousDriver);
+        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
+          throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
+        }
+        createdDriver = await this.createDriver(session.dto.id, (level, text) => {
+          if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
+          this.emit(scope, {
+            type: "browser_console", sessionId: session.dto.id, executionId: scope.runId,
+            level, text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
+          });
         });
-      });
-      if (previousUrl && previousUrl !== "about:blank") await session.driver.navigate(validateBrowserUrl(previousUrl));
-      const info = await session.driver.pageInfo();
-      session.dto = { ...session.dto, status: "ready", ...info, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
-      this.lifecycle(session, "reconnected");
-      return publicDto(session);
-    } catch (error) {
-      const failure = error instanceof Error ? error.message : String(error);
-      await session.driver?.close().catch(() => undefined);
-      session.driver = undefined;
-      session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
-      this.lifecycle(session, failure);
-      throw new BrowserSessionError(failure, 503);
-    }
+        if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
+          throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
+        }
+        session.driver = createdDriver;
+        if (previousUrl && previousUrl !== "about:blank") await createdDriver.navigate(validateBrowserUrl(previousUrl));
+        const info = redactPageInfo(await createdDriver.pageInfo());
+        if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
+          throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
+        }
+        session.replayUrl = info.replayUrl;
+        session.dto = {
+          ...session.dto, status: "ready", url: info.url, title: info.title,
+          frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString(),
+        };
+        this.lifecycle(session, "reconnected");
+        return publicDto(session);
+      } catch (error) {
+        await this.closeDriver(createdDriver);
+        if (session.driver === createdDriver) session.driver = undefined;
+        const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
+        if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
+          session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
+          this.lifecycle(session, failure);
+        }
+        if (error instanceof BrowserSessionError) throw error;
+        throw new BrowserSessionError(failure, 503);
+      } finally {
+        session.opening = undefined;
+      }
+    })();
+    session.opening = reconnecting;
+    return reconnecting;
   }
 
   async setControl(scope: BrowserScope, owner: BrowserControlOwner, expectedEpoch?: number): Promise<BrowserSessionDto> {
@@ -249,18 +429,23 @@ export class BrowserSessionManager {
     if (expectedEpoch !== undefined && expectedEpoch !== session.dto.controlEpoch) {
       throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
     }
-    if (session.dto.controlOwner !== owner) {
-      session.dto = {
-        ...session.dto, controlOwner: owner, controlEpoch: session.dto.controlEpoch + 1,
-        updatedAt: new Date().toISOString(),
-      };
-      this.emit(scope, {
-        type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
-        actor: owner, action: "control", summary: `${owner} took browser control`, url: session.dto.url,
-      });
-      this.lifecycle(session, "control_changed");
-    }
-    return publicDto(session);
+    return this.pageAction(scope, session, undefined, undefined, async () => {
+      if (expectedEpoch !== undefined && expectedEpoch !== session.dto.controlEpoch) {
+        throw new BrowserSessionError("browser control changed in another tab; refresh before interacting", 409);
+      }
+      if (session.dto.controlOwner !== owner) {
+        session.dto = {
+          ...session.dto, controlOwner: owner, controlEpoch: session.dto.controlEpoch + 1,
+          updatedAt: new Date().toISOString(),
+        };
+        this.emit(scope, {
+          type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
+          actor: owner, action: "control", summary: `${owner} took browser control`, url: session.dto.url,
+        });
+        this.lifecycle(session, "control_changed");
+      }
+      return publicDto(session);
+    });
   }
 
   private assertControl(session: ManagedSession, owner: BrowserControlOwner, expectedEpoch?: number): void {
@@ -276,8 +461,10 @@ export class BrowserSessionManager {
     if (session.dto.status !== "ready" || !session.driver) {
       throw new BrowserSessionError("browser session closed while the action was running", 409);
     }
+    const safe = redactPageInfo(info);
+    session.replayUrl = safe.replayUrl;
     session.dto = {
-      ...session.dto, ...info, frameRevision: session.dto.frameRevision + 1,
+      ...session.dto, url: safe.url, title: safe.title, frameRevision: session.dto.frameRevision + 1,
       updatedAt: new Date().toISOString(),
     };
     session.lastFrame = undefined;
@@ -287,89 +474,95 @@ export class BrowserSessionManager {
     const session = this.ready(scope);
     this.assertControl(session, owner);
     const target = validateBrowserUrl(url);
-    const info = await this.serialized(session, () => session.driver.navigate(target));
-    this.updateInfo(session, info);
-    this.emit(scope, {
-      type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
-      actor: owner, action: "navigate", summary: `navigated to ${info.url}`, url: info.url,
+    return this.pageAction(scope, session, owner, undefined, (driver) => driver.navigate(target), (info) => {
+      this.updateInfo(session, info);
+      this.emit(scope, {
+        type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
+        actor: owner, action: "navigate", summary: `navigated to ${session.dto.url}`, url: session.dto.url,
+      });
+      this.lifecycle(session, "navigated");
+      return publicDto(session);
     });
-    this.lifecycle(session, "navigated");
-    return publicDto(session);
   }
 
   async inspect(scope: BrowserScope): Promise<string> {
     const session = this.ready(scope);
-    const { snapshot, info } = await this.serialized(session, async () => ({
-      snapshot: await session.driver.inspect(),
-      info: await session.driver.pageInfo(),
-    }));
-    this.updateInfo(session, info);
-    this.emit(scope, {
-      type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
-      actor: "agent", action: "inspect", summary: `inspected ${info.url}`, url: info.url,
-    });
-    return snapshot.slice(0, MAX_SNAPSHOT_TEXT);
+    return this.pageAction(scope, session, undefined, undefined, async (driver) => ({
+      snapshot: await driver.inspect(),
+      info: await driver.pageInfo(),
+    }), ({ snapshot, info }) => {
+      this.updateInfo(session, info);
+      this.emit(scope, {
+        type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
+        actor: "agent", action: "inspect", summary: `inspected ${session.dto.url}`, url: session.dto.url,
+      });
+      return { snapshot: redactSnapshot(snapshot), info };
+    }).then(({ snapshot }) => snapshot.slice(0, MAX_SNAPSHOT_TEXT));
   }
 
   async act(scope: BrowserScope, input: { action?: unknown; selector?: unknown; text?: unknown; key?: unknown }): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
     this.assertControl(session, "agent");
     const action = input.action;
-    let info: BrowserPageInfo;
+    let work: (driver: BrowserDriver) => Promise<BrowserPageInfo>;
     let summary: string;
     if (action === "click" && typeof input.selector === "string" && input.selector.length > 0 && input.selector.length <= MAX_SELECTOR_TEXT) {
-      info = await this.serialized(session, () => session.driver.click(input.selector as string));
+      work = (driver) => driver.click(input.selector as string);
       summary = `clicked ${input.selector}`;
     } else if (action === "fill" && typeof input.selector === "string" && input.selector.length > 0 && input.selector.length <= MAX_SELECTOR_TEXT && typeof input.text === "string") {
       if (input.text.length > 4_000) throw new BrowserSessionError("browser fill text exceeds 4000 characters");
-      info = await this.serialized(session, () => session.driver.fill(input.selector as string, input.text as string));
+      work = (driver) => driver.fill(input.selector as string, input.text as string);
       summary = `filled ${input.selector}`;
     } else if (action === "key" && typeof input.key === "string" && input.key.length > 0 && input.key.length <= 40) {
-      info = await this.serialized(session, () => session.driver.key(input.key as string));
+      work = (driver) => driver.key(input.key as string);
       summary = `pressed ${input.key}`;
     } else {
       throw new BrowserSessionError("browser action requires click(selector), fill(selector,text), or key(key)");
     }
-    this.updateInfo(session, info);
-    this.emit(scope, {
-      type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
-      actor: "agent", action: action === "fill" ? "type" : action, summary, url: info.url,
+    return this.pageAction(scope, session, "agent", undefined, work, (info) => {
+      this.updateInfo(session, info);
+      this.emit(scope, {
+        type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
+        actor: "agent", action: action === "fill" ? "type" : action, summary, url: session.dto.url,
+      });
+      return publicDto(session);
     });
-    return publicDto(session);
   }
 
   async operatorInput(scope: BrowserScope, input: BrowserOperatorInputRequest): Promise<BrowserSessionDto> {
     const session = this.ready(scope);
     this.assertControl(session, "operator", input.expectedControlEpoch);
-    let info: BrowserPageInfo;
+    let work: (driver: BrowserDriver) => Promise<BrowserPageInfo>;
     let summary: string;
     if (input.kind === "click") {
       if (!Number.isFinite(input.x) || !Number.isFinite(input.y) || input.x < 0 || input.y < 0 || input.x > VIEWPORT.width || input.y > VIEWPORT.height) {
         throw new BrowserSessionError("browser click coordinates are outside the viewport");
       }
-      info = await this.serialized(session, () => session.driver.pointer(input.x, input.y));
+      work = (driver) => driver.pointer(input.x, input.y);
       summary = `clicked viewport at ${Math.round(input.x)},${Math.round(input.y)}`;
     } else if (input.kind === "type") {
       if (!input.text || input.text.length > 4_000) throw new BrowserSessionError("browser type text must contain 1 to 4000 characters");
-      info = await this.serialized(session, () => session.driver.type(input.text));
+      work = (driver) => driver.type(input.text);
       summary = "typed into the focused page control";
     } else if (input.kind === "key") {
       if (!input.key || input.key.length > 40) throw new BrowserSessionError("browser key is invalid");
-      info = await this.serialized(session, () => session.driver.key(input.key));
+      work = (driver) => driver.key(input.key);
       summary = `pressed ${input.key}`;
     } else {
       if (![input.deltaX, input.deltaY].every(Number.isFinite) || Math.abs(input.deltaX) > 4_000 || Math.abs(input.deltaY) > 4_000) {
         throw new BrowserSessionError("browser scroll delta is invalid");
       }
-      info = await this.serialized(session, () => session.driver.scroll(input.deltaX, input.deltaY));
+      work = (driver) => driver.scroll(input.deltaX, input.deltaY);
       summary = `scrolled viewport by ${Math.round(input.deltaX)},${Math.round(input.deltaY)}`;
     }
-    this.updateInfo(session, info);
-    this.emit(scope, {
-      type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
-      actor: "operator", action: input.kind, summary, url: info.url,
+    return this.pageAction(scope, session, "operator", input.expectedControlEpoch, work, (info) => {
+      this.updateInfo(session, info);
+      this.emit(scope, {
+        type: "browser_action", sessionId: session.dto.id, executionId: scope.runId,
+        actor: "operator", action: input.kind, summary, url: session.dto.url,
+      });
+      return publicDto(session);
     });
-    return publicDto(session);
   }
 
   async captureFrame(scope: BrowserScope): Promise<{ body: Buffer; revision: number }> {
@@ -378,8 +571,7 @@ export class BrowserSessionManager {
       return { body: session.lastFrame.body, revision: session.lastFrame.revision };
     }
     if (session.frameCapture) return session.frameCapture;
-    session.frameCapture = this.serialized(session, () => session.driver.capture()).then((body) => {
-      if (session.dto.status !== "ready" || !session.driver) throw new BrowserSessionError("browser session closed while capturing", 409);
+    session.frameCapture = this.pageAction(scope, session, undefined, undefined, (driver) => driver.capture(), (body) => {
       if (!body.length || body.length > MAX_FRAME_BYTES) throw new BrowserSessionError("browser frame exceeds the 16 MiB limit", 503);
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
       session.lastFrame = { body, revision: session.dto.frameRevision, capturedAt: Date.now() };
@@ -391,15 +583,16 @@ export class BrowserSessionManager {
   async captureArtifact(scope: BrowserScope): Promise<{ path: string; width: number; height: number }> {
     const session = this.ready(scope);
     this.assertControl(session, "agent");
-    const body = await this.serialized(session, () => session.driver.capture());
-    if (session.dto.status !== "ready" || !session.driver) throw new BrowserSessionError("browser session closed while capturing", 409);
-    if (!body.length || body.length > MAX_FRAME_BYTES) throw new BrowserSessionError("browser screenshot exceeds the 16 MiB limit", 503);
+    const body = await this.pageAction(scope, session, "agent", undefined, (driver) => driver.capture(), (captured) => {
+      if (!captured.length || captured.length > MAX_FRAME_BYTES) throw new BrowserSessionError("browser screenshot exceeds the 16 MiB limit", 503);
+      session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
+      return captured;
+    });
     const relative = path.posix.join("browser", `${session.dto.id}-${Date.now()}-${randomUUID()}.png`);
     const directory = artifactsDir(this.dataDir, scope.projectId, scope.agentId);
     const file = path.join(directory, ...relative.split("/"));
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await fs.writeFile(file, body, { mode: 0o600, flag: "wx" });
-    session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
     this.emit(scope, {
       type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.runId,
       path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
@@ -412,13 +605,16 @@ export class BrowserSessionManager {
     if (session.dto.status === "closed") return publicDto(session);
     const driver = session.driver;
     session.driver = undefined;
+    session.lifecycleEpoch += 1;
+    session.replayUrl = undefined;
     session.lastFrame = undefined;
+    session.frameCapture = undefined;
     session.dto = {
       ...session.dto, status: "closed", controlEpoch: session.dto.controlEpoch + 1,
       updatedAt: new Date().toISOString(),
     };
     this.lifecycle(session, reason);
-    await driver?.close().catch(() => undefined);
+    await this.closeDriver(driver);
     return publicDto(session);
   }
 
@@ -440,6 +636,23 @@ interface CdpReply {
   result?: Record<string, unknown>;
   error?: { message?: string };
   sessionId?: string;
+}
+
+async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise<boolean>((resolve) => {
+    const onExit = () => { clearTimeout(timer); resolve(true); };
+    const timer = setTimeout(() => { child.off("exit", onExit); resolve(false); }, timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function terminateBrowserProcess(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, 2_000)) return;
+  child.kill("SIGKILL");
+  await waitForChildExit(child, 2_000);
 }
 
 class CdpConnection {
@@ -568,7 +781,7 @@ class ChromeCdpDriver implements BrowserDriver {
       ]);
       return driver;
     } catch (error) {
-      if (child.exitCode === null) child.kill("SIGKILL");
+      await terminateBrowserProcess(child);
       await fs.rm(profileDir, { recursive: true, force: true });
       throw error;
     }
@@ -668,13 +881,7 @@ class ChromeCdpDriver implements BrowserDriver {
 
   async close(): Promise<void> {
     await this.connection.send("Browser.close").catch(() => undefined);
-    if (this.child.exitCode === null) {
-      this.child.kill("SIGTERM");
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => { this.child.kill("SIGKILL"); resolve(); }, 2_000);
-        this.child.once("exit", () => { clearTimeout(timer); resolve(); });
-      });
-    }
+    await terminateBrowserProcess(this.child);
     await fs.rm(this.profileDir, { recursive: true, force: true });
   }
 }
