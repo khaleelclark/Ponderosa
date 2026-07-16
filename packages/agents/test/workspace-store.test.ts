@@ -45,4 +45,24 @@ describe("WorkspaceStore canonical replay", () => {
     store.deletePushSubscription("phone");
     expect(new WorkspaceStore(dir).listPushSubscriptions()).toEqual([]);
   });
+
+  it("persists one push delivery per subscribed endpoint and converges read state after restart", () => {
+    const { dir, store } = fixture();
+    const first = store.putPushSubscription({ deviceId: "tab-a", endpoint: "https://push.example/device", expirationTime: null, keys: { p256dh: "one", auth: "auth" } });
+    expect(store.putPushSubscription({ deviceId: "tab-a", endpoint: first.endpoint, expirationTime: null, keys: first.keys })).toEqual(first);
+    // Clearing local storage can create a new device ID, but the endpoint still
+    // identifies one browser subscription and must not receive duplicates.
+    store.putPushSubscription({ deviceId: "tab-b", endpoint: first.endpoint, expirationTime: null, keys: first.keys });
+    expect(store.listPushSubscriptions().map((item) => item.deviceId)).toEqual(["tab-b"]);
+
+    const notification = store.createNotification({ projectId: "project", conversationId: "chat", communicationEventId: "message", kind: "direct_responses", title: "Agent", body: "Done" }, true);
+    expect(store.duePushDeliveries()).toHaveLength(1);
+    store.updatePushDelivery({ notificationId: notification.id, deviceId: "tab-b", status: "delivered", deliveredAt: new Date().toISOString() });
+    store.readConversation("chat");
+
+    const restarted = new WorkspaceStore(dir);
+    expect(restarted.duePushDeliveries()).toEqual([]);
+    expect(restarted.listPushDeliveries()).toEqual([expect.objectContaining({ notificationId: notification.id, deviceId: "tab-b", status: "delivered", attempts: 1 })]);
+    expect(restarted.listNotifications()[0]?.readAt).toBeTruthy();
+  });
 });

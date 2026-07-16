@@ -144,7 +144,8 @@ export type WorkspaceEvent =
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
-  | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" };
+  | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" }
+  | { type: "push_delivery_changed"; notificationId: string; deviceId: string; action: "delivered" | "retry_scheduled" | "abandoned" };
 
 export interface WebPushSubscriptionDto {
   deviceId: string;
@@ -156,7 +157,13 @@ export interface WebPushSubscriptionDto {
 
 export interface WebPushStatusDto {
   configured: boolean;
+  configuration: "active" | "missing" | "invalid";
   publicKey?: string;
+  /** Safe operator-facing diagnostic; never contains key material. */
+  detail?: string;
+  setupCommand?: string;
+  /** Present when a device ID was supplied to the status request. */
+  deviceRegistered?: boolean;
 }
 
 export interface WorkspaceEventEnvelope {

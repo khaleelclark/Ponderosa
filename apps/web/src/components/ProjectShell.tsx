@@ -207,6 +207,7 @@ export function ProjectShell({
       <ConversationView
         key={route.conversationId}
         conversationId={route.conversationId}
+        focusMessageId={route.messageId}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={() => capabilitiesQuery.refetch()}

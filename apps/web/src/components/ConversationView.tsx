@@ -255,6 +255,7 @@ export function TeamCollaborationComposer({
 
 export function ConversationView({
   conversationId,
+  focusMessageId,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -266,6 +267,7 @@ export function ConversationView({
   onDeleted,
 }: {
   conversationId: string;
+  focusMessageId?: string;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(): Promise<unknown> | unknown;
@@ -294,6 +296,18 @@ export function ConversationView({
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!focusMessageId) return;
+    const message = detailQuery.data?.messages.find((candidate) => candidate.communicationEventId === focusMessageId);
+    if (!message) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById(`master-message-${message.id}`);
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      target?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [detailQuery.data?.messages, focusMessageId]);
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
   const [stoppedNotice, setStoppedNotice] = useState<string>();

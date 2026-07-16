@@ -17,13 +17,14 @@ export type Route =
   | { kind: "projects" }
   | { kind: "allAgents" }
   | { kind: "project"; projectId: string }
-  | { kind: "conversation"; projectId: string; conversationId: string }
+  | { kind: "conversation"; projectId: string; conversationId: string; messageId?: string }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
 
-export function parseRoute(pathname: string): Route {
+export function parseRoute(input: string): Route {
+  const [pathname = "/", query = ""] = input.split("?", 2);
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
@@ -32,7 +33,8 @@ export function parseRoute(pathname: string): Route {
   }
   const projectId = decodeURIComponent(parts[1]);
   if (parts[2] === "chats" && parts[3]) {
-    return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]) };
+    const messageId = new URLSearchParams(query).get("message")?.trim();
+    return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]), ...(messageId ? { messageId } : {}) };
   }
   if (parts[2] === "agents" && parts[3]) {
     return { kind: "agent", projectId, agentId: decodeURIComponent(parts[3]) };
@@ -52,7 +54,7 @@ export function routeToPath(route: Route): string {
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
     case "conversation":
-      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}`;
+      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${route.messageId ? `?message=${encodeURIComponent(route.messageId)}` : ""}`;
     case "agents":
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
     case "agent":
@@ -86,17 +88,17 @@ export function useRoute(): {
   route: Route;
   navigate(route: Route, options?: { replace?: boolean }): void;
 } {
-  const [route, setRoute] = useState<Route>(() => parseRoute(window.location.pathname));
+  const [route, setRoute] = useState<Route>(() => parseRoute(`${window.location.pathname}${window.location.search}`));
 
   useEffect(() => {
-    const onPop = () => setRoute(parseRoute(window.location.pathname));
+    const onPop = () => setRoute(parseRoute(`${window.location.pathname}${window.location.search}`));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const navigate = useCallback((next: Route, options?: { replace?: boolean }) => {
     const path = routeToPath(next);
-    if (path === window.location.pathname) {
+    if (path === `${window.location.pathname}${window.location.search}`) {
       setRoute(next);
       return;
     }

@@ -184,7 +184,7 @@ export const realApi: PonderosaApi = {
   updateWorkspacePreferences(request) { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
   listNotifications() { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
   async clearConversationNotifications(conversationId) { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
-  getWebPushStatus() { return requestJson("/api/push/status"); },
+  getWebPushStatus(deviceId) { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
   async upsertWebPushSubscription(subscription) {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(subscription.deviceId)}`, { method: "PUT", body: JSON.stringify(subscription) });
   },

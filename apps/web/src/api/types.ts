@@ -126,7 +126,7 @@ export interface PonderosaApi {
   updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto>;
   listNotifications(): Promise<WorkspaceNotificationDto[]>;
   clearConversationNotifications(conversationId: string): Promise<void>;
-  getWebPushStatus(): Promise<WebPushStatusDto>;
+  getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto>;
   upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void>;
   deleteWebPushSubscription(deviceId: string): Promise<void>;
   sendCollaborationMessage(conversationId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse>;

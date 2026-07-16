@@ -16,17 +16,19 @@ depend on Tailscale.
 
 ## Enable browser push notifications
 
-Generate a VAPID keypair as the same login user that runs Ponderosa:
+After the build, initialize VAPID and restart the service with one command as
+the same login user that runs Ponderosa:
 
 ```sh
-pnpm --filter @ponderosa/server push:configure
-sudo systemctl restart ponderosa
+pnpm --filter @ponderosa/server push:configure && sudo systemctl restart ponderosa
 ```
 
 The command creates `~/.config/ponderosa/push.env` with mode `0600`. The systemd
 unit loads that file, while the leading `-` on `EnvironmentFile` keeps Web Push
 optional. The private key stays outside the repository and must not be logged or
-committed.
+committed. Its parent directory is forced to mode `0700`; the initializer refuses
+to overwrite an existing keypair so reconnects and upgrades cannot silently
+invalidate active browser subscriptions.
 
 The default VAPID subject is `mailto:admin@localhost`. To identify a real operator
 contact, pass an output path and subject explicitly:
@@ -45,5 +47,8 @@ private key:
 curl -sS http://127.0.0.1:8787/api/push/status
 ```
 
-The response should contain `"configured":true` and the public key. The browser
-can then request notification permission and register its push subscription.
+The response should contain `"configured":true`, `"configuration":"active"`,
+and the public key. `missing` includes the safe setup command; `invalid` means the
+host file is incomplete or contains unusable VAPID material. The browser settings
+screen separately reports unsupported browsers, insecure origins, default or
+denied permission, subscription failure, and an active device subscription.
