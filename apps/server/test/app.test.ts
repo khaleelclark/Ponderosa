@@ -3387,6 +3387,30 @@ describe("server chunk F", () => {
     await app.close();
   }, 10000);
 
+  it("resets an ahead Agent cursor and announces the durable high-water mark", async () => {
+    const { app, agent } = await createProjectAndAgent();
+    store.appendEvent(agent.id, { type: "error", message: "durable" });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("no server address");
+    const abort = new AbortController();
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/agents/${agent.id}/stream?lastEventId=999999`, { signal: abort.signal });
+    const reader = response.body!.getReader();
+    let chunk = "";
+    for (let index = 0; index < 10 && !chunk.includes("id: 1"); index += 1) {
+      const read = await reader.read();
+      chunk += new TextDecoder().decode(read.value);
+    }
+    abort.abort();
+    expect(chunk).toContain("event: agent_status");
+    expect(chunk).toContain(`\"agentId\":\"${agent.id}\"`);
+    expect(chunk).toContain('"cursor":1');
+    expect(chunk).toContain('"reset":true');
+    expect(chunk).toContain("id: 1");
+    expect(chunk).toContain('"replayed":true');
+    await app.close();
+  }, 10000);
+
   it("validates individual reply targets and sends compact quoted context", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Original question" } });

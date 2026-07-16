@@ -30,12 +30,20 @@ export interface SseEventEnvelope {
   replayed?: boolean;
 }
 
+/** Durable Agent-stream identity and high-water mark, sent before replay. */
+export interface AgentStreamStatusDto {
+  agentId: string;
+  instanceId: string;
+  cursor: number;
+  reset: boolean;
+}
+
 /**
  * The named SSE event types the server sends. `event: message` carries an
  * {@link SseEventEnvelope}; `event: heartbeat` is a periodic keep-alive with no
  * meaningful payload; `event: done` signals the run ended (client may stop tailing).
  */
-export type SseEventName = "message" | "heartbeat" | "done";
+export type SseEventName = "message" | "agent_status" | "heartbeat" | "done";
 
 /** The keep-alive payload (SPEC §8: heartbeats keep phone connections warm). */
 export interface SseHeartbeat {

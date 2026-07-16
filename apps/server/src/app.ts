@@ -5030,7 +5030,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const lastEventId = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
       const sinceSeq = Number(Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
-      const replayFrom = Number.isFinite(sinceSeq) ? sinceSeq : 0;
+      const requestedCursor = Number.isSafeInteger(sinceSeq) && sinceSeq >= 0 ? sinceSeq : 0;
+      const highWaterMark = store.lastSeqOf(request.params.id);
+      const reset = requestedCursor > highWaterMark;
+      const replayFrom = reset ? 0 : requestedCursor;
 
       reply.hijack();
       reply.raw.writeHead(200, {
@@ -5039,6 +5042,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         connection: "keep-alive",
         "x-accel-buffering": "no",
       });
+      writeSse(reply.raw, "agent_status", undefined, {
+        agentId: request.params.id,
+        instanceId: workspace.instanceId(),
+        cursor: highWaterMark,
+        reset,
+      } satisfies import("@ponderosa/core").AgentStreamStatusDto);
       writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
 
       let lastWrittenSeq = replayFrom;

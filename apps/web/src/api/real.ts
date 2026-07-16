@@ -347,6 +347,9 @@ export const realApi: PonderosaApi = {
       const envelope = JSON.parse(event.data as string) as SseEventEnvelope;
       handlers.onEvent(envelope);
     });
+    source.addEventListener("agent_status", (event) => {
+      handlers.onStatus?.(JSON.parse(event.data as string) as import("@ponderosa/core").AgentStreamStatusDto);
+    });
 
     return {
       close() {

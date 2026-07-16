@@ -24,7 +24,7 @@ describe("Communication V3 agent deletion", () => {
       agents.updateAgentConversationMemberships(recipient.id, {
         conversationIds: [chatB.id, chatA.id], primaryConversationId: chatB.id,
       });
-      const coordination = new CoordinationV3Store(agents.sqlite);
+      const coordination = new CoordinationV3Store(agents.sqlite, { maxPendingActivationsPerAgent: 1 });
       coordination.coordinate({
         projectId: project.id, conversationId: chatA.id,
         requesterAgentId: requester.id, actorScope: `agent:${requester.id}`,
@@ -32,6 +32,12 @@ describe("Communication V3 agent deletion", () => {
           { requestId: "membership-removal-request", recipientAgentId: recipient.id, lifetime: { kind: "indefinite" } },
         ],
       });
+      const trigger = coordination.recordTriggerOccurrence({
+        projectId: project.id, conversationId: chatA.id, triggerId: "membership-trigger",
+        occurrenceKey: "delivery-1", agentId: recipient.id, payload: { task: "watch" },
+        provenance: { source: "test" },
+      });
+      expect(trigger.state).toBe("pending");
 
       agents.updateAgentConversationMemberships(recipient.id, {
         conversationIds: [chatB.id], primaryConversationId: chatB.id,
@@ -46,6 +52,8 @@ describe("Communication V3 agent deletion", () => {
         SELECT COUNT(*) AS count FROM agent_activations
         WHERE agent_id = ? AND scope_key = ? AND state IN ('pending', 'retry_pending')
       `).get(recipient.id, `conversation:${chatA.id}`)).toEqual({ count: 0 });
+      expect(agents.sqlite.prepare("SELECT state FROM trigger_occurrences WHERE id = ?").get(trigger.occurrenceId))
+        .toEqual({ state: "dead_lettered" });
     } finally {
       agents.close();
     }
@@ -163,6 +171,10 @@ describe("Communication V3 agent deletion", () => {
         id: "project-delete-communication", projectId: project.id,
         sender: { kind: "user" }, intent: "broadcast", audience: { projectId: project.id }, payload: { text: "FYI" },
       });
+      coordination.recordTriggerOccurrence({
+        projectId: project.id, triggerId: "project-delete-trigger", occurrenceKey: "delivery-1",
+        agentId: recipient.id, payload: { task: "watch" }, provenance: { source: "test" },
+      });
 
       coordination.prepareProjectDeletion(project.id);
       expect(coordination.activeRunCount()).toBe(0);
@@ -174,6 +186,7 @@ describe("Communication V3 agent deletion", () => {
         "activation_outbox", "scheduler_runs", "scheduler_run_activations",
         "scheduler_prompt_injections", "scheduler_cancellation_receipts",
         "provider_operation_outbox", "coordination_idempotency", "scheduler_agent_fences",
+        "trigger_occurrences",
       ]) {
         expect(agents.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
       }

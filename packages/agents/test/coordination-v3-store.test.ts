@@ -897,6 +897,140 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.claimOutbox("dispatcher-3", 10, "2026-07-15T00:01:10.000Z", 30_000)).toHaveLength(0);
   });
 
+  it("backpressures new external intake without blocking idempotent replay", () => {
+    store = new CoordinationV3Store(opened.client, { maxPendingActivationsPerAgent: 1 });
+    const first = store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "bounded-1", kind: "ordinary", payload: { text: "one" },
+    });
+    expect(store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "bounded-1", kind: "ordinary", payload: { text: "one" },
+    })).toBe(first);
+    expect(() => store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "bounded-2", kind: "ordinary", payload: { text: "two" },
+    })).toThrow("pending activation limit reached");
+    expect(store.pendingActivations(projectId)).toHaveLength(1);
+  });
+
+  it("dead-letters malformed and repeatedly failing outbox records", () => {
+    store = new CoordinationV3Store(opened.client, { maxOutboxAttempts: 2 });
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "malformed", kind: "ordinary", payload: { text: "work" },
+    });
+    opened.client.prepare("UPDATE activation_outbox SET payload_json = '{' ").run();
+    expect(store.claimOutbox("dispatcher", 10, "2026-07-15T00:00:01.000Z")).toEqual([]);
+    expect(store.schedulerMetrics()).toMatchObject({ deadLetteredActivationOutbox: 1, pendingActivationOutbox: 0 });
+    expect(store.claimOutbox("dispatcher", 10, "2026-07-15T00:01:00.000Z")).toEqual([]);
+    opened.client.prepare("UPDATE agent_activations SET state = 'cancelled' WHERE agent_id = ?").run(recipientA);
+
+    const secondActivation = store.enqueueMessageActivation({
+      projectId, agentId: recipientB, messageId: "cancel-for-outbox", kind: "human", payload: { text: "work" },
+    });
+    expect(secondActivation).toBeTruthy();
+    const lease = store.leaseNextRun({ workerId: "worker" })!;
+    acknowledgeLease(lease);
+    store.cancelAgentRun({
+      agentId: recipientB,
+      idempotencyKey: "cancel-for-outbox",
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const first = store.claimProviderOperations("supervisor", 10, "2026-07-15T00:00:01.000Z")[0]!;
+    store.failProviderOperation(first.id, "supervisor", "offline", 1, "2026-07-15T00:00:01.000Z");
+    const second = store.claimProviderOperations("supervisor", 10, "2026-07-15T00:00:02.000Z")[0]!;
+    store.failProviderOperation(second.id, "supervisor", "still offline", 1, "2026-07-15T00:00:02.000Z");
+    expect(store.claimProviderOperations("supervisor", 10, "2026-07-15T00:00:03.000Z")).toEqual([]);
+    expect(store.schedulerMetrics()).toMatchObject({ deadLetteredProviderOperations: 1, pendingProviderOperations: 0 });
+  });
+
+  it("prunes settled operational receipts to a bounded diagnostic tail", () => {
+    for (let index = 0; index < 105; index += 1) {
+      store.enqueueMessageActivation({
+        projectId, agentId: recipientA, messageId: `settled-${index}`, kind: "ordinary", payload: { index },
+      });
+    }
+    const outbox = store.claimOutbox("dispatcher", 200);
+    expect(outbox).toHaveLength(105);
+    for (const item of outbox) store.completeOutbox(item.id, "dispatcher");
+    expect(store.pruneSettledOutboxes(100)).toEqual({ activationOutbox: 5, providerOperations: 0 });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM activation_outbox").get()).toEqual({ count: 100 });
+  });
+
+  it("persists and deduplicates trigger occurrences without creating Runs", () => {
+    const input = {
+      projectId,
+      triggerId: "github:push",
+      occurrenceKey: "delivery-1",
+      agentId: recipientA,
+      payload: { ref: "refs/heads/main" },
+      provenance: { source: "github", deliveryId: "delivery-1" },
+      now: "2026-07-15T00:00:00.000Z",
+    };
+    const first = store.recordTriggerOccurrence(input);
+    expect(first).toMatchObject({ state: "activated", replayed: false, activationId: expect.any(String) });
+    expect(store.recordTriggerOccurrence(input)).toEqual({ ...first, replayed: true });
+    expect(store.activeRunCount()).toBe(0);
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM trigger_occurrences").get()).toEqual({ count: 1 });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    expect(() => store.recordTriggerOccurrence({ ...input, payload: { ref: "different" } }))
+      .toThrow("idempotency conflict");
+  });
+
+  it("durably debounces trigger bursts while retaining their provenance", () => {
+    const base = {
+      projectId,
+      triggerId: "filesystem:changed",
+      agentId: recipientA,
+      payload: { path: "src/app.ts" },
+      provenance: { source: "filesystem", watcher: "workspace" },
+      debounceMs: 1_000,
+    };
+    expect(store.recordTriggerOccurrence({
+      ...base, occurrenceKey: "change-1", now: "2026-07-15T00:00:00.000Z",
+    }).state).toBe("activated");
+    expect(store.recordTriggerOccurrence({
+      ...base, occurrenceKey: "change-2", now: "2026-07-15T00:00:00.500Z",
+    })).toMatchObject({ state: "debounced", replayed: false });
+    expect(opened.client.prepare(`
+      SELECT state, provenance_json FROM trigger_occurrences ORDER BY occurred_at
+    `).all()).toEqual([
+      { state: "activated", provenance_json: '{"source":"filesystem","watcher":"workspace"}' },
+      { state: "debounced", provenance_json: '{"source":"filesystem","watcher":"workspace"}' },
+    ]);
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+  });
+
+  it("bounds trigger backpressure, retries, and pending intake", () => {
+    store = new CoordinationV3Store(opened.client, {
+      maxPendingActivationsPerAgent: 1,
+      maxPendingTriggerOccurrencesPerAgent: 1,
+      maxTriggerAttempts: 2,
+    });
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "occupy-capacity", kind: "ordinary", payload: {},
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const base = {
+      projectId,
+      triggerId: "timer:tick",
+      agentId: recipientA,
+      payload: { task: "refresh" },
+      provenance: { source: "timer" },
+      retryDelayMs: 1,
+    };
+    expect(store.recordTriggerOccurrence({
+      ...base, occurrenceKey: "tick-1", now: "2026-07-15T00:00:00.000Z",
+    })).toMatchObject({ state: "pending" });
+    expect(store.recordTriggerOccurrence({
+      ...base, occurrenceKey: "tick-2", now: "2026-07-15T00:00:00.000Z",
+    })).toMatchObject({ state: "dead_lettered" });
+    expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.002Z"))
+      .toEqual({ activated: 0, pending: 0, deadLettered: 1 });
+    expect(store.schedulerMetrics()).toMatchObject({
+      pendingTriggerOccurrences: 0,
+      deadLetteredTriggerOccurrences: 2,
+      activeRuns: 0,
+    });
+  });
+
   it("recovers a pre-injection lease after a process restart", () => {
     opened.client.close();
     const dir = mkdtempSync(join(tmpdir(), "ponderosa-v3-restart-"));

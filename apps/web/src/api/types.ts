@@ -52,6 +52,7 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
+  AgentStreamStatusDto,
   AgentDetailDto,
   AgentDto,
   TokenUsageScope,
@@ -79,6 +80,7 @@ export interface StreamSubscription {
 
 export interface StreamHandlers {
   onEvent(envelope: SseEventEnvelope): void;
+  onStatus?(status: AgentStreamStatusDto): void;
   onOpen?(): void;
   onError?(error: unknown): void;
 }

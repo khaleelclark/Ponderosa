@@ -1,9 +1,14 @@
 import type { SseEventEnvelope, AgentDetailDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { runningAfterAgentEvent, updateAgentDetail } from "../src/hooks/useAgentStream";
+import { reconcileAgentCursor, runningAfterAgentEvent, updateAgentDetail } from "../src/hooks/useAgentStream";
 import { formatExecutionElapsed } from "../src/components/AgentDetail";
 
 describe("updateAgentDetail", () => {
+  it("detects gaps and duplicates with a constant-memory ordered cursor", () => {
+    expect(reconcileAgentCursor(4, { seq: 4 })).toEqual({ cursor: 4, duplicate: true, gap: false });
+    expect(reconcileAgentCursor(4, { seq: 5 })).toEqual({ cursor: 5, duplicate: false, gap: false });
+    expect(reconcileAgentCursor(4, { seq: 7 })).toEqual({ cursor: 7, duplicate: false, gap: true });
+  });
   it("formats a stable stopwatch from the canonical execution start", () => {
     expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T00:02:03.000Z"))).toBe("2:03");
     expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T01:02:03.000Z"))).toBe("1:02:03");
