@@ -185,6 +185,50 @@ describe("AgentStore — V1 layout", () => {
     expect(queryPlan.some((row) => row.detail.includes("USE TEMP B-TREE FOR ORDER BY"))).toBe(false);
   });
 
+  it("rebuilds the latest passive display text after reconnect without changing message identity", () => {
+    const project = store.createProject({ label: "Edited", hostPath: "/edited" });
+    const conversationId = project.lastConversationId!;
+    const eventId = "passive-edit-event";
+    const createdAt = "2026-07-16T12:00:00.000Z";
+    store.appendCommunicationEvent({
+      eventId,
+      schemaVersion: 1,
+      projectId: project.id,
+      conversationId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Original display text",
+      createdAt,
+    });
+    store.appendCommunicationProjection(project.id, {
+      eventId,
+      surface: "conversation",
+      projectionKey: conversationId,
+      projectedAt: createdAt,
+      message: {
+        messageId: "projected-passive-edit-message",
+        role: "user",
+        renderedText: "Latest passive edit text",
+        createdAt,
+      },
+    });
+
+    expect(store.searchGlobalChats({ query: "latest passive" }).results[0]).toMatchObject({
+      messageId: "projected-passive-edit-message",
+      communicationEventId: eventId,
+      snippet: "Latest passive edit text",
+    });
+
+    store.close();
+    store = new AgentStore(dir);
+    expect(store.searchGlobalChats({ query: "latest passive" }).results[0]).toMatchObject({
+      messageId: "projected-passive-edit-message",
+      communicationEventId: eventId,
+      snippet: "Latest passive edit text",
+    });
+  });
+
   it("enforces exclusive live ownership of a data directory", () => {
     expect(() => new AgentStore(dir)).toThrow("already owned");
     store.close();
