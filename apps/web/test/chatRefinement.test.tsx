@@ -72,4 +72,24 @@ describe("chat interaction refinement", () => {
     expect(actions).toContain(".chat-message:hover");
     expect(actions).toContain(".chat-message-actions.revealed");
   });
+
+  it("keeps scrollbar geometry stable and reveals affordances for pointer, keyboard, and active scrolling", () => {
+    const styles = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
+
+    expect(styles).toContain("scrollbar-gutter: stable");
+    expect(styles).toContain(".chat-scroll-region.is-scrolling");
+    expect(styles).toContain(".chat-scroll-region:focus-within");
+    expect(styles).toContain(".chat-scroll-region:focus-visible");
+    expect(styles).not.toMatch(/\.chat-scroll-region::-[^{]+\{[^}]*width:\s*0/s);
+  });
+
+  it("uses one bounded document column and removes the nested Markdown preview scroller", () => {
+    const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
+    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+
+    expect(conversation).toContain("data-chat-column");
+    expect(conversation).toContain('width: "min(800px, 100%)"');
+    expect(panes).not.toContain('maxHeight: "60vh", overflow: "auto"');
+    expect(panes).toContain('tabIndex={0}');
+  });
 });
