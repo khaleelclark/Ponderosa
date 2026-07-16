@@ -39,13 +39,14 @@ A retained provider session already contains its organization envelope. Ponderos
 
 This reduces repeated input as the organization grows without changing delivery behavior or relying on rendered text heuristics.
 
-## Durable waiting
+## Durable coordination and waiting
 
 An agent identity should be durable, while a provider turn is temporary and an OS process is an evictable cache:
 
 `runnable -> running -> waiting(condition) -> runnable -> running -> idle`
 
-Agents have an explicit, durable wait latch supporting:
+Communication V3 represents waiting with immutable correlated Requests and a
+durable Join supporting:
 
 - all expected reports;
 - any response;
@@ -54,19 +55,27 @@ Agents have an explicit, durable wait latch supporting:
 - immediate user or blocker override; and
 - informational delivery without waking.
 
-Registering a wait atomically includes the expected stable agent IDs, condition, optional deadline, and the current delivery watermark. Each newly authored agent Collaboration delivery requires an explicit wait behavior: `queue` accumulates without advancing the latch, `report` counts its expected author once, and `interrupt` cancels the latch for urgent work. Missing behavior remains `report` only while replaying persisted legacy deliveries. User/direct signals and managed-agent failures override the latch, and deadlines resume with the reports received so far.
+Creating coordination atomically records each stable recipient Request and an
+optional `all`, `any`, or `quorum` Join. Request and Join deadlines are
+independent. Recipient terminal updates are canonical handoffs; the Join
+activates its owner exactly once when satisfied, impossible, or expired. Human
+and urgent Activations do not cancel open Joins. Explicit queued human turns
+remain FIFO one-per-Run boundaries, while passive progress and duplicate audit
+copies do not wake a provider.
 
-This lets a manager park after delegating, accumulate progress and three reports without running for each message, and synthesize once. The latch is append-only and restart-safe; reporter identities are counted once after the registration watermark. Before closing a satisfied or interrupted latch, the dispatcher persists its release cause on the fixed delivery batch, so claim rejection and process restart cannot degrade the eventual Run to a generic Collaboration wake. Agent detail exposes current progress through canonical wait-change events, and each resumed Run records its structural wake cause for diagnosis.
+This lets a manager park after delegating, accumulate progress without running
+for each message, and synthesize once. SQLite owns the restart-safe Request,
+Join, Activation, Run, lease, fence, and injection state; exact provider input
+and structural wake cause remain inspectable from the Run.
 
 ## Further strategies
 
-After accounting and waiting are trustworthy:
+Implemented foundations now include exact provider-input manifests and
+Project-owned stable artifacts with targeted retrieval. Further strategies are:
 
-1. Add prompt-segment manifests so the UI can attribute input to system policy, team directory, history, task, and artifacts.
-2. Replace repeated large payloads with canonical artifacts plus targeted retrieval and stable references.
-3. Make direct delivery to the actual consumer the default; managers synthesize and decide rather than relay routine messages.
-4. Route bounded, verifiable work to cheaper models, with explicit escalation criteria and a capable model retaining outcome ownership.
-5. Add per-agent and per-project token/cost budgets with warnings and hard opt-in limits.
-6. Benchmark organizations by quality-adjusted cost and latency across multiple tasks, not by raw token totals from one run.
+1. Make direct delivery to the actual consumer the default; managers synthesize and decide rather than relay routine messages.
+2. Route bounded, verifiable work to cheaper models, with explicit escalation criteria and a capable model retaining outcome ownership.
+3. Add per-agent and per-project token/cost budgets with warnings and hard opt-in limits.
+4. Benchmark organizations by quality-adjusted cost and latency across multiple tasks, not by raw token totals from one run.
 
 Avoid heuristic wake suppression, text-inferred scope, mutable shared blackboards, auctions, or secretly replacing an organization with one agent. Those approaches sacrifice auditability or the organizational capability being measured.

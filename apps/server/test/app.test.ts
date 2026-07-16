@@ -9,7 +9,7 @@ import { runInNewContext } from "node:vm";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
-import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 
@@ -696,6 +696,7 @@ class SteerableMockAdapter extends MockAdapter {
   interrupted = 0;
   failNextSteer = false;
   completeStartedTurns = false;
+  completeSteers = true;
   onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
   readonly queues: TestEventQueue[] = [];
 
@@ -727,8 +728,10 @@ class SteerableMockAdapter extends MockAdapter {
           this.failNextSteer = false;
           throw new Error("steering transport closed after submission");
         }
-        queue.push({ type: "text", delta: "steered result" });
-        queue.push({ type: "turn_done" });
+        if (this.completeSteers) {
+          queue.push({ type: "text", delta: "steered result" });
+          queue.push({ type: "turn_done" });
+        }
         return { status: "accepted", turnId: "persistent-turn" };
       },
       interrupt: async () => { this.interrupted += 1; },
@@ -1481,6 +1484,39 @@ describe("project lifecycle API", () => {
 });
 
 describe("persistent engine steering", () => {
+  it("fences stale message publication after an acknowledged steer", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeSteers = false;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Steering fence", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "original" } });
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "new direction" } });
+    await vi.waitFor(() => expect(persistent.steers).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const stale = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_message",
+      arguments: { intent: "direct_to_user", text: "stale answer", idempotencyKey: "stale-answer" },
+    });
+    expect(stale.success).toBe(false);
+    const rejection = JSON.parse(stale.text) as { requiredSteeringInjectionId: string };
+    expect(rejection.requiredSteeringInjectionId).toBeTruthy();
+    const current = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_message",
+      arguments: {
+        intent: "direct_to_user", text: "current answer", idempotencyKey: "current-answer",
+        steeringInjectionId: rejection.requiredSteeringInjectionId,
+      },
+    });
+    expect(current.success, current.text).toBe(true);
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
   it("surfaces uncertain delivery and lets the operator recover after the current Run", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -2013,6 +2049,28 @@ describe("server chunk F", () => {
     await unavailable.close();
   });
 
+  it("lets provider-confirmed entitlement failure override a stale login-positive probe", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Entitlement", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Claude-like", engine: "codex" });
+    adapter.failureAfterBeforeResponse = "Your organization has disabled Claude subscription access";
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Try provider" } });
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("failed");
+    expect((await app.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
+      id: "codex", authenticated: false, authDetail: expect.stringContaining("organization has disabled"),
+    }));
+    const readiness = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(readiness.statusCode).toBe(503);
+    expect(readiness.json()).toMatchObject({ runtimes: [{ id: "codex", authenticated: false }] });
+    await app.close();
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    expect((await restarted.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
+      id: "codex", authenticated: false, authDetail: expect.stringContaining("organization has disabled"),
+    }));
+    await restarted.close();
+  });
+
   it("keeps clean projects available when an older project has projection drift", async () => {
     const project = store.createProject({ label: "Drifted legacy test", hostPath: repoDir });
     vi.spyOn(store, "reconcileCommunicationEvents").mockReturnValue({
@@ -2241,6 +2299,42 @@ describe("server chunk F", () => {
     expect(deleted.statusCode).toBe(200);
     expect(deleted.json()).toEqual({ deleted: true, deletedAgentIds: [manager.id, child.id, grandchild.id] });
     expect(store.listAgents(project.id)).toEqual([]);
+    await app.close();
+  });
+
+  it("keeps Project-owned generated artifacts retrievable across rebuild and origin-Agent deletion", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Artifacts", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Artist", engine: "codex" });
+    const artifactId = randomUUID();
+    const relativePath = `generated/${artifactId}.png`;
+    const body = Buffer.from("stable generated bytes");
+    const legacyFile = artifactContentPath(dataDir, project.id, agent.id, relativePath);
+    const managedFile = managedArtifactContentPath(dataDir, project.id, artifactId);
+    mkdirSync(path.dirname(legacyFile), { recursive: true });
+    mkdirSync(path.dirname(managedFile), { recursive: true });
+    writeFileSync(legacyFile, body);
+    writeFileSync(managedFile, body);
+    const captured = store.appendEvent(agent.id, {
+      type: "generated_artifact", artifactId, executionId: "run-art", path: relativePath,
+      sourcePath: "output.png", name: "output.png", mediaType: "image/png", size: body.length,
+      visibility: "project", pinned: true,
+    });
+    store.recordProjectArtifact({
+      id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
+      executionId: "run-art", kind: "generated_file", path: relativePath, sourcePath: "output.png",
+      summary: "output.png", createdAt: captured.ts, mediaType: "image/png", size: body.length,
+      visibility: "project", pinned: true,
+    });
+
+    store.rebuildProjections();
+    expect(readFileSync(legacyFile)).toEqual(body);
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json())
+      .toContainEqual(expect.objectContaining({ id: artifactId, projectId: project.id, originAgentId: agent.id }));
+    const downloaded = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download` });
+    expect(downloaded.statusCode).toBe(200);
+    expect(downloaded.rawPayload).toEqual(body);
     await app.close();
   });
 
@@ -2731,7 +2825,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("fails closed when a submitted resume cannot prove a safe replay", async () => {
+  it("retries a provider-confirmed pre-sampling compaction failure from canonical history", async () => {
     const { app, agent } = await createProjectAndAgent();
     await app.inject({
       method: "POST",
@@ -2747,14 +2841,15 @@ describe("server chunk F", () => {
       payload: { text: "second" },
     });
     expect(second.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
-    await expect.poll(() => new CoordinationV3Store(store.sqlite).schedulerMetrics().outcomeUnknownRuns).toBe(1);
+    await waitForRun(agent.id, 2);
 
     expect(adapter.continues).toHaveLength(1);
-    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
     expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
     expect(store.readEvents(agent.id).some((item) =>
       item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
-    )).toBe(true);
+    )).toBe(false);
+    expect(new CoordinationV3Store(store.sqlite).schedulerMetrics().outcomeUnknownRuns).toBe(0);
     expect(store.resumeSessionId(agent.id)).toBe("sess-1");
     await app.close();
   });
@@ -2978,6 +3073,28 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("records Broadcast lineage for every communication present in exact provider input", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Manifest", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Room" });
+    const broadcast = appendBroadcast(store, project.id, conversation.id, "NEBULA-683 shared decision");
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Use current context", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    await waitForRun(agent.id);
+    const run = store.getRuns(agent.id)[0]!;
+    const input = store.getProviderInput(run.id, true)!;
+    expect(input.exactPrompt).toContain("NEBULA-683 shared decision");
+    expect(input.sourceManifest.historyMessageCount).toBeGreaterThan(0);
+    expect(input.sourceManifest.communicationEventIds).toContain(broadcast.communicationEventId);
+    expect(input.sourceManifest.sources).toContainEqual(expect.objectContaining({
+      kind: "communication", ref: broadcast.communicationEventId,
+    }));
+    await app.close();
+  });
+
   it("preserves accepted context cursors across a server restart", async () => {
     const firstApp = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -3020,25 +3137,49 @@ describe("server chunk F", () => {
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
     const shared = store.getConversationMessages(master.id).find((message) => message.text === "#Acadia Check the first-run path.");
-    const audit = store.getMessages(agent.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
-    expect(audit?.communicationEventId).toBe(shared?.communicationEventId);
     const eventId = shared!.communicationEventId!;
     expect(store.readCommunicationEvents(project.id).filter((event) => event.eventId === eventId)).toEqual([
       expect.objectContaining({
         schemaVersion: 2,
         sender: { kind: "user", userId: "local-operator" },
-        intent: "user_dm",
-        audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+        intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id },
       }),
     ]);
     expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId)
       .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
         ["conversation", master.id],
-        ["direct_agent_audit", agent.id],
-        ["user_inbox", "local-operator"],
       ]));
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
+    await app.close();
+  });
+
+  it("commits staged files with Agent creation and its first Activation", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Atomic first send", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Room" });
+    const upload = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/draft-attachments`,
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "text/plain", "x-ponderosa-filename": "brief.txt" },
+      payload: Buffer.from("first-turn attachment"),
+    });
+    const draft = upload.json<{ id: string }>();
+    const created = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: {
+        title: "Atomic", engine: "codex", conversationId: conversation.id,
+        initialMessage: "Read the brief", draftAttachmentIds: [draft.id],
+      },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const agent = created.json<AgentDto>();
+    await expect.poll(() => store.readEvents(agent.id).filter((event) => event.event.type === "turn_done").length, { timeout: 3_000 }).toBe(1);
+    const message = store.getConversationMessages(conversation.id).find((candidate) => candidate.text === "#Atomic Read the brief")!;
+    expect(message.attachments).toEqual([expect.objectContaining({ name: "brief.txt", state: "associated", agentId: agent.id })]);
+    expect(adapter.seeds[0]?.prompt).toContain("Attached images/assets (server-validated local files");
+    expect(adapter.seeds[0]?.prompt).toContain(message.attachments![0]!.id);
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(0);
     await app.close();
   });
 
@@ -3316,6 +3457,19 @@ describe("server chunk F", () => {
     expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.required)
       .toEqual(["updateId", "kind"]);
     expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);
+
+    const invalidDeadline = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "invalid-deadline",
+        requests: [{ requestId: "invalid-deadline-request", recipientAgentId: recipient.id, text: "Never create", lifetime: { kind: "indefinite" } }],
+        join: { id: "invalid-deadline-join", mode: "all", deadline: "2026-07-17T00:00:00.000Z" },
+      },
+    });
+    expect(invalidDeadline.success).toBe(false);
+    expect(JSON.parse(invalidDeadline.text)).toMatchObject({ error: expect.stringContaining("deadlineAt") });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_requests WHERE id = 'invalid-deadline-request'").get())
+      .toEqual({ count: 0 });
 
     const coordinated = await requesterRuntime.handleDynamicToolCall!({
       name: "ponderosa_coordinate",
@@ -4069,7 +4223,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("wakes a managed agent's direct manager when the child runtime crashes", async () => {
+  it("wakes a managed requester exactly once through its impossible Join when the child crashes", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Managed failure", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Failure supervision" });
@@ -4090,9 +4244,13 @@ describe("server chunk F", () => {
 
     await waitForRun(manager.id);
     const managerFollowUp = [...adapter.seeds, ...adapter.continues].find((turn) =>
-      turn.agentId === manager.id && turn.prompt.includes("Internal managed-agent update"));
-    expect(managerFollowUp?.prompt).toContain("Fragile worker");
-    expect(managerFollowUp?.prompt).toContain("simulated runtime failure");
+      turn.agentId === manager.id && turn.prompt.includes("coordination_join_impossible"));
+    expect(managerFollowUp?.prompt).toContain("managed:");
+    expect(managerFollowUp?.prompt).not.toContain("Internal managed-agent update");
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_join_impossible'
+    `).get(manager.id)).toEqual({ count: 1 });
     expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("simulated runtime failure") })]),
     );

@@ -14,9 +14,23 @@ The comparisons below are retained historical qualification evidence. Their
 isolated data directories, ports, feature flags, and V2 service descriptions do
 not describe the current executable product.
 
-## Current V3.1.1 integration contract
+## Current V3.1.2 integration contract
 
-V3.1.1 now treats the operational failures discovered after the original
+V3.1.2 retains the V3.1.1 reliability boundary and closes the faults found by
+the subsequent rigorous production campaign:
+
+- explicit queued human turns are leased FIFO as one Run each;
+- child cancellation settles its Request and Join instead of stranding a waiter;
+- correlated managed-child failure has one correctly scoped Join wake;
+- coordinate input is strict, and background Request cancellation is explicit;
+- acknowledged steering fences stale pre-steer message publication;
+- exact-input manifests enumerate Broadcast and coalesced communication sources;
+- provider-confirmed entitlement failure overrides credential-file readiness;
+- generated files have Project-owned durable bytes and metadata; and
+- default Project-chat Agent creation commits its first message and staged files
+  through one server command.
+
+V3.1.1 treated the operational failures discovered after the original
 qualification as one integrated reliability boundary:
 
 - deleted recipients dead-letter pending Activations instead of retrying forever;

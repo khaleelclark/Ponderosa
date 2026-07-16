@@ -70,7 +70,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Append one authorized, idempotent update to a correlated request. A terminal update is the canonical final handoff: completed, blocked, or failed requires a self-contained text result and replaces a separate ordinary report/message. Omit requestId when the current run has exactly one attached correlated request; Ponderosa resolves it authoritatively. Supply the exact requestId only when the run contains multiple correlated requests. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
+  description: "Append one authorized, idempotent update to a correlated request. A terminal update is the canonical final handoff: completed, blocked, or failed requires a self-contained text result and replaces a separate ordinary report/message. Omit requestId when the current run has exactly one attached correlated request; Ponderosa resolves it authoritatively. Supply the exact requestId when the run contains multiple attached requests. A requester may also cancel or supersede an exact outbound background request it owns from a later authoritative Run; no other historical Request mutation is allowed. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -105,6 +105,10 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         description: "Exact routing enum. Use direct_to_user for a private user reply; user_dm is not a tool value.",
       },
       text: { type: "string", minLength: 1, maxLength: 4000 },
+      steeringInjectionId: {
+        type: "string", minLength: 1,
+        description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt. Ponderosa rejects output fenced behind an acknowledged steer.",
+      },
       recipientAgentIds: {
         type: "array", minItems: 1, maxItems: 100, uniqueItems: true, items: { type: "string" },
         description: "Required for collaboration. Always an array, including one recipient.",

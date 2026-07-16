@@ -70,8 +70,9 @@ describe("V1 reliability safety net", () => {
 
     await adapter.seedStarted.promise;
     expect(store.readEvents(agent.id).map(({ event }) => event.type)).toEqual(
-      expect.arrayContaining(["user_message", "session", "text"]),
+      expect.arrayContaining(["session", "text"]),
     );
+    expect(store.getConversationMessages(master.id)).toContainEqual(expect.objectContaining({ text: "#Reliability-Agent first turn" }));
 
     const queued = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second turn" } });
     expect(queued.statusCode).toBe(202);
@@ -91,7 +92,6 @@ describe("V1 reliability safety net", () => {
       runOutput: Array<{ executionId: string; kind: string; text: string; completed: boolean }>;
     }>();
     expect(detail.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text: "first turn" }),
       expect.objectContaining({ role: "user", text: "second turn" }),
     ]));
     expect(detail.messages.some((message) => message.text === "queued turn completed")).toBe(false);

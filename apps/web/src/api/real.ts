@@ -266,6 +266,7 @@ export const realApi: PonderosaApi = {
       model: options.model,
       effort: options.effort,
       initialMessage: options.initialMessage,
+      draftAttachmentIds: options.draftAttachmentIds,
       replyToMessageId: options.replyToMessageId,
       presetId: options.presetId,
       managerAgentId: options.managerAgentId,

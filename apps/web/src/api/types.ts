@@ -75,6 +75,7 @@ export interface CreateAgentOptions {
   effort?: string;
   /** Starts the first turn as part of creation, avoiding a stranded idle agent. */
   initialMessage?: string;
+  draftAttachmentIds?: string[];
   replyToMessageId?: string;
   presetId?: string;
   managerAgentId?: string;

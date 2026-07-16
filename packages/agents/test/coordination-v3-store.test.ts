@@ -640,6 +640,21 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.runChangesScope(second.runId, recipientA)).toBe(true);
   });
 
+  it("leases explicit queued human turns FIFO as one Run each", () => {
+    for (const [index, text] of ["first", "second"].entries()) store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: `queued-${index}`, kind: "human",
+      payload: { communication: { eventId: `queued-${index}` }, dispatch: { text, activeRunDelivery: "queue" } },
+    });
+    const first = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
+    expect(first.activations).toHaveLength(1);
+    expect(first.activations[0]?.payload).toMatchObject({ dispatch: { text: "first" } });
+    acknowledgeLease(first);
+    store.completeRun(first.runId, first.fencingToken);
+    const second = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
+    expect(second.activations).toHaveLength(1);
+    expect(second.activations[0]?.payload).toMatchObject({ dispatch: { text: "second" } });
+  });
+
   it("retries only before injection and rejects stale fencing tokens", () => {
     store.enqueueMessageActivation({
       projectId, agentId: recipientA, messageId: "retry-1", kind: "ordinary", payload: { text: "Work" },
@@ -840,6 +855,25 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.claimProviderOperations("supervisor-2")).toHaveLength(0);
   });
 
+  it("settles the attached Request and reevaluates its Join when a child Run is cancelled", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "cancel-child", requests: [{
+        requestId: "cancel-child-request", recipientAgentId: recipientA, lifetime: indefinite,
+      }], join: { id: "cancel-child-join", mode: "all" },
+    });
+    const child = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(child);
+    store.cancelAgentRun({ agentId: recipientA, idempotencyKey: "cancel-child-run" });
+    expect(store.getRequest("cancel-child-request")?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'cancel-child-join'").get())
+      .toEqual({ state: "impossible" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_join_impossible'
+    `).get(requesterId)).toEqual({ count: 1 });
+  });
+
   it("rejects every provider mutation after cancellation inside the mutation transaction", () => {
     store.enqueueMessageActivation({
       projectId, agentId: recipientA, messageId: "authorize-run", kind: "human", payload: { text: "Work" },
@@ -865,7 +899,7 @@ describe("CoordinationV3Store scheduler", () => {
       .toEqual({ count: 0 });
   });
 
-  it("requires provider request updates to be attached to the current run", () => {
+  it("allows only the requester to cancel its exact historical outbound Request", () => {
     store.coordinate({
       projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}`,
       idempotencyKey: "historical-request", requests: [
@@ -878,12 +912,30 @@ describe("CoordinationV3Store scheduler", () => {
     const lease = store.leaseNextRun({ workerId: "worker-1" })!;
     acknowledgeLease(lease);
     expect(store.requestIdsAttachedToRun(lease.runId, recipientA)).toEqual([]);
-    expect(() => store.updateRequest({
+    expect(store.updateRequest({
       requestId: "historical-request", updateId: "late-cancel", kind: "cancelled",
       actor: { kind: "agent", id: recipientA },
       runAuthorization: { runId: lease.runId, agentId: recipientA, fencingToken: lease.fencingToken },
-    })).toThrow("not attached");
-    expect(store.getRequest("historical-request")?.state).toBe("open");
+    })).toMatchObject({ requestId: "historical-request", state: "cancelled" });
+    expect(store.getRequest("historical-request")?.state).toBe("cancelled");
+    expect(() => store.updateRequest({
+      requestId: "historical-request", updateId: "late-complete", kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: { runId: lease.runId, agentId: recipientA, fencingToken: lease.fencingToken },
+    })).toThrow();
+  });
+
+  it("exposes the latest acknowledged steering injection as an output fence", () => {
+    store.enqueueMessageActivation({ projectId, agentId: recipientA, messageId: "base-fence", kind: "ordinary", payload: { text: "base" } });
+    const run = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(run);
+    expect(store.latestAcknowledgedSteeringInjection(run.runId)).toBeUndefined();
+    store.enqueueMessageActivation({ projectId, agentId: recipientA, messageId: "steer-fence", kind: "human", payload: { text: "new" } });
+    const steering = store.leaseNextSteering({ workerId: "worker-1" })!;
+    store.preparePromptInjection({ injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken, prompt: "new" });
+    store.markPromptSubmitted({ injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken });
+    store.acknowledgePromptInjection({ injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken });
+    expect(store.latestAcknowledgedSteeringInjection(run.runId)).toBe(steering.injectionId);
   });
 
   it("settles pending and submitted steering distinctly during cancellation", () => {

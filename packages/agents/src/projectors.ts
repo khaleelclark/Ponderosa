@@ -273,7 +273,7 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(agentId, seq, 0), agentId, executionId: event.executionId,
+          id: event.artifactId ?? artifactId(agentId, seq, 0), agentId, executionId: event.executionId,
           kind: "generated_file", path: event.path, summary: event.name, createdAt: ts,
         },
       });

@@ -7,7 +7,7 @@ This contract is the scheduler and coordination source of truth. The executable
 request reducer lives in `packages/core/src/coordination-v3.ts`. Authorization,
 idempotency, and persistence surround that pure reducer.
 
-Communication V3.1 is unconditional. There is no executable V2 scheduler,
+Communication V3.1.2 is unconditional. There is no executable V2 scheduler,
 feature flag, migration reader, or compatibility delivery ledger. Deployments
 reset pre-cutover test data instead of replaying ambiguous scheduler state.
 
@@ -84,6 +84,10 @@ Authorization is checked before reduction:
 Request deadlines and join deadlines are independent. A request deadline moves
 only that request to `expired`, reevaluates its joins, and activates a surviving
 requester only when action is needed. Expiring a join never expires its requests.
+Unknown coordinate fields are rejected before mutation; `deadlineAt` is the only
+join-deadline field. A requester may cancel or supersede its exact open outbound
+Request from a later authoritative Run without gaining mutation authority over
+any other historical Request.
 
 ## Join state machine
 
@@ -156,6 +160,11 @@ The scheduler coalesces compatible activations once, preserves every source ID,
 enforces centralized concurrency and fairness, and assigns a monotonically
 increasing fencing token to each lease.
 
+An explicit operator-selected Queue is a semantic turn boundary. Queued human
+communications are leased FIFO, exactly one per Run; compatible background
+Activations may coalesce, but a later queued human turn is never consumed by an
+earlier completion contract.
+
 An activation is retryable on another Run only before prompt injection. Once the
 prompt was injected, the scheduler resumes that same Run when possible; otherwise
 it records `outcome_unknown`. It never blindly replays an injected prompt.
@@ -182,8 +191,14 @@ Cancellation commits before provider interruption. One SQLite transaction
 advances the fence, marks the Run cancelled, closes or releases its attached
 Activations according to their policy, persists an idempotent cancellation
 receipt, and enqueues a provider-interrupt outbox operation. Late provider output
-is rejected by the advanced fence. The interrupt is asynchronous and cannot roll
-back external effects that already occurred.
+is rejected by the advanced fence. Cancelling a child Run also terminalizes its
+attached Request, reevaluates its Join, and creates at most one requester wake.
+The interrupt is asynchronous and cannot roll back external effects that already
+occurred.
+
+After steering is acknowledged, uncorrelated output publication is fenced by the
+newest steering injection ID. A pre-steer tool call cannot publish stale output
+after newer instructions have been accepted, even if the provider emits it late.
 
 Complete communications, request reports, and join outcomes remain durable in
 SQLite. Prompt materialization is token-budgeted rather than semantically

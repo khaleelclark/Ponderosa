@@ -663,6 +663,8 @@ export interface CreateAgentRequest {
   effort?: string;
   /** Optional first turn, dispatched atomically with agent creation. */
   initialMessage?: string;
+  /** Conversation-scoped staged assets committed with the optional first turn. */
+  draftAttachmentIds?: string[];
   /** Project-chat message referenced by the optional first turn. */
   replyToMessageId?: string;
   presetId?: string;
@@ -984,7 +986,11 @@ export interface ChangedFileDto {
 /** An Artifacts-pane entry (SPEC §7 `artifacts`). Metadata only; content via :aid. */
 export interface ArtifactDto {
   id: string;
+  /** Owning Project for stable cross-Agent retrieval. */
+  projectId?: string;
   agentId: string;
+  /** Agent that created the artifact; retained after that Agent is deleted. */
+  originAgentId?: string;
   executionId?: string;
   kind: ArtifactKind;
   /** Relative path under the agent's `artifacts/` dir. */
@@ -1143,6 +1149,8 @@ export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
 interface AgentMessageRequestBase {
   text: string;
+  /** Exact prompt-injection fence supplied by the latest steering prompt. */
+  steeringInjectionId?: string;
   /** Optional long-form Markdown; `text` remains the concise scoped summary. */
   document?: { title: string; content: string; mediaType?: "text/markdown" };
   /** External sources are normalized into canonical citation metadata at the server edge. */

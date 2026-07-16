@@ -265,6 +265,8 @@ export function formatActivationPrompt(
   return [
     "Ponderosa Communication V3 activation batch.",
     `Run: ${lease.runId}`,
+    `Prompt injection fence: ${lease.injectionId}`,
+    `For any ponderosa_message sent after this prompt is acknowledged, include steeringInjectionId: ${lease.injectionId}. This prevents pre-steering output from being published as a response to newer instructions.`,
     "Handle every source exactly once. A human or urgent activation does not cancel your open joins.",
     "Ordinary runtime output is only a Work log. For a human activation, explicitly use ponderosa_message with direct_to_user, or broadcast only when its payload sets shareWithOrganization true.",
     "For an inbound request, you are its recipient. Report with ponderosa_update_request. When exactly one correlated request is attached to this run, omit requestId so Ponderosa selects it from authoritative run state; use the exact requestId only when multiple requests are attached. If the request itself asks for information or consultation, send that reply as completed. Use question only when you need a blocking follow-up from the original requester; answer is reserved for that requester replying to your question update.",

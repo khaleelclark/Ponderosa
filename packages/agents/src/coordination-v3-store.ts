@@ -366,12 +366,13 @@ function activationDefaults(kind: string, priority: number): {
 }
 
 function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map((item) => item === undefined ? "null" : stableJson(item)).join(",")}]`;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "null";
 }
 
 function payloadHash(value: unknown): string {
@@ -1392,10 +1393,18 @@ export class CoordinationV3Store {
     };
     const hash = payloadHash(replayPayload);
     return this.sqlite.transaction(() => {
+      const request = this.getRequestRow(input.requestId);
       if (input.runAuthorization) {
         this.requireAuthorizedRun(input.runAuthorization);
         const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
-        if (!attached.includes(input.requestId)) throw new Error("request is not attached to the authoritative run");
+        const requesterOwnedTerminalControl =
+          (input.kind === "cancelled" || input.kind === "superseded") &&
+          input.actor.kind === "agent" &&
+          input.actor.id === request.requester_agent_id &&
+          input.runAuthorization.agentId === request.requester_agent_id;
+        if (!attached.includes(input.requestId) && !requesterOwnedTerminalControl) {
+          throw new Error("request is not attached to the authoritative run");
+        }
       }
       const existing = this.sqlite.prepare(`
         SELECT request_id, actor_kind, actor_id, payload_hash, resulting_state, resulting_version
@@ -1417,7 +1426,6 @@ export class CoordinationV3Store {
         };
       }
 
-      const request = this.getRequestRow(input.requestId);
       this.authorizeUpdate(request, input.kind, input.actor);
       const next = reduceCoordinationRequest(
         {
@@ -1793,7 +1801,7 @@ export class CoordinationV3Store {
             SELECT 1 FROM scheduler_runs r
             WHERE r.agent_id = a.agent_id AND r.status IN ('leased', 'running')
           )
-        ORDER BY a.priority DESC, a.created_at, a.id
+        ORDER BY a.priority DESC, a.created_at, a.rowid
         LIMIT 1
       `).get(now) as { agent_id: string; project_id: string; scope_key: string } | undefined;
       if (!candidate) return undefined;
@@ -1801,7 +1809,7 @@ export class CoordinationV3Store {
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
-        ORDER BY priority DESC, created_at, id LIMIT 64
+        ORDER BY priority DESC, created_at, rowid LIMIT 64
       `).all(candidate.agent_id, candidate.scope_key, now) as ActivationRow[];
       // A new inbound request starts a fresh provider task context. Human
       // messages, join resumptions, answers, and blockers retain continuity,
@@ -1809,9 +1817,28 @@ export class CoordinationV3Store {
       // Keep the lower-priority class pending for the next authoritative Run.
       const startsFreshTask = (activation: ActivationRow) => activation.kind === "coordination_request";
       const candidateStartsFreshTask = startsFreshTask(queuedActivations[0]!);
-      const activations = queuedActivations
-        .filter((activation) => startsFreshTask(activation) === candidateStartsFreshTask)
-        .slice(0, limit);
+      const isExplicitQueuedTurn = (activation: ActivationRow): boolean => {
+        try {
+          const payload = JSON.parse(activation.payload_json) as {
+            dispatch?: { activeRunDelivery?: unknown };
+          };
+          return payload.dispatch?.activeRunDelivery === "queue";
+        } catch {
+          return false;
+        }
+      };
+      const candidateIsExplicitQueuedTurn = isExplicitQueuedTurn(queuedActivations[0]!);
+      // Queue is an operator-selected turn boundary. Attaching multiple queued
+      // turns to one Run lets a single provider response consume later work it
+      // never handled. Isolate the candidate and never pull a later queued turn
+      // into another compatible activation bundle.
+      const activations = candidateIsExplicitQueuedTurn
+        ? [queuedActivations[0]!]
+        : queuedActivations
+            .filter((activation) =>
+              !isExplicitQueuedTurn(activation) &&
+              startsFreshTask(activation) === candidateStartsFreshTask)
+            .slice(0, limit);
       if (activations.length === 0) return undefined;
       const fencingToken = this.nextFence(candidate.agent_id);
       const runId = randomUUID();
@@ -2027,6 +2054,15 @@ export class CoordinationV3Store {
       idempotencyKey: input.idempotencyKey,
       now: input.now ?? new Date().toISOString(),
     });
+  }
+
+  /** Latest provider-confirmed steering fence for host-side output publication. */
+  latestAcknowledgedSteeringInjection(runId: string): string | undefined {
+    return (this.sqlite.prepare(`
+      SELECT id FROM scheduler_prompt_injections
+      WHERE run_id = ? AND kind = 'steer' AND state = 'acknowledged'
+      ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1
+    `).get(runId) as { id: string } | undefined)?.id;
   }
 
   /** Materialize due recovery work transactionally. The recovery Activation is
@@ -2467,6 +2503,15 @@ export class CoordinationV3Store {
         UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
         WHERE run_id = ? AND state = 'submitted'
       `).run(now, now, run.id);
+      // Fencing stops future provider work but cannot prove which request-owned
+      // effects already happened. Terminalize correlated work so its no-Join
+      // requester or owning Join receives a deterministic recovery wake.
+      this.markRelatedRequestsOutcomeUnknown(
+        run.id,
+        now,
+        "run_cancelled_by_operator",
+        ["open", "in_progress", "waiting_dependency", "awaiting_answer"],
+      );
       this.sqlite.prepare(`
         INSERT INTO scheduler_cancellation_receipts (
           agent_id, idempotency_key, run_id, accepted, fencing_token, created_at

@@ -113,6 +113,7 @@ import {
 import {
   artifactsDir,
   artifactContentPath,
+  managedArtifactsLogPath,
   attachmentsDir,
   dbPath,
   eventsPath,
@@ -143,6 +144,10 @@ interface ProjectJson {
   defaultEngine: string;
   lastConversationId?: string;
 }
+
+type ManagedArtifactEvent =
+  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string } }
+  | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string };
 
 interface DataDirectoryOwnership {
   path: string;
@@ -281,6 +286,21 @@ function readJsonLines<T>(file: string): T[] {
     .split("\n")
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as T);
+}
+
+/** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
+function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
+  if (!existsSync(root)) return;
+  for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
+    const childRelative = relative ? join(relative, entry.name) : entry.name;
+    const child = join(root, childRelative);
+    if (entry.isDirectory()) {
+      pruneArtifactDirectory(root, protectedPaths, childRelative);
+      if (readdirSync(child).length === 0) rmSync(child, { recursive: false, force: true });
+    } else if (!entry.isFile() || !protectedPaths.has(childRelative)) {
+      rmSync(child, { force: true });
+    }
+  }
 }
 
 /** V1 is a destructive test-data cutover; managed source workspaces are external. */
@@ -2406,7 +2426,7 @@ export class AgentStore {
     const agent = this.getAgent(agentId);
     const generatedFiles = new Map(eventLog.flatMap((stored) =>
       stored.event.type === "generated_artifact"
-        ? [[artifactId(agentId, stored.seq, 0), stored.event] as const]
+        ? [[stored.event.artifactId ?? artifactId(agentId, stored.seq, 0), stored.event] as const]
         : [],
     ));
     const visibility = new Map<string, { visibility: "project" | "published"; pinned: boolean }>();
@@ -2461,6 +2481,47 @@ export class AgentStore {
       });
   }
 
+  /** Durable Project-owned generated-artifact catalog. */
+  getProjectArtifacts(projectId: string): ArtifactDto[] {
+    const resolved = new Map<string, ArtifactDto & { projectId: string; originAgentId: string }>();
+    for (const event of readRepairableJsonl<ManagedArtifactEvent>(
+      managedArtifactsLogPath(this.dataDir, projectId),
+      `managed artifacts for project ${projectId}`,
+    )) {
+      if (event.type === "created") resolved.set(event.artifact.id, event.artifact);
+      else {
+        const current = resolved.get(event.artifactId);
+        if (current) resolved.set(event.artifactId, { ...current, visibility: event.visibility, pinned: event.pinned });
+      }
+    }
+    return [...resolved.values()].map((artifact) => {
+      const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
+      return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
+    }).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  getProjectArtifact(projectId: string, artifactIdValue: string): ArtifactDto | undefined {
+    return this.getProjectArtifacts(projectId).find((artifact) => artifact.id === artifactIdValue);
+  }
+
+  recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
+    if (!this.getProject(artifact.projectId)) throw new Error("artifact project not found");
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [{ type: "created", artifact } satisfies ManagedArtifactEvent]);
+  }
+
+  updateProjectArtifactVisibility(
+    projectId: string,
+    artifactIdValue: string,
+    visibility: "project" | "published",
+    pinned: boolean,
+  ): ArtifactDto | undefined {
+    if (!this.getProjectArtifact(projectId, artifactIdValue)) return undefined;
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), [{
+      type: "visibility", artifactId: artifactIdValue, visibility, pinned, at: new Date().toISOString(),
+    } satisfies ManagedArtifactEvent]);
+    return this.getProjectArtifact(projectId, artifactIdValue);
+  }
+
   getGeneratedPdfPath(agentId: string, artifactIdValue: string): string | undefined {
     const stored = this.readEvents(agentId).find((candidate) =>
       artifactId(agentId, candidate.seq, 0) === artifactIdValue &&
@@ -2474,7 +2535,8 @@ export class AgentStore {
 
   getGeneratedArtifact(agentId: string, artifactIdValue: string): Extract<LogEvent, { type: "generated_artifact" }> | undefined {
     const stored = this.readEvents(agentId).find((candidate) =>
-      artifactId(agentId, candidate.seq, 0) === artifactIdValue && candidate.event.type === "generated_artifact"
+      candidate.event.type === "generated_artifact" &&
+      (candidate.event.artifactId ?? artifactId(agentId, candidate.seq, 0)) === artifactIdValue
     );
     return stored?.event.type === "generated_artifact" ? stored.event : undefined;
   }
@@ -2668,13 +2730,15 @@ export class AgentStore {
         }
 
         const logFile = eventsPath(this.dataDir, projectId, agentId);
-        rmSync(artifactsDir(this.dataDir, projectId, agentId), {
-          recursive: true,
-          force: true,
-        });
         mkdirSync(artifactsDir(this.dataDir, projectId, agentId), { recursive: true });
         if (!existsSync(logFile)) continue;
         const stored = new EventLog(logFile).readAll();
+        const protectedArtifactPaths = new Set(stored.flatMap(({ event }) =>
+          event.type === "generated_artifact" || event.type === "browser_screenshot" ? [event.path] : [],
+        ));
+        // Provider-generated bytes are authored state. Other artifact files are
+        // projections and are safely rebuilt from canonical events below.
+        pruneArtifactDirectory(artifactsDir(this.dataDir, projectId, agentId), protectedArtifactPaths);
         const ops = projectAll(agentId, stored, t.activeEngine);
         this.applyOps(agentId, projectId, ops);
       }
