@@ -411,6 +411,46 @@ export function AgentDetail({
     ? agents.find((candidate) => candidate.id === detail.agent.spawnedByAgentId)
     : undefined;
   const descendantCount = agentDescendants(detail.agent.id, agents).length;
+  const agentRuntimeControls = <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: { xs: "100%", sm: "max-content" } }}>
+    <FormControl size="small" variant="standard" disabled sx={{ minWidth: { xs: 0, sm: 105 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
+      <InputLabel id="agent-composer-engine-label">Engine</InputLabel>
+      <Select
+        labelId="agent-composer-engine-label"
+        aria-label="Engine"
+        value={engine?.id ?? ""}
+      >
+        {engine ? <MenuItem value={engine.id}>{engine.displayName}</MenuItem> : null}
+      </Select>
+    </FormControl>
+    {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 115 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
+      <InputLabel id="agent-composer-model-label">Model</InputLabel>
+      <Select
+        labelId="agent-composer-model-label"
+        aria-label="Model"
+        value={models.some((option) => option.id === model) ? model : ""}
+        onChange={(event: SelectChangeEvent) => {
+          const nextModel = event.target.value;
+          setModel(nextModel);
+          if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
+        }}
+      >
+        <MenuItem value="">Default</MenuItem>
+        {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+      </Select>
+    </FormControl> : null}
+    {efforts.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 90 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
+      <InputLabel id="agent-composer-effort-label">Effort</InputLabel>
+      <Select
+        labelId="agent-composer-effort-label"
+        aria-label="Effort"
+        value={efforts.some((option) => option.id === effort) ? effort : ""}
+        onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
+      >
+        <MenuItem value="">Default</MenuItem>
+        {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+      </Select>
+    </FormControl> : null}
+  </Stack>;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
     (text: string, files: File[]) => {
@@ -613,7 +653,9 @@ export function AgentDetail({
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
       </Box>
 
-      <BrowserPanel projectId={detail.agent.projectId} agentId={agentId} runId={runtimeActivity?.executionId} />
+      <Box sx={{ minWidth: 0 }}>
+        <BrowserPanel projectId={detail.agent.projectId} agentId={agentId} runId={runtimeActivity?.executionId} />
+      </Box>
 
       <Tabs
         aria-label="Agent details"
@@ -629,7 +671,7 @@ export function AgentDetail({
 
       <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>
 
-      <Box sx={{ minWidth: 0 }}>
+      {tab === "chat" ? <Box sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {sendMessage.isError || cancelRun.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
@@ -644,6 +686,7 @@ export function AgentDetail({
           projectId={detail.agent.projectId}
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           conversationDraftId={`agent:${agentId}`}
+          controls={agentRuntimeControls}
           disabled={sendMessage.isPending}
           running={false}
           guidance={runtimeActivity
@@ -671,7 +714,7 @@ export function AgentDetail({
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(undefined)}
         />
-      </Box>
+      </Box> : null}
 
       <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Delete agent?</DialogTitle>

@@ -1959,14 +1959,15 @@ export function Composer({
     <Paper
       elevation={3}
       sx={{
-        position: "sticky",
-        bottom: 0,
+        position: "relative",
         zIndex: 3,
         border: 1,
         borderColor: "divider",
         borderRadius: { xs: 2, sm: 2.5 },
-        width: "min(780px, 100%)",
+        width: { xs: "calc(100% - 16px)", sm: "min(780px, calc(100% - 24px))" },
         mx: "auto",
+        mt: { xs: 0.75, sm: 1 },
+        mb: { xs: 1, sm: 1.5 },
         minWidth: 0,
         maxWidth: "100%",
         overflow: "hidden",
