@@ -13,6 +13,7 @@ import {
   type CoordinationJoinState,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
+  type MessageDeliveryReceiptDto,
   type RequestLifetime,
   type DerivedAgentAvailability,
 } from "@ponderosa/core";
@@ -259,6 +260,13 @@ export interface CancellationResult {
   operationId?: number;
 }
 
+export interface SteeringRecoveryDecisionResult {
+  accepted: boolean;
+  replayed: boolean;
+  state: "waiting_for_run" | "recovery_queued" | "not_recoverable";
+  agentId?: string;
+}
+
 export interface ProviderOperation {
   id: number;
   runId: string;
@@ -480,6 +488,77 @@ export class CoordinationV3Store {
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
     } : undefined;
+  }
+
+  /** Project immutable authored messages onto mutable, per-recipient delivery
+   * evidence without rewriting the Communication or its chat projection. */
+  deliveryReceiptsForCommunication(communicationEventId: string): MessageDeliveryReceiptDto[] {
+    if (!communicationEventId.trim()) return [];
+    const activations = this.sqlite.prepare(`
+      SELECT DISTINCT activation.id, activation.agent_id, activation.state, activation.updated_at
+      FROM activation_sources source
+      JOIN runtime_communications runtime ON runtime.id = source.source_id
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      WHERE source.source_kind = 'communication'
+        AND (
+          runtime.id = ? OR
+          CASE WHEN json_valid(runtime.payload_json)
+            THEN json_extract(runtime.payload_json, '$.communication.eventId')
+            ELSE NULL
+          END = ?
+        )
+      ORDER BY activation.created_at, activation.id
+    `).all(communicationEventId, communicationEventId) as Array<{
+      id: string; agent_id: string; state: string; updated_at: string;
+    }>;
+    return activations.map((activation) => {
+      const injection = this.sqlite.prepare(`
+        SELECT injection.id, injection.kind, injection.state, injection.updated_at
+        FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+        WHERE member.value = ?
+        ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
+      `).get(activation.id) as {
+        id: string; kind: "turn" | "steer"; state: string; updated_at: string;
+      } | undefined;
+      const recovery = injection ? this.sqlite.prepare(`
+        SELECT recovery.state, recovery.recover_at, recovery.updated_at,
+          mapping.recovery_activation_id, recovery_activation.state AS recovery_activation_state
+        FROM scheduler_steering_recoveries recovery
+        LEFT JOIN scheduler_steering_recovery_activations mapping
+          ON mapping.injection_id = recovery.injection_id AND mapping.source_activation_id = ?
+        LEFT JOIN agent_activations recovery_activation ON recovery_activation.id = mapping.recovery_activation_id
+        WHERE recovery.injection_id = ?
+      `).get(activation.id, injection.id) as {
+        state: "grace_period" | "wait_for_run" | "recovery_queued";
+        recover_at: string; updated_at: string;
+        recovery_activation_id: string | null; recovery_activation_state: string | null;
+      } | undefined : undefined;
+      let state: MessageDeliveryReceiptDto["state"];
+      if (activation.state === "outcome_unknown") {
+        if (!recovery) state = "undelivered";
+        else if (recovery.state === "grace_period") state = "unconfirmed";
+        else if (recovery.recovery_activation_state === "consumed") state = "recovered";
+        else if (["failed", "outcome_unknown", "cancelled"].includes(recovery.recovery_activation_state ?? "")) state = "failed";
+        else if (recovery.recovery_activation_state === "attached") state = "recovering";
+        else state = recovery.state === "wait_for_run" ? "waiting_for_run" : "recovery_queued";
+      } else if (activation.state === "failed") state = "failed";
+      else if (activation.state === "cancelled") state = "cancelled";
+      else if (activation.state === "consumed") state = "processed";
+      else if (injection?.state === "acknowledged") state = "delivered";
+      else if (injection?.kind === "steer" && (injection.state === "pending" || injection.state === "submitted")) state = "steering";
+      else if (activation.state === "attached") state = "started";
+      else state = "queued";
+      return {
+        activationId: activation.id,
+        targetAgentId: activation.agent_id,
+        state,
+        updatedAt: recovery?.updated_at ?? injection?.updated_at ?? activation.updated_at,
+        ...(injection ? { injectionId: injection.id } : {}),
+        ...(recovery ? { recoveryAt: recovery.recover_at } : {}),
+        ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
+        ...(recovery?.recovery_activation_id ? { recoveryActivationId: recovery.recovery_activation_id } : {}),
+      };
+    });
   }
 
   pendingActivations(projectId?: string): PendingActivationV3View[] {
@@ -1887,6 +1966,7 @@ export class CoordinationV3Store {
 
   markSteeringOutcomeUnknown(input: {
     injectionId: string; runId: string; fencingToken: number; now?: string;
+    recoveryGraceMs?: number; error?: string;
   }): void {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
@@ -1900,14 +1980,152 @@ export class CoordinationV3Store {
       if (activationIds.length) {
         const placeholders = activationIds.map(() => "?").join(", ");
         this.sqlite.prepare(`
-          UPDATE agent_activations SET state = 'outcome_unknown', updated_at = ?
+          UPDATE agent_activations SET state = 'outcome_unknown',
+            last_delivery_error = COALESCE(?, last_delivery_error), updated_at = ?
           WHERE id IN (${placeholders}) AND state = 'attached'
-        `).run(now, ...activationIds);
+        `).run(input.error?.slice(0, 2_000) ?? null, now, ...activationIds);
       }
       this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
         WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
       `).run(now, now, input.injectionId, input.runId);
+      const hasHumanActivation = activationIds.length > 0 && Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM agent_activations
+        WHERE id IN (${activationIds.map(() => "?").join(", ")}) AND prompt_class = 'human' LIMIT 1
+      `).get(...activationIds));
+      if (hasHumanActivation) {
+        const run = this.sqlite.prepare(`SELECT agent_id FROM scheduler_runs WHERE id = ?`)
+          .get(input.runId) as { agent_id: string };
+        const graceMs = Math.max(0, Math.min(input.recoveryGraceMs ?? 10_000, 60_000));
+        this.sqlite.prepare(`
+          INSERT OR IGNORE INTO scheduler_steering_recoveries (
+            injection_id, run_id, agent_id, state, recover_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 'grace_period', ?, ?, ?)
+        `).run(
+          input.injectionId, input.runId, run.agent_id,
+          new Date(Date.parse(now) + graceMs).toISOString(), now, now,
+        );
+      }
+    })();
+  }
+
+  letCurrentRunFinish(input: {
+    injectionId: string; idempotencyKey: string; now?: string;
+  }): SteeringRecoveryDecisionResult {
+    if (!input.idempotencyKey.trim()) throw new Error("steering recovery idempotency key is required");
+    return this.queueSteeringRecovery({
+      injectionId: input.injectionId,
+      interruptOriginalRun: false,
+      idempotencyKey: input.idempotencyKey,
+      now: input.now ?? new Date().toISOString(),
+    });
+  }
+
+  /** Materialize due recovery work transactionally. The recovery Activation is
+   * created before the exact originating Run is fenced and interrupted. */
+  processDueSteeringRecoveries(now = new Date().toISOString(), limit = 100): string[] {
+    const due = this.sqlite.prepare(`
+      SELECT injection_id FROM scheduler_steering_recoveries
+      WHERE state = 'grace_period' AND recover_at <= ?
+      ORDER BY recover_at, injection_id LIMIT ?
+    `).all(now, Math.max(1, Math.min(limit, 500))) as Array<{ injection_id: string }>;
+    const changed = new Set<string>();
+    for (const row of due) {
+      const result = this.queueSteeringRecovery({
+        injectionId: row.injection_id,
+        interruptOriginalRun: true,
+        idempotencyKey: `automatic:${row.injection_id}`,
+        now,
+      });
+      if (result.accepted && result.agentId) changed.add(result.agentId);
+    }
+    return [...changed];
+  }
+
+  private queueSteeringRecovery(input: {
+    injectionId: string; interruptOriginalRun: boolean; idempotencyKey: string; now: string;
+  }): SteeringRecoveryDecisionResult {
+    return this.sqlite.transaction((): SteeringRecoveryDecisionResult => {
+      const recovery = this.sqlite.prepare(`
+        SELECT run_id, agent_id, state FROM scheduler_steering_recoveries WHERE injection_id = ?
+      `).get(input.injectionId) as {
+        run_id: string; agent_id: string;
+        state: "grace_period" | "wait_for_run" | "recovery_queued";
+      } | undefined;
+      if (!recovery) return { accepted: false, replayed: false, state: "not_recoverable" };
+      if (recovery.state !== "grace_period") return {
+        accepted: true,
+        replayed: true,
+        state: recovery.state === "wait_for_run" ? "waiting_for_run" : "recovery_queued",
+        agentId: recovery.agent_id,
+      };
+      const sources = this.sqlite.prepare(`
+        SELECT activation.id, activation.project_id, activation.agent_id, activation.scope_key,
+          activation.priority, activation.payload_json
+        FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+        JOIN agent_activations activation ON activation.id = member.value
+        WHERE injection.id = ?
+        ORDER BY activation.created_at, activation.id
+      `).all(input.injectionId) as Array<{
+        id: string; project_id: string; agent_id: string; scope_key: string;
+        priority: number; payload_json: string;
+      }>;
+      if (sources.length === 0) return { accepted: false, replayed: false, state: "not_recoverable" };
+      for (const source of sources) {
+        const originalPayload = JSON.parse(source.payload_json) as unknown;
+        const payloadRecord = originalPayload && typeof originalPayload === "object" && !Array.isArray(originalPayload)
+          ? originalPayload as Record<string, unknown>
+          : { originalPayload };
+        const recoveryActivationId = this.createActivation({
+          projectId: source.project_id,
+          agentId: source.agent_id,
+          scopeKey: source.scope_key,
+          kind: "steering_recovery",
+          priority: Math.max(PRIORITY.human, source.priority),
+          dispatchPolicy: "next_run",
+          promptClass: "human",
+          dedupeKey: `steering-recovery:${input.injectionId}:${source.id}`,
+          payload: {
+            ...payloadRecord,
+            steeringRecovery: {
+              sourceRunId: recovery.run_id,
+              sourceInjectionId: input.injectionId,
+              sourceActivationId: source.id,
+              reason: "provider_steering_acknowledgement_unconfirmed",
+              instruction: "Audit current project and runtime state before acting. Preserve completed results, then handle the original user message exactly once. Do not assume the prior Run either ignored or applied the uncertain steer.",
+            },
+          },
+          sourceKind: "steering_recovery",
+          sourceId: `${input.injectionId}:${source.id}`,
+          now: input.now,
+        });
+        this.sqlite.prepare(`
+          INSERT OR IGNORE INTO scheduler_steering_recovery_activations (
+            injection_id, source_activation_id, recovery_activation_id
+          ) VALUES (?, ?, ?)
+        `).run(input.injectionId, source.id, recoveryActivationId);
+      }
+      const originalStillActive = Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM scheduler_runs WHERE id = ? AND agent_id = ? AND status IN ('leased', 'running')
+      `).get(recovery.run_id, recovery.agent_id));
+      const nextState = input.interruptOriginalRun || !originalStillActive ? "recovery_queued" : "wait_for_run";
+      this.sqlite.prepare(`
+        UPDATE scheduler_steering_recoveries
+        SET state = ?, decision_idempotency_key = ?, updated_at = ?
+        WHERE injection_id = ? AND state = 'grace_period'
+      `).run(nextState, input.idempotencyKey, input.now, input.injectionId);
+      if (input.interruptOriginalRun && originalStillActive) this.cancelAgentRun({
+        agentId: recovery.agent_id,
+        expectedRunId: recovery.run_id,
+        idempotencyKey: `steering-recovery:${input.injectionId}`,
+        now: input.now,
+      });
+      return {
+        accepted: true,
+        replayed: false,
+        state: nextState === "wait_for_run" ? "waiting_for_run" : "recovery_queued",
+        agentId: recovery.agent_id,
+      };
     })();
   }
 
@@ -2133,7 +2351,7 @@ export class CoordinationV3Store {
     })();
   }
 
-  cancelAgentRun(input: { agentId: string; idempotencyKey: string; now?: string }): CancellationResult {
+  cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
     if (!input.idempotencyKey.trim()) throw new Error("cancellation idempotency key is required");
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
@@ -2151,8 +2369,8 @@ export class CoordinationV3Store {
       };
       const run = this.sqlite.prepare(`
         SELECT id, fencing_token FROM scheduler_runs
-        WHERE agent_id = ? AND status IN ('leased', 'running')
-      `).get(input.agentId) as { id: string; fencing_token: number } | undefined;
+        WHERE agent_id = ? AND status IN ('leased', 'running') AND (? IS NULL OR id = ?)
+      `).get(input.agentId, input.expectedRunId ?? null, input.expectedRunId ?? null) as { id: string; fencing_token: number } | undefined;
       if (!run) {
         this.sqlite.prepare(`
           INSERT INTO scheduler_cancellation_receipts (

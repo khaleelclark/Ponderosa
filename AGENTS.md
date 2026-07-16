@@ -185,6 +185,11 @@ Ordinary runtime output → execution-scoped Work log
 
 - A direct message to an actively responding agent **steers by default**.
   Queueing is an explicit manager choice and remains durable FIFO work.
+- A steer is delivered only after provider acknowledgement. Uncertain human
+  steering gets a durable ten-second grace period, then exact-Run interruption
+  and a linked audit-first recovery Activation unless the manager chooses to let
+  the current Run finish. Historical uncertain steering remains inert and must
+  never be replayed automatically.
 - Responding/typing state and elapsed time come from canonical execution
   ownership, not optimistic component state. They survive refresh and SSE
   reconnection and fail closed when ownership is ambiguous.

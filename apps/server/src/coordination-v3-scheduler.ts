@@ -41,11 +41,13 @@ export class CoordinationV3Scheduler {
       leaseMs?: number;
       coalesceLimit?: number;
       maxDeliveryFailures?: number;
+      steeringRecoveryGraceMs?: number;
       now?: () => number;
       setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
       clearTimer?: (timer: NodeJS.Timeout) => void;
       dispatchSteering?: (lease: SteeringLease, prompt: string) => Promise<CoordinationV3DispatchResult>;
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
+      onMessageDeliveryChanged?: (agentId: string) => void;
     },
   ) {}
 
@@ -80,6 +82,9 @@ export class CoordinationV3Scheduler {
       const now = new Date((this.options.now ?? Date.now)()).toISOString();
       this.store.expireDue(now);
       this.store.processDueTriggerOccurrences(now);
+      for (const agentId of this.store.processDueSteeringRecoveries(now)) {
+        this.options.onMessageDeliveryChanged?.(agentId);
+      }
       for (const item of this.store.claimOutbox(this.options.workerId, 500, now)) {
         this.store.completeOutbox(item.id, this.options.workerId, now);
         this.metrics.outboxSignals += 1;
@@ -131,6 +136,8 @@ export class CoordinationV3Scheduler {
                 injectionId: steering.injectionId,
                 runId: steering.runId,
                 fencingToken: steering.fencingToken,
+                recoveryGraceMs: this.options.steeringRecoveryGraceMs,
+                error: result.error,
               });
               else this.store.deferSteering({
                 injectionId: steering.injectionId,
@@ -142,6 +149,7 @@ export class CoordinationV3Scheduler {
               this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
             }
           }
+          this.options.onMessageDeliveryChanged?.(steering.agentId);
         }
       }
       const maximum = this.options.maxConcurrentRuns ?? 8;
@@ -197,6 +205,7 @@ export class CoordinationV3Scheduler {
             this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
           }
         }
+        this.options.onMessageDeliveryChanged?.(lease.agentId);
       }
       this.maintenanceDrains += 1;
       if (this.maintenanceDrains % 256 === 0) this.store.pruneSettledOutboxes();

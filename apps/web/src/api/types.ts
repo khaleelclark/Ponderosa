@@ -26,6 +26,8 @@ import type {
   QueuedConversationMessageDto,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
+  LetCurrentRunFinishRequest,
+  LetCurrentRunFinishResponse,
   CorrectConversationMessageRequest,
   CorrectConversationMessageResponse,
   ImageAttachmentDto,
@@ -139,6 +141,7 @@ export interface PonderosaApi {
   sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
   listQueuedConversationMessages(conversationId: string): Promise<QueuedConversationMessageDto[]>;
   cancelQueuedConversationMessage(conversationId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse>;
+  letCurrentRunFinish(injectionId: string, request: LetCurrentRunFinishRequest): Promise<LetCurrentRunFinishResponse>;
   correctConversationMessage(conversationId: string, messageId: string, request: CorrectConversationMessageRequest): Promise<CorrectConversationMessageResponse>;
   sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;
   listAgents(projectId: string): Promise<AgentDto[]>;

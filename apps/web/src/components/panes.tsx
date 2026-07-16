@@ -54,6 +54,7 @@ import { findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
+import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 
 function isLoopbackLink(url: URL): boolean {
@@ -728,6 +729,10 @@ export function ChatPane({
               </Box>)}
             </Stack> : null}
             <MessageReactions reactions={message.reactions} />
+            {message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
+              receipts={message.deliveryReceipts}
+              recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
+            /> : null}
           </Box>
           <MessageActionsAndTimestamp
             value={message.createdAt}

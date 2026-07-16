@@ -693,6 +693,8 @@ class SteerableMockAdapter extends MockAdapter {
   readonly openedOptions: OpenRuntimeSessionOptions[] = [];
   opened = 0;
   closed = 0;
+  interrupted = 0;
+  failNextSteer = false;
   completeStartedTurns = false;
   onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
   readonly queues: TestEventQueue[] = [];
@@ -721,11 +723,15 @@ class SteerableMockAdapter extends MockAdapter {
       },
       steer: async (input) => {
         this.steers.push(input);
+        if (this.failNextSteer) {
+          this.failNextSteer = false;
+          throw new Error("steering transport closed after submission");
+        }
         queue.push({ type: "text", delta: "steered result" });
         queue.push({ type: "turn_done" });
         return { status: "accepted", turnId: "persistent-turn" };
       },
-      interrupt: async () => undefined,
+      interrupt: async () => { this.interrupted += 1; },
       close: async () => { this.closed += 1; },
     };
   }
@@ -1457,6 +1463,76 @@ describe("project lifecycle API", () => {
 });
 
 describe("persistent engine steering", () => {
+  it("surfaces uncertain delivery and lets the operator recover after the current Run", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { steeringRecoveryGraceMs: 60_000 },
+    });
+    const project = store.createProject({ label: "Steering receipt", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "keep working" } });
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    persistent.failNextSteer = true;
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "change direction" } });
+
+    let uncertain!: import("@ponderosa/core").MessageDeliveryReceiptDto;
+    await vi.waitFor(async () => {
+      const detail = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}` }))
+        .json<import("@ponderosa/core").AgentDetailDto>();
+      const message = detail.messages.find((candidate) => candidate.text === "change direction");
+      uncertain = message?.deliveryReceipts?.[0]!;
+      expect(uncertain).toMatchObject({ state: "unconfirmed", canLetCurrentRunFinish: true });
+    });
+    const wait = await app.inject({
+      method: "POST",
+      url: `/api/message-deliveries/${uncertain.injectionId}/let-current-run-finish`,
+      payload: { idempotencyKey: "let-current-finish" },
+    });
+    expect(wait.statusCode).toBe(202);
+    expect(wait.json()).toMatchObject({ accepted: true, state: "waiting_for_run" });
+    expect(persistent.interrupted).toBe(0);
+    expect(persistent.starts).toHaveLength(1);
+    const detail = (await app.inject({ method: "GET", url: `/api/conversations/${master.id}` }))
+      .json<import("@ponderosa/core").ConversationDetailDto>();
+    expect(detail.messages.find((message) => message.text.includes("change direction"))?.deliveryReceipts)
+      .toEqual([expect.objectContaining({ state: "waiting_for_run" })]);
+    await app.close();
+  });
+
+  it("automatically interrupts the exact uncertain Run and starts an audit-first recovery", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { steeringRecoveryGraceMs: 0, pollMs: 10 },
+    });
+    const project = store.createProject({ label: "Automatic steering recovery", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "keep working" } });
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    persistent.failNextSteer = true;
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "change direction" } });
+
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(2));
+    expect(persistent.interrupted).toBe(1);
+    expect(persistent.starts[1]?.prompt).toContain("Audit current project and runtime state before acting");
+    expect(persistent.starts[1]?.prompt).toContain("Original user message:\nchange direction");
+    await vi.waitFor(() => expect(store.sqlite.prepare(`
+      SELECT state FROM agent_activations WHERE kind = 'steering_recovery'
+    `).get()).toEqual({ state: "attached" }));
+    const detail = (await app.inject({ method: "GET", url: `/api/conversations/${master.id}` }))
+      .json<import("@ponderosa/core").ConversationDetailDto>();
+    expect(detail.messages.find((message) => message.text.includes("change direction"))?.deliveryReceipts)
+      .toEqual([expect.objectContaining({ state: "recovering" })]);
+    await app.close();
+  });
+
   it("reuses session-scoped capabilities while authorizing only the current turn", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;

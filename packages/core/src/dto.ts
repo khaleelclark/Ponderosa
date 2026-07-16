@@ -141,6 +141,7 @@ export type WorkspaceEvent =
   | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
+  | { type: "message_delivery_changed"; agentId: string }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
@@ -343,6 +344,45 @@ export interface ConversationMessageDto {
   /** Latest append-only edit projected under this message's stable identity. */
   editedAt?: string;
   editRevision?: number;
+  /** Durable per-recipient delivery evidence for operator-authored messages. */
+  deliveryReceipts?: MessageDeliveryReceiptDto[];
+}
+
+export type MessageDeliveryReceiptState =
+  | "queued"
+  | "steering"
+  | "started"
+  | "delivered"
+  | "processed"
+  | "unconfirmed"
+  | "waiting_for_run"
+  | "recovery_queued"
+  | "recovering"
+  | "recovered"
+  | "undelivered"
+  | "failed"
+  | "cancelled";
+
+/** Operational receipt; the authored Communication remains immutable. */
+export interface MessageDeliveryReceiptDto {
+  activationId: string;
+  targetAgentId: string;
+  state: MessageDeliveryReceiptState;
+  updatedAt: string;
+  injectionId?: string;
+  recoveryAt?: string;
+  canLetCurrentRunFinish?: boolean;
+  recoveryActivationId?: string;
+}
+
+export interface LetCurrentRunFinishRequest {
+  idempotencyKey: string;
+}
+
+export interface LetCurrentRunFinishResponse {
+  accepted: boolean;
+  replayed: boolean;
+  state: "waiting_for_run" | "recovery_queued" | "not_recoverable";
 }
 
 /** Engine-agnostic citation metadata emitted only after edge normalization/verification. */
@@ -687,6 +727,8 @@ export interface MessageDto {
   reactions?: MessageReactionDto[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
+  /** Durable per-recipient delivery evidence for operator-authored messages. */
+  deliveryReceipts?: MessageDeliveryReceiptDto[];
 }
 
 export type AssetMediaType =

@@ -70,8 +70,12 @@ export function formatExecutionElapsed(startedAt: string, now = Date.now()): str
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function directAgentDeliveryNotice(response: SendMessageResponse): string | undefined {
+export function directAgentDeliveryNotice(
+  response: SendMessageResponse,
+  activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]> = "steer",
+): string | undefined {
   if (response.queued) {
+    if (activeRunDelivery === "steer") return "Delivery pending provider confirmation.";
     return `Queued in position ${response.position}; it will start when the current response finishes.`;
   }
   return response.steered ? "Steered into the active turn." : undefined;
@@ -423,7 +427,7 @@ export function AgentDetail({
             {
               onSuccess: (response) => {
                 setReplyTo(undefined);
-                setQueuedMessageNotice(directAgentDeliveryNotice(response));
+                setQueuedMessageNotice(directAgentDeliveryNotice(response, activeRunDelivery));
                 void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.agent.projectId] });
               },
             },
