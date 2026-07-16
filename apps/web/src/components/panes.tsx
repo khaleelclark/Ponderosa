@@ -12,6 +12,8 @@ import AttachFileIcon from "@mui/icons-material/AttachFile";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import TerminalIcon from "@mui/icons-material/Terminal";
+import LanguageIcon from "@mui/icons-material/Language";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert,
   Box,
@@ -20,6 +22,10 @@ import {
   CircularProgress,
   ClickAwayListener,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   MenuItem,
   MenuList,
@@ -48,6 +54,68 @@ import { MessageSenderLabel } from "./MessageSenderLabel";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
+
+function isLoopbackLink(url: URL): boolean {
+  return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
+}
+
+export function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
+  let url: URL;
+  try { url = new URL(href); } catch { return undefined; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  return { url, hostname: url.hostname, destination: `${url.hostname}${url.port ? `:${url.port}` : ""}${url.pathname === "/" ? "" : url.pathname}`, loopback: isLoopbackLink(url) };
+}
+
+export interface LinkPreviewScope { projectId: string; agentId: string; runId: string; conversationId?: string }
+
+export function linkPreviewScopeForMessage(
+  message: Pick<MessageDto, "role" | "authorAgentId" | "executionId">,
+  activeScope?: LinkPreviewScope,
+): LinkPreviewScope | undefined {
+  if (!activeScope || message.role !== "assistant") return undefined;
+  if (message.authorAgentId !== activeScope.agentId || message.executionId !== activeScope.runId) return undefined;
+  return activeScope;
+}
+
+function ChatLink({ href, children, previewScope }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope }): JSX.Element {
+  const link = linkPresentation(href);
+  const [chooserOpen, setChooserOpen] = useState(false);
+  const [faviconFailed, setFaviconFailed] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState<string>();
+  if (!link) return <a href={href}>{children}</a>;
+  const activate = (event: React.MouseEvent) => { event.preventDefault(); setChooserOpen(true); setError(undefined); };
+  const openInside = async () => {
+    setOpening(true); setError(undefined);
+    try {
+      if (!previewScope) throw new Error("This localhost app is not associated with an active run.");
+      const response = await fetch("/api/link-previews", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: link.url.href, ...previewScope }) });
+      if (!response.ok) throw new Error("Ponderosa could not open this localhost app.");
+      const preview = await response.json() as { openUrl: string };
+      window.open(preview.openUrl, "_blank", "noopener,noreferrer");
+      setChooserOpen(false);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Preview unavailable."); }
+    finally { setOpening(false); }
+  };
+  return <>
+    <Box component="a" href={href} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+      {!faviconFailed && !link.loopback && link.url.protocol === "https:"
+        ? <Box component="img" src={`/api/link-favicon?url=${encodeURIComponent(link.url.href)}`} alt="" onError={() => setFaviconFailed(true)} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
+        : <LanguageIcon aria-hidden fontSize="inherit" />}
+      <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>{link.hostname}</strong> · {link.destination}</Box>
+      <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
+    </Box>
+    <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
+      <DialogTitle id="link-open-title">Open link</DialogTitle>
+      <DialogContent><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{link.url.href}</Typography>{error ? <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert> : null}</DialogContent>
+      <DialogActions>
+        <Button onClick={() => setChooserOpen(false)}>Cancel</Button>
+        {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open in Ponderosa</Button> : null}
+        <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open externally</Button>
+      </DialogActions>
+    </Dialog>
+  </>;
+}
 
 export function workItemStatusLabel(status: WorkItemDto["status"]): string {
   if (status === "waiting_approval") {
@@ -367,10 +435,12 @@ export function ChatMarkdown({
   children,
   agentIdForHandle,
   onOpenAgent,
+  previewScope,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
+  previewScope?: LinkPreviewScope;
 }): JSX.Element {
   return (
     <Box
@@ -402,7 +472,7 @@ export function ChatMarkdown({
         components={{
           pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
           a: ({ href, children: label }) => {
-            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <a href={href}>{label}</a>;
+            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope}>{label}</ChatLink>;
             const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
             const agentId = agentIdForHandle?.(handle);
             if (!agentId || !onOpenAgent) {
@@ -418,12 +488,13 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent }: {
+export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent, previewScope }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
+  previewScope?: LinkPreviewScope;
 }): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent}>{text}</ChatMarkdown>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
@@ -449,11 +520,12 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent }: {
+export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent, previewScope }: {
   text: string;
   citations?: VerifiedCitationDto[];
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
+  previewScope?: LinkPreviewScope;
 }): JSX.Element {
   const collapsible = isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
@@ -466,7 +538,7 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent
           maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
         } : undefined}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope} />
       </Box>
       {collapsible ? (
         <Button
@@ -505,6 +577,7 @@ export function ChatPane({
   onOpenAgent,
   onReact,
   onReply,
+  previewScope,
   scrollStorageKey,
 }: {
   messages: MessageDto[];
@@ -514,6 +587,7 @@ export function ChatPane({
   onOpenAgent?(agentId: string): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
+  previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
 }): JSX.Element {
   const chatMessages = messages.filter(
@@ -606,7 +680,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={linkPreviewScopeForMessage(message, previewScope)} />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>

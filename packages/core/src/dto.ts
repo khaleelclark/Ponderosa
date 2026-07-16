@@ -298,6 +298,23 @@ export interface ConversationMessageDto {
 /** Engine-agnostic citation metadata emitted only after edge normalization/verification. */
 export type VerifiedCitationDto = VerifiedCitationRecord;
 
+/** Authenticated, short-lived browser registration for one loopback app origin. */
+export interface CreateLinkPreviewRequest {
+  url: string;
+  projectId: string;
+  agentId: string;
+  runId: string;
+  conversationId?: string;
+}
+
+export interface LinkPreviewDto {
+  id: string;
+  /** Same-origin Ponderosa URL; never exposes proxy credentials to the target app. */
+  openUrl: string;
+  targetOrigin: string;
+  expiresAt: string;
+}
+
 /** User-authored emoji state projected onto one canonical agent communication. */
 export interface MessageReactionDto {
   emoji: string;
@@ -611,6 +628,8 @@ export interface MessageDto {
   createdAt: string;
   /** Stable agent author for explicit agent communication shown in this audit. */
   authorAgentId?: string;
+  /** Originating provider execution for agent-authored communication. */
+  executionId?: string;
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   reactions?: MessageReactionDto[];

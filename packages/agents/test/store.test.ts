@@ -323,7 +323,7 @@ describe("AgentStore — canonical communication events", () => {
     const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: room.id });
     const report: CommunicationEvent = {
       eventId: "child-report", schemaVersion: 2, projectId: project.id, conversationId: room.id,
-      sender: { kind: "agent", agentId: child.id }, intent: "collaboration",
+      sender: { kind: "agent", agentId: child.id, executionId: "child-run" }, intent: "collaboration",
       audience: { kind: "agents", agentIds: [manager.id] }, text: "Private finding",
       createdAt: "2026-07-13T00:00:00.000Z",
     };
@@ -337,6 +337,7 @@ describe("AgentStore — canonical communication events", () => {
         communicationEventId: report.eventId,
         role: "assistant",
         authorAgentId: child.id,
+        executionId: "child-run",
         text: report.text,
       }),
     ]);

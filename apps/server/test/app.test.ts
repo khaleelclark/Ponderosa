@@ -101,6 +101,66 @@ describe("workspace synchronization policy", () => {
   });
 });
 
+describe("localhost link preview registration", () => {
+  it("requires browser authentication, exact active-run ownership, and tears down after the run", async () => {
+    const project = store.createProject({ label: "Preview", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Preview room" });
+    const agent = store.createAgent(project.id, { title: "Previewer", engine: "codex", conversationId: room.id });
+    const otherProject = store.createProject({ label: "Other", hostPath: repoDir });
+    const app = createServer({ dataDir, store, engines, logger: false, authToken: "preview-secret" });
+    const headers = { authorization: "Bearer preview-secret" };
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, headers: { authorization: "Bearer preview-secret" }, payload: { text: "Serve the app" } });
+    await waitForSeedCount(1);
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health`, headers });
+    const runId = health.json<{ agents: Array<{ runtimeActivity?: { executionId: string } }> }>().agents[0]!.runtimeActivity!.executionId;
+    const scope = { projectId: project.id, agentId: agent.id, runId, conversationId: room.id };
+    const unauthorized = await app.inject({ method: "POST", url: "/api/link-previews", payload: { url: "http://localhost:5173/app", ...scope } });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const accepted = await app.inject({ method: "POST", url: "/api/link-previews", headers, payload: { url: "http://localhost:5173/app", ...scope } });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ targetOrigin: "http://127.0.0.1:5173", openUrl: expect.stringMatching(/^\/api\/link-previews\/.+\/app$/) });
+
+    for (const badScope of [
+      { ...scope, projectId: otherProject.id },
+      { ...scope, agentId: randomUUID() },
+      { ...scope, runId: randomUUID() },
+      { ...scope, conversationId: randomUUID() },
+    ]) expect((await app.inject({ method: "POST", url: "/api/link-previews", headers, payload: { url: "http://localhost:5173/app", ...badScope } })).statusCode).toBe(409);
+
+    for (const url of ["http://localhost/no-port", "https://localhost:5173/", "http://192.168.1.5:5173/", "file:///etc/passwd", "http://user:pass@localhost:5173/"]) {
+      expect((await app.inject({ method: "POST", url: "/api/link-previews", headers, payload: { url, ...scope } })).statusCode).toBe(400);
+    }
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers })).statusCode).toBe(200);
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const afterCancel = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health`, headers });
+      if (!afterCancel.json<{ agents: Array<{ runtimeActivity?: unknown }> }>().agents[0]?.runtimeActivity) break;
+      await sleep(10);
+    }
+    expect((await app.inject({ method: "GET", url: accepted.json<{ openUrl: string }>().openUrl, headers })).statusCode).toBe(404);
+    await app.close();
+  });
+});
+
+describe("link favicon loading", () => {
+  it("serves a bounded same-origin favicon and rejects unsafe targets before loading", async () => {
+    const linkFaviconLoader = vi.fn(async () => ({ body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mediaType: "image/png" }));
+    const app = createServer({ dataDir, store, engines, logger: false, linkFaviconLoader });
+    const favicon = await app.inject({ method: "GET", url: "/api/link-favicon?url=https%3A%2F%2Fdocs.example.com%2Fguide" });
+    expect(favicon.statusCode).toBe(200);
+    expect(favicon.headers["content-type"]).toContain("image/png");
+    expect(favicon.rawPayload).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(linkFaviconLoader).toHaveBeenCalledWith(new URL("https://docs.example.com/favicon.ico"));
+
+    for (const url of ["http://example.com/", "https://localhost:443/", "https://127.0.0.1/", "file:///etc/passwd", "https://user:secret@example.com/"]) {
+      expect((await app.inject({ method: "GET", url: `/api/link-favicon?url=${encodeURIComponent(url)}` })).statusCode).toBe(400);
+    }
+    expect(linkFaviconLoader).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+});
+
 class MockAdapter implements Adapter {
   id = "codex";
   displayName = "Mock Codex";

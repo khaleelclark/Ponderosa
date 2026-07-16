@@ -1,6 +1,10 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
+import { promises as dns } from "node:dns";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP } from "node:net";
+import { Readable } from "node:stream";
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -68,6 +72,8 @@ import type {
   WebPushSubscriptionDto,
   CancelAgentRunRequest,
   CancelAgentRunResponse,
+  CreateLinkPreviewRequest,
+  LinkPreviewDto,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -101,6 +107,8 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
+  /** Deterministic test seam; production resolves and pins public DNS itself. */
+  linkFaviconLoader?: (target: URL) => Promise<{ body: Buffer; mediaType: string }>;
   /** Explicit roots exposed by the host folder picker. */
   allowedBrowseRoots?: string[];
   /** Immutable source revision for deploy/runtime parity checks. */
@@ -153,6 +161,63 @@ export interface CreateServerOptions {
     beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
     afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
   };
+}
+
+const nonPublicFaviconAddresses = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16],
+  ["192.0.2.0", 24], ["192.88.99.0", 24], ["198.18.0.0", 15], ["198.51.100.0", 24],
+  ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) nonPublicFaviconAddresses.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b::", 96], ["100::", 64],
+  ["2001::", 32], ["2001:db8::", 32], ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) nonPublicFaviconAddresses.addSubnet(network, prefix, "ipv6");
+
+function externalFaviconTarget(raw: string): URL | undefined {
+  let target: URL;
+  try { target = new URL(raw); } catch { return undefined; }
+  const hostname = target.hostname.toLowerCase();
+  if (target.protocol !== "https:" || target.username || target.password || (target.port && target.port !== "443")
+    || !hostname || hostname === "localhost" || hostname.endsWith(".local") || isIP(hostname)) return undefined;
+  return new URL(`https://${hostname}/favicon.ico`);
+}
+
+async function loadExternalFavicon(target: URL): Promise<{ body: Buffer; mediaType: string }> {
+  const addresses = await dns.lookup(target.hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(({ address, family }) => nonPublicFaviconAddresses.check(address, family === 6 ? "ipv6" : "ipv4"))) {
+    throw new Error("favicon host does not resolve exclusively to public addresses");
+  }
+  const selected = addresses[0]!;
+  return await new Promise((resolve, reject) => {
+    const request = httpsRequest({
+      protocol: "https:", hostname: target.hostname, port: 443, path: "/favicon.ico", method: "GET",
+      servername: target.hostname,
+      headers: { accept: "image/png,image/x-icon,image/vnd.microsoft.icon,image/gif,image/webp,image/jpeg", "user-agent": "Ponderosa favicon fetch" },
+      lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family),
+    }, (response) => {
+      const mediaType = (response.headers["content-type"] ?? "").split(";", 1)[0]!.trim().toLowerCase();
+      const allowed = new Set(["image/png", "image/x-icon", "image/vnd.microsoft.icon", "image/gif", "image/webp", "image/jpeg"]);
+      if (response.statusCode !== 200 || !allowed.has(mediaType)) {
+        response.resume();
+        reject(new Error("favicon response was unavailable or unsafe"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > 64 * 1024) request.destroy(new Error("favicon exceeds 64 KiB"));
+        else chunks.push(chunk);
+      });
+      response.on("end", () => resolve({ body: Buffer.concat(chunks), mediaType }));
+      response.on("error", reject);
+    });
+    request.setTimeout(5_000, () => request.destroy(new Error("favicon request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 interface ActiveRun {
@@ -1197,6 +1262,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   };
   const activeRuns = new Map<string, ActiveRun>();
+  const linkPreviews = new Map<string, { origin: string; expiresAt: number; projectId: string; agentId: string; runId: string; conversationId?: string }>();
+  const LINK_PREVIEW_TTL_MS = 4 * 60 * 60 * 1000;
   const runtimeSessions = new Map<string, PersistentRuntime>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
@@ -1852,11 +1919,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   });
 
-  app.addHook("onSend", async (_request, reply, payload) => {
+  app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    if (request.url.startsWith("/api/link-previews/")) {
+      // Local dev apps are untrusted content. A unique sandbox origin prevents
+      // their scripts from inheriting the operator's authenticated API origin.
+      reply.header("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals allow-downloads; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'");
+    }
     return payload;
   });
 
@@ -2750,6 +2822,113 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/projects", async () => store.listProjects());
+
+  app.get<{ Querystring: { url?: string } }>("/api/link-favicon", async (request, reply) => {
+    const target = externalFaviconTarget(request.query.url ?? "");
+    if (!target) return reply.code(400).send({ error: "favicon URL must be a public HTTPS hostname" });
+    try {
+      const favicon = await (opts.linkFaviconLoader ?? loadExternalFavicon)(target);
+      reply.type(favicon.mediaType);
+      reply.header("cache-control", "public, max-age=3600");
+      return reply.send(favicon.body);
+    } catch {
+      return reply.code(404).send({ error: "favicon unavailable" });
+    }
+  });
+
+  const loopbackPreviewTarget = (raw: string): URL | undefined => {
+    let target: URL;
+    try { target = new URL(raw); } catch { return undefined; }
+    const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (target.protocol !== "http:" || target.username || target.password || !target.port) return undefined;
+    if (!(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) return undefined;
+    const port = Number(target.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    target.hostname = "127.0.0.1";
+    target.hash = "";
+    return target;
+  };
+
+  app.post<{ Body: CreateLinkPreviewRequest }>("/api/link-previews", async (request, reply) => {
+    const target = loopbackPreviewTarget(request.body?.url);
+    if (!target) return reply.code(400).send({ error: "preview URL must be HTTP on an explicit localhost port" });
+    const { projectId, agentId, runId, conversationId } = request.body ?? {};
+    const project = typeof projectId === "string" ? store.getProject(projectId) : undefined;
+    const agent = typeof agentId === "string" ? store.getAgent(agentId) : undefined;
+    const active = agent ? activeRuns.get(agent.id) : undefined;
+    if (!project || !agent || agent.projectId !== project.id || !active || active.runId !== runId || active.executionId !== runId) {
+      return reply.code(409).send({ error: "preview scope does not match an active agent run" });
+    }
+    if (conversationId !== undefined) {
+      const conversation = store.getConversation(conversationId);
+      if (!conversation || conversation.projectId !== project.id || !agent.conversationIds.includes(conversation.id)) {
+        return reply.code(409).send({ error: "preview conversation is not owned by this agent and project" });
+      }
+    }
+    for (const [key, registration] of linkPreviews) if (registration.expiresAt <= Date.now()) linkPreviews.delete(key);
+    const id = randomUUID();
+    const expiresAt = Date.now() + LINK_PREVIEW_TTL_MS;
+    linkPreviews.set(id, { origin: target.origin, expiresAt, projectId, agentId, runId, ...(conversationId ? { conversationId } : {}) });
+    const suffix = `${target.pathname}${target.search}`.replace(/^\//, "");
+    return {
+      id,
+      openUrl: `/api/link-previews/${id}/${suffix}`,
+      targetOrigin: target.origin,
+      expiresAt: new Date(expiresAt).toISOString(),
+    } satisfies LinkPreviewDto;
+  });
+
+  app.get<{ Params: { id: string; "*": string }; Querystring: Record<string, string> }>("/api/link-previews/:id/*", async (request, reply) => {
+    const registration = linkPreviews.get(request.params.id);
+    if (!registration || registration.expiresAt <= Date.now()) {
+      linkPreviews.delete(request.params.id);
+      return reply.code(404).send({ error: "preview expired or was not found" });
+    }
+    const agent = store.getAgent(registration.agentId);
+    const active = agent ? activeRuns.get(agent.id) : undefined;
+    const conversation = registration.conversationId ? store.getConversation(registration.conversationId) : undefined;
+    if (!agent || agent.projectId !== registration.projectId || !store.getProject(registration.projectId)
+      || !active || active.runId !== registration.runId || active.executionId !== registration.runId
+      || (registration.conversationId && (!conversation || conversation.projectId !== registration.projectId || !agent.conversationIds.includes(registration.conversationId)))) {
+      linkPreviews.delete(request.params.id);
+      return reply.code(404).send({ error: "preview run is no longer active" });
+    }
+    const relativePath = `/${request.params["*"] ?? ""}`;
+    const target = new URL(relativePath, registration.origin);
+    target.search = new URL(request.raw.url ?? "", "http://ponderosa.invalid").search;
+    if (target.origin !== registration.origin) return reply.code(403).send({ error: "preview target is outside its registered origin" });
+    let upstream: Response;
+    try {
+      upstream = await fetch(target, {
+        redirect: "manual",
+        headers: { accept: request.headers.accept ?? "*/*", "user-agent": "Ponderosa localhost preview" },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      return reply.code(502).send({ error: "localhost app is unavailable" });
+    }
+    const location = upstream.headers.get("location");
+    if (location) {
+      const redirected = new URL(location, target);
+      if (redirected.origin !== registration.origin) return reply.code(502).send({ error: "localhost app redirected outside its registered origin" });
+      reply.header("location", `/api/link-previews/${request.params.id}${redirected.pathname}${redirected.search}`);
+    }
+    reply.code(upstream.status);
+    const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+    reply.type(contentType);
+    reply.header("cache-control", "no-store");
+    if (!upstream.body) return reply.send();
+    if (contentType.includes("text/html")) {
+      const html = await upstream.text();
+      if (html.length > 5_000_000) return reply.code(413).send({ error: "preview document is too large" });
+      const prefix = `/api/link-previews/${request.params.id}`;
+      const base = `<base href="${prefix}/">`;
+      // Root-relative asset references otherwise escape the opaque proxy scope.
+      const scopedHtml = html.replace(/\b(src|href|action)=(['"])\/(?!\/)/gi, `$1=$2${prefix}/`);
+      return reply.send(/<head(?:\s[^>]*)?>/i.test(scopedHtml) ? scopedHtml.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${base}`) : `${base}${scopedHtml}`);
+    }
+    return reply.send(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream));
+  });
   app.get("/api/project-folders", async (): Promise<ProjectFolderOptionsDto> => {
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
     const registered = store.listProjects().map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const }));
