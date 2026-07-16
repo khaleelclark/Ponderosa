@@ -1,4 +1,5 @@
-import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFileDto, SseEventEnvelope, WorkItemDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
+import { unifiedDiffLineTotals } from "@ponderosa/core";
+import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFileDto, ResponseFileActivityDto, SseEventEnvelope, WorkItemDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -73,6 +74,28 @@ function projectedWorkItemId(agentId: string, workItemId: string): string {
   return `${agentId}:work-item:${workItemId}`;
 }
 
+export function mergeLiveResponseFileActivity(
+  current: ResponseFileActivityDto[] | undefined,
+  event: Extract<AgentEvent, { type: "file_change" }>,
+  seq: number,
+  artifactId: string,
+): ResponseFileActivityDto[] {
+  const totals = unifiedDiffLineTotals(event.diff);
+  const next: ResponseFileActivityDto = {
+    path: event.path,
+    kind: event.kind,
+    status: "in_progress",
+    sourceSeq: seq,
+    artifactId,
+    previewable: Boolean(event.diff),
+    ...(totals ? totals : {}),
+  };
+  const files = current ?? [];
+  return files.some((file) => file.path === event.path)
+    ? files.map((file) => file.path === event.path ? next : file)
+    : [...files, next];
+}
+
 export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
   const { event, seq, ts } = envelope;
 
@@ -84,9 +107,12 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
   if (executionTypes.has(event.type)) {
     const activity = detail.activity ?? [];
     const id = `${agentId}:activity:${seq}`;
+    const activeExecutionId = [...(detail.runs ?? [])].reverse()
+      .find((run) => run.status === "running" || run.status === "compacting")?.id;
     if (!activity.some((item) => item.id === id)) {
       const entry: AgentActivityDto = {
         id, agentId, seq, createdAt: ts,
+        ...(activeExecutionId ? { executionId: activeExecutionId } : {}),
         event: event as AgentActivityDto["event"],
       };
       detail = { ...detail, activity: [...activity, entry].sort((a, b) => a.seq - b.seq) };
@@ -99,7 +125,9 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
         kind: event.kind,
         lastSeq: seq,
         lastChangedAt: ts,
-        executionIds: previous?.executionIds ?? [],
+        executionIds: activeExecutionId && !previous?.executionIds.includes(activeExecutionId)
+          ? [...(previous?.executionIds ?? []), activeExecutionId]
+          : previous?.executionIds ?? [],
         ...(event.diff ? { diff: event.diff } : {}),
       };
       detail = {
@@ -118,11 +146,20 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     const kind = event.type === "reasoning" ? "reasoning" : "response";
     const id = `live-runOutput:${executionId}:${kind}`;
     const existing = runOutput.find((entry) => entry.id === id);
+    const canonicalFileActivity = (detail.activity ?? [])
+      .filter((item) => item.executionId === executionId && item.event.type === "file_change")
+      .reduce<ResponseFileActivityDto[]>((files, item) => mergeLiveResponseFileActivity(
+        files,
+        item.event as Extract<AgentEvent, { type: "file_change" }>,
+        item.seq,
+        projectedArtifactId(agentId, item.seq),
+      ), []);
     const next: RunOutputDto = existing ? {
       ...existing,
       text: `${existing.text}${event.delta}`,
       seq,
       sourceSeqEnd: seq,
+      ...(kind === "response" && canonicalFileActivity.length ? { fileActivity: canonicalFileActivity } : {}),
     } : {
       id,
       agentId,
@@ -134,6 +171,7 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
       sourceSeqStart: seq,
       sourceSeqEnd: seq,
       createdAt: ts,
+      ...(kind === "response" && canonicalFileActivity.length ? { fileActivity: canonicalFileActivity } : {}),
     };
     return {
       ...detail,
@@ -145,6 +183,18 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
 
   if (event.type === "agent_output") {
     const runOutput = compactDefined(detail.runOutput ?? []);
+    const liveEntry = runOutput.find((item) =>
+      item.executionId === event.executionId && item.kind === "response" && !item.completed
+    );
+    const canonicalFileActivity = (detail.activity ?? [])
+      .filter((item) => item.executionId === event.executionId && item.event.type === "file_change")
+      .reduce<ResponseFileActivityDto[]>((files, item) => mergeLiveResponseFileActivity(
+        files,
+        item.event as Extract<AgentEvent, { type: "file_change" }>,
+        item.seq,
+        projectedArtifactId(agentId, item.seq),
+      ), [])
+      .map((file) => ({ ...file, status: "completed" as const }));
     const entry: RunOutputDto = {
       id: `${agentId}:runOutput:${seq}`,
       agentId,
@@ -156,6 +206,11 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
       sourceSeqStart: event.sourceSeqStart,
       sourceSeqEnd: event.sourceSeqEnd,
       createdAt: ts,
+      ...(canonicalFileActivity.length
+        ? { fileActivity: canonicalFileActivity }
+        : liveEntry?.fileActivity?.length
+          ? { fileActivity: liveEntry.fileActivity.map((file) => ({ ...file, status: "completed" as const })) }
+          : {}),
     };
     if (runOutput.some((item) => item.id === entry.id)) return detail;
     return {
@@ -218,17 +273,24 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
       return detail;
     }
     const isPdf = event.path.toLowerCase().endsWith(".pdf");
+    const canonicalArtifactId = projectedArtifactId(agentId, seq);
     const artifact: ArtifactDto = {
-      id: `live-artifact-${seq}`,
+      id: canonicalArtifactId,
       agentId,
-      executionId: [...(detail.runs ?? [])].reverse().find((run) => run.status === "running")?.id,
+      executionId: [...(detail.runs ?? [])].reverse()
+        .find((run) => run.status === "running" || run.status === "compacting")?.id,
       kind: isPdf ? "document" : "diff",
       path: event.path,
       summary: `${event.kind} ${event.path}`,
       createdAt: ts,
       ...(isPdf ? { mediaType: "application/pdf" as const } : {}),
     };
-    return { ...detail, artifacts: [...artifacts, artifact] };
+    const runOutput = compactDefined(detail.runOutput ?? []).map((entry) =>
+      entry.kind === "response" && !entry.completed && entry.executionId === artifact.executionId
+        ? { ...entry, fileActivity: mergeLiveResponseFileActivity(entry.fileActivity, event, seq, canonicalArtifactId) }
+        : entry
+    );
+    return { ...detail, artifacts: [...artifacts, artifact], runOutput };
   }
 
   if (event.type === "test_result") {

@@ -1960,7 +1960,12 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id)
       .find((message) => message.authorAgentId === responsible.id && message.text === "done")).toBeUndefined();
     expect(store.getAgentDetail(responsible.id)?.runOutput).toEqual([
-      expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "done", completed: true }),
+      expect.objectContaining({
+        executionId: expect.any(String), kind: "response", text: "done", completed: true,
+        fileActivity: [expect.objectContaining({
+          path: "a.ts", status: "completed", artifactId: expect.any(String), previewable: true,
+        })],
+      }),
     ]);
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.sender.kind === "agent" && event.text === "done")).toBe(false);

@@ -93,14 +93,16 @@ describe("projectEvent — routing (SPEC §5)", () => {
       type: "file_change",
       path: "auth.ts",
       kind: "edit",
+      diff: "--- a/auth.ts\n+++ b/auth.ts\n-old\n+new",
     }));
     const art = ops.find((o) => o.kind === "insert_artifact");
     expect(art).toBeDefined();
     if (art?.kind === "insert_artifact") {
       expect(art.row.kind).toBe("diff");
+      expect(art.row.id).toBe("agent-1:a:3:0");
       expect(art.row.path).toBe("000003-diff.patch");
       expect(art.row.executionId).toBe("run-real");
-      expect(art.content).toContain("No diff text was provided");
+      expect(art.content).toContain("+new");
     }
   });
 

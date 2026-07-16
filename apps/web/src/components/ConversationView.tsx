@@ -35,7 +35,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -48,7 +48,7 @@ import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCom
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles, uploadFilesForRecipients } from "../conversationReply";
-import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
@@ -95,6 +95,7 @@ export function ConversationMessage({
   compactViewport = false,
   onOpenAgent,
   onOpenReview,
+  onOpenFileActivity,
   onReply,
   onDirectReply,
   onReact,
@@ -108,7 +109,8 @@ export function ConversationMessage({
   agentIdForHandle(handle: string): string | undefined;
   compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
-  onOpenReview?(agentId: string, path?: string): void;
+  onOpenReview?(agentId: string): void;
+  onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onReply(message: ConversationMessageDto): void;
   onDirectReply(message: ConversationMessageDto): void;
   onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
@@ -175,18 +177,15 @@ export function ConversationMessage({
         {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
         {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
-        {message.fileActivity?.length ? <Box component="aside" aria-label="File activity" sx={{ mt: 1, p: .75, borderRadius: 1, bgcolor: "action.hover" }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: .25 }}>
-            <Typography variant="caption" sx={{ fontWeight: 700, flex: 1 }}>Files changed</Typography>
-            <Typography variant="caption" color="success.main">+{message.fileActivity.reduce((total, file) => total + (file.additions ?? 0), 0)}</Typography>
-            <Typography variant="caption" color="error.main">−{message.fileActivity.reduce((total, file) => total + (file.deletions ?? 0), 0)}</Typography>
-            {message.authorAgentId && onOpenReview ? <Button size="small" color="inherit" onClick={() => onOpenReview(message.authorAgentId!)} sx={{ minWidth: 0, py: 0, px: .5 }}>Review</Button> : null}
-          </Stack>
-          {message.fileActivity.map((file) => <Button key={`${file.kind}:${file.path}`} size="small" color="inherit" onClick={() => message.authorAgentId && onOpenReview?.(message.authorAgentId, file.path)} disabled={!message.authorAgentId || !onOpenReview} sx={{ display: "flex", width: "100%", justifyContent: "flex-start", textTransform: "none", minHeight: 26, px: .5, py: 0, textAlign: "left" }}>
-            <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>{file.kind} · +{file.additions ?? 0} −{file.deletions ?? 0}</Typography>
-          </Button>)}
-        </Box> : null}
+        {message.fileActivity?.length ? <ResponseFileActivity
+          files={message.fileActivity}
+          onOpenFile={message.authorAgentId && onOpenFileActivity
+            ? (file) => onOpenFileActivity(message.authorAgentId!, file)
+            : undefined}
+          onViewAll={message.authorAgentId && onOpenReview
+            ? () => onOpenReview(message.authorAgentId!)
+            : undefined}
+        /> : null}
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
           {message.attachments.map((attachment) => <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
             {attachment.mediaType.startsWith("image/")
@@ -262,6 +261,7 @@ export function ConversationView({
   healthByAgentId,
   onOpenAgent,
   onOpenReview,
+  onOpenFileActivity,
   onNewAgent,
   onDeleted,
 }: {
@@ -272,7 +272,8 @@ export function ConversationView({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
-  onOpenReview?(agentId: string, path?: string): void;
+  onOpenReview?(agentId: string): void;
+  onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -956,6 +957,7 @@ export function ConversationView({
                 compactViewport={compactViewport}
                 onOpenAgent={onOpenAgent}
                 onOpenReview={onOpenReview}
+                onOpenFileActivity={onOpenFileActivity}
                 onReply={(selected) => {
                   clearReply();
                   setReplyTo(selected);

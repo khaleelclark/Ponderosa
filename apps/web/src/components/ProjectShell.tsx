@@ -2,7 +2,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -140,9 +140,14 @@ export function ProjectShell({
     });
   };
 
-  const openAgentReview = (agentId: string, path?: string) => {
+  const openAgentReview = (agentId: string) => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), "review");
-    if (path) writeChatState(chatStateKey("view", `agent.${agentId}.review-file`), path);
+    navigate({ kind: "agent", projectId, agentId });
+  };
+
+  const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), file.artifactId ? "artifacts" : "changed_files");
+    if (file.artifactId) writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);
     navigate({ kind: "agent", projectId, agentId });
   };
 
@@ -214,6 +219,7 @@ export function ProjectShell({
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenReview={openAgentReview}
+        onOpenFileActivity={openAgentFileActivity}
         onNewAgent={openNewAgentFromMaster}
         onDeleted={() => navigate({ kind: "agents", projectId })}
       />

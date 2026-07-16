@@ -40,7 +40,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -394,12 +394,23 @@ export function AgentDetail({
     }).then(() => {
       void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
     })} onReply={setReplyTo} />,
-    runOutput: <WorkLogPane entries={detail.runOutput} />,
+    runOutput: <WorkLogPane
+      entries={detail.runOutput}
+      onOpenFile={(file: ResponseFileActivityDto) => {
+        if (file.artifactId) {
+          writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);
+          setTab("artifacts");
+        } else {
+          setTab("changed_files");
+        }
+      }}
+      onViewAll={() => setTab("review")}
+    />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} initialArtifactId={readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} />,
   };
 
   return (

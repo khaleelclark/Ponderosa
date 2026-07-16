@@ -262,6 +262,22 @@ export interface UpdateConversationRequest {
   archived?: boolean;
 }
 
+/** Compact execution-scoped file provenance shown beside an agent response. */
+export interface ResponseFileActivityDto {
+  path: string;
+  kind: "create" | "edit" | "delete";
+  status: "in_progress" | "completed";
+  /** Sequence of the latest canonical file_change event for this path and Run. */
+  sourceSeq: number;
+  /** Canonical persisted Artifact projection for the source event, when available. */
+  artifactId?: string;
+  /** True only when the persisted artifact contains a focused textual diff. */
+  previewable: boolean;
+  /** Unified-diff line totals when the engine supplied a textual diff. */
+  additions?: number;
+  deletions?: number;
+}
+
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
   id: string;
@@ -284,14 +300,7 @@ export interface ConversationMessageDto {
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
   executionId?: string;
-  fileActivity?: Array<{
-    path: string;
-    kind: "create" | "edit" | "delete";
-    status: "completed";
-    /** Unified-diff line totals when the engine supplied a textual diff. */
-    additions?: number;
-    deletions?: number;
-  }>;
+  fileActivity?: ResponseFileActivityDto[];
   correctionOfMessageId?: string;
   correctedByMessageId?: string;
   /** Latest append-only edit projected under this message's stable identity. */
@@ -896,6 +905,8 @@ export interface RunOutputDto {
   sourceSeqStart: number;
   sourceSeqEnd: number;
   createdAt: string;
+  /** Canonical file changes attributed to this exact Run, never a working-tree snapshot. */
+  fileActivity?: ResponseFileActivityDto[];
 }
 
 export interface AgentCoordinationV3Dto {

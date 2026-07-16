@@ -38,7 +38,8 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import { unifiedDiffLineTotals } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -773,7 +774,62 @@ export function summarizeActivityText(value: string, maxLength: number): string 
   return normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…` : normalized;
 }
 
-export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Element {
+export function ResponseFileActivity({
+  files,
+  onOpenFile,
+  onViewAll,
+}: {
+  files: ResponseFileActivityDto[];
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onViewAll?(): void;
+}): JSX.Element | null {
+  if (files.length === 0) return null;
+  const additions = files.reduce((total, file) => total + (file.additions ?? 0), 0);
+  const deletions = files.reduce((total, file) => total + (file.deletions ?? 0), 0);
+  const hasLineTotals = files.some((file) => file.additions !== undefined || file.deletions !== undefined);
+  const inProgress = files.some((file) => file.status === "in_progress");
+  return <Box component="aside" aria-label="File activity" sx={{ mt: 1 }}>
+    <Stack direction="row" spacing={0.75} sx={{ alignItems: "flex-start", minWidth: 0 }}>
+      <Paper component="details" variant="outlined" data-testid="response-file-activity" sx={{ flex: 1, minWidth: 0, bgcolor: "action.hover", "& > summary": { cursor: "pointer", listStylePosition: "inside" } }}>
+        <Box component="summary" sx={{ px: 1, py: 0.625 }}>
+          <Stack component="span" direction="row" spacing={0.75} sx={{ display: "inline-flex", alignItems: "baseline", ml: 0.25 }}>
+            <Typography component="span" variant="caption" sx={{ fontWeight: 700 }}>
+              {files.length} changed file{files.length === 1 ? "" : "s"}
+            </Typography>
+            {hasLineTotals ? <>
+              <Typography component="span" variant="caption" color="success.main">+{additions}</Typography>
+              <Typography component="span" variant="caption" color="error.main">−{deletions}</Typography>
+            </> : null}
+            {inProgress ? <Typography component="span" variant="caption" color="info.main">Live</Typography> : null}
+          </Stack>
+        </Box>
+        <Stack spacing={0.25} sx={{ px: 0.5, pb: 0.5 }}>
+          {files.map((file) => <Button
+            key={`${file.sourceSeq}:${file.path}`}
+            size="small"
+            color="inherit"
+            onClick={() => onOpenFile?.(file)}
+            disabled={!onOpenFile}
+            aria-label={file.previewable ? `Open focused diff for ${file.path}` : `Open file artifact for ${file.path}`}
+            sx={{ display: "flex", width: "100%", justifyContent: "flex-start", textTransform: "none", minHeight: 30, px: 0.75, py: 0.25, textAlign: "left" }}
+          >
+            <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
+              {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & results"}
+            </Typography>
+          </Button>)}
+        </Stack>
+      </Paper>
+      {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review all</Button> : null}
+    </Stack>
+  </Box>;
+}
+
+export function WorkLogPane({ entries, onOpenFile, onViewAll }: {
+  entries: RunOutputDto[];
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onViewAll?(): void;
+}): JSX.Element {
   const ordered = [...entries].sort((a, b) => a.seq - b.seq);
   return (
     <Stack spacing={1.25} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent work log">
@@ -792,6 +848,9 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
           <Typography component="div" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
             {entry.text}
           </Typography>
+          {entry.kind === "response" && entry.fileActivity?.length
+            ? <ResponseFileActivity files={entry.fileActivity} onOpenFile={onOpenFile} onViewAll={onViewAll} />
+            : null}
         </Paper>
       ))}
     </Stack>
@@ -1130,7 +1189,7 @@ export function WorkspaceReviewPane({ projectId, files, running, initialPath }: 
 export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.Element {
   const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
   const totals = ordered.reduce((sum, file) => {
-    const current = unifiedDiffLineTotals(file.diff);
+    const current = unifiedDiffLineTotals(file.diff) ?? { additions: 0, deletions: 0 };
     return { additions: sum.additions + current.additions, deletions: sum.deletions + current.deletions };
   }, { additions: 0, deletions: 0 });
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
@@ -1154,15 +1213,7 @@ export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.El
   </Stack>;
 }
 
-export function unifiedDiffLineTotals(diff: string | undefined): { additions: number; deletions: number } {
-  if (!diff) return { additions: 0, deletions: 0 };
-  return diff.split(/\r?\n/u).reduce((totals, line) => {
-    if (line.startsWith("+++") || line.startsWith("---")) return totals;
-    if (line.startsWith("+")) return { ...totals, additions: totals.additions + 1 };
-    if (line.startsWith("-")) return { ...totals, deletions: totals.deletions + 1 };
-    return totals;
-  }, { additions: 0, deletions: 0 });
-}
+export { unifiedDiffLineTotals } from "@ponderosa/core";
 
 export function languageForPath(filePath: string): string {
   const extension = filePath.split(".").at(-1)?.toLocaleLowerCase();
@@ -1283,18 +1334,28 @@ export function ArtifactsPane({
   artifacts,
   agentId,
   timeline,
+  initialArtifactId,
 }: {
   artifacts: ArtifactDto[];
   agentId: string;
   timeline: ExecutionItem[];
+  initialArtifactId?: string;
 }): JSX.Element {
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(artifacts[0]?.id);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
+    initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)
+      ? initialArtifactId
+      : artifacts[0]?.id,
+  );
 
   useEffect(() => {
+    if (initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)) {
+      setSelectedArtifactId(initialArtifactId);
+      return;
+    }
     if (!selectedArtifactId || !artifacts.some((artifact) => artifact.id === selectedArtifactId)) {
       setSelectedArtifactId(artifacts[0]?.id);
     }
-  }, [artifacts, selectedArtifactId]);
+  }, [artifacts, initialArtifactId, selectedArtifactId]);
 
   const selectedArtifact = artifacts.find((artifact) => artifact.id === selectedArtifactId);
   const liveSeq = selectedArtifact?.id.startsWith("live-artifact-")

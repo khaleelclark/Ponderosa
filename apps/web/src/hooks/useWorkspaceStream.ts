@@ -33,6 +33,15 @@ export function invalidateWorkspaceCapabilities(
   });
 }
 
+/** Conversation caches whose canonical response file summaries changed. */
+export function fileActivityConversationQueryKeys(event: WorkspaceEvent): Array<readonly ["conversation", string]> {
+  if (
+    event.type !== "agent_event"
+    || (event.category !== "file" && event.category !== "artifact" && event.category !== "lifecycle")
+  ) return [];
+  return event.conversationIds.map((conversationId) => ["conversation", conversationId] as const);
+}
+
 /** Pure ordered-cursor reducer shared by every tab's stream consumer. */
 export function reconcileWorkspaceCursor(current: number, envelope: Pick<WorkspaceEventEnvelope, "id">): WorkspaceCursorReconciliation {
   if (envelope.id <= current) return { cursor: current, duplicate: true, gap: false };
@@ -89,6 +98,9 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "agent_event") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
+        for (const queryKey of fileActivityConversationQueryKeys(event)) {
+          void queryClient.invalidateQueries({ queryKey });
+        }
         if (event.category === "lifecycle") {
           void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });

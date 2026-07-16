@@ -121,8 +121,38 @@ describe("updateAgentDetail", () => {
     } as SseEventEnvelope;
 
     expect(updateAgentDetail("agent-1", envelope, detail).artifacts).toEqual([
-      expect.objectContaining({ id: "live-artifact-5", path: "src/app.ts" }),
+      expect.objectContaining({ id: "agent-1:a:5:0", path: "src/app.ts" }),
     ]);
+  });
+
+  it("keeps live and replayed file activity on the exact response without duplicates", () => {
+    const detail = {
+      messages: [], runOutput: [], activity: [], changedFiles: [], runs: [], workItems: [], artifacts: [],
+      agent: { activeEngine: "codex" },
+    } as unknown as AgentDetailDto;
+    const started = updateAgentDetail("agent-1", {
+      seq: 1, ts: "2026-07-11T08:00:00.000Z",
+      event: { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1" },
+    } as SseEventEnvelope, detail);
+    const responding = updateAgentDetail("agent-1", {
+      seq: 2, ts: "2026-07-11T08:00:01.000Z",
+      event: { type: "text", delta: "Working", executionId: "run-1" },
+    } as SseEventEnvelope, started);
+    const fileEnvelope = {
+      seq: 3, ts: "2026-07-11T08:00:02.000Z",
+      event: { type: "file_change", path: "src/live.ts", kind: "edit", diff: "--- a/src/live.ts\n+++ b/src/live.ts\n-old\n+new" },
+    } as SseEventEnvelope;
+    const live = updateAgentDetail("agent-1", fileEnvelope, responding);
+    const replayed = updateAgentDetail("agent-1", { ...fileEnvelope, replayed: true }, live);
+    expect(replayed.runOutput[0]?.fileActivity).toEqual([expect.objectContaining({
+      path: "src/live.ts", status: "in_progress", additions: 1, deletions: 1,
+      artifactId: "agent-1:a:3:0",
+    })]);
+    const completed = updateAgentDetail("agent-1", {
+      seq: 4, ts: "2026-07-11T08:00:03.000Z",
+      event: { type: "agent_output", executionId: "run-1", text: "Done", sourceSeqStart: 2, sourceSeqEnd: 3 },
+    } as SseEventEnvelope, replayed);
+    expect(completed.runOutput[0]?.fileActivity).toEqual([expect.objectContaining({ status: "completed" })]);
   });
 
   it("projects streamed execution activity and changed files without duplicating replay", () => {
