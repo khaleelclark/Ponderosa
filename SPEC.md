@@ -344,17 +344,19 @@ Activity/Artifacts events and are not rendered as Chat conversation.
 Only non-userinfo `http:` and `https:` navigation inputs are accepted. A page's
 current URL is untrusted even after an allowed navigation because redirects can
 introduce OAuth callbacks, bearer tokens, signed-download parameters, or
-credential-bearing fragments. Before a URL crosses into a DTO, canonical event,
-audit summary, snapshot, console record, or failure display, Ponderosa removes
-the entire fragment and redacts known credential-bearing query values. Titles
-and console/failure text receive the same URL redaction.
+credential-bearing fragments or userinfo. Before a URL crosses into a DTO,
+canonical event, audit summary, snapshot, console record, or failure display,
+Ponderosa strips userinfo and the entire fragment and redacts known
+credential-bearing query values. Inspect snapshots are recursively sanitized,
+including their title, visible text, and control labels; titles and
+console/failure text receive the same credential redaction.
 
 The manager retains a reconnect target only when the sanitized current URL has
-no credential-bearing query. Fragments are never retained. OAuth codes and
-state, access/refresh/ID/session tokens, API/client secrets, SAML payloads,
-signatures, and AWS/Google signed query fields are therefore never restored or
-replayed after reconnect. If the current URL is non-replayable, reconnect opens
-a blank page and requires an explicit fresh navigation.
+no credential-bearing query or userinfo. Fragments are never retained. OAuth
+codes and state, access/refresh/ID/session tokens, API/client secrets, SAML
+payloads, signatures, and AWS/Google signed query fields are therefore never
+restored or replayed after reconnect. If the current URL is non-replayable,
+reconnect opens a blank page and requires an explicit fresh navigation.
 
 Frames are bounded screenshots, not an unrestricted interactive stream.
 Screenshots are written with restrictive permissions to the owning Agent's

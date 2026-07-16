@@ -867,25 +867,79 @@ describe("interactive browser API", () => {
     close: vi.fn(async () => undefined),
   });
 
-  const startBrowserRun = async (app: ReturnType<typeof createServer>) => {
+  const startBrowserRun = async (app: ReturnType<typeof createServer>, headers?: Record<string, string>) => {
     const project = (await app.inject({
-      method: "POST", url: "/api/projects",
+      method: "POST", url: "/api/projects", headers,
       payload: { label: "Browser lifecycle", hostPath: repoDir, defaultEngine: "codex" },
     })).json<{ id: string }>();
     const agent = (await app.inject({
-      method: "POST", url: `/api/projects/${project.id}/agents`,
+      method: "POST", url: `/api/projects/${project.id}/agents`, headers,
       payload: { title: "Browser lifecycle agent", engine: "codex" },
     })).json<{ id: string }>();
     expect((await app.inject({
-      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Use the browser" },
+      method: "POST", url: `/api/agents/${agent.id}/messages`, headers, payload: { text: "Use the browser" },
     })).statusCode).toBe(202);
     await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("running");
     await waitForSeedCount(1);
     const runId = store.getRuns(agent.id)[0]!.id;
     const browserUrl = `/api/projects/${project.id}/agents/${agent.id}/runs/${runId}/browser`;
-    expect((await app.inject({ method: "POST", url: browserUrl })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: browserUrl, headers })).statusCode).toBe(200);
     return { project, agent, runId, browserUrl };
   };
+
+  it("authorizes operator DELETE against the exact run and tears down its session", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({
+      dataDir, store, engines, logger: false, authToken: "operator-secret",
+      browserDriverFactory: async () => driver,
+    });
+    const operator = { authorization: "Bearer operator-secret" };
+    const { agent, runId, browserUrl } = await startBrowserRun(app, operator);
+
+    expect((await app.inject({ method: "DELETE", url: browserUrl })).statusCode).toBe(401);
+    expect((await app.inject({
+      method: "DELETE", url: browserUrl.replace(runId, "foreign-run"), headers: operator,
+    })).statusCode).toBe(404);
+    const closed = await app.inject({ method: "DELETE", url: browserUrl, headers: operator });
+    expect(closed.statusCode).toBe(200);
+    expect(closed.json()).toMatchObject({ projectId: expect.any(String), agentId: agent.id, runId, status: "closed" });
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason: "operator_closed", executionId: runId }),
+    }));
+    await app.close();
+    expect(driver.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("authorizes run-capability close and tears down only its owned browser session", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { agent, runId } = await startBrowserRun(app);
+    const capability = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+
+    expect((await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: "Bearer foreign-capability" },
+      payload: { operation: "close" },
+    })).statusCode).toBe(401);
+    const closed = await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: `Bearer ${capability}` },
+      payload: { operation: "close" },
+    });
+    expect(closed.statusCode).toBe(200);
+    expect(closed.json()).toMatchObject({ session: { agentId: agent.id, runId, status: "closed" } });
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason: "agent_closed", executionId: runId }),
+    }));
+    expect((await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: `Bearer ${capability}` },
+      payload: { operation: "inspect" },
+    })).statusCode).toBe(409);
+    await app.close();
+    expect(driver.close).toHaveBeenCalledTimes(1);
+  });
 
   it("authenticates and scopes operator/agent control to the exact active run", async () => {
     adapter.mode = "hang";

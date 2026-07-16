@@ -131,8 +131,12 @@ export function redactBrowserUrl(value: string): RedactedBrowserUrl {
   }
   if (parsed.protocol === "about:" && parsed.pathname === "blank") return { url: "about:blank", replayUrl: "about:blank" };
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return { url: `${parsed.protocol}redacted` };
+  // The current page URL is untrusted: a redirect may introduce userinfo even
+  // though direct navigation rejects it. Never display, persist, or replay it.
+  let sensitive = Boolean(parsed.username || parsed.password);
+  parsed.username = "";
+  parsed.password = "";
   parsed.hash = "";
-  let sensitive = false;
   for (const name of [...parsed.searchParams.keys()]) {
     if (!isSensitiveQueryName(name)) continue;
     sensitive = true;
@@ -144,8 +148,15 @@ export function redactBrowserUrl(value: string): RedactedBrowserUrl {
   };
 }
 
+const SENSITIVE_TEXT_ASSIGNMENT = /(\b(?:access[_ -]?token|refresh[_ -]?token|id[_ -]?token|session[_ -]?token|authorization[_ -]?code|oauth[_ -]?code|client[_ -]?secret|api[_ -]?key|password|token)\b\s*[:=]\s*)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&#]+)/gi;
+const BEARER_CREDENTIAL = /(\bbearer\s+)([a-z0-9._~+/=-]{8,})/gi;
+
 function redactBrowserText(value: string): string {
-  return value.replace(/https?:\/\/[^\s<>"']+/gi, (candidate) => redactBrowserUrl(candidate).url);
+  return value
+    .replace(/https?:\/\/[^\s<>"']+/gi, (candidate) => redactBrowserUrl(candidate).url)
+    .replace(BEARER_CREDENTIAL, "$1[REDACTED]")
+    .replace(SENSITIVE_TEXT_ASSIGNMENT, (match, prefix: string, credential: string) =>
+      /^(?:\[REDACTED\]|%5Bredacted%5D)$/i.test(credential) ? match : `${prefix}[REDACTED]`);
 }
 
 function redactPageInfo(info: BrowserPageInfo): BrowserPageInfo & { replayUrl?: string } {
@@ -155,9 +166,17 @@ function redactPageInfo(info: BrowserPageInfo): BrowserPageInfo & { replayUrl?: 
 
 function redactSnapshot(snapshot: string): string {
   try {
-    const parsed = JSON.parse(snapshot) as { url?: unknown };
-    if (typeof parsed.url === "string") parsed.url = redactBrowserUrl(parsed.url).url;
-    return JSON.stringify(parsed, null, 2);
+    const redactValue = (value: unknown, key?: string): unknown => {
+      if (typeof value === "string") {
+        return key === "url" ? redactBrowserUrl(value).url : redactBrowserText(value);
+      }
+      if (Array.isArray(value)) return value.map((item) => redactValue(item));
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redactValue(child, childKey)]));
+      }
+      return value;
+    };
+    return JSON.stringify(redactValue(JSON.parse(snapshot)), null, 2);
   } catch {
     return redactBrowserText(snapshot);
   }

@@ -124,6 +124,67 @@ describe("run-scoped browser sessions", () => {
     expect(navigations).toEqual(["https://identity.example/authorize?client_id=public#prompt=login"]);
   });
 
+  it("strips redirect-introduced URL userinfo and never makes it reconnectable", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const events: AgentEvent[] = [];
+    const navigations: string[] = [];
+    const redirected = "https://redirect-user:redirect-password@example.com/account";
+    const first = fakeDriver();
+    first.navigate = async (url) => {
+      navigations.push(url);
+      return { url: redirected, title: `Account at ${redirected}` };
+    };
+    first.pageInfo = async () => ({ url: redirected, title: `Account at ${redirected}` });
+    first.inspect = async () => JSON.stringify({ url: redirected, title: `Account at ${redirected}` });
+    const second = fakeDriver();
+    second.navigate = async (url) => { navigations.push(url); return { url, title: "Unexpected replay" }; };
+    const drivers = [first, second];
+    const manager = new BrowserSessionManager(dataDir, async () => drivers.shift()!, (_scope, event) => events.push(event));
+    const scope: BrowserScope = { projectId: "project", agentId: "agent", runId: "run" };
+
+    const opened = await manager.open(scope, "https://example.com/start");
+    expect(opened).toMatchObject({ url: "https://example.com/account", title: "Account at https://example.com/account" });
+    expect(await manager.inspect(scope)).not.toMatch(/redirect-user|redirect-password/);
+    expect(JSON.stringify(events)).not.toMatch(/redirect-user|redirect-password/);
+
+    expect((await manager.reconnect(scope)).url).toBe("about:blank");
+    expect(navigations).toEqual(["https://example.com/start"]);
+  });
+
+  it("recursively redacts inspect credentials while retaining harmless snapshot text", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const driver = fakeDriver();
+    driver.pageInfo = async () => ({
+      url: "https://example.com/dashboard",
+      title: "Token pricing and authorization guide",
+    });
+    driver.inspect = async () => JSON.stringify({
+      url: "https://files.example/download?X-Amz-Signature=signed-secret&part=1#fragment-secret",
+      title: "OAuth code: title-secret",
+      text: "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature authorization=Bearer second.long.token access_token=body-secret&display=visible Token pricing remains visible.",
+      controls: [
+        { selector: "#refresh", text: "Refresh token: control-secret" },
+        { selector: "#guide", text: "Authorization guide" },
+      ],
+      region: { description: "Safe docs https://example.com/docs?topic=tokenization", nested: ["client_secret=nested-secret"] },
+    });
+    const manager = new BrowserSessionManager(dataDir, async () => driver, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "agent", runId: "run" };
+
+    await manager.open(scope);
+    const snapshot = await manager.inspect(scope);
+    expect(snapshot).not.toMatch(/signed-secret|fragment-secret|title-secret|body-secret|control-secret|nested-secret|eyJhbGci/);
+    expect(snapshot).toContain("X-Amz-Signature=%5BREDACTED%5D");
+    expect(snapshot).toContain("part=1");
+    expect(snapshot).toContain("display=visible");
+    expect(snapshot).toContain("Token pricing remains visible.");
+    expect(snapshot).toContain("Authorization guide");
+    expect(snapshot).toContain("https://example.com/docs?topic=tokenization");
+    expect(snapshot).toContain('"selector": "#refresh"');
+  });
+
   it("replays only a sanitized non-sensitive URL and never its fragment", async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
     roots.push(dataDir);
