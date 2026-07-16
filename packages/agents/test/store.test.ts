@@ -96,6 +96,35 @@ function appendCanonicalConversationMessage(
 }
 
 describe("AgentStore — V1 layout", () => {
+  it("searches human-facing projections globally while excluding runtime detail", () => {
+    const first = store.createProject({ label: "Alpha", hostPath: "/alpha" });
+    const firstChat = store.getConversation(first.lastConversationId!)!;
+    const firstAgent = store.createAgent(first.id, { title: "Alpha Agent", engine: "codex", conversationId: firstChat.id });
+    const firstMessage = appendCanonicalConversationMessage(firstChat.id, { text: "Investigate the rare cache needle" });
+    store.appendEvent(firstAgent.id, { type: "command", command: "echo secret-needle", cwd: "/alpha" });
+    store.appendEvent(firstAgent.id, { type: "text", delta: "runtime-needle must stay out of Chat" });
+
+    const second = store.createProject({ label: "Beta", hostPath: "/beta" });
+    const secondChat = store.getConversation(second.lastConversationId!)!;
+    appendCanonicalConversationMessage(secondChat.id, { text: "A second needle across projects" });
+
+    const response = store.searchGlobalChats({
+      query: "needle",
+      notifications: [{ conversationId: firstChat.id, communicationEventId: firstMessage!.communicationEventId }],
+    });
+    expect(response.results.map((result) => result.project.label)).toEqual(expect.arrayContaining(["Alpha", "Beta"]));
+    expect(response.results.some((result) => result.snippet.includes("runtime-needle") || result.snippet.includes("secret-needle"))).toBe(false);
+    expect(response.results.find((result) => result.messageId === firstMessage!.id)).toMatchObject({
+      unread: true,
+      chat: { kind: "conversation", id: firstChat.id, title: firstChat.title },
+      author: { kind: "user", label: "User" },
+    });
+
+    const empty = store.searchGlobalChats({ notifications: [{ conversationId: firstChat.id, communicationEventId: firstMessage!.communicationEventId }] });
+    expect(empty.results).toHaveLength(1);
+    expect(empty.recentChats.map((item) => item.project.label)).toEqual(expect.arrayContaining(["Alpha", "Beta"]));
+  });
+
   it("enforces exclusive live ownership of a data directory", () => {
     expect(() => new AgentStore(dir)).toThrow("already owned");
     store.close();

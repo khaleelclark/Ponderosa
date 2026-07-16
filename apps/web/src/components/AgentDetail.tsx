@@ -132,6 +132,7 @@ export function eligibleOrganizationParents(agent: AgentDto, agents: AgentDto[])
 
 export function AgentDetail({
   agentId,
+  focusMessageId,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -146,6 +147,7 @@ export function AgentDetail({
   onDeleted,
 }: {
   agentId: string;
+  focusMessageId?: string;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(): Promise<unknown> | unknown;
@@ -179,6 +181,10 @@ export function AgentDetail({
   const [primaryConversationId, setPrimaryConversationId] = useState("");
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
+  const [runSetupOpen, setRunSetupOpen] = useState(false);
+  const focusedMessage = useRef<string>();
+  const theme = useTheme();
+  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   useEffect(() => {
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -188,6 +194,19 @@ export function AgentDetail({
   useEffect(() => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
   }, [agentId, tab]);
+
+  useEffect(() => {
+    if (!focusMessageId || focusedMessage.current === focusMessageId) return;
+    if (tab !== "chat") {
+      setTab("chat");
+      return;
+    }
+    const target = document.getElementById(`message-${focusMessageId}`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
+    focusedMessage.current = focusMessageId;
+  }, [focusMessageId, tab, agentQuery.data?.messages]);
 
   const detail = agentQuery.data;
   const engine =

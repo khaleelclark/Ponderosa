@@ -4039,8 +4039,10 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("keeps v2 routes as explicit 501 stubs", async () => {
-    const { app, agent } = await createProjectAndAgent();
+  it("keeps switch-engine stubbed while global and legacy agent search use projected chat messages", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = project.lastConversationId!;
+    const message = appendBroadcast(store, project.id, conversationId, "Find this cross-project history needle");
 
     const switchEngine = await app.inject({
       method: "POST",
@@ -4049,11 +4051,31 @@ describe("server chunk F", () => {
     });
     const search = await app.inject({
       method: "GET",
+      url: "/api/search?q=history&limit=5",
+    });
+    const legacyAgentSearch = await app.inject({
+      method: "GET",
       url: `/api/agents/${agent.id}/search?q=history`,
     });
 
     expect(switchEngine.statusCode).toBe(501);
-    expect(search.statusCode).toBe(501);
+    expect(search.statusCode).toBe(200);
+    const searchBody = search.json<{ query: string; results: Array<{ project: { id: string }; chat: { kind: string; id: string }; messageId: string; snippet: string }>; scannedMessages: number; truncated: boolean }>();
+    expect(searchBody.query).toBe("history");
+    expect(searchBody.results).toHaveLength(1);
+    expect(searchBody.results[0]).toMatchObject({
+      project: { id: project.id },
+      chat: { kind: "conversation", id: conversationId },
+      messageId: message!.id,
+    });
+    expect(searchBody.results[0]!.snippet).toContain("history");
+    expect(searchBody.scannedMessages).toBeGreaterThanOrEqual(1);
+    expect(searchBody.truncated).toBe(false);
+    expect(legacyAgentSearch.statusCode).toBe(200);
+    expect(legacyAgentSearch.json()).toMatchObject({ query: "history", results: [] });
+
+    const tooLong = await app.inject({ method: "GET", url: `/api/search?q=${"x".repeat(201)}` });
+    expect(tooLong.statusCode).toBe(400);
     await app.close();
   });
 

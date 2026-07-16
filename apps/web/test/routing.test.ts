@@ -31,4 +31,11 @@ describe("mobile-critical durable navigation", () => {
     expect(parseRoute("/projects/project/conversations/planning"))
       .toEqual({ kind: "project", projectId: "project" });
   });
+
+  it("round-trips exact-message focus for Project and Agent chats", () => {
+    const conversation: Route = { kind: "conversation", projectId: "project", conversationId: "planning", focusMessageId: "message / 1" };
+    const agent: Route = { kind: "agent", projectId: "project", agentId: "agent", focusMessageId: "message #2" };
+    expect(parseRoute(routeToPath(conversation))).toEqual(conversation);
+    expect(parseRoute(routeToPath(agent))).toEqual(agent);
+  });
 });

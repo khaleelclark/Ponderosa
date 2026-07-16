@@ -77,6 +77,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["workspace-file"] });
       void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
+      void queryClient.invalidateQueries({ queryKey: ["global-search"] });
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
       const reconciliation = reconcileWorkspaceCursor(cursor.current, envelope);
@@ -91,6 +92,7 @@ export function useWorkspaceStream(): void {
         for (const queryKey of conversationChangedQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
         }
+        void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       } else if (event.type === "draft_changed" || event.type === "draft_conflict") void queryClient.invalidateQueries({ queryKey: ["conversation-draft", event.conversationId] });
       else if (event.type === "queued_message_changed") {
         void queryClient.invalidateQueries({ queryKey: ["queued-messages", event.conversationId] });
@@ -115,7 +117,10 @@ export function useWorkspaceStream(): void {
       else if (event.type === "runtime_capabilities_changed") {
         void invalidateWorkspaceCapabilities(queryClient, { kind: "runtime-change", projectId: event.projectId });
       }
-      else if (event.type === "notification_changed") void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      else if (event.type === "notification_changed") {
+        void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+        void queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      }
     };
     const subscription = api.subscribeWorkspace(cursor.current, {
       onEvent: apply,

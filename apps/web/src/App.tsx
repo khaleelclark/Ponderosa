@@ -2,6 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import SettingsIcon from "@mui/icons-material/Settings";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
+import SearchIcon from "@mui/icons-material/Search";
 import {
   Alert,
   AppBar,
@@ -40,6 +41,7 @@ import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { AllAgentsView, AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
+import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
@@ -95,6 +97,7 @@ export default function App({
   const [settingsProjectId, setSettingsProjectId] = useState<string>();
   const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
 
   useEffect(() => {
@@ -201,6 +204,16 @@ export default function App({
     document.documentElement.style.setProperty("--ponderosa-font-family", families[preferences.fontFamily]);
   }, [preferences.fontFamily]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isGlobalSearchShortcut(event)) return;
+      event.preventDefault();
+      setGlobalSearchOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const goHome = (next: Route) => navigate(next);
 
   return (
@@ -232,6 +245,17 @@ export default function App({
             variant="outlined"
             sx={{ maxWidth: { xs: 132, sm: "none" } }}
           />
+          <Button
+            variant="outlined"
+            color="inherit"
+            startIcon={<SearchIcon />}
+            onClick={() => setGlobalSearchOpen(true)}
+            aria-label="Search all chats"
+            sx={{ ml: 1, minWidth: { md: 190 }, justifyContent: "space-between", display: { xs: "none", md: "inline-flex" }, color: "text.secondary", borderColor: "divider" }}
+          >
+            Search <Box component="kbd" sx={{ ml: 2, px: .75, py: .15, border: 1, borderColor: "divider", borderRadius: .75, fontSize: 11, fontFamily: "inherit" }}>{typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K"}</Box>
+          </Button>
+          <Tooltip title="Search chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><SearchIcon /></IconButton></Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
@@ -315,6 +339,18 @@ export default function App({
           onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
         />
       </Drawer>
+
+      <GlobalChatSearch
+        open={globalSearchOpen}
+        onClose={() => setGlobalSearchOpen(false)}
+        onSelect={(selection) => {
+          saveLastProjectId(selection.projectId);
+          if (selection.chat.kind === "conversation") {
+            void api.markProjectUsed(selection.projectId, selection.chat.id);
+          }
+          navigate(routeForGlobalSearchSelection(selection));
+        }}
+      />
 
       <Dialog open={projectDialogOpen} onClose={() => setProjectDialogOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>New Project</DialogTitle>

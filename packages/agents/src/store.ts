@@ -59,6 +59,8 @@ import type {
   TokenUsageMetric,
   TokenUsageRangeDto,
   TokenUsage,
+  GlobalChatSearchAuthorDto,
+  GlobalChatSearchResponseDto,
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
@@ -68,6 +70,7 @@ import type {
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
 import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
+import { highlightedSearchSnippet, searchProjectedChatMessages, type ProjectedChatSearchCandidate } from "./chat-search.js";
 
 function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
   const { content: _content, ...metadata } = document;
@@ -1915,6 +1918,114 @@ export class AgentStore {
           ...(message.citations?.length ? { citations: message.citations } : {}),
         } satisfies MessageDto];
       });
+  }
+
+  /**
+   * Bounded global search over rebuildable human-facing communication views.
+   * Project chat is preferred when one canonical message is visible on both a
+   * Project chat and an Agent audit timeline, avoiding duplicate search hits.
+   */
+  searchGlobalChats(input: {
+    query?: string;
+    limit?: number;
+    recentLimit?: number;
+    maxScannedMessages?: number;
+    notifications?: Array<{ conversationId?: string; communicationEventId?: string; readAt?: string }>;
+  } = {}): GlobalChatSearchResponseDto {
+    const query = (input.query ?? "").trim();
+    const limit = Math.max(1, Math.min(50, input.limit ?? 30));
+    const recentLimit = Math.max(1, Math.min(20, input.recentLimit ?? 10));
+    const maxScannedMessages = Math.max(limit, Math.min(20_000, input.maxScannedMessages ?? 10_000));
+    const unreadNotifications = (input.notifications ?? []).filter((notification) => !notification.readAt);
+    const unreadEventIds = new Set(unreadNotifications.flatMap((notification) =>
+      notification.communicationEventId ? [notification.communicationEventId] : []));
+    const unreadConversationCounts = new Map<string, number>();
+    for (const notification of unreadNotifications) {
+      if (!notification.conversationId) continue;
+      unreadConversationCounts.set(notification.conversationId, (unreadConversationCounts.get(notification.conversationId) ?? 0) + 1);
+    }
+
+    const candidates: ProjectedChatSearchCandidate[] = [];
+    const recentChats: GlobalChatSearchResponseDto["recentChats"] = [];
+    const projectedEventIds = new Set<string>();
+
+    for (const project of this.listProjects()) {
+      const projectRef = { id: project.id, label: project.label };
+      const projectAgents = this.listAgents(project.id).filter((agent) => !agent.archived);
+      const agentsById = new Map(projectAgents.map((agent) => [agent.id, agent]));
+      const authorFor = (role: "user" | "assistant" | "system", authorAgentId?: string): GlobalChatSearchAuthorDto => {
+        if (authorAgentId) return { kind: "agent", label: agentsById.get(authorAgentId)?.title ?? "Agent", agentId: authorAgentId };
+        if (role === "user") return { kind: "user", label: "User" };
+        if (role === "system") return { kind: "system", label: "System" };
+        return { kind: "agent", label: "Agent" };
+      };
+
+      for (const conversation of this.listConversations(project.id).filter((item) => !item.archived)) {
+        const chat = { kind: "conversation" as const, id: conversation.id, title: conversation.title };
+        const visibleMessages = this.getConversationMessages(conversation.id, "main");
+        for (const message of visibleMessages) {
+          if (message.communicationEventId) projectedEventIds.add(message.communicationEventId);
+          candidates.push({
+            project: projectRef,
+            chat,
+            messageId: message.id,
+            ...(message.communicationEventId ? { communicationEventId: message.communicationEventId } : {}),
+            author: authorFor(message.role, message.authorAgentId),
+            timestamp: message.createdAt,
+            text: message.text,
+            unread: Boolean(message.communicationEventId && unreadEventIds.has(message.communicationEventId)),
+          });
+        }
+        const latest = visibleMessages.at(-1);
+        recentChats.push({
+          project: projectRef,
+          chat,
+          lastActivityAt: latest?.createdAt ?? conversation.updatedAt,
+          ...(latest?.text ? { snippet: highlightedSearchSnippet(latest.text, "").snippet } : {}),
+          unreadCount: unreadConversationCounts.get(conversation.id) ?? 0,
+        });
+      }
+
+      for (const agent of projectAgents) {
+        const chat = { kind: "agent" as const, id: agent.id, title: agent.title };
+        const visibleMessages = this.getProjectedAgentMessages(agent.id);
+        const uniqueMessages = visibleMessages.filter((message) => {
+          if (!message.communicationEventId) return true;
+          if (projectedEventIds.has(message.communicationEventId)) return false;
+          projectedEventIds.add(message.communicationEventId);
+          return true;
+        });
+        for (const message of uniqueMessages) {
+          candidates.push({
+            project: projectRef,
+            chat,
+            messageId: message.id,
+            ...(message.communicationEventId ? { communicationEventId: message.communicationEventId } : {}),
+            author: authorFor(message.role, message.authorAgentId),
+            timestamp: message.createdAt,
+            text: message.text,
+            unread: Boolean(message.communicationEventId && unreadEventIds.has(message.communicationEventId)),
+          });
+        }
+        const latest = visibleMessages.at(-1);
+        if (latest) recentChats.push({
+          project: projectRef,
+          chat,
+          lastActivityAt: latest.createdAt,
+          ...(latest.text ? { snippet: highlightedSearchSnippet(latest.text, "").snippet } : {}),
+          unreadCount: new Set(visibleMessages.flatMap((message) =>
+            message.communicationEventId && unreadEventIds.has(message.communicationEventId) ? [message.communicationEventId] : [])).size,
+        });
+      }
+    }
+
+    const searched = searchProjectedChatMessages(candidates, { query, limit, maxScannedMessages });
+    return {
+      ...searched,
+      recentChats: query ? [] : recentChats
+        .sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt))
+        .slice(0, recentLimit),
+    };
   }
 
   getRuns(agentId: string): AgentRunDto[] {

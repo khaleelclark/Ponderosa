@@ -42,6 +42,7 @@ import type {
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
   CancelAgentRunResponse,
+  GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
@@ -115,6 +116,9 @@ export const realApi: PonderosaApi = {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
     return requestJson<TokenUsageSummaryDto>(url);
+  },
+  searchGlobalChats(query, limit) {
+    return requestJson<GlobalChatSearchResponseDto>(`/api/search${toQuery({ q: query, limit })}`);
   },
   listConversations(projectId) {
     return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");

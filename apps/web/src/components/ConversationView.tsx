@@ -340,6 +340,7 @@ export function ConversationView({
   const shouldFollowNewMessages = useRef(true);
   const displayedConversationId = useRef<string>();
   const displayedView = useRef<"main" | "collaboration">();
+  const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
@@ -358,6 +359,19 @@ export function ConversationView({
   const messages = compactDefined(detailQuery.data?.messages ?? []);
   const agents = compactDefined(detailQuery.data?.agents ?? []);
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
+  useEffect(() => {
+    if (!focusMessageId || focusedMessage.current === focusMessageId) return;
+    if (activeView !== "main") {
+      setActiveView("main");
+      return;
+    }
+    const target = document.getElementById(`master-message-${focusMessageId}`);
+    if (!target) return;
+    shouldFollowNewMessages.current = false;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
+    focusedMessage.current = focusMessageId;
+  }, [activeView, focusMessageId, messages]);
   useLayoutEffect(() => {
     if (
       displayedConversationId.current !== conversationId ||

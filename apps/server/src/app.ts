@@ -78,6 +78,7 @@ import type {
   CancelAgentRunResponse,
   CreateLinkPreviewRequest,
   LinkPreviewDto,
+  GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -4790,9 +4791,38 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     reply.code(501).send({ error: "switch-engine is a v2 endpoint" }),
   );
 
-  app.get("/api/agents/:id/search", async (_request, reply) =>
-    reply.code(501).send({ error: "search is a v2 endpoint" }),
-  );
+  const globalChatSearch = (query: { q?: string; limit?: string | number }): GlobalChatSearchResponseDto => {
+    const q = String(query.q ?? "").trim();
+    if (q.length > 200) throw new Error("search query must be 200 characters or fewer");
+    const requestedLimit = Number(query.limit ?? 30);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(50, Math.floor(requestedLimit))) : 30;
+    return store.searchGlobalChats({ query: q, limit, notifications: workspace.listNotifications() });
+  };
+
+  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search", async (request, reply) => {
+    try {
+      return globalChatSearch(request.query);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
+    }
+  });
+
+  // Keep the former agent-search URL useful for old clients while returning the
+  // same shared DTO and projection semantics as global search.
+  app.get<{ Params: { id: string }; Querystring: { q?: string; limit?: string } }>("/api/agents/:id/search", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent) return reply.code(404).send({ error: "agent not found" });
+    try {
+      const response = globalChatSearch(request.query);
+      return {
+        ...response,
+        results: response.results.filter((result) => result.chat.kind === "agent" && result.chat.id === agent.id),
+        recentChats: response.recentChats.filter((recent) => recent.chat.kind === "agent" && recent.chat.id === agent.id),
+      };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
+    }
+  });
 
   async function assetMetadata(agentId: string, id: string) {
     const agent = store.getAgent(agentId);

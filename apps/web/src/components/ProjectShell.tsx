@@ -212,7 +212,7 @@ export function ProjectShell({
       <ConversationView
         key={route.conversationId}
         conversationId={route.conversationId}
-        focusMessageId={route.messageId}
+        focusMessageId={route.focusMessageId}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={() => capabilitiesQuery.refetch()}
@@ -230,6 +230,7 @@ export function ProjectShell({
       <AgentDetail
         key={route.agentId}
         agentId={route.agentId}
+        focusMessageId={route.focusMessageId}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={() => capabilitiesQuery.refetch()}

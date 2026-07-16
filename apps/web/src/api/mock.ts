@@ -18,6 +18,7 @@ import type {
   TokenUsageScope,
   TokenUsageRangeDto,
   CancelAgentRunResponse,
+  GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -381,6 +382,43 @@ export const mockApi: PonderosaApi = {
       breakdown: [],
       recentTurns: [],
     });
+  },
+  searchGlobalChats(query, limit = 30) {
+    const normalized = query.trim().toLocaleLowerCase();
+    const results: GlobalChatSearchResponseDto["results"] = [];
+    for (const conversation of conversations) {
+      const project = projects.find((item) => item.id === conversation.projectId);
+      if (!project) continue;
+      for (const message of masterMessages[conversation.id] ?? []) {
+        const match = normalized ? message.text.toLocaleLowerCase().indexOf(normalized) : -1;
+        if (normalized && match < 0) continue;
+        results.push({
+          project: { id: project.id, label: project.label },
+          chat: { kind: "conversation", id: conversation.id, title: conversation.title },
+          messageId: message.id,
+          ...(message.communicationEventId ? { communicationEventId: message.communicationEventId } : {}),
+          author: message.authorAgentId
+            ? { kind: "agent", label: agents.find((agent) => agent.id === message.authorAgentId)?.title ?? "Agent", agentId: message.authorAgentId }
+            : { kind: message.role === "system" ? "system" : "user", label: message.role === "system" ? "System" : "User" },
+          timestamp: message.createdAt,
+          snippet: message.text,
+          highlights: match >= 0 ? [{ start: match, length: normalized.length }] : [],
+          unread: false,
+        });
+      }
+    }
+    const recentChats = normalized ? [] : conversations.slice(0, 10).flatMap((conversation) => {
+      const project = projects.find((item) => item.id === conversation.projectId);
+      if (!project) return [];
+      return [{
+        project: { id: project.id, label: project.label },
+        chat: { kind: "conversation" as const, id: conversation.id, title: conversation.title },
+        lastActivityAt: conversation.updatedAt,
+        ...(masterMessages[conversation.id]?.at(-1)?.text ? { snippet: masterMessages[conversation.id]!.at(-1)!.text } : {}),
+        unreadCount: 0,
+      }];
+    });
+    return delay({ query: query.trim(), results: results.slice(0, limit), recentChats, scannedMessages: results.length, truncated: results.length > limit });
   },
   listAgentPresets(projectId) { return delay(agentPresets.filter((preset) => preset.projectId === projectId)); },
   createAgentPreset(projectId, request) { const now = new Date().toISOString(); const preset: AgentPresetDto = { id: `preset-${Date.now()}`, projectId, ...request, enabled: request.enabled ?? true, createdAt: now, updatedAt: now }; agentPresets.push(preset); return delay(preset); },
