@@ -35,6 +35,9 @@ engage with it.
 6. **Functionality comes first.** Core workflows must work reliably. Mobile and
    interface polish should improve continuously without blocking foundational
    correctness.
+7. **Automation is explicit and inspectable.** Outside events may start work,
+   but their payloads remain untrusted data, every occurrence is auditable, and
+   the user can disable the source without losing completed results.
 
 ## Interaction and execution state
 
@@ -67,7 +70,8 @@ Agent Detail separates durable views of the same execution domain: Chat for
 explicit communication, Work log for ordinary runtime output, Activity for the
 chronological command/test/tool/file feed, Changed Files for the canonical
 agent-attributed file set, Review for the current Git working tree and safe
-diff/file inspection, Runs for execution state, and Files & results for durable outputs.
+diff/file inspection, Runs for execution state, Files & results for durable outputs,
+and Triggers for Agent-owned automatic work.
 Sources remain attached to their message in a compact footer. Generated PDFs are
 previewable and downloadable as project-scoped artifacts.
 
@@ -95,6 +99,29 @@ Context inspection distinguishes exact input submitted for the current Run from
 evidence known only to remain in a continued provider session. Unsent queued
 messages and unrelated artifacts appear in neither category, and historical
 manifest records remain readable after the schema evolves.
+
+## Automatic Triggers
+
+Power users may attach schedules, signed webhooks, and Project-folder watchers
+to one Agent in one Project chat. A Trigger is part of that Agent's lifecycle,
+not a global workflow router: deleting the Agent or removing its chat membership
+deletes the Trigger and cancels work that has not started. Completed Runs,
+artifacts, and occurrence history remain evidence of what happened.
+
+Trigger work always queues at a turn boundary. Bursts retain every normalized
+occurrence but may be executed as one bounded same-Trigger batch; they never
+replace the latest event, silently discard intermediate events, steer an active
+Run, or mix definitions. Filesystem sources bundle paths and event metadata
+without automatically injecting file contents. Missed schedules recover as one
+occurrence rather than a Run per interval.
+
+Automation is intentionally flexible in V3.2: Trigger Runs have the full access
+of their Agent. Ponderosa therefore presents a prominent full-access warning,
+requires signed webhook intake, preserves immutable payload/provenance hashes,
+and keeps operator instructions structurally separate from untrusted event
+data. These boundaries reduce accidental and prompt-injection risk but are not
+a restricted-execution sandbox. Reduced authority can be added later if real
+usage demonstrates that the flexibility/safety tradeoff requires it.
 
 ## Projects and agent organization
 

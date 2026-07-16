@@ -302,6 +302,24 @@ export const realApi: PonderosaApi = {
   getAgent(agentId) {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}`);
   },
+  listTriggers(agentId) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
+  },
+  createTrigger(agentId, request) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`, { method: "POST", body: JSON.stringify(request) });
+  },
+  updateTrigger(triggerId, request) {
+    return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}`, { method: "PATCH", body: JSON.stringify(request) });
+  },
+  async deleteTrigger(triggerId) {
+    await requestJson(`/api/triggers/${encodeURIComponent(triggerId)}`, { method: "DELETE" });
+  },
+  rotateTriggerSecret(triggerId) {
+    return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/rotate-secret`, { method: "POST" });
+  },
+  listTriggerOccurrences(triggerId, limit = 100) {
+    return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/occurrences?limit=${encodeURIComponent(String(limit))}`);
+  },
   listEngines() {
     return requestJson<EngineDto[]>("/api/engines");
   },

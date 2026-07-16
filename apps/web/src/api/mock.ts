@@ -21,6 +21,8 @@ import type {
   GlobalChatSearchResponseDto,
   BrowserSessionDto,
   ProjectBrowserSessionDto,
+  TriggerDefinitionDto,
+  TriggerOccurrenceDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -59,6 +61,8 @@ const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const browserSessions = new Map<string, BrowserSessionDto>();
 const projectBrowserSessions = new Map<string, ProjectBrowserSessionDto>();
 const agentPresets: AgentPresetDto[] = [];
+const triggers: TriggerDefinitionDto[] = [];
+const triggerOccurrences = new Map<string, TriggerOccurrenceDto[]>();
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
 const uploadedAttachments = new Map<string, import("@ponderosa/core").ImageAttachmentDto>();
@@ -694,6 +698,41 @@ export const mockApi: PonderosaApi = {
       artifacts: artifacts[agentId] ?? [],
       state: agent.state,
     });
+  },
+  listTriggers(agentId) {
+    return delay(triggers.filter((trigger) => trigger.agentId === agentId));
+  },
+  createTrigger(agentId, request) {
+    const agent = agents.find((candidate) => candidate.id === agentId);
+    if (!agent) return Promise.reject(new Error("Agent not found"));
+    const createdAt = new Date().toISOString();
+    const trigger: TriggerDefinitionDto = {
+      id: `trigger-${Date.now()}`, projectId: agent.projectId, conversationId: request.conversationId,
+      agentId, name: request.name, instructions: request.instructions, sourceKind: request.sourceKind,
+      sourceConfig: request.sourceConfig, enabled: request.enabled !== false, fullAccess: true,
+      ...(request.sourceKind === "webhook" ? { webhookPath: `/api/trigger-webhooks/trigger-${Date.now()}`, secretFingerprint: "demo" } : {}),
+      createdAt, updatedAt: createdAt,
+    };
+    triggers.push(trigger);
+    return delay({ trigger, ...(request.sourceKind === "webhook" ? { webhookSecret: "demo-secret-shown-once" } : {}) });
+  },
+  updateTrigger(triggerId, request) {
+    const trigger = triggers.find((candidate) => candidate.id === triggerId);
+    if (!trigger) return Promise.reject(new Error("Trigger not found"));
+    Object.assign(trigger, request, { updatedAt: new Date().toISOString() });
+    return delay(trigger);
+  },
+  deleteTrigger(triggerId) {
+    const index = triggers.findIndex((candidate) => candidate.id === triggerId);
+    if (index !== -1) triggers.splice(index, 1);
+    return delay(undefined);
+  },
+  rotateTriggerSecret(triggerId) {
+    const trigger = triggers.find((candidate) => candidate.id === triggerId);
+    return trigger ? delay({ trigger, webhookSecret: "rotated-demo-secret" }) : Promise.reject(new Error("Trigger not found"));
+  },
+  listTriggerOccurrences(triggerId) {
+    return delay(triggerOccurrences.get(triggerId) ?? []);
   },
   listEngines() {
     return delay(engines);

@@ -67,6 +67,11 @@ import type {
   BrowserOperatorInputRequest,
   ProjectBrowserSessionDto,
   ProjectBrowserControlRequest,
+  TriggerDefinitionDto,
+  TriggerOccurrenceDto,
+  CreateTriggerRequest,
+  CreateTriggerResponse,
+  UpdateTriggerRequest,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -162,6 +167,12 @@ export interface PonderosaApi {
   updateAgentOrganization(agentId: string, request: UpdateAgentOrganizationRequest): Promise<AgentDto>;
   deleteAgent(agentId: string): Promise<void>;
   getAgent(agentId: string): Promise<AgentDetailDto>;
+  listTriggers(agentId: string): Promise<TriggerDefinitionDto[]>;
+  createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse>;
+  updateTrigger(triggerId: string, request: UpdateTriggerRequest): Promise<TriggerDefinitionDto>;
+  deleteTrigger(triggerId: string): Promise<void>;
+  rotateTriggerSecret(triggerId: string): Promise<CreateTriggerResponse>;
+  listTriggerOccurrences(triggerId: string, limit?: number): Promise<TriggerOccurrenceDto[]>;
   listEngines(): Promise<EngineDto[]>;
   recheckEngine(engineId: string): Promise<EngineDto>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;

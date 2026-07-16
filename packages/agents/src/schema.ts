@@ -351,6 +351,8 @@ export const triggerOccurrences = sqliteTable("trigger_occurrences", {
   scopeKey: text("scope_key").notNull(),
   payloadJson: text("payload_json").notNull(),
   provenanceJson: text("provenance_json").notNull(),
+  triggerSnapshotJson: text("trigger_snapshot_json").notNull().default("{}"),
+  payloadMediaType: text("payload_media_type").notNull().default("application/json"),
   inputHash: text("input_hash").notNull(),
   activationConfigJson: text("activation_config_json").notNull(),
   state: text("state").notNull(),
@@ -361,7 +363,26 @@ export const triggerOccurrences = sqliteTable("trigger_occurrences", {
   occurredAt: text("occurred_at").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+  cancelledAt: text("cancelled_at"),
   deadLetteredAt: text("dead_lettered_at"),
+});
+
+export const triggerDefinitions = sqliteTable("trigger_definitions", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  name: text("name").notNull(),
+  instructions: text("instructions").notNull(),
+  sourceKind: text("source_kind").notNull(),
+  sourceConfigJson: text("source_config_json").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  nextFireAt: text("next_fire_at"),
+  lastFiredAt: text("last_fired_at"),
+  secretCiphertext: text("secret_ciphertext"),
+  secretFingerprint: text("secret_fingerprint"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
 });
 
 export type ProjectRow = typeof projects.$inferSelect;
@@ -378,6 +399,8 @@ export type CoordinationRequestRow = typeof coordinationRequests.$inferSelect;
 export type CoordinationJoinRow = typeof coordinationJoins.$inferSelect;
 export type AgentActivationRow = typeof agentActivations.$inferSelect;
 export type SchedulerRunRow = typeof schedulerRuns.$inferSelect;
+export type TriggerDefinitionRow = typeof triggerDefinitions.$inferSelect;
+export type TriggerOccurrenceRow = typeof triggerOccurrences.$inferSelect;
 export type RuntimeCommunicationRow = typeof runtimeCommunications.$inferSelect;
 export type SchedulerPromptInjectionRow = typeof schedulerPromptInjections.$inferSelect;
 export type SchedulerCancellationReceiptRow = typeof schedulerCancellationReceipts.$inferSelect;

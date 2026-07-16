@@ -32,9 +32,13 @@ describe("Communication V3 agent deletion", () => {
           { requestId: "membership-removal-request", recipientAgentId: recipient.id, lifetime: { kind: "indefinite" } },
         ],
       });
+      coordination.createTriggerDefinition({
+        id: "membership-trigger", projectId: project.id, conversationId: chatA.id, agentId: recipient.id,
+        name: "Membership trigger", instructions: "Handle it", sourceKind: "webhook",
+        sourceConfig: { replayWindowSeconds: 300 },
+      });
       const trigger = coordination.recordTriggerOccurrence({
-        projectId: project.id, conversationId: chatA.id, triggerId: "membership-trigger",
-        occurrenceKey: "delivery-1", agentId: recipient.id, payload: { task: "watch" },
+        triggerId: "membership-trigger", occurrenceKey: "delivery-1", payload: { task: "watch" },
         provenance: { source: "test" },
       });
       expect(trigger.state).toBe("pending");
@@ -53,7 +57,7 @@ describe("Communication V3 agent deletion", () => {
         WHERE agent_id = ? AND scope_key = ? AND state IN ('pending', 'retry_pending')
       `).get(recipient.id, `conversation:${chatA.id}`)).toEqual({ count: 0 });
       expect(agents.sqlite.prepare("SELECT state FROM trigger_occurrences WHERE id = ?").get(trigger.occurrenceId))
-        .toEqual({ state: "dead_lettered" });
+        .toEqual({ state: "cancelled" });
       expect(agents.sqlite.prepare(`
         SELECT state, terminal_outcome FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
@@ -159,8 +163,9 @@ describe("Communication V3 agent deletion", () => {
     const agents = new AgentStore(directory);
     try {
       const project = agents.createProject({ label: "Delete project", hostPath: "/repo" });
-      const requester = agents.createAgent(project.id, { title: "Requester", engine: "codex" });
-      const recipient = agents.createAgent(project.id, { title: "Recipient", engine: "codex" });
+      const chat = agents.createConversation(project.id, { title: "Trigger chat" });
+      const requester = agents.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: chat.id });
+      const recipient = agents.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: chat.id });
       const coordination = new CoordinationV3Store(agents.sqlite);
       coordination.coordinate({
         projectId: project.id, requesterAgentId: requester.id, actorScope: `agent:${requester.id}`,
@@ -178,9 +183,14 @@ describe("Communication V3 agent deletion", () => {
         id: "project-delete-communication", projectId: project.id,
         sender: { kind: "user" }, intent: "broadcast", audience: { projectId: project.id }, payload: { text: "FYI" },
       });
+      coordination.createTriggerDefinition({
+        id: "project-delete-trigger", projectId: project.id, conversationId: chat.id, agentId: recipient.id,
+        name: "Project trigger", instructions: "Handle it", sourceKind: "webhook",
+        sourceConfig: { replayWindowSeconds: 300 },
+      });
       coordination.recordTriggerOccurrence({
-        projectId: project.id, triggerId: "project-delete-trigger", occurrenceKey: "delivery-1",
-        agentId: recipient.id, payload: { task: "watch" }, provenance: { source: "test" },
+        triggerId: "project-delete-trigger", occurrenceKey: "delivery-1",
+        payload: { task: "watch" }, provenance: { source: "test" },
       });
 
       coordination.prepareProjectDeletion(project.id);
@@ -193,7 +203,7 @@ describe("Communication V3 agent deletion", () => {
         "activation_outbox", "scheduler_runs", "scheduler_run_activations",
         "scheduler_prompt_injections", "scheduler_cancellation_receipts",
         "provider_operation_outbox", "coordination_idempotency", "scheduler_agent_fences",
-        "trigger_occurrences",
+        "trigger_occurrences", "trigger_definitions",
       ]) {
         expect(agents.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
       }

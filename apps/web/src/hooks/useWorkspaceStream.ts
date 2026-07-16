@@ -115,6 +115,8 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
       void queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      void queryClient.invalidateQueries({ queryKey: ["triggers"] });
+      void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences"] });
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
       const reconciliation = reconcileWorkspaceCursor(cursor.current, envelope);
@@ -138,6 +140,10 @@ export function useWorkspaceStream(): void {
       else if (event.type === "message_delivery_changed") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+      }
+      else if (event.type === "trigger_changed") {
+        void queryClient.invalidateQueries({ queryKey: ["triggers", event.agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences", event.triggerId] });
       }
       else if (event.type === "agent_event") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });

@@ -14,7 +14,34 @@ The comparisons below are retained historical qualification evidence. Their
 isolated data directories, ports, feature flags, and V2 service descriptions do
 not describe the current executable product.
 
-## Current V3.1.2 integration contract
+## Current V3.2 integration contract
+
+V3.2 retains the V3.1.3 hardening boundary and adds user-authored Agent-owned
+Triggers. The accepted contract is:
+
+- exactly one existing Agent and one Project chat own each Trigger;
+- schedules, signed webhooks, and Project-folder changes normalize to immutable
+  occurrence rows before they can affect scheduling;
+- every occurrence creates one Activation and Trigger work always queues;
+- compatible pending occurrences from the same definition may share one bounded
+  Run, while different definitions and arrivals during an active Run stay
+  separate;
+- webhook event IDs are HMAC-bound to the exact raw body and timestamp, secrets
+  are encrypted at rest and shown only once, and payloads are bounded;
+- operator instructions remain structurally separate from untrusted source data;
+- filesystem intake bundles metadata without reading file contents; and
+- disabling or deleting lifecycle owners cancels pending work while completed
+  Runs, artifacts, and occurrence history survive.
+
+V3.2 Trigger Runs use full Agent authority. The warning is explicit in the UI
+and provider input; reduced-authority execution is not claimed. Local automated
+qualification covers source validation, webhook signature/replay/idempotency,
+missed-schedule collapse, same-definition batching, lifecycle cancellation, and
+history retention. Production reliability/cost benchmarks remain outstanding
+until the release candidate is deployed, so no efficiency improvement is
+claimed here.
+
+## Retained V3.1.2 integration contract
 
 V3.1.2 retains the V3.1.1 reliability boundary and closes the faults found by
 the subsequent rigorous production campaign:
@@ -45,7 +72,7 @@ qualification as one integrated reliability boundary:
 - explicit capacity rejection uses backoff and safe fallback selection.
 
 This implementation work does not retroactively strengthen the benchmark claims
-below. User-authored Triggers remain deliberately deferred.
+below. The Trigger deferral described by this historical section ended in V3.2.
 
 ## V3.1.1 activation-delivery lifecycle
 

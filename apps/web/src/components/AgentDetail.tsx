@@ -10,6 +10,7 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import {
   Alert,
   Box,
@@ -58,8 +59,9 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
+import { TriggersPane } from "./TriggersPane";
 
-type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts";
+type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
 
 export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
@@ -119,6 +121,7 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
   { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
   { value: "runs", label: "Runs", icon: <TaskAltOutlinedIcon /> },
   { value: "artifacts", label: "Files & results", icon: <Inventory2OutlinedIcon /> },
+  { value: "triggers", label: "Triggers", icon: <BoltOutlinedIcon /> },
 ];
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
@@ -519,6 +522,7 @@ export function AgentDetail({
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} initialArtifactId={readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} />,
+    triggers: <TriggersPane agent={detail.agent} />,
   };
 
   return (

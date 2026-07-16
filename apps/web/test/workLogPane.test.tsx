@@ -5,7 +5,7 @@ import { AGENT_DETAIL_TAB_LABELS } from "../src/components/AgentDetail";
 
 describe("WorkLogPane", () => {
   it("is a dedicated agent-detail tab beside the existing panes", () => {
-    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Work log", "Activity", "Changed Files", "Review", "Runs", "Files & results"]);
+    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Work log", "Activity", "Changed Files", "Review", "Runs", "Files & results", "Triggers"]);
   });
 
   it("renders completed responses and transient reasoning distinctly in chronological order", () => {
