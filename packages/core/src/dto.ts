@@ -143,6 +143,7 @@ export type WorkspaceEvent =
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
+  | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
   | { type: "push_subscription_changed"; deviceId: string; action: "upserted" | "deleted" };
 
 export interface WebPushSubscriptionDto {
@@ -1053,6 +1054,7 @@ export interface ProjectEngineCapabilitiesDto {
   persistentSessions: boolean;
   commands: import("./adapter.js").EngineCommand[];
   mcpServers: import("./adapter.js").EngineMcpServer[];
+  composerCapabilities: import("./adapter.js").EngineComposerCapability[];
 }
 
 // ─── Files (scoped file browser, SPEC §8/§11) ────────────────────────────────

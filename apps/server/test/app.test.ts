@@ -8,7 +8,7 @@ import path from "node:path";
 import { runInNewContext } from "node:vm";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 
@@ -3975,11 +3975,12 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("caches inherited engine capabilities instead of repeatedly spawning host CLIs", async () => {
+  it("rediscovers inherited engine capabilities and reports newly available skills", async () => {
     let discoveries = 0;
     Object.assign(adapter, { capabilities: async () => {
       discoveries += 1;
-      return { steering: true, persistentSessions: true, commands: [], mcpServers: [] };
+      const skill = { id: `skill:review-${discoveries}`, kind: "skill" as const, label: `review-${discoveries}`, description: "Review changes", status: "available" as const, insertText: `$review-${discoveries} ` };
+      return { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [skill] };
     } });
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Capabilities", hostPath: repoDir });
@@ -3988,8 +3989,9 @@ describe("server chunk F", () => {
     const second = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
 
     expect(first.statusCode).toBe(200);
-    expect(second.json()).toEqual(first.json());
-    expect(discoveries).toBe(1);
+    expect(first.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-1");
+    expect(second.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-2");
+    expect(discoveries).toBe(2);
     await app.close();
   });
 

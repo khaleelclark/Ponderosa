@@ -2,7 +2,7 @@ import type { ConversationMessageDto } from "@ponderosa/core";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { ConversationMessage } from "../src/components/ConversationView";
+import { ConversationMessage, conversationComposerRuntime } from "../src/components/ConversationView";
 import { replyPreviewText } from "../src/components/panes";
 
 const baseMessage: ConversationMessageDto = {
@@ -16,6 +16,28 @@ const baseMessage: ConversationMessageDto = {
 };
 
 describe("chat interaction refinement", () => {
+  it("shares selected authenticated runtime capabilities with Project and Team composer views", () => {
+    const runtime = conversationComposerRuntime(
+      { id: "runtime-a", authenticated: true },
+      [{
+        engineId: "runtime-a",
+        steering: true,
+        persistentSessions: true,
+        commands: [{ name: "review", description: "Review", source: "skill", acceptsArguments: true }],
+        mcpServers: [],
+        composerCapabilities: [{ id: "skill:review", kind: "skill", label: "review", description: "Review", status: "available", insertText: "$review " }],
+      }],
+    );
+    expect(runtime.commands.map((command) => command.name)).toEqual(["review"]);
+    expect(runtime.capabilities.map((capability) => capability.id)).toEqual(["skill:review"]);
+    expect(conversationComposerRuntime({ id: "runtime-a", authenticated: false }, []).capabilities).toEqual([]);
+
+    const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
+    expect(source).toContain("capabilities={composerRuntime.capabilities}");
+    expect(source).toContain("onCapabilitiesOpen={onRefreshCapabilities}");
+    expect(source).not.toContain('capabilities={activeView === "main"');
+  });
+
   it("keeps direct-reply context bounded and exposes review/count metadata", () => {
     expect(replyPreviewText("long text ".repeat(100)).length).toBeLessThanOrEqual(240);
     const html = renderToStaticMarkup(

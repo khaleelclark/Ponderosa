@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import { create, unstable_batchedUpdates } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -18,6 +18,35 @@ const pasteTarget = (view: ReturnType<typeof create>) => view.root.findAll((node
 const renderComposer = (element: ReactElement) => create(<QueryClientProvider client={new QueryClient()}>{element}</QueryClientProvider>);
 
 describe("composer clipboard attachments", () => {
+  it("keeps context guidance and the capability trigger inside the shared composer shell", () => {
+    const view = renderComposer(<Composer
+      disabled={false}
+      running={false}
+      guidance="Use #agent to target an agent and @ to reference a file."
+      capabilities={[{ id: "skill:review", kind: "skill", label: "review", description: "Review changes", status: "available", insertText: "$review " }]}
+      onSend={() => undefined}
+    />);
+    expect(view.root.findAll((node) => node.children.includes("Use #agent to target an agent and @ to reference a file."))).not.toHaveLength(0);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Add attachment or capability")).toHaveLength(1);
+    expect(view.root.findAll((node) => node.props.variant === "standard" && node.props.multiline)).toHaveLength(1);
+    view.unmount();
+  });
+
+  it("refreshes runtime discovery whenever the capability menu opens", () => {
+    const refresh = vi.fn();
+    const view = renderComposer(<Composer
+      disabled={false}
+      running={false}
+      capabilities={[]}
+      onCapabilitiesOpen={refresh}
+      onSend={() => undefined}
+    />);
+    const trigger = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Add attachment or capability")[0]!;
+    trigger.props.onClick({ currentTarget: null });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
   it("bounds long reply previews so the cancel action remains reachable", () => {
     const preview = replyPreviewText(`  ${"long reply segment ".repeat(80)}  `);
     expect(preview.length).toBeLessThanOrEqual(240);
@@ -244,6 +273,42 @@ describe("composer clipboard attachments", () => {
 
     expect(sent).toHaveLength(3);
     expect(sent.reduce((total, value) => total + value.size, 0)).toBe(24 * 1024 * 1024);
+    view.unmount();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
+
+  it("queues an attachment-only busy draft and returns to ordinary Send without losing it", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (value) => `blob:${(value as File).name}`;
+    URL.revokeObjectURL = () => undefined;
+    const queued: Array<{ text: string; files: File[] }> = [];
+    const client = new QueryClient();
+    const attachment = file("busy-context.pdf", "application/pdf");
+    const props = {
+      disabled: false,
+      running: false,
+      agentResponding: true,
+      onSend: () => undefined,
+      onQueue: (text: string, files: File[]) => { queued.push({ text, files }); },
+    };
+    const view = create(<QueryClientProvider client={client}><Composer {...props} /></QueryClientProvider>);
+    pasteTarget(view).props.onPaste(clipboard([attachment]));
+
+    const queue = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")[0]!;
+    expect(queue.props.disabled).toBeFalsy();
+    queue.props.onClick();
+    expect(queued).toEqual([{ text: "", files: [attachment] }]);
+    await Promise.resolve();
+
+    // A second staged draft survives the canonical busy -> available switch;
+    // Queue disappears and the ordinary Send action remains accessible.
+    pasteTarget(view).props.onPaste(clipboard([attachment]));
+    view.update(<QueryClientProvider client={client}><Composer {...props} agentResponding={false} onQueue={undefined} /></QueryClientProvider>);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")).toHaveLength(0);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")).toHaveLength(1);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Remove busy-context.pdf")).toHaveLength(1);
     view.unmount();
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;

@@ -28,7 +28,7 @@ import type {
 import { codexApiPriceProfile } from "./api-pricing.js";
 import { mapCodexEvent } from "./events.js";
 import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
-import { discoverCliMcps, discoverMarkdownCommands, parseCodexMcpList } from "./capabilities.js";
+import { composerCapabilities, discoverCliMcps, discoverEnginePlugins, discoverMarkdownCommands, parseCodexMcpList } from "./capabilities.js";
 import { CodexAppServerSession } from "./codex-app-server.js";
 
 export type { SpawnFn };
@@ -192,15 +192,21 @@ export class CodexAdapter implements Adapter {
 
   async capabilities(cwd: string): Promise<EngineCapabilities> {
     const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
-    const commands = discoverMarkdownCommands([
+    const plugins = discoverEnginePlugins([
+      { path: path.join(cwd, ".codex", "plugins"), requireInstallMarker: false },
+      { path: path.join(codexHome, "plugins", "cache"), requireInstallMarker: true },
+    ]);
+    const commands = [...discoverMarkdownCommands([
       { path: path.join(cwd, ".codex", "skills"), source: "skill", skillFilesOnly: true },
       { path: path.join(codexHome, "skills"), source: "skill", skillFilesOnly: true },
-    ]);
+    ]), ...plugins.flatMap((plugin) => plugin.commands)];
+    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseCodexMcpList);
     return {
       steering: true,
       persistentSessions: true,
       commands,
-      mcpServers: await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseCodexMcpList),
+      mcpServers,
+      composerCapabilities: composerCapabilities(commands, plugins, mcpServers, "$"),
     };
   }
 

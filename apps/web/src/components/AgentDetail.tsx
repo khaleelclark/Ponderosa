@@ -120,6 +120,7 @@ export function AgentDetail({
   agentId,
   engines,
   engineCapabilities,
+  onRefreshCapabilities,
   projectedStatus,
   projectedHealth,
   agents,
@@ -133,6 +134,7 @@ export function AgentDetail({
   agentId: string;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
+  onRefreshCapabilities(): Promise<unknown> | unknown;
   projectedStatus?: AgentStatus;
   projectedHealth?: AgentHealthDto;
   agents: AgentDto[];
@@ -604,11 +606,6 @@ export function AgentDetail({
 
       <Box sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
-        {runtimeActivity ? (
-          <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
-            Send steers the active response. Choose Queue to deliver the draft after it finishes.
-          </Alert>
-        ) : null}
         {sendMessage.isError || cancelRun.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             {sendMessage.isError ? "Message not sent." : "The agent could not be stopped."}{" "}
@@ -617,11 +614,16 @@ export function AgentDetail({
         ) : null}
         <Composer
           commands={commands}
+          capabilities={engine?.authenticated ? engineCapability?.composerCapabilities : []}
+          onCapabilitiesOpen={onRefreshCapabilities}
           projectId={detail.agent.projectId}
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           conversationDraftId={`agent:${agentId}`}
           disabled={sendMessage.isPending}
           running={false}
+          guidance={runtimeActivity
+            ? "Send steers the active response. Choose Queue to deliver the draft after it finishes. Use @ to reference a project file."
+            : "Message this agent directly. Use @ to reference a project file."}
           placeholder={runtimeActivity ? "Steer this agent's active response" : "Message this agent directly"}
           agentResponding={Boolean(runtimeActivity)}
           onSend={(text, files) => {

@@ -174,11 +174,29 @@ export interface EngineMcpServer {
   detail?: string;
 }
 
+/**
+ * One composer-facing capability reported by an authenticated runtime.
+ * Invocation syntax is normalized by the adapter so the web app never needs
+ * to know whether an engine addresses a skill with `/`, `$`, or another form.
+ */
+export interface EngineComposerCapability {
+  id: string;
+  kind: "skill" | "plugin" | "connector";
+  label: string;
+  description: string;
+  status: "available" | "unavailable";
+  /** Exact text to insert at the caret when this capability is actionable. */
+  insertText?: string;
+  /** Short human-facing explanation for a disabled capability. */
+  unavailableReason?: string;
+}
+
 export interface EngineCapabilities {
   steering: boolean;
   persistentSessions: boolean;
   commands: EngineCommand[];
   mcpServers: EngineMcpServer[];
+  composerCapabilities: EngineComposerCapability[];
 }
 
 /**
