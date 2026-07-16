@@ -88,6 +88,8 @@ export function ConversationMessage({
   onDirectReply,
   onReact,
   onEdit,
+  projectId,
+  activeRunId,
 }: {
   message: ConversationMessageDto;
   conversation: "main" | "collaboration";
@@ -100,6 +102,8 @@ export function ConversationMessage({
   onDirectReply(message: ConversationMessageDto): void;
   onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
   onEdit?: (message: ConversationMessageDto) => void;
+  projectId: string;
+  activeRunId?: string;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
   const showUserLabel = fromManager && message.role === "user";
@@ -155,7 +159,7 @@ export function ConversationMessage({
             <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
           </Box>
         ) : null}
-        <ChatMessageBody text={visibleText} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} />
+        <ChatMessageBody text={visibleText} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined} />
         {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
         {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
@@ -879,6 +883,8 @@ export function ConversationView({
                 key={message.id}
                 message={message}
                 conversation={activeView}
+                projectId={conversation.projectId}
+                activeRunId={message.authorAgentId ? healthByAgentId.get(message.authorAgentId)?.runtimeActivity?.executionId : undefined}
                 agentTitle={agentTitle}
                 agentIdForHandle={agentIdForHandle}
                 compactViewport={compactViewport}

@@ -1198,7 +1198,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   };
   const activeRuns = new Map<string, ActiveRun>();
-  const linkPreviews = new Map<string, { origin: string; expiresAt: number }>();
+  const linkPreviews = new Map<string, { origin: string; expiresAt: number; projectId: string; agentId: string; runId: string; conversationId?: string }>();
   const LINK_PREVIEW_TTL_MS = 4 * 60 * 60 * 1000;
   const runtimeSessions = new Map<string, PersistentRuntime>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
@@ -2740,10 +2740,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.post<{ Body: CreateLinkPreviewRequest }>("/api/link-previews", async (request, reply) => {
     const target = loopbackPreviewTarget(request.body?.url);
     if (!target) return reply.code(400).send({ error: "preview URL must be HTTP on an explicit localhost port" });
+    const { projectId, agentId, runId, conversationId } = request.body ?? {};
+    const project = typeof projectId === "string" ? store.getProject(projectId) : undefined;
+    const agent = typeof agentId === "string" ? store.getAgent(agentId) : undefined;
+    const active = agent ? activeRuns.get(agent.id) : undefined;
+    if (!project || !agent || agent.projectId !== project.id || !active || active.runId !== runId || active.executionId !== runId) {
+      return reply.code(409).send({ error: "preview scope does not match an active agent run" });
+    }
+    if (conversationId !== undefined) {
+      const conversation = store.getConversation(conversationId);
+      if (!conversation || conversation.projectId !== project.id || !agent.conversationIds.includes(conversation.id)) {
+        return reply.code(409).send({ error: "preview conversation is not owned by this agent and project" });
+      }
+    }
     for (const [key, registration] of linkPreviews) if (registration.expiresAt <= Date.now()) linkPreviews.delete(key);
     const id = randomUUID();
     const expiresAt = Date.now() + LINK_PREVIEW_TTL_MS;
-    linkPreviews.set(id, { origin: target.origin, expiresAt });
+    linkPreviews.set(id, { origin: target.origin, expiresAt, projectId, agentId, runId, ...(conversationId ? { conversationId } : {}) });
     const suffix = `${target.pathname}${target.search}`.replace(/^\//, "");
     return {
       id,
@@ -2758,6 +2771,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!registration || registration.expiresAt <= Date.now()) {
       linkPreviews.delete(request.params.id);
       return reply.code(404).send({ error: "preview expired or was not found" });
+    }
+    const agent = store.getAgent(registration.agentId);
+    const active = agent ? activeRuns.get(agent.id) : undefined;
+    const conversation = registration.conversationId ? store.getConversation(registration.conversationId) : undefined;
+    if (!agent || agent.projectId !== registration.projectId || !store.getProject(registration.projectId)
+      || !active || active.runId !== registration.runId || active.executionId !== registration.runId
+      || (registration.conversationId && (!conversation || conversation.projectId !== registration.projectId || !agent.conversationIds.includes(registration.conversationId)))) {
+      linkPreviews.delete(request.params.id);
+      return reply.code(404).send({ error: "preview run is no longer active" });
     }
     const relativePath = `/${request.params["*"] ?? ""}`;
     const target = new URL(relativePath, registration.origin);

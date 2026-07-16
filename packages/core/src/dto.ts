@@ -301,6 +301,10 @@ export type VerifiedCitationDto = VerifiedCitationRecord;
 /** Authenticated, short-lived browser registration for one loopback app origin. */
 export interface CreateLinkPreviewRequest {
   url: string;
+  projectId: string;
+  agentId: string;
+  runId: string;
+  conversationId?: string;
 }
 
 export interface LinkPreviewDto {
