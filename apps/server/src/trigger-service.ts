@@ -95,9 +95,23 @@ interface FileBurst {
   maxTimer: NodeJS.Timeout;
 }
 
+interface FilesystemRoute {
+  trigger: TriggerDefinitionDto;
+  configKey: string;
+  include(path: string): boolean;
+  exclude(path: string): boolean;
+}
+
+interface ProjectFilesystemWatcher {
+  watcher: FSWatcher;
+  projectPath: string;
+  routes: Map<string, FilesystemRoute>;
+  ready: Promise<void>;
+}
+
 export class TriggerSourceService {
   readonly secrets: TriggerSecretStore;
-  private readonly watchers = new Map<string, { watcher: FSWatcher; configKey: string; ready: Promise<void> }>();
+  private readonly watchers = new Map<string, ProjectFilesystemWatcher>();
   private readonly bursts = new Map<string, FileBurst>();
   private scheduleTimer?: NodeJS.Timeout;
   private refreshChain: Promise<void> = Promise.resolve();
@@ -143,53 +157,76 @@ export class TriggerSourceService {
 
   private async refreshNow(): Promise<void> {
     if (this.stopping) return;
-    const desired = new Map(this.options.coordination.listTriggerDefinitions()
+    const desired = this.options.coordination.listTriggerDefinitions()
       .filter((trigger) => {
         const agent = this.options.store.getAgent(trigger.agentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
         return trigger.enabled && trigger.sourceKind === "filesystem" && Boolean(
           agent && !agent.archived && conversation && !conversation.archived && agent.conversationIds.includes(conversation.id),
         );
-      })
-      .map((trigger) => [trigger.id, trigger]));
-    for (const [id, active] of this.watchers) {
-      const trigger = desired.get(id);
-      const configKey = trigger ? JSON.stringify(trigger.sourceConfig) : undefined;
-      if (trigger && active.configKey === configKey) continue;
-      await active.watcher.close();
-      this.watchers.delete(id);
-      this.clearBurst(id);
-    }
-    for (const trigger of desired.values()) {
-      if (this.watchers.has(trigger.id)) continue;
-      const project = this.options.store.getProject(trigger.projectId);
-      if (!project) continue;
+      });
+    const routesByProject = new Map<string, Map<string, FilesystemRoute>>();
+    for (const trigger of desired) {
       const config = trigger.sourceConfig as TriggerFilesystemConfig;
-      const include = picomatch(config.include, { dot: true });
-      const exclude = picomatch(config.exclude, { dot: true });
+      const routes = routesByProject.get(trigger.projectId) ?? new Map<string, FilesystemRoute>();
+      routes.set(trigger.id, {
+        trigger,
+        configKey: JSON.stringify(trigger.sourceConfig),
+        include: picomatch(config.include, { dot: true }),
+        exclude: picomatch(config.exclude, { dot: true }),
+      });
+      routesByProject.set(trigger.projectId, routes);
+    }
+
+    for (const [projectId, active] of this.watchers) {
+      const project = this.options.store.getProject(projectId);
+      const routes = routesByProject.get(projectId);
+      if (!project || !routes || active.projectPath !== project.hostPath) {
+        await active.watcher.close();
+        this.watchers.delete(projectId);
+        for (const triggerId of active.routes.keys()) this.clearBurst(triggerId);
+        continue;
+      }
+      for (const [triggerId, previous] of active.routes) {
+        const next = routes.get(triggerId);
+        if (!next || next.configKey !== previous.configKey) this.clearBurst(triggerId);
+      }
+      active.routes = routes;
+    }
+
+    const ignoredByDefault = picomatch(DEFAULT_EXCLUDES, { dot: true });
+    for (const [projectId, routes] of routesByProject) {
+      if (this.watchers.has(projectId)) continue;
+      const project = this.options.store.getProject(projectId);
+      if (!project) continue;
       const watcher = watch(project.hostPath, {
         ignoreInitial: true,
         persistent: true,
         followSymlinks: false,
         ignored: (candidate) => {
           const relative = path.relative(project.hostPath, candidate).split(path.sep).join("/");
-          return Boolean(relative && !relative.startsWith("../") && (exclude(relative) || exclude(`${relative}/`)));
+          return Boolean(relative && !relative.startsWith("../") && (ignoredByDefault(relative) || ignoredByDefault(`${relative}/`)));
         },
       });
       const ready = new Promise<void>((resolve) => watcher.once("ready", resolve));
+      const active: ProjectFilesystemWatcher = { watcher, projectPath: project.hostPath, routes, ready };
       watcher.on("error", () => {
         // Fail closed and make the inert source visible as disabled instead of
         // silently presenting an enabled automation that cannot observe files.
-        this.options.coordination.updateTriggerDefinition(trigger.id, { enabled: false });
-        this.options.notify(trigger.id);
+        for (const route of active.routes.values()) {
+          this.options.coordination.updateTriggerDefinition(route.trigger.id, { enabled: false });
+          this.options.notify(route.trigger.id);
+        }
         void this.refresh().catch(() => undefined);
       });
       watcher.on("all", (event, changedPath) => {
         const relative = path.relative(project.hostPath, changedPath).split(path.sep).join("/");
-        if (!relative || relative.startsWith("../") || !include(relative) || exclude(relative)) return;
-        this.addFileEvent(trigger, relative, event);
+        if (!relative || relative.startsWith("../")) return;
+        for (const route of active.routes.values()) {
+          if (route.include(relative) && !route.exclude(relative)) this.addFileEvent(route.trigger, relative, event);
+        }
       });
-      this.watchers.set(trigger.id, { watcher, configKey: JSON.stringify(trigger.sourceConfig), ready });
+      this.watchers.set(projectId, active);
     }
   }
 

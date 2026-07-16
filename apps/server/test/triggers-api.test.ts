@@ -56,6 +56,18 @@ describe("V3.2 Trigger API", () => {
       });
       expect((await webhook()).statusCode).toBe(202);
       expect((await webhook()).statusCode).toBe(200);
+      const nonJsonRaw = "not json";
+      const nonJsonSignature = `v1=${createHmac("sha256", created.webhookSecret!).update(`${timestamp}.delivery-text.`).update(nonJsonRaw).digest("hex")}`;
+      const nonJson = await app.inject({
+        method: "POST", url: created.trigger.webhookPath!, payload: nonJsonRaw,
+        headers: {
+          "content-type": "text/plain",
+          "x-ponderosa-event-id": "delivery-text",
+          "x-ponderosa-timestamp": timestamp,
+          "x-ponderosa-signature": nonJsonSignature,
+        },
+      });
+      expect(nonJson.statusCode).toBe(415);
       const history = (await app.inject({
         method: "GET", url: `/api/triggers/${created.trigger.id}/occurrences`, headers: authorization,
       })).json<TriggerOccurrenceDto[]>();

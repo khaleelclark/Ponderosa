@@ -25,15 +25,27 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDto, CreateTriggerRequest, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceKind } from "@ponderosa/core";
+import type { AgentDto, CreateTriggerRequest, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 
 function localFuture(minutes = 5): string {
-  const date = new Date(Date.now() + minutes * 60_000);
+  return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
+}
+
+export function isoToDatetimeLocal(value: string): string {
+  const date = new Date(value);
   const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  return new Date(date.getTime() - offset).toISOString().slice(0, 23);
+}
+
+export function changedSourceConfig(original: TriggerSourceConfig, next: TriggerSourceConfig): TriggerSourceConfig | undefined {
+  return JSON.stringify(original) === JSON.stringify(next) ? undefined : next;
+}
+
+export function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): TriggerSourceConfig {
+  return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
 }
 
 function lines(value: string): string[] {
@@ -89,7 +101,9 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
   }, [agent, conversationId]);
 
   const sourceConfig = (): CreateTriggerRequest["sourceConfig"] => {
-    if (sourceKind === "webhook") return { replayWindowSeconds: 300 };
+    if (sourceKind === "webhook") {
+      return editing?.sourceKind === "webhook" ? editing.sourceConfig : { replayWindowSeconds: 300 };
+    }
     if (sourceKind === "filesystem") return {
       include: lines(include), exclude: lines(exclude),
       quietMs: Math.round(Number(quietSeconds) * 1_000),
@@ -97,7 +111,11 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     };
     if (scheduleKind === "once") return { scheduleKind: "once", at: new Date(onceAt).toISOString() };
     if (scheduleKind === "cron") return { scheduleKind: "cron", expression: cronExpression, timezone };
-    return { scheduleKind: "interval", everyMs: Math.round(Number(intervalMinutes) * 60_000), startsAt: new Date().toISOString() };
+    const editingSchedule = editing?.sourceKind === "schedule"
+      ? editing.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>
+      : undefined;
+    const original = editingSchedule?.scheduleKind === "interval" ? editingSchedule : undefined;
+    return intervalSourceConfig(Math.round(Number(intervalMinutes) * 60_000), original);
   };
 
   const resetEditor = (): void => {
@@ -120,7 +138,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     if (trigger.sourceKind === "schedule") {
       const config = trigger.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>;
       setScheduleKind(config.scheduleKind);
-      if (config.scheduleKind === "once") setOnceAt(config.at.slice(0, 16));
+      if (config.scheduleKind === "once") setOnceAt(isoToDatetimeLocal(config.at));
       else if (config.scheduleKind === "interval") setIntervalMinutes(String(config.everyMs / 60_000));
       else { setCronExpression(config.expression); setTimezone(config.timezone); }
     } else if (trigger.sourceKind === "filesystem") {
@@ -146,7 +164,15 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     },
   });
   const saveEdit = useMutation({
-    mutationFn: () => api.updateTrigger(editing!.id, { name, instructions, sourceConfig: sourceConfig() }),
+    mutationFn: () => {
+      const nextSourceConfig = sourceConfig();
+      const changed = changedSourceConfig(editing!.sourceConfig, nextSourceConfig);
+      return api.updateTrigger(editing!.id, {
+        name,
+        instructions,
+        ...(changed ? { sourceConfig: changed } : {}),
+      });
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey });
       setCreateOpen(false);
@@ -251,7 +277,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
           {sourceKind === "schedule" ? <>
             <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
             {scheduleKind === "interval" ? <TextField label="Every (minutes)" type="number" value={intervalMinutes} onChange={(event) => setIntervalMinutes(event.target.value)} inputProps={{ min: 1 }} /> : null}
-            {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} /> : null}
+            {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
             {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
           </> : null}
           {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}

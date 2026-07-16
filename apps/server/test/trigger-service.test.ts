@@ -114,7 +114,7 @@ describe("V3.2 Trigger sources", () => {
     }
   });
 
-  it("bundles filesystem metadata without injecting changed file contents", async () => {
+  it("shares one Project watcher while routing metadata to each matching Trigger", async () => {
     const now = new Date("2026-07-16T12:00:00.000Z");
     const context = setup(now);
     try {
@@ -124,12 +124,19 @@ describe("V3.2 Trigger sources", () => {
         sourceKind: "filesystem",
         sourceConfig: { include: ["src/**"], exclude: ["**/*.tmp"], quietMs: 100, maxWindowMs: 500 },
       });
+      const second = context.coordination.createTriggerDefinition({
+        id: "filesystem-second", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "More files", instructions: "Inspect the same Project changes",
+        sourceKind: "filesystem",
+        sourceConfig: { include: ["src/**"], exclude: ["**/*.log"], quietMs: 100, maxWindowMs: 500 },
+      });
       await context.service.start();
       await context.service.waitForFilesystemWatchers();
+      expect((context.service as unknown as { watchers: Map<string, unknown> }).watchers.size).toBe(1);
       mkdirSync(join(context.project.hostPath, "src"), { recursive: true });
       writeFileSync(join(context.project.hostPath, "src", "app.ts"), "SECRET_FILE_CONTENT");
       const deadline = Date.now() + 2_000;
-      while (context.coordination.listTriggerOccurrences(trigger.id).length === 0 && Date.now() < deadline) {
+      while ((context.coordination.listTriggerOccurrences(trigger.id).length === 0 || context.coordination.listTriggerOccurrences(second.id).length === 0) && Date.now() < deadline) {
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
       }
       const occurrence = context.coordination.listTriggerOccurrences(trigger.id)[0];
@@ -138,6 +145,7 @@ describe("V3.2 Trigger sources", () => {
         provenance: { source: "project_filesystem", contentInjected: false },
       });
       expect(JSON.stringify(occurrence)).not.toContain("SECRET_FILE_CONTENT");
+      expect(context.coordination.listTriggerOccurrences(second.id)).toHaveLength(1);
     } finally {
       await context.service.stop();
       context.agents.close();

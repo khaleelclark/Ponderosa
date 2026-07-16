@@ -5648,6 +5648,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.post<{ Params: { id: string }; Body: unknown }>("/api/trigger-webhooks/:id", async (request, reply) => {
+    const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType !== "application/json" && !contentType?.endsWith("+json")) {
+      return reply.code(415).send({ error: "Trigger webhooks require a JSON Content-Type" });
+    }
     const eventId = request.headers["x-ponderosa-event-id"];
     const timestamp = request.headers["x-ponderosa-timestamp"];
     const signature = request.headers["x-ponderosa-signature"];

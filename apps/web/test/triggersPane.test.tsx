@@ -1,10 +1,22 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TriggersPane } from "../src/components/TriggersPane";
+import { changedSourceConfig, intervalSourceConfig, isoToDatetimeLocal, TriggersPane } from "../src/components/TriggersPane";
 
 describe("Agent Triggers", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("preserves source configuration across metadata-only edits", () => {
+    const interval = { scheduleKind: "interval" as const, everyMs: 30 * 60_000, startsAt: "2026-07-16T12:07:08.123Z" };
+    expect(intervalSourceConfig(30 * 60_000, interval)).toEqual(interval);
+    expect(changedSourceConfig(interval, intervalSourceConfig(30 * 60_000, interval))).toBeUndefined();
+    const webhook = { replayWindowSeconds: 600 };
+    expect(changedSourceConfig(webhook, webhook)).toBeUndefined();
+    expect(changedSourceConfig(webhook, { replayWindowSeconds: 300 })).toEqual({ replayWindowSeconds: 300 });
+
+    const instant = "2026-07-16T18:23:45.678Z";
+    expect(new Date(isoToDatetimeLocal(instant)).toISOString()).toBe(instant);
+  });
 
   it("makes full authority prominent and renders Agent-owned Trigger status", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify([{
