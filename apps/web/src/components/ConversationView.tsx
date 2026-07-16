@@ -52,6 +52,8 @@ import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom,
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
+import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 
 export function conversationComposerRuntime(
   engine: Pick<EngineDto, "id" | "authenticated"> | undefined,
@@ -699,6 +701,21 @@ export function ConversationView({
 
   const agentTitle = (agentId: string | undefined): string =>
     agents.find((agent) => agent.id === agentId)?.title ?? "Agent";
+  const transcriptTitle = activeView === "collaboration"
+    ? `${conversation.title} — Team chat`
+    : conversation.title;
+  const transcriptMarkdown = buildMarkdownTranscript(
+    transcriptTitle,
+    (activeView === "collaboration" ? collaborationMessages : messages).map((message) => ({
+      author: message.authorAgentId ? agentTitle(message.authorAgentId) : message.role === "system" ? "System" : "You",
+      text: activeView === "main" && message.authorAgentId
+        ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
+        : message.text,
+      createdAt: message.createdAt,
+      attachments: message.attachments,
+      document: message.document,
+    })),
+  );
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
   const mentionHandles = activeView === "collaboration"
     ? [
@@ -853,23 +870,6 @@ export function ConversationView({
               Shared work and durable team updates
             </Typography>
           </Box>
-          <Tooltip title="Rename">
-            <IconButton
-              aria-label="Rename Project chat"
-              sx={{ minWidth: 44, minHeight: 44 }}
-              onClick={() => {
-                setRenameValue(conversation.title);
-                setRenameOpen(true);
-              }}
-            >
-              <DriveFileRenameOutlineIcon />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Delete">
-            <IconButton aria-label="Delete Project chat" color="error" onClick={() => setDeleteOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>
-              <DeleteOutlineIcon />
-            </IconButton>
-          </Tooltip>
           <Button
             variant="outlined"
             size="small"
@@ -896,15 +896,32 @@ export function ConversationView({
           >
             {activeView === "collaboration" ? "Project chat" : "Team chat"}
           </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<AddIcon />}
-            onClick={() => onNewAgent(conversation)}
-            sx={{ minHeight: compactViewport ? 44 : undefined }}
-          >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>New</Box>{" "}Agent
-          </Button>
+          <ChatOverflowMenu
+            label={`${activeView === "collaboration" ? "Team" : "Project"} chat actions`}
+            transcriptMarkdown={transcriptMarkdown}
+            transcriptFileName={transcriptFileName(transcriptTitle)}
+            actions={[
+              {
+                label: "Rename",
+                icon: <DriveFileRenameOutlineIcon fontSize="small" />,
+                onSelect: () => {
+                  setRenameValue(conversation.title);
+                  setRenameOpen(true);
+                },
+              },
+              {
+                label: "Create agent",
+                icon: <AddIcon fontSize="small" />,
+                onSelect: () => onNewAgent(conversation),
+              },
+              {
+                label: "Delete",
+                icon: <DeleteOutlineIcon fontSize="small" />,
+                destructive: true,
+                onSelect: () => setDeleteOpen(true),
+              },
+            ]}
+          />
         </Stack>
       </Box>
 
