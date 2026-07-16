@@ -50,7 +50,7 @@ import { api } from "../api";
 import { copyText } from "../clipboard";
 import { readChatState, readScrollPosition, writeChatState } from "../chatState";
 import type { ExecutionItem } from "../hooks/useAgentStream";
-import { findMentionedHandles } from "../mentions";
+import { agentMentionHandle, findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
@@ -471,11 +471,13 @@ export function remarkMessageTags() {
 export function ChatMarkdown({
   children,
   agentIdForHandle,
+  agentMentionForHandle,
   onOpenAgent,
   previewScope,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
   previewScope?: LinkPreviewScope;
 }): JSX.Element {
@@ -511,11 +513,13 @@ export function ChatMarkdown({
           a: ({ href, children: label }) => {
             if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope}>{label}</ChatLink>;
             const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
-            const agentId = agentIdForHandle?.(handle);
+            const boundMention = agentMentionForHandle?.(handle);
+            const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
+            const visibleLabel = boundMention ? `#${boundMention.label}` : label;
             if (!agentId || !onOpenAgent) {
-              return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={{ fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 2 }}>{label}</Box>;
+              return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={{ fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 2 }}>{visibleLabel}</Box>;
             }
-            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${handle}`} onClick={() => onOpenAgent(agentId)} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >
@@ -525,13 +529,14 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, onOpenAgent, previewScope }: {
+export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, previewScope }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
   previewScope?: LinkPreviewScope;
 }): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope}>{text}</ChatMarkdown>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
@@ -557,10 +562,11 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent, previewScope }: {
+export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, previewScope }: {
   text: string;
   citations?: VerifiedCitationDto[];
   agentIdForHandle?(handle: string): string | undefined;
+  agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
   previewScope?: LinkPreviewScope;
 }): JSX.Element {
@@ -575,7 +581,7 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, onOpenAgent
           maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
         } : undefined}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope} />
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope} />
       </Box>
       {collapsible ? (
         <Button
@@ -719,7 +725,18 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={linkPreviewScopeForMessage(message, previewScope)} />
+            <ChatMessageBody
+              text={message.text}
+              citations={message.citations}
+              agentIdForHandle={agentIdForHandle}
+              agentMentionForHandle={(handle) => {
+                const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
+                const title = binding ? agentNameForId?.(binding.agentId) : undefined;
+                return binding && title ? { agentId: binding.agentId, label: agentMentionHandle(title) } : undefined;
+              }}
+              onOpenAgent={onOpenAgent}
+              previewScope={linkPreviewScopeForMessage(message, previewScope)}
+            />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>

@@ -316,6 +316,13 @@ export interface ResponseFileActivityDto {
   deletions?: number;
 }
 
+export interface AgentMentionBindingDto {
+  /** Display handle captured when the message was authored. */
+  handle: string;
+  /** Immutable recipient identity used to resolve its current name. */
+  agentId: string;
+}
+
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
   id: string;
@@ -331,6 +338,8 @@ export interface ConversationMessageDto {
    * own messages.
    */
   authorAgentId?: string;
+  /** Stable recipients bound to the #handles captured in the authored text. */
+  agentMentions?: AgentMentionBindingDto[];
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
@@ -720,6 +729,8 @@ export interface MessageDto {
   createdAt: string;
   /** Stable agent author for explicit agent communication shown in this audit. */
   authorAgentId?: string;
+  /** Stable recipients bound to the #handles captured in the authored text. */
+  agentMentions?: AgentMentionBindingDto[];
   /** Originating provider execution for agent-authored communication. */
   executionId?: string;
   replyTo?: MessageReferenceDto;

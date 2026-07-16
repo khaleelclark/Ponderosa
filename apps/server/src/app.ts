@@ -106,6 +106,7 @@ import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js
 import { UserReactionStore } from "./user-reactions.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
+import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import {
   BrowserSessionError,
   BrowserSessionManager,
@@ -2013,14 +2014,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       rejectLinkPreviewUpgrade(socket, 400, "malformed preview upgrade");
     }
   };
-  function withUserReactions<T extends { communicationEventId?: string }>(messages: T[]): T[] {
+  function withMessagePresentation<T extends { communicationEventId?: string; text: string; reactions?: import("@ponderosa/core").MessageReactionDto[]; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[] }>(projectId: string, messages: T[]): T[] {
+    const projectAgents = store.listAgents(projectId);
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
+      const communication = store.getCommunicationEvent(projectId, message.communicationEventId);
+      const recipientAgentIds = communication?.intent === "collaboration"
+        ? communication.audience.agentIds
+        : communication?.schemaVersion === 2 && communication.intent === "user_dm"
+          ? communication.audience.kind === "user_agent" ? [communication.audience.agentId] : communication.audience.agentIds
+          : [];
+      const agentMentions = resolveAgentMentionBindings(message.text, recipientAgentIds, projectAgents);
       const deliveryReceipts = coordinationV3.deliveryReceiptsForCommunication(message.communicationEventId);
       return {
         ...message,
         reactions: userReactions.forCommunication(message.communicationEventId),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
+        ...(agentMentions.length ? { agentMentions } : {}),
       };
     });
   }
@@ -2028,13 +2038,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function conversationDetail(conversationId: string): ConversationDetailDto | undefined {
     const detail = store.getConversationDetail(conversationId);
     if (!detail) return detail;
-    return { ...detail, messages: withUserReactions(store.getProjectedConversationMessages(conversationId, "main")) };
+    return { ...detail, messages: withMessagePresentation(detail.conversation.projectId, store.getProjectedConversationMessages(conversationId, "main")) };
   }
 
   function collaborationViewDetail(conversationId: string): CollaborationViewDto | undefined {
     const detail = store.getCollaborationViewDetail(conversationId);
     if (!detail) return detail;
-    return { ...detail, messages: withUserReactions(store.getProjectedConversationMessages(conversationId, "collaboration")) };
+    return { ...detail, messages: withMessagePresentation(store.getConversation(conversationId)!.projectId, store.getProjectedConversationMessages(conversationId, "collaboration")) };
   }
 
   function agentDetail(agentId: string): import("@ponderosa/core").AgentDetailDto | undefined {
@@ -2042,7 +2052,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!detail) return detail;
     return {
       ...detail,
-      messages: withUserReactions(store.getProjectedAgentMessages(agentId)),
+      messages: withMessagePresentation(detail.agent.projectId, store.getProjectedAgentMessages(agentId)),
       coordinationV3: coordinationV3.agentSnapshot(agentId),
     };
   }

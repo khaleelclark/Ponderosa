@@ -5,6 +5,30 @@ import { ConversationMessage } from "../src/components/ConversationView";
 import { ChatPane } from "../src/components/panes";
 
 describe("Conversation #tags", () => {
+  it("renders the current agent name for a historical tag bound to stable identity", () => {
+    const html = renderToStaticMarkup(<ConversationMessage
+      message={{
+        id: "renamed-tag",
+        conversationId: "room",
+        role: "user",
+        text: "Thanks #John-Day-Fossil-Beds",
+        agentMentions: [{ handle: "John-Day-Fossil-Beds", agentId: "agent-john" }],
+        createdAt: "2026-07-12T00:00:00.000Z",
+      }}
+      conversation="main"
+      agentTitle={() => "John"}
+      agentIdForHandle={() => undefined}
+      onOpenAgent={vi.fn()}
+      onReply={vi.fn()}
+      onDirectReply={vi.fn()}
+      onReact={vi.fn()}
+    />);
+
+    expect(html).toContain("#John");
+    expect(html).not.toContain("#John-Day-Fossil-Beds");
+    expect(html).toContain('aria-label="Open agent John"');
+  });
+
   it("links agent tags while styling reserved and unknown tags without navigation", () => {
     const html = renderToStaticMarkup(<ConversationMessage
       message={{
