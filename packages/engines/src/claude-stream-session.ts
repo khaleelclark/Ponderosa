@@ -11,6 +11,7 @@ import type {
 import { mapClaudeEvent } from "./claude-events.js";
 import { parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
+import { renderSeedPrompt } from "./seed-history.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
@@ -27,8 +28,10 @@ export class ClaudeStreamSession implements RuntimeSession {
   private closed = false;
   private stderrTail = "";
   private killTimer?: NodeJS.Timeout;
+  private readonly seedHistory: OpenRuntimeSessionOptions["history"];
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
+    this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
       ? JSON.stringify({
@@ -71,7 +74,10 @@ export class ClaudeStreamSession implements RuntimeSession {
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
     if (this.active) throw new Error("Claude already has an active turn");
     const turnId = input.clientMessageId ?? randomUUID();
-    await this.writeInput(input.prompt, turnId);
+    const prompt = this.opts.resumeSessionId
+      ? input.prompt
+      : renderSeedPrompt(this.seedHistory.splice(0), input.prompt);
+    await this.writeInput(prompt, turnId);
     this.active = true;
     return { turnId };
   }

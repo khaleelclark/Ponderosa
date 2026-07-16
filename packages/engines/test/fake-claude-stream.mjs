@@ -9,6 +9,12 @@ lines.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.type !== "user") return;
   inputs += 1;
+  const prompt = message.message?.content?.[0]?.text ?? "";
+  if (prompt.includes("History marker")) {
+    send({ type: "assistant", message: { content: [{ type: "text", text: prompt }] } });
+    send({ type: "result", subtype: "success", is_error: false, result: "done", usage: { input_tokens: 4, output_tokens: 2 } });
+    return;
+  }
   if (inputs === 1) return;
   send({ type: "assistant", message: { content: [{ type: "text", text: "steered claude response" }] } });
   send({ type: "result", subtype: "success", is_error: false, result: "done", usage: { input_tokens: 4, output_tokens: 2 } });

@@ -16,7 +16,6 @@ import type {
   Adapter,
   ApiPriceProfile,
   AgentEvent,
-  ChatMessage,
   ContinueOptions,
   EngineCapabilities,
   EffortOption,
@@ -30,6 +29,7 @@ import { mapCodexEvent } from "./events.js";
 import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
 import { composerCapabilities, discoverCliMcps, discoverEnginePlugins, discoverMarkdownCommands, parseCodexMcpList } from "./capabilities.js";
 import { CodexAppServerSession } from "./codex-app-server.js";
+import { renderSeedPrompt } from "./seed-history.js";
 
 export type { SpawnFn };
 
@@ -133,17 +133,7 @@ const DEFAULT_EFFORTS: EffortOption[] = [
  * repo's md files and git state from its cwd. In v1, `seed()` usually fires on the
  * first message, so `history` is empty or a single line.
  */
-export function renderSeedPrompt(history: ChatMessage[], prompt: string): string {
-  const prior = history.filter((m) => m.text.trim() !== "");
-  if (prior.length === 0) return prompt;
-  const transcript = prior
-    .map((m) => {
-      const attachments = m.attachments?.map((item) => `\n  [image: ${item.name}, ${item.mediaType}, ${item.size} bytes, ${item.available ? item.localPath : "unavailable"}]`).join("") ?? "";
-      return `${m.role === "user" ? "User" : "Assistant"}: ${m.text}${attachments}`;
-    })
-    .join("\n");
-  return `Conversation so far:\n${transcript}\n\nCurrent request:\n${prompt}`;
-}
+export { renderSeedPrompt } from "./seed-history.js";
 
 export class CodexAdapter implements Adapter {
   readonly id = "codex";

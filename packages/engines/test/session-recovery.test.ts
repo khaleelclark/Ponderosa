@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { shouldRolloverEngineSession } from "../src/session-recovery.js";
+import { classifyProviderFailure, shouldRolloverEngineSession } from "../src/session-recovery.js";
+
+describe("classifyProviderFailure", () => {
+  it("recognizes capacity and rate-limit rejections", () => {
+    expect(classifyProviderFailure("Selected model is at capacity")).toBe("capacity");
+    expect(classifyProviderFailure("429 Too Many Requests: rate limit exceeded")).toBe("rate_limit");
+    expect(classifyProviderFailure("compiler exited")).toBe("unknown");
+  });
+});
 
 describe("shouldRolloverEngineSession", () => {
   it("classifies Codex pre-sampling compaction failures", () => {

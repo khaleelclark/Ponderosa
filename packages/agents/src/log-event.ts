@@ -53,11 +53,31 @@ export interface CoordinationV3ChangedEvent {
   coordination: AgentCoordinationV3Dto;
 }
 
+/** Provider-created output copied into stable Ponderosa-managed storage. */
+export interface GeneratedArtifactEvent {
+  type: "generated_artifact";
+  executionId: string;
+  path: string;
+  sourcePath: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  visibility: "project" | "published";
+  pinned?: boolean;
+}
+
+export interface ArtifactVisibilityEvent {
+  type: "artifact_visibility";
+  artifactId: string;
+  visibility: "project" | "published";
+  pinned: boolean;
+}
+
 /** Runtime completion enriched by the server with its canonical execution id. */
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent |
+export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
   AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */

@@ -117,9 +117,36 @@ specific message stores.
 
 Fresh runtimes receive only the context allowed by the current communication
 contracts plus repository instructions from their working directory. Persistent
-provider sessions may resume within their durable causal scope. The server does
-not resend indiscriminate chat, audit, or tool history on every turn and does not
-build a parallel Ponderosa memory store.
+provider sessions may resume within their durable causal scope, but the first
+turn of every fresh Codex or Claude session receives the same bounded canonical
+history used by one-shot adapters. The server does not resend indiscriminate
+chat, audit, tool, or artifact history on every turn.
+
+Each Run has a durable provider-input ledger containing the exact submitted text,
+its SHA-256 hash, and a versioned source manifest. The Runs UI shows the manifest
+first and reveals exact provider input only after an explicit operator action.
+This proves what Ponderosa supplied; it does not expose opaque provider-native
+session state.
+
+Supported provider-generated files are copied into project-scoped managed
+storage. Stable artifact identity records the owning Agent and Run, media type,
+source path, visibility, and retrieval location. Fresh context receives artifact
+metadata only when a message references it or the operator pins or publishes it.
+
+Visible managed Agents are created through a host-owned organization capability,
+not provider-native helper spawning. Creation establishes the Agent and opening
+correlated Request together, with an all-results Join by default. Terminal
+Request updates carry the canonical final handoff; duplicate reports are passive
+audit copies, acknowledgement-only collaboration is suppressed, and uncertain
+work is retried through a correlated Request that first audits current state.
+
+Explicit capacity and rate-limit rejections are classified as confirmed
+non-execution and retried with bounded exponential backoff. After repeated
+capacity failures Ponderosa may select a fallback only when no model was
+explicitly chosen. Other post-submission uncertainty continues to fail closed.
+
+User-authored Triggers remain deferred from V3.1.1 until their broader product
+contract is settled; trigger safety records are not a completed scheduling UI.
 
 ### 3.4 Runtime and network boundaries
 

@@ -9,6 +9,23 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-claude-stream.mjs");
 
 describe("Claude persistent stream-json runtime", () => {
+  it("injects canonical history into the first turn of a fresh persistent session", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = new ClaudeStreamSession({
+      agentId: "history", cwd: here, history: [{ role: "assistant", text: "History marker" }],
+      signal: controller.signal, bin: "claude", spawnFn, permissionMode: "bypassPermissions", killGraceMs: 50,
+    });
+    const text: string[] = [];
+    const collecting = (async () => { for await (const event of session.events) {
+      if (event.type === "text") text.push(event.delta);
+      if (event.type === "turn_done") return;
+    } })();
+    await session.startTurn({ prompt: "Current work", kind: "user_message" });
+    await collecting;
+    expect(text.join("")).toContain("Conversation so far:\nAssistant: History marker\n\nCurrent request:\nCurrent work");
+    await session.close();
+  });
   it("steers an active process through realtime JSON input", async () => {
     const controller = new AbortController();
     let spawns = 0;

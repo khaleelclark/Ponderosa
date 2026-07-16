@@ -45,7 +45,7 @@ export {
 } from "./projectors.js";
 export type { ProjectionOp, ProjectionState } from "./projectors.js";
 
-export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, AgentLifecycleEvent, CoordinationV3ChangedEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
+export type { LogEvent, UserMessageEvent, CommunicationProjectionEvent, AgentLifecycleEvent, CoordinationV3ChangedEvent, GeneratedArtifactEvent, TurnDoneLogEvent, StoredLogEvent } from "./log-event.js";
 export * as schema from "./schema.js";
 export type {
   ProjectRow,

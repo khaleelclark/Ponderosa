@@ -60,7 +60,7 @@ describe("Ponderosa stdio MCP bridge", () => {
 
     await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(3);
     expect(responses[1]).toMatchObject({ result: { tools: [
-      { name: "coordinate" }, { name: "update_request" }, { name: "message" },
+      { name: "create_managed_agent" }, { name: "coordinate" }, { name: "update_request" }, { name: "message" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
@@ -75,7 +75,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });
 
-  it("keeps exactly three coordination tools and adds the scoped browser execution tools", async () => {
+  it("separates visible managed-Agent creation from three communication tools and scoped browser tools", async () => {
     const received: string[] = [];
     const http = createServer((request, response) => {
       request.resume();
@@ -96,6 +96,7 @@ describe("Ponderosa stdio MCP bridge", () => {
         PONDEROSA_AGENT_COORDINATE_URL: `${origin}/api/agent-coordinate`,
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${origin}/api/agent-request-updates`,
         PONDEROSA_AGENT_BROWSER_URL: `${origin}/api/agent-browser`,
+        PONDEROSA_AGENT_SPAWN_URL: `${origin}/api/agent-spawn`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -116,7 +117,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     })}\n`);
     await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(3);
     expect(responses[0]).toMatchObject({ result: { tools: [
-      { name: "coordinate" }, { name: "update_request" }, { name: "message" },
+      { name: "create_managed_agent" }, { name: "coordinate" }, { name: "update_request" }, { name: "message" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });

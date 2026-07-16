@@ -22,7 +22,7 @@ import type {
 } from "@ponderosa/core";
 import { claudeApiPriceProfile } from "./api-pricing.js";
 import { mapClaudeEvent } from "./claude-events.js";
-import { renderSeedPrompt } from "./codex.js";
+import { renderSeedPrompt } from "./seed-history.js";
 import { streamProcess, type SpawnFn } from "./process.js";
 import { composerCapabilities, discoverCliMcps, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";

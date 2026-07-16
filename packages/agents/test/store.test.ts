@@ -838,6 +838,26 @@ const RUN: LogEvent[] = [
 ];
 
 describe("AgentStore — append + projection", () => {
+  it("keeps generated output under a stable artifact ID with visibility updates", () => {
+    const { projectId, agentId } = seedAgent();
+    const managedPath = "generated/image.png";
+    const file = artifactContentPath(dir, projectId, agentId, managedPath);
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "png");
+    const captured = store.appendEvent(agentId, {
+      type: "generated_artifact", executionId: "run-artifact", path: managedPath,
+      sourcePath: "outputs/image.png", name: "image.png", mediaType: "image/png",
+      size: 3, visibility: "project",
+    });
+    const id = `${agentId}:a:${captured.seq}:0`;
+    expect(store.getArtifacts(agentId)).toContainEqual(expect.objectContaining({
+      id, executionId: "run-artifact", kind: "generated_file", mediaType: "image/png",
+      sourcePath: "outputs/image.png", size: 3, visibility: "project", pinned: false,
+    }));
+    store.appendEvent(agentId, { type: "artifact_visibility", artifactId: id, visibility: "published", pinned: true });
+    expect(store.getArtifacts(agentId).find((artifact) => artifact.id === id)).toMatchObject({ visibility: "published", pinned: true });
+  });
+
   it("projects a full run into Chat, Work log, Runs, and Artifacts", () => {
     const { projectId, agentId } = seedAgent();
     for (const ev of RUN) store.appendEvent(agentId, ev);
