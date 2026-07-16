@@ -28,7 +28,7 @@ import {
   Typography,
   TextField,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
@@ -88,10 +88,9 @@ function projectSnapshots(
   }));
 }
 
-export function WorkspaceSidebar({ projects, route, preferences, notifications, drawer = false, onNavigate, onCreateProject, onManageProject }: {
+export function WorkspaceSidebar({ projects, route, notifications, drawer = false, onNavigate, onCreateProject, onManageProject }: {
   projects: ProjectDto[];
   route: Route;
-  preferences: WorkspacePreferencesDto;
   notifications: WorkspaceNotificationDto[];
   /** Phone drawer always presents the full list/detail navigator, independent of desktop rail state. */
   drawer?: boolean;
@@ -117,7 +116,7 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
   const counts = workspaceCounts(snapshots, notifications);
   const previewAgents = [...allAgents].sort((a, b) => Number(b.project.id === selectedProjectId) - Number(a.project.id === selectedProjectId)).slice(0, 4);
 
-  const initialWidth = clampSidebarWidth(Number(localValue(storageKeys.width)) || preferences.sidebarWidth || 288);
+  const initialWidth = clampSidebarWidth(Number(localValue(storageKeys.width)) || 288);
   const [localWidth, setLocalWidth] = useState(initialWidth);
   const [draftWidth, setDraftWidth] = useState(initialWidth);
   const [collapsed, setCollapsed] = useState(() => localValue(storageKeys.collapsed) === "true");
@@ -153,15 +152,15 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
   if (collapsed && !drawer) {
     const badge = counts.running || counts.unread;
     return <Box component="nav" aria-label="Workspace navigation" data-sidebar-state="collapsed" sx={{ width: SIDEBAR_RAIL_WIDTH, height: "100%", minHeight: 0, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", justifyItems: "center", py: 1 }}>
-      <Tooltip title="Expand sidebar" placement="right"><IconButton aria-label="Expand sidebar" onClick={() => setSidebarCollapsed(false)}><ChevronRightIcon /></IconButton></Tooltip>
+      <Tooltip title="Expand sidebar" placement="right"><IconButton aria-label="Expand sidebar" onClick={() => setSidebarCollapsed(false)} sx={{ minWidth: 44, minHeight: 44 }}><ChevronRightIcon /></IconButton></Tooltip>
       <Stack spacing={.5} sx={{ alignItems: "center", pt: 1 }}>
         <Tooltip title={selected ? `Current project: ${selected.project.label}` : "View all projects"} placement="right">
-          <IconButton aria-label={selected ? `Current project ${selected.project.label}` : "View all projects"} onClick={() => onNavigate(selected ? { kind: "project", projectId: selected.project.id } : { kind: "projects" })}><FolderOutlinedIcon /></IconButton>
+          <IconButton aria-label={selected ? `Current project ${selected.project.label}` : "View all projects"} onClick={() => onNavigate(selected ? { kind: "project", projectId: selected.project.id } : { kind: "projects" })} sx={{ minWidth: 44, minHeight: 44 }}><FolderOutlinedIcon /></IconButton>
         </Tooltip>
-        <Tooltip title="View all projects" placement="right"><IconButton aria-label="View all projects" onClick={() => onNavigate({ kind: "projects" })}><ChatBubbleOutlineIcon /></IconButton></Tooltip>
+        <Tooltip title="View all projects" placement="right"><IconButton aria-label="View all projects" onClick={() => onNavigate({ kind: "projects" })} sx={{ minWidth: 44, minHeight: 44 }}><ChatBubbleOutlineIcon /></IconButton></Tooltip>
       </Stack>
       <Tooltip title={`Agents: ${counts.running} running, ${counts.unread} unread`} placement="right">
-        <IconButton aria-label={`View all agents, ${counts.running} running, ${counts.unread} unread`} onClick={() => onNavigate({ kind: "allAgents" })}>
+        <IconButton aria-label={`View all agents, ${counts.running} running, ${counts.unread} unread`} onClick={() => onNavigate({ kind: "allAgents" })} sx={{ minWidth: 44, minHeight: 44 }}>
           <Badge color={counts.running ? "info" : "primary"} badgeContent={badge} max={99}><SmartToyOutlinedIcon /></Badge>
         </IconButton>
       </Tooltip>
@@ -171,8 +170,8 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
   return <Box component="nav" aria-label="Workspace navigation" data-sidebar-state="expanded" sx={{ position: "relative", width: drawer ? "100%" : draftWidth, height: "100%", minHeight: 0, minWidth: SIDEBAR_MIN_WIDTH, maxWidth: drawer ? "none" : SIDEBAR_MAX_WIDTH, borderRight: 1, borderColor: "divider", bgcolor: "background.paper", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
     <Stack direction="row" sx={{ height: 52, alignItems: "center", px: 1 }}>
       <Typography variant="subtitle2" sx={{ flex: 1, px: 1, fontWeight: 800 }}>Workspace</Typography>
-      <Tooltip title="New project"><IconButton size="small" aria-label="New project" onClick={onCreateProject}><AddIcon fontSize="small" /></IconButton></Tooltip>
-      {!drawer ? <Tooltip title="Collapse sidebar"><IconButton size="small" aria-label="Collapse sidebar" onClick={() => setSidebarCollapsed(true)}><ChevronLeftIcon fontSize="small" /></IconButton></Tooltip> : null}
+      <Tooltip title="New project"><IconButton size="small" aria-label="New project" onClick={onCreateProject} sx={{ minWidth: 44, minHeight: 44 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
+      {!drawer ? <Tooltip title="Collapse sidebar"><IconButton size="small" aria-label="Collapse sidebar" onClick={() => setSidebarCollapsed(true)} sx={{ minWidth: 44, minHeight: 44 }}><ChevronLeftIcon fontSize="small" /></IconButton></Tooltip> : null}
     </Stack>
 
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ overflowY: "auto", minHeight: 0, overscrollBehavior: "contain", scrollbarGutter: "stable" }}>
@@ -192,7 +191,7 @@ export function WorkspaceSidebar({ projects, route, preferences, notifications, 
                 <ListItemText primary={conversation.title} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 650 }} />
                 {unread.get(conversation.id) ? <Badge color="primary" badgeContent={unread.get(conversation.id)} sx={{ mr: 1 }} /> : null}
               </ListItemButton>
-              <IconButton size="small" aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, conversation })}><MoreHorizIcon fontSize="small" /></IconButton>
+              <IconButton size="small" aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, conversation })} sx={{ minWidth: 44, minHeight: 44 }}><MoreHorizIcon fontSize="small" /></IconButton>
             </Stack>)}
           </List>
           <Button size="small" startIcon={<AddIcon />} onClick={() => void createChat(selected.project)} sx={{ ml: .5 }}>New chat</Button>

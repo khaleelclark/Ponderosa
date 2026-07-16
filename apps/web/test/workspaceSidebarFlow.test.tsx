@@ -1,4 +1,4 @@
-import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,12 +17,6 @@ const agents: AgentDto[] = [
   { id: "agent-alpha", projectId: "alpha", title: "Reviewer", conversationIds: ["chat-alpha"], activeEngine: "codex", state: {}, createdAt: "2026-07-14T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", archived: false },
   { id: "agent-beta", projectId: "beta", title: "Reviewer", conversationIds: ["chat-beta"], activeEngine: "codex", state: {}, createdAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", archived: false },
 ];
-const preferences: WorkspacePreferencesDto = {
-  projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288,
-  notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
-  fontFamily: "inter", updatedAt: "2026-07-16T00:00:00.000Z",
-};
-
 describe("responsive workspace sidebar flow", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -40,7 +34,6 @@ describe("responsive workspace sidebar flow", () => {
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
       route={{ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" }}
-      preferences={preferences}
       notifications={[{ id: "unread", projectId: "beta", conversationId: "chat-beta", kind: "mentions", title: "Mention", body: "Review", createdAt: "2026-07-16T00:00:00.000Z" }]}
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}

@@ -240,7 +240,6 @@ export default function App({
           <WorkspaceSidebar
             projects={projects}
             route={route}
-            preferences={preferences}
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
@@ -301,7 +300,6 @@ export default function App({
           drawer
           projects={projects}
           route={route}
-          preferences={{ ...preferences, sidebarCollapsed: false, sidebarWidth: Math.min(360, preferences.sidebarWidth) }}
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
