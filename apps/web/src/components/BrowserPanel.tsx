@@ -102,8 +102,14 @@ export function BrowserPanel({
         const frame = await api.getBrowserFrame(projectId, agentId, runId);
         if (cancelled) return;
         const next = URL.createObjectURL(frame.blob);
-        setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return next; });
-        setFrameError(undefined);
+        const preload = new Image();
+        preload.onload = () => {
+          if (cancelled) { URL.revokeObjectURL(next); return; }
+          setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return next; });
+          setFrameError(undefined);
+        };
+        preload.onerror = () => { URL.revokeObjectURL(next); if (!cancelled) setFrameError("Browser frame could not be decoded."); };
+        preload.src = next;
       } catch (error) {
         if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
       } finally {

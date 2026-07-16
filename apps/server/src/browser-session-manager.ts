@@ -24,6 +24,9 @@ export interface BrowserScope {
   agentId: string;
   runId: string;
   conversationId?: string;
+  /** Optional real Run receiving audit/artifact records for a borrowed browser. */
+  actorAgentId?: string;
+  actorRunId?: string;
 }
 
 export interface BrowserPageInfo {
@@ -296,13 +299,13 @@ export class BrowserSessionManager {
     });
   }
 
-  open(scope: BrowserScope, url?: string): Promise<BrowserSessionDto> {
+  open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent"): Promise<BrowserSessionDto> {
     const existing = this.sessions.get(scope.agentId);
     if (existing?.dto.status === "ready") {
       if (!sameScope(existing.dto, scope)) {
         return Promise.reject(new BrowserSessionError("another run owns this agent's browser session", 409));
       }
-      return url ? this.navigate(scope, url, "agent") : Promise.resolve(publicDto(existing));
+      return url ? this.navigate(scope, url, initialOwner) : Promise.resolve(publicDto(existing));
     }
     if (existing?.dto.status === "opening" && existing.opening) {
       if (!sameScope(existing.dto, scope)) {
@@ -316,7 +319,7 @@ export class BrowserSessionManager {
         id: randomUUID(),
         ...scope,
         status: "opening",
-        controlOwner: "agent",
+        controlOwner: initialOwner,
         controlEpoch: 1,
         frameRevision: 0,
         openedAt: now,
@@ -609,12 +612,12 @@ export class BrowserSessionManager {
       return captured;
     });
     const relative = path.posix.join("browser", `${session.dto.id}-${Date.now()}-${randomUUID()}.png`);
-    const directory = artifactsDir(this.dataDir, scope.projectId, scope.agentId);
+    const directory = artifactsDir(this.dataDir, scope.projectId, scope.actorAgentId ?? scope.agentId);
     const file = path.join(directory, ...relative.split("/"));
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await fs.writeFile(file, body, { mode: 0o600, flag: "wx" });
     this.emit(scope, {
-      type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.runId,
+      type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
       path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
     });
     return { path: relative, ...VIEWPORT };

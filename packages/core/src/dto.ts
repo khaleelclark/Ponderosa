@@ -257,6 +257,33 @@ export interface BrowserSessionDto {
   failure?: string;
 }
 
+/** One operator-owned browser that persists for the lifetime of a Project. */
+export interface ProjectBrowserSessionDto {
+  id: string;
+  projectId: string;
+  status: BrowserSessionStatus;
+  controlOwner: BrowserControlOwner;
+  /** Present only while an exact active Run has borrowed control. */
+  controllerAgentId?: string;
+  controllerRunId?: string;
+  controlEpoch: number;
+  url?: string;
+  title?: string;
+  frameRevision: number;
+  openedAt: string;
+  updatedAt: string;
+  failure?: string;
+}
+
+export interface ProjectBrowserControlRequest extends BrowserControlRequest {
+  /** Required when handing control to an agent; ignored when reclaiming it. */
+  agentId?: string;
+}
+
+export interface ProjectBrowserNavigateRequest {
+  url: string;
+}
+
 export interface BrowserControlRequest {
   owner: BrowserControlOwner;
   expectedControlEpoch: number;

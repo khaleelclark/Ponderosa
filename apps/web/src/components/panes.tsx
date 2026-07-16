@@ -56,6 +56,7 @@ import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
+import { useProjectBrowser } from "./ProjectBrowserContext";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -80,6 +81,7 @@ export function linkPreviewScopeForMessage(
 }
 
 function ChatLink({ href, children, previewScope }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope }): JSX.Element {
+  const projectBrowser = useProjectBrowser();
   const link = linkPresentation(href);
   const [chooserOpen, setChooserOpen] = useState(false);
   const [faviconFailed, setFaviconFailed] = useState(false);
@@ -112,7 +114,8 @@ function ChatLink({ href, children, previewScope }: { href: string; children: Re
       <DialogContent><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{link.url.href}</Typography>{error ? <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert> : null}</DialogContent>
       <DialogActions>
         <Button onClick={() => setChooserOpen(false)}>Cancel</Button>
-        {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open in Ponderosa</Button> : null}
+        {projectBrowser.projectId ? <Button onClick={() => { projectBrowser.open(link.url.href); setChooserOpen(false); }}>Open in Ponderosa</Button> : null}
+        {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open live app preview</Button> : null}
         <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open externally</Button>
       </DialogActions>
     </Dialog>

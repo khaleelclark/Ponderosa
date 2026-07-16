@@ -84,6 +84,9 @@ import type {
   GlobalChatSearchResponseDto,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
+  ProjectBrowserSessionDto,
+  ProjectBrowserControlRequest,
+  ProjectBrowserNavigateRequest,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -1426,6 +1429,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       persistRuntimeEvent(scope.agentId, run, event);
     },
   );
+  const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
+  const projectBrowserSessions = new BrowserSessionManager(
+    opts.dataDir,
+    opts.browserDriverFactory ?? chromeBrowserDriverFactory(opts.dataDir),
+    (scope, event) => {
+      const grant = projectBrowserGrants.get(scope.projectId);
+      if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) return;
+      const run = activeRuns.get(grant.agentId);
+      if (!run || run.runId !== grant.runId) return;
+      persistRuntimeEvent(grant.agentId, run, { ...event, executionId: grant.runId });
+    },
+  );
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const draftAttachmentsRoot = path.resolve(opts.dataDir, "draft-attachments");
   const draftAttachmentId = /^[a-f0-9-]{36}$/i;
@@ -1698,8 +1713,48 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void> {
     const scope = browserScopeForRun(agentId, run);
-    return scope ? browserSessions.closeRun(scope, reason) : Promise.resolve();
+    const releaseProjectBrowser = async (): Promise<void> => {
+      const agent = store.getAgent(agentId);
+      if (!agent) return;
+      const grant = projectBrowserGrants.get(agent.projectId);
+      if (!grant || grant.agentId !== agentId || grant.runId !== run.runId) return;
+      projectBrowserGrants.delete(agent.projectId);
+      const projectScope = projectBrowserScope(agent.projectId);
+      const session = projectBrowserSessions.get(projectScope.agentId);
+      if (session?.status === "ready" && session.controlOwner === "agent") {
+        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch).catch(() => undefined);
+      }
+    };
+    return Promise.all([
+      scope ? browserSessions.closeRun(scope, reason) : Promise.resolve(),
+      releaseProjectBrowser(),
+    ]).then(() => undefined);
   }
+
+  const projectBrowserScope = (projectId: string, grant?: { agentId: string; runId: string }): BrowserScope => ({
+    projectId,
+    agentId: `project-browser:${projectId}`,
+    runId: `project:${projectId}`,
+    ...(grant ? { actorAgentId: grant.agentId, actorRunId: grant.runId } : {}),
+  });
+
+  const projectBrowserDto = (projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto => {
+    const grant = projectBrowserGrants.get(projectId);
+    return {
+      id: session.id,
+      projectId,
+      status: session.status,
+      controlOwner: session.controlOwner,
+      ...(grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
+      controlEpoch: session.controlEpoch,
+      ...(session.url ? { url: session.url } : {}),
+      ...(session.title ? { title: session.title } : {}),
+      frameRevision: session.frameRevision,
+      openedAt: session.openedAt,
+      updatedAt: session.updatedAt,
+      ...(session.failure ? { failure: session.failure } : {}),
+    };
+  };
 
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
     if (!ownsV3Run(run)) return false;
@@ -2489,7 +2544,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Frame-Options", "DENY");
-    reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
     if (request.url.startsWith("/api/link-previews/")) {
       // Local dev apps are untrusted content. A unique sandbox origin prevents
       // their scripts from inheriting the operator's authenticated API origin.
@@ -2590,6 +2645,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     activeRuns.clear();
     await browserSessions.closeAll("server_shutdown");
+    projectBrowserGrants.clear();
+    await projectBrowserSessions.closeAll("server_shutdown");
     for (const runtime of runtimeSessions.values()) cancelRuntimeIdleClose(runtime);
     await Promise.allSettled([...runtimeSessions.values()].map(({ session }) => session.close()));
     runtimeSessions.clear();
@@ -2878,35 +2935,47 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
       return reply.code(401).send({ error: "browser capability is not authorized for an active run" });
     }
-    const scope: BrowserScope = {
-      projectId: agent.projectId,
-      agentId: agent.id,
-      runId: active.runId,
-      ...(active.conversationId ? { conversationId: active.conversationId } : {}),
-    };
+    const projectGrant = projectBrowserGrants.get(agent.projectId);
+    const borrowingProjectBrowser = projectGrant?.agentId === agent.id && projectGrant.runId === active.runId;
+    const sessionManager = borrowingProjectBrowser ? projectBrowserSessions : browserSessions;
+    const scope: BrowserScope = borrowingProjectBrowser
+      ? projectBrowserScope(agent.projectId, projectGrant)
+      : {
+          projectId: agent.projectId,
+          agentId: agent.id,
+          runId: active.runId,
+          ...(active.conversationId ? { conversationId: active.conversationId } : {}),
+        };
     try {
       switch (request.body?.operation) {
         case "open": {
-          const session = await browserSessions.open(scope, request.body.url);
-          return { session, snapshot: await browserSessions.inspect(scope) };
+          const session = await sessionManager.open(scope, request.body.url);
+          return { session, snapshot: await sessionManager.inspect(scope) };
         }
         case "navigate": {
           if (typeof request.body.url !== "string") throw new BrowserSessionError("url is required");
-          const session = await browserSessions.navigate(scope, request.body.url, "agent");
-          return { session, snapshot: await browserSessions.inspect(scope) };
+          const session = await sessionManager.navigate(scope, request.body.url, "agent");
+          return { session, snapshot: await sessionManager.inspect(scope) };
         }
         case "inspect":
-          return { session: browserSessions.get(agent.id), snapshot: await browserSessions.inspect(scope) };
+          return { session: sessionManager.get(scope.agentId), snapshot: await sessionManager.inspect(scope) };
         case "act": {
-          const session = await browserSessions.act(scope, request.body);
-          return { session, snapshot: await browserSessions.inspect(scope) };
+          const session = await sessionManager.act(scope, request.body);
+          return { session, snapshot: await sessionManager.inspect(scope) };
         }
         case "screenshot":
-          return { session: browserSessions.get(agent.id), artifact: await browserSessions.captureArtifact(scope) };
+          return { session: sessionManager.get(scope.agentId), artifact: await sessionManager.captureArtifact(scope) };
         case "take_control":
-          return { session: await browserSessions.setControl(scope, "agent") };
-        case "close":
-          return { session: await browserSessions.close(scope, "agent_closed") };
+          return { session: await sessionManager.setControl(scope, "agent") };
+        case "close": {
+          if (borrowingProjectBrowser) {
+            const session = sessionManager.get(scope.agentId);
+            if (!session) throw new BrowserSessionError("project browser session is unavailable", 404);
+            projectBrowserGrants.delete(agent.projectId);
+            return { session: await sessionManager.setControl(scope, "operator", session.controlEpoch) };
+          }
+          return { session: await sessionManager.close(scope, "agent_closed") };
+        }
         default:
           return reply.code(400).send({ error: "unknown browser operation" });
       }
@@ -4092,6 +4161,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
+    projectBrowserGrants.delete(project.id);
+    const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
+    if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
     const agentIds = new Set(agents.map((agent) => agent.id));
     for (const agentId of agentIds) deletingAgentIds.add(agentId);
     // Fence scheduler ownership before touching provider processes. The later
@@ -6770,6 +6842,124 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message });
     throw error;
   };
+  const projectBrowserRoute = "/api/projects/:projectId/browser";
+
+  app.get<{ Params: { projectId: string } }>(projectBrowserRoute, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    const scope = projectBrowserScope(request.params.projectId);
+    const session = projectBrowserSessions.get(scope.agentId);
+    if (!session) return reply.code(404).send({ error: "project browser has not been opened" });
+    return projectBrowserDto(request.params.projectId, session);
+  });
+
+  app.post<{ Params: { projectId: string }; Body: Partial<ProjectBrowserNavigateRequest> }>(projectBrowserRoute, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try {
+      const scope = projectBrowserScope(request.params.projectId);
+      const session = await projectBrowserSessions.open(scope, request.body?.url, "operator");
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{ Params: { projectId: string }; Body: ProjectBrowserNavigateRequest }>(`${projectBrowserRoute}/navigate`, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try {
+      if (typeof request.body?.url !== "string") return reply.code(400).send({ error: "url is required" });
+      const scope = projectBrowserScope(request.params.projectId);
+      const session = await projectBrowserSessions.navigate(scope, request.body.url, "operator");
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{ Params: { projectId: string } }>(`${projectBrowserRoute}/reconnect`, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try {
+      const scope = projectBrowserScope(request.params.projectId);
+      const session = await projectBrowserSessions.reconnect(scope);
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.delete<{ Params: { projectId: string } }>(projectBrowserRoute, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try {
+      projectBrowserGrants.delete(request.params.projectId);
+      const session = await projectBrowserSessions.close(projectBrowserScope(request.params.projectId), "operator_closed");
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.put<{ Params: { projectId: string }; Body: ProjectBrowserControlRequest }>(`${projectBrowserRoute}/control`, async (request, reply) => {
+    const project = store.getProject(request.params.projectId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if ((request.body?.owner !== "agent" && request.body?.owner !== "operator") || !Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+      return reply.code(400).send({ error: "owner and expectedControlEpoch are required" });
+    }
+    try {
+      const previousGrant = projectBrowserGrants.get(project.id);
+      if (request.body.owner === "operator") {
+        const current = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
+        if (current?.status === "ready" && current.controlOwner === "operator" && !previousGrant) {
+          return projectBrowserDto(project.id, current);
+        }
+        const session = await projectBrowserSessions.setControl(projectBrowserScope(project.id, previousGrant), "operator", request.body.expectedControlEpoch);
+        projectBrowserGrants.delete(project.id);
+        return projectBrowserDto(project.id, session);
+      }
+      const agent = request.body.agentId ? store.getAgent(request.body.agentId) : undefined;
+      const run = agent ? activeRuns.get(agent.id) : undefined;
+      if (!agent || agent.projectId !== project.id || !run || !ownsActiveRun(agent.id, run)) {
+        return reply.code(409).send({ error: "agent control requires an active Run in this Project" });
+      }
+      const grant = { agentId: agent.id, runId: run.runId };
+      projectBrowserGrants.set(project.id, grant);
+      try {
+        const session = await projectBrowserSessions.setControl(projectBrowserScope(project.id, grant), "agent", request.body.expectedControlEpoch);
+        const privateScope = browserScopeForRun(agent.id, run);
+        if (privateScope) await browserSessions.closeRun(privateScope, "project_browser_granted");
+        return projectBrowserDto(project.id, session);
+      } catch (error) {
+        if (previousGrant) projectBrowserGrants.set(project.id, previousGrant);
+        else projectBrowserGrants.delete(project.id);
+        throw error;
+      }
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{ Params: { projectId: string }; Body: BrowserOperatorInputRequest }>(`${projectBrowserRoute}/input`, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try {
+      if (!request.body || !["click", "type", "key", "scroll"].includes(request.body.kind) || !Number.isSafeInteger(request.body.expectedControlEpoch)) {
+        return reply.code(400).send({ error: "valid input and expectedControlEpoch are required" });
+      }
+      const session = await projectBrowserSessions.operatorInput(projectBrowserScope(request.params.projectId), request.body);
+      return projectBrowserDto(request.params.projectId, session);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.get<{ Params: { projectId: string } }>(`${projectBrowserRoute}/frame`, async (request, reply) => {
+    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    try {
+      const frame = await projectBrowserSessions.captureFrame(projectBrowserScope(request.params.projectId));
+      return reply.type("image/png").header("cache-control", "private, no-store")
+        .header("x-ponderosa-browser-revision", String(frame.revision)).send(frame.body);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
   const browserRoute = "/api/projects/:projectId/agents/:id/runs/:runId/browser";
 
   app.get<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {

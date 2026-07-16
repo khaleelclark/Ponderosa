@@ -65,6 +65,8 @@ import type {
   BrowserSessionDto,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
+  ProjectBrowserSessionDto,
+  ProjectBrowserControlRequest,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -179,6 +181,14 @@ export interface PonderosaApi {
   setBrowserControl(projectId: string, agentId: string, runId: string, request: BrowserControlRequest): Promise<BrowserSessionDto>;
   sendBrowserInput(projectId: string, agentId: string, runId: string, request: BrowserOperatorInputRequest): Promise<BrowserSessionDto>;
   getBrowserFrame(projectId: string, agentId: string, runId: string): Promise<{ blob: Blob; revision: number }>;
+  getProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto>;
+  openProjectBrowser(projectId: string, url?: string): Promise<ProjectBrowserSessionDto>;
+  navigateProjectBrowser(projectId: string, url: string): Promise<ProjectBrowserSessionDto>;
+  reconnectProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto>;
+  closeProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto>;
+  setProjectBrowserControl(projectId: string, request: ProjectBrowserControlRequest): Promise<ProjectBrowserSessionDto>;
+  sendProjectBrowserInput(projectId: string, request: BrowserOperatorInputRequest): Promise<ProjectBrowserSessionDto>;
+  getProjectBrowserFrame(projectId: string): Promise<{ blob: Blob; revision: number }>;
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription;
 }

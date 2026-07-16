@@ -162,11 +162,12 @@ export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
 };
 
 /** Engine-agnostic, host-owned browser tools. These are execution capabilities,
- * not Communication V3 tools, and are authorized only during their owning Run. */
+ * not Communication V3 tools, and are authorized only during their owning Run.
+ * An operator may explicitly route them to the Project browser for that Run. */
 export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   {
     name: "ponderosa_browser_open",
-    description: "Open or reuse the host-managed browser session owned by this exact run. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
+    description: "Open or reuse the browser authorized for this exact run. This is normally a private run browser; an operator may instead lend the persistent Project browser. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: { url: { type: "string", minLength: 1, maxLength: 2048 } },
@@ -210,7 +211,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
   },
   {
     name: "ponderosa_browser_close",
-    description: "Close the browser session owned by this run and delete its temporary browser profile.",
+    description: "Close the private browser owned by this run. When the operator lent the persistent Project browser, return control to the operator without closing it.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
 ];
