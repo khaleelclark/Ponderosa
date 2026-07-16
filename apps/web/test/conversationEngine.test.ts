@@ -1,13 +1,15 @@
 import type { EngineDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
 
 const engine = (id: string, authenticated: boolean): EngineDto => ({
   id,
   displayName: id,
   models: [],
   efforts: [],
+  configured: true,
   authenticated,
+  available: authenticated,
 });
 
 describe("Project chat engine initialization", () => {
@@ -20,6 +22,11 @@ describe("Project chat engine initialization", () => {
     const engines = [engine("codex", true), engine("claude", false)];
     expect(resolveConversationEngine("claude", engines)).toBe("claude");
     expect(resolveConversationEngine("removed", engines)).toBe("codex");
+  });
+
+  it("distinguishes configured authentication from proven provider availability", () => {
+    expect(engineIsAvailable({ ...engine("claude", true), available: false })).toBe(false);
+    expect(engineIsAvailable(engine("codex", true))).toBe(true);
   });
 
   it("forwards the selected model and effort to the first Project-chat run", () => {

@@ -1,5 +1,9 @@
 import type { EffortOption, EngineDto } from "@ponderosa/core";
 
+export function engineIsAvailable(engine: Pick<EngineDto, "authenticated" | "available"> | undefined): boolean {
+  return Boolean(engine?.authenticated && engine.available);
+}
+
 /**
  * Resolve a Project chat's engine only after the live engine roster arrives.
  * Marking initialization complete against an empty query result strands the
@@ -11,7 +15,7 @@ export function resolveConversationEngine(
 ): string | undefined {
   if (engines.length === 0) return undefined;
   if (defaultEngine && engines.some((engine) => engine.id === defaultEngine)) return defaultEngine;
-  return engines.find((engine) => engine.authenticated)?.id ?? engines[0]?.id;
+  return engines.find(engineIsAvailable)?.id ?? engines[0]?.id;
 }
 
 /** Keep Project-chat runtime controls attached to both creation and first dispatch. */

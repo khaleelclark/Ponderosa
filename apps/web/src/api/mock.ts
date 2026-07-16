@@ -220,7 +220,9 @@ const engines: EngineDto[] = [
   {
     id: "codex",
     displayName: "Codex",
+    configured: true,
     authenticated: true,
+    available: true,
     authDetail: "Subscription CLI session detected",
     models: [
       { id: "", label: "Codex default" },
@@ -234,7 +236,9 @@ const engines: EngineDto[] = [
   {
     id: "claude",
     displayName: "Claude",
+    configured: true,
     authenticated: true,
+    available: true,
     authDetail: "Subscription CLI session detected",
     models: [
       { id: "", label: "Claude default" },
@@ -693,6 +697,10 @@ export const mockApi: PonderosaApi = {
   },
   listEngines() {
     return delay(engines);
+  },
+  recheckEngine(engineId) {
+    const engine = engines.find((candidate) => candidate.id === engineId);
+    return engine ? delay(engine) : Promise.reject(new Error("unknown engine"));
   },
   getEngineCapabilities(_projectId) {
     return delay(engines.map((engine) => ({

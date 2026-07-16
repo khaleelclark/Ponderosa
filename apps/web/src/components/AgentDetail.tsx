@@ -51,7 +51,7 @@ import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { projectedMessageIdForFocus } from "../messageFocus";
 import { compactViewportQuery } from "../responsive";
-import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 import { TokenUsageButton } from "./TokenUsageButton";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
@@ -274,6 +274,14 @@ export function AgentDetail({
     onSettled: () => {
       stopRequestId.current = undefined;
       void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+    },
+  });
+  const recheckEngine = useMutation({
+    mutationFn: (engineId: string) => api.recheckEngine(engineId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<EngineDto[]>(["engines"], (current) =>
+        current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
+      void queryClient.invalidateQueries({ queryKey: ["engines"] });
     },
   });
   const stopActiveRun = () => {
@@ -564,10 +572,27 @@ export function AgentDetail({
               </Stack>
               <Chip
                 size="small"
-                label={`${engine?.displayName ?? detail.agent.activeEngine}${engine?.authenticated ? "" : " · not signed in"}`}
-                color={engine?.authenticated ? "default" : "warning"}
+                label={`${engine?.displayName ?? detail.agent.activeEngine}${engineIsAvailable(engine) ? "" : engine?.authenticated ? " · access unavailable" : " · not signed in"}`}
+                color={engineIsAvailable(engine) ? "default" : "warning"}
                 sx={{ justifyContent: "flex-start" }}
               />
+              {engine?.authenticated && !engineIsAvailable(engine) ? <>
+                <Typography variant="caption" color="warning.main">
+                  {engine.availabilityDetail ?? "The provider rejected runtime access."}
+                </Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={recheckEngine.isPending}
+                  onClick={() => {
+                    if (!window.confirm("Test provider access now? This sends one minimal subscription-backed request.")) return;
+                    recheckEngine.mutate(engine.id);
+                  }}
+                >
+                  {recheckEngine.isPending ? "Testing access…" : "Test access"}
+                </Button>
+                {recheckEngine.isError ? <Alert severity="error">{recheckEngine.error.message}</Alert> : null}
+              </> : null}
               <FormControl size="small" fullWidth>
                 <InputLabel id="agent-detail-model-label">Model</InputLabel>
                 <Select
@@ -684,7 +709,7 @@ export function AgentDetail({
         ) : null}
         <Composer
           commands={commands}
-          capabilities={engine?.authenticated ? engineCapability?.composerCapabilities : []}
+          capabilities={engineIsAvailable(engine) ? engineCapability?.composerCapabilities : []}
           onCapabilitiesOpen={onRefreshCapabilities}
           projectId={detail.agent.projectId}
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}

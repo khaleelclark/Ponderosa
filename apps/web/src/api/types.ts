@@ -163,6 +163,7 @@ export interface PonderosaApi {
   deleteAgent(agentId: string): Promise<void>;
   getAgent(agentId: string): Promise<AgentDetailDto>;
   listEngines(): Promise<EngineDto[]>;
+  recheckEngine(engineId: string): Promise<EngineDto>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;
   getFiles(projectId: string, path?: string): Promise<FilesResponse>;
   getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto>;

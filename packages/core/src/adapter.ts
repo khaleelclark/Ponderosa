@@ -243,3 +243,10 @@ export interface EngineAuthStatus {
   /** Optional human-readable detail (e.g. "logged in as ...", or why not). */
   detail?: string;
 }
+
+/** Positive provider evidence gathered only after an explicit operator check. */
+export interface EngineAvailabilityStatus {
+  available: boolean;
+  /** Provider-safe detail explaining the result of the check. */
+  detail?: string;
+}

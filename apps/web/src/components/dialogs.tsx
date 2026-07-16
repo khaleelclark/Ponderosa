@@ -16,7 +16,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentPresetDto, EngineDto, ConversationDto, AgentDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
-import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible } from "../conversationEngine";
 
 const UNSET = "";
 
@@ -114,9 +114,9 @@ export function CreateConversationDialog({
             >
               <MenuItem value={UNSET}>No default — choose per agent</MenuItem>
               {engines.map((option) => (
-                <MenuItem key={option.id} value={option.id}>
+                <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>
                   {option.displayName}
-                  {option.authenticated ? "" : " — not signed in"}
+                  {engineIsAvailable(option) ? "" : option.authenticated ? " — unavailable" : " — not signed in"}
                 </MenuItem>
               ))}
             </Select>
@@ -228,7 +228,7 @@ export function CreateAgentDialog({
   useEffect(() => {
     if (open) {
       setTitle(defaultName ?? "");
-      setEngine(defaultEngine ?? engines.find((candidate) => candidate.authenticated)?.id ?? engines[0]?.id ?? UNSET);
+      setEngine(defaultEngine ?? engines.find(engineIsAvailable)?.id ?? engines[0]?.id ?? UNSET);
       setModel(defaultModel ?? UNSET);
       setEffort(defaultEffort ?? UNSET);
       setConversationId(fixedConversationId ?? UNSET);
@@ -283,9 +283,9 @@ export function CreateAgentDialog({
               }}
             >
               {engines.map((option) => (
-                <MenuItem key={option.id} value={option.id} disabled={!option.authenticated}>
+                <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>
                   {option.displayName}
-                  {option.authenticated ? "" : " — not signed in"}
+                  {engineIsAvailable(option) ? "" : option.authenticated ? " — unavailable" : " — not signed in"}
                 </MenuItem>
               ))}
             </Select>

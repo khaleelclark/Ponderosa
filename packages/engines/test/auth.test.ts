@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCodexLoginStatus } from "../src/auth.js";
+import { claudeAvailabilityStatus, parseCodexLoginStatus } from "../src/auth.js";
 
 describe("parseCodexLoginStatus", () => {
   it("accepts ChatGPT subscription auth", () => {
@@ -22,5 +22,35 @@ describe("parseCodexLoginStatus", () => {
     expect(parseCodexLoginStatus("Run codex login to use ChatGPT").authenticated).toBe(
       false,
     );
+  });
+});
+
+describe("claudeAvailabilityStatus", () => {
+  it("uses one explicit tool-free provider request as positive entitlement evidence", async () => {
+    let args: string[] = [];
+    const status = await claudeAvailabilityStatus(
+      { PONDEROSA_CLAUDE_BIN: "claude-test" },
+      async (_bin, received) => {
+        args = received;
+        return { stdout: '{"result":"PONDEROSA_RUNTIME_READY"}', stderr: "" };
+      },
+      async () => ({ authenticated: true, detail: "configured" }),
+    );
+    expect(status.available).toBe(true);
+    expect(args).toEqual(expect.arrayContaining(["--tools", "", "--safe-mode", "--no-session-persistence"]));
+  });
+
+  it("does not call the provider when subscription authentication is absent", async () => {
+    let called = false;
+    const status = await claudeAvailabilityStatus(
+      {},
+      async () => {
+        called = true;
+        return { stdout: "", stderr: "" };
+      },
+      async () => ({ authenticated: false, detail: "sign in" }),
+    );
+    expect(status).toEqual({ available: false, detail: "sign in" });
+    expect(called).toBe(false);
   });
 });

@@ -48,6 +48,8 @@ export class CoordinationV3Scheduler {
       dispatchSteering?: (lease: SteeringLease, prompt: string) => Promise<CoordinationV3DispatchResult>;
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
       onMessageDeliveryChanged?: (agentId: string) => void;
+      /** Keep durable work queued while its provider is known unavailable. */
+      blockedAgentIds?: () => readonly string[];
     },
   ) {}
 
@@ -159,6 +161,7 @@ export class CoordinationV3Scheduler {
           leaseMs: this.options.leaseMs,
           coalesceLimit: this.options.coalesceLimit,
           now: new Date((this.options.now ?? Date.now)()).toISOString(),
+          excludedAgentIds: this.options.blockedAgentIds?.(),
         });
         if (!lease) break;
         dispatched += 1;

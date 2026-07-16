@@ -844,7 +844,7 @@ export interface AgentRunDto {
   };
 }
 
-export interface ProviderInputSourceManifest {
+export interface ProviderInputSourceManifestV1 {
   schemaVersion: 1;
   historyMessageCount: number;
   activationIds: string[];
@@ -859,6 +859,30 @@ export interface ProviderInputSourceManifest {
     createdAt?: string;
   }>;
 }
+
+export interface ProviderInputSourceManifestV2 {
+  schemaVersion: 2;
+  /** History messages represented in the exact text submitted for this Run. */
+  historyMessageCount: number;
+  /** Sources known to remain only in the continued provider session. */
+  retainedSessionSourceCount: number;
+  activationIds: string[];
+  communicationEventIds: string[];
+  artifactIds: string[];
+  conversationId?: string;
+  providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
+  sources: Array<{
+    kind: "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory";
+    ref: string;
+    /** Submitted sources contribute to exactPrompt; retained sources do not. */
+    delivery: "submitted" | "retained_session";
+    hash?: string;
+    createdAt?: string;
+  }>;
+}
+
+/** V1 remains readable for historical Runs; all newly recorded Runs use V2. */
+export type ProviderInputSourceManifest = ProviderInputSourceManifestV1 | ProviderInputSourceManifestV2;
 
 export interface ProviderInputDto {
   executionId: string;
@@ -1218,8 +1242,15 @@ export interface EngineDto {
   efforts: EffortOption[];
   /** False when provider model metadata is temporarily unavailable. */
   modelCatalogKnown?: boolean;
+  /** The adapter is configured on this Ponderosa host. */
+  configured: true;
+  /** Subscription credentials are present; this does not prove entitlement. */
   authenticated: boolean;
   authDetail?: string;
+  /** Real provider work is allowed to run. */
+  available: boolean;
+  /** Positive/negative provider evidence behind `available`. */
+  availabilityDetail?: string;
 }
 
 export interface ProjectEngineCapabilitiesDto {
@@ -1318,7 +1349,13 @@ export interface ReadinessDto {
     runtimes: ReadinessCheckDto;
     communicationMigration: ReadinessCheckDto;
   };
-  runtimes: Array<{ id: string; authenticated: boolean; detail?: string }>;
+  runtimes: Array<{
+    id: string;
+    configured: true;
+    authenticated: boolean;
+    available: boolean;
+    detail?: string;
+  }>;
 }
 
 // ─── Legacy engine switch + global chat search ─────────────────────────────

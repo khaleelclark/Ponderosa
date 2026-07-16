@@ -63,7 +63,9 @@ const engines: EngineDto[] = [{
   displayName: "Selected runtime",
   models: [],
   efforts: [],
+  configured: true,
   authenticated: true,
+  available: true,
 }];
 
 const capability = (

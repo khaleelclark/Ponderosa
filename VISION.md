@@ -85,6 +85,17 @@ but idle agents must not retain an unbounded process and MCP stack. Canonical
 provider session identity survives process teardown so a later turn can resume
 without making runtime residency part of the product's memory model.
 
+Runtime configuration, subscription authentication, and current provider
+availability are separate facts. A real entitlement denial remains authoritative
+across time and restarts, and queued work for that engine remains unleased. The
+operator may explicitly test access after renewing a subscription; only a
+provider-accepted test or successful Run restores availability.
+
+Context inspection distinguishes exact input submitted for the current Run from
+evidence known only to remain in a continued provider session. Unsent queued
+messages and unrelated artifacts appear in neither category, and historical
+manifest records remain readable after the schema evolves.
+
 ## Projects and agent organization
 
 Projects and their Project chats live in a collapsible, resizable explorer-style

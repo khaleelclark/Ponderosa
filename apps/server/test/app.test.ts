@@ -2108,18 +2108,54 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Try provider" } });
     await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("failed");
     expect((await app.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
-      id: "codex", authenticated: false, authDetail: expect.stringContaining("organization has disabled"),
+      id: "codex", configured: true, authenticated: true, available: false,
+      authDetail: "test", availabilityDetail: expect.stringContaining("organization has disabled"),
     }));
     const readiness = await app.inject({ method: "GET", url: "/api/ready" });
     expect(readiness.statusCode).toBe(503);
-    expect(readiness.json()).toMatchObject({ runtimes: [{ id: "codex", authenticated: false }] });
+    expect(readiness.json()).toMatchObject({ runtimes: [{ id: "codex", authenticated: true, available: false }] });
     await app.close();
     store = new AgentStore(dataDir);
     const restarted = createServer({ dataDir, store, engines, logger: false });
     expect((await restarted.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
-      id: "codex", authenticated: false, authDetail: expect.stringContaining("organization has disabled"),
+      id: "codex", authenticated: true, available: false,
+      availabilityDetail: expect.stringContaining("organization has disabled"),
     }));
     await restarted.close();
+  });
+
+  it("keeps denied work queued and releases it only after an explicit successful provider probe", async () => {
+    let providerAvailable = false;
+    engines = [{
+      adapter,
+      authStatus: async () => ({ authenticated: true, detail: "configured login" }),
+      availabilityProbe: async () => ({
+        available: providerAvailable,
+        detail: providerAvailable ? "subscription request accepted" : "subscription inactive",
+      }),
+    }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Entitlement queue", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Claude-like", engine: "codex" });
+    adapter.failureAfterBeforeResponse = "subscription access denied";
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "First" } });
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("failed");
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep queued" } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(store.getRuns(agent.id)).toHaveLength(1);
+    expect((await app.inject({ method: "POST", url: "/api/engines/codex/recheck" })).json()).toMatchObject({
+      authenticated: true, available: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(store.getRuns(agent.id)).toHaveLength(1);
+
+    providerAvailable = true;
+    expect((await app.inject({ method: "POST", url: "/api/engines/codex/recheck" })).json()).toMatchObject({
+      authenticated: true, available: true,
+    });
+    await expect.poll(() => store.getRuns(agent.id).length).toBe(2);
+    await app.close();
   });
 
   it("keeps clean projects available when an older project has projection drift", async () => {
@@ -3161,12 +3197,43 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
     const run = store.getRuns(agent.id)[0]!;
     const input = store.getProviderInput(run.id, true)!;
+    expect(input.sourceManifest.schemaVersion).toBe(2);
     expect(input.exactPrompt).toContain("NEBULA-683 shared decision");
     expect(input.sourceManifest.historyMessageCount).toBeGreaterThan(0);
     expect(input.sourceManifest.communicationEventIds).toContain(broadcast.communicationEventId);
     expect(input.sourceManifest.sources).toContainEqual(expect.objectContaining({
       kind: "communication", ref: broadcast.communicationEventId,
     }));
+    await app.close();
+  });
+
+  it("keeps continued-session history out of exact submitted lineage", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Manifest continuation", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "FIRST-LINEAGE-ITEM", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    await waitForRun(agent.id);
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "SECOND-LINEAGE-ITEM", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    await waitForRun(agent.id, 2);
+
+    const secondRun = store.getRuns(agent.id)[1]!;
+    const input = store.getProviderInput(secondRun.id, true)!;
+    expect(input.exactPrompt).toContain("SECOND-LINEAGE-ITEM");
+    expect(input.exactPrompt).not.toContain("FIRST-LINEAGE-ITEM");
+    expect(input.sourceManifest.schemaVersion).toBe(2);
+    if (input.sourceManifest.schemaVersion !== 2) throw new Error("expected V2 manifest");
+    expect(input.sourceManifest.sources.filter((source) => source.kind === "history_message")).toEqual([]);
+    expect(input.sourceManifest.sources).toContainEqual(expect.objectContaining({
+      kind: "team_directory", delivery: "retained_session",
+    }));
+    expect(input.sourceManifest.retainedSessionSourceCount).toBe(1);
     await app.close();
   });
 

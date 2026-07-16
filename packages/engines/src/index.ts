@@ -16,23 +16,25 @@ export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
 export type { ProcessStreamSnapshot, RuntimeProcessFaults } from "./process.js";
 export { LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
-export { codexAuthStatus, codexHome, claudeAuthStatus } from "./auth.js";
+export { codexAuthStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";
 export { shouldRolloverEngineSession, classifyProviderFailure } from "./session-recovery.js";
 export type { ProviderFailureKind } from "./session-recovery.js";
 export { codexApiPriceProfile, claudeApiPriceProfile } from "./api-pricing.js";
 export { composerCapabilities, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList, parseCodexMcpList } from "./capabilities.js";
 
 // Re-export the Adapter contract from core so consumers import engines in one place.
-export type { Adapter, AgentEvent, EngineAuthStatus } from "@ponderosa/core";
+export type { Adapter, AgentEvent, EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
 
-import type { Adapter, EngineAuthStatus } from "@ponderosa/core";
-import { claudeAuthStatus, codexAuthStatus } from "./auth.js";
+import type { Adapter, EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
+import { claudeAuthStatus, claudeAvailabilityStatus, codexAuthStatus } from "./auth.js";
 import { CodexAdapter } from "./codex.js";
 import { ClaudeAdapter } from "./claude.js";
 
 export interface EngineRegistration {
   adapter: Adapter;
   authStatus?: () => Promise<EngineAuthStatus>;
+  /** Explicit, provider-backed entitlement check; never run during polling. */
+  availabilityProbe?: () => Promise<EngineAvailabilityStatus>;
 }
 
 export function defaultEngineRegistrations(): EngineRegistration[] {
@@ -44,6 +46,7 @@ export function defaultEngineRegistrations(): EngineRegistration[] {
     {
       adapter: new ClaudeAdapter(),
       authStatus: claudeAuthStatus,
+      availabilityProbe: claudeAvailabilityStatus,
     },
   ];
 }

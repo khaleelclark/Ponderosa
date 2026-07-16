@@ -45,7 +45,7 @@ import { compactDefined } from "../collections";
 import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
-import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
@@ -58,13 +58,13 @@ import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 
 export function conversationComposerRuntime(
-  engine: Pick<EngineDto, "id" | "authenticated"> | undefined,
+  engine: Pick<EngineDto, "id" | "authenticated" | "available"> | undefined,
   engineCapabilities: ProjectEngineCapabilitiesDto[],
 ): { commands: EngineCommand[]; capabilities: ProjectEngineCapabilitiesDto["composerCapabilities"] } {
   const discovered = engineCapabilities.find((item) => item.engineId === engine?.id);
   return {
     commands: discovered?.commands ?? [],
-    capabilities: engine?.authenticated ? discovered?.composerCapabilities ?? [] : [],
+    capabilities: engineIsAvailable(engine) ? discovered?.composerCapabilities ?? [] : [],
   };
 }
 
@@ -662,7 +662,7 @@ export function ConversationView({
   const efforts = effort && effortSelectionIsCompatible(activeEngine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
     ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
     : advertisedEfforts;
-  const engineReady = Boolean(activeEngine?.authenticated);
+  const engineReady = engineIsAvailable(activeEngine);
 
   const agentTitle = (agentId: string | undefined): string =>
     agents.find((agent) => agent.id === agentId)?.title ?? "Agent";
@@ -766,7 +766,7 @@ export function ConversationView({
           persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: null, defaultEffort: null });
         }}
       >
-        {engines.map((option) => <MenuItem key={option.id} value={option.id} disabled={!option.authenticated}>{option.displayName}{option.authenticated ? "" : " — signed out"}</MenuItem>)}
+        {engines.map((option) => <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>{option.displayName}{engineIsAvailable(option) ? "" : option.authenticated ? " — unavailable" : " — signed out"}</MenuItem>)}
       </Select>
     </FormControl>
     {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 115 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
