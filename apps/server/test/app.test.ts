@@ -143,6 +143,24 @@ describe("localhost link preview registration", () => {
   });
 });
 
+describe("link favicon loading", () => {
+  it("serves a bounded same-origin favicon and rejects unsafe targets before loading", async () => {
+    const linkFaviconLoader = vi.fn(async () => ({ body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mediaType: "image/png" }));
+    const app = createServer({ dataDir, store, engines, logger: false, linkFaviconLoader });
+    const favicon = await app.inject({ method: "GET", url: "/api/link-favicon?url=https%3A%2F%2Fdocs.example.com%2Fguide" });
+    expect(favicon.statusCode).toBe(200);
+    expect(favicon.headers["content-type"]).toContain("image/png");
+    expect(favicon.rawPayload).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(linkFaviconLoader).toHaveBeenCalledWith(new URL("https://docs.example.com/favicon.ico"));
+
+    for (const url of ["http://example.com/", "https://localhost:443/", "https://127.0.0.1/", "file:///etc/passwd", "https://user:secret@example.com/"]) {
+      expect((await app.inject({ method: "GET", url: `/api/link-favicon?url=${encodeURIComponent(url)}` })).statusCode).toBe(400);
+    }
+    expect(linkFaviconLoader).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+});
+
 class MockAdapter implements Adapter {
   id = "codex";
   displayName = "Mock Codex";

@@ -1,6 +1,9 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
+import { promises as dns } from "node:dns";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP } from "node:net";
 import { Readable } from "node:stream";
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
@@ -104,6 +107,8 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
+  /** Deterministic test seam; production resolves and pins public DNS itself. */
+  linkFaviconLoader?: (target: URL) => Promise<{ body: Buffer; mediaType: string }>;
   /** Explicit roots exposed by the host folder picker. */
   allowedBrowseRoots?: string[];
   /** Immutable source revision for deploy/runtime parity checks. */
@@ -156,6 +161,63 @@ export interface CreateServerOptions {
     beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
     afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
   };
+}
+
+const nonPublicFaviconAddresses = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16],
+  ["192.0.2.0", 24], ["192.88.99.0", 24], ["198.18.0.0", 15], ["198.51.100.0", 24],
+  ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) nonPublicFaviconAddresses.addSubnet(network, prefix, "ipv4");
+for (const [network, prefix] of [
+  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b::", 96], ["100::", 64],
+  ["2001::", 32], ["2001:db8::", 32], ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) nonPublicFaviconAddresses.addSubnet(network, prefix, "ipv6");
+
+function externalFaviconTarget(raw: string): URL | undefined {
+  let target: URL;
+  try { target = new URL(raw); } catch { return undefined; }
+  const hostname = target.hostname.toLowerCase();
+  if (target.protocol !== "https:" || target.username || target.password || (target.port && target.port !== "443")
+    || !hostname || hostname === "localhost" || hostname.endsWith(".local") || isIP(hostname)) return undefined;
+  return new URL(`https://${hostname}/favicon.ico`);
+}
+
+async function loadExternalFavicon(target: URL): Promise<{ body: Buffer; mediaType: string }> {
+  const addresses = await dns.lookup(target.hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(({ address, family }) => nonPublicFaviconAddresses.check(address, family === 6 ? "ipv6" : "ipv4"))) {
+    throw new Error("favicon host does not resolve exclusively to public addresses");
+  }
+  const selected = addresses[0]!;
+  return await new Promise((resolve, reject) => {
+    const request = httpsRequest({
+      protocol: "https:", hostname: target.hostname, port: 443, path: "/favicon.ico", method: "GET",
+      servername: target.hostname,
+      headers: { accept: "image/png,image/x-icon,image/vnd.microsoft.icon,image/gif,image/webp,image/jpeg", "user-agent": "Ponderosa favicon fetch" },
+      lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family),
+    }, (response) => {
+      const mediaType = (response.headers["content-type"] ?? "").split(";", 1)[0]!.trim().toLowerCase();
+      const allowed = new Set(["image/png", "image/x-icon", "image/vnd.microsoft.icon", "image/gif", "image/webp", "image/jpeg"]);
+      if (response.statusCode !== 200 || !allowed.has(mediaType)) {
+        response.resume();
+        reject(new Error("favicon response was unavailable or unsafe"));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let size = 0;
+      response.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > 64 * 1024) request.destroy(new Error("favicon exceeds 64 KiB"));
+        else chunks.push(chunk);
+      });
+      response.on("end", () => resolve({ body: Buffer.concat(chunks), mediaType }));
+      response.on("error", reject);
+    });
+    request.setTimeout(5_000, () => request.destroy(new Error("favicon request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 interface ActiveRun {
@@ -2723,6 +2785,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/projects", async () => store.listProjects());
+
+  app.get<{ Querystring: { url?: string } }>("/api/link-favicon", async (request, reply) => {
+    const target = externalFaviconTarget(request.query.url ?? "");
+    if (!target) return reply.code(400).send({ error: "favicon URL must be a public HTTPS hostname" });
+    try {
+      const favicon = await (opts.linkFaviconLoader ?? loadExternalFavicon)(target);
+      reply.type(favicon.mediaType);
+      reply.header("cache-control", "public, max-age=3600");
+      return reply.send(favicon.body);
+    } catch {
+      return reply.code(404).send({ error: "favicon unavailable" });
+    }
+  });
 
   const loopbackPreviewTarget = (raw: string): URL | undefined => {
     let target: URL;

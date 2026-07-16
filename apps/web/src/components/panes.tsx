@@ -71,6 +71,7 @@ export interface LinkPreviewScope { projectId: string; agentId: string; runId: s
 function ChatLink({ href, children, previewScope }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope }): JSX.Element {
   const link = linkPresentation(href);
   const [chooserOpen, setChooserOpen] = useState(false);
+  const [faviconFailed, setFaviconFailed] = useState(false);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string>();
   if (!link) return <a href={href}>{children}</a>;
@@ -89,7 +90,9 @@ function ChatLink({ href, children, previewScope }: { href: string; children: Re
   };
   return <>
     <Box component="a" href={href} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
-      <LanguageIcon aria-hidden fontSize="inherit" />
+      {!faviconFailed && !link.loopback && link.url.protocol === "https:"
+        ? <Box component="img" src={`/api/link-favicon?url=${encodeURIComponent(link.url.href)}`} alt="" onError={() => setFaviconFailed(true)} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
+        : <LanguageIcon aria-hidden fontSize="inherit" />}
       <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>{link.hostname}</strong> · {link.destination}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
@@ -668,7 +671,7 @@ export function ChatPane({
                 <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
               </Box>
             ) : null}
-            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope} />
+            <ChatMessageBody text={message.text} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={message.role === "assistant" ? previewScope : undefined} />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
