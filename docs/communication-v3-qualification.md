@@ -14,6 +14,28 @@ The comparisons below are retained historical qualification evidence. Their
 isolated data directories, ports, feature flags, and V2 service descriptions do
 not describe the current executable product.
 
+## V3.1.1 activation-delivery lifecycle
+
+A scheduler Run is one delivery attempt; its failure is not itself the durable
+outcome of the Activation. V3.1.1 records delivery failures and terminal outcome
+on each Activation. Deterministic recipient loss is terminal
+`recipient_unavailable`, other permanent rejections are `permanent_failure`, and
+transient rejections stop at a bounded retry ceiling (five by default) as
+`retry_exhausted`.
+
+On startup, Ponderosa first recovers orphaned Runs. It then terminalizes only
+`pending` or `retry_pending` Activations whose Project recipient is missing or
+archived. Submitted or acknowledged provider work retains the existing
+fail-closed `outcome_unknown` treatment. Agent deletion and Team Chat membership
+removal use the same terminal recipient-unavailable delivery outcome for work
+that has not started.
+
+Operators can inspect terminal counts and the most recent terminal Activation
+metadata at `GET /api/communication-v3/metrics`. A preconditioned, idempotent
+repair for one verified poison record is available at
+`POST /api/communication-v3/activations/:id/settle-recipient-unavailable`; it
+refuses a live recipient or an Activation whose delivery has already started.
+
 ## Controlled setup
 
 - Machine: Pine, so both conditions shared provider latency and host load.

@@ -201,6 +201,10 @@ export const agentActivations = sqliteTable("agent_activations", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   consumedAt: text("consumed_at"),
+  deliveryFailures: integer("delivery_failures").notNull().default(0),
+  lastDeliveryError: text("last_delivery_error"),
+  terminalOutcome: text("terminal_outcome"),
+  terminalAt: text("terminal_at"),
 });
 
 export const activationSources = sqliteTable("activation_sources", {

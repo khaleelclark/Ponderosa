@@ -624,6 +624,98 @@ describe("CoordinationV3Store scheduler", () => {
     expect(() => store.completeRun(first.runId, first.fencingToken)).toThrow("stale");
   });
 
+  it("terminalizes a permanent dispatch rejection with an operator-visible outcome", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "missing-recipient", kind: "human", payload: { text: "Wake" },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const lease = store.leaseNextRun({ workerId: "worker-1", now: "2026-07-15T00:00:00.000Z" })!;
+    expect(store.failRun({
+      runId: lease.runId,
+      fencingToken: lease.fencingToken,
+      workerId: "worker-1",
+      sameRunResumable: false,
+      retryable: false,
+      terminalOutcome: "recipient_unavailable",
+      error: "agent not found",
+      now: "2026-07-15T00:00:01.000Z",
+    })).toBe("terminal");
+    expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:01:00.000Z" })).toBeUndefined();
+    expect(opened.client.prepare(`
+      SELECT state, delivery_failures, last_delivery_error, terminal_outcome, terminal_at
+      FROM agent_activations WHERE id = ?
+    `).get(lease.activationIds[0])).toEqual({
+      state: "failed",
+      delivery_failures: 1,
+      last_delivery_error: "agent not found",
+      terminal_outcome: "recipient_unavailable",
+      terminal_at: "2026-07-15T00:00:01.000Z",
+    });
+    expect(store.schedulerMetrics()).toMatchObject({ recipientUnavailableActivations: 1 });
+    expect(store.terminalActivations(projectId)).toEqual([
+      expect.objectContaining({
+        id: lease.activationIds[0], outcome: "recipient_unavailable", deliveryFailures: 1,
+        lastDeliveryError: "agent not found",
+      }),
+    ]);
+  });
+
+  it("bounds transient delivery retries and terminalizes exhaustion", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "bounded-retry", kind: "ordinary", payload: { text: "Work" },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const first = store.leaseNextRun({ workerId: "worker-1", now: "2026-07-15T00:00:00.000Z" })!;
+    expect(store.failRun({
+      runId: first.runId, fencingToken: first.fencingToken, workerId: "worker-1",
+      sameRunResumable: false, retryable: true, error: "busy", maxDeliveryFailures: 2,
+      retryDelayMs: 0, now: "2026-07-15T00:00:01.000Z",
+    })).toBe("retry");
+    const second = store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:01.000Z" })!;
+    expect(store.failRun({
+      runId: second.runId, fencingToken: second.fencingToken, workerId: "worker-2",
+      sameRunResumable: false, retryable: true, error: "still busy", maxDeliveryFailures: 2,
+      retryDelayMs: 0, now: "2026-07-15T00:00:02.000Z",
+    })).toBe("terminal");
+    expect(opened.client.prepare(`
+      SELECT state, delivery_failures, terminal_outcome FROM agent_activations WHERE id = ?
+    `).get(first.activationIds[0])).toEqual({
+      state: "failed", delivery_failures: 2, terminal_outcome: "retry_exhausted",
+    });
+    expect(store.schedulerMetrics()).toMatchObject({ retryExhaustedActivations: 1, pendingActivations: 0 });
+  });
+
+  it("reconciles and explicitly repairs only detached Activations with unavailable recipients", () => {
+    const reconciliation = store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "startup-poison", kind: "human", payload: { text: "Wake" },
+    });
+    const targeted = store.enqueueMessageActivation({
+      projectId, agentId: recipientB, messageId: "targeted-poison", kind: "human", payload: { text: "Wake" },
+    });
+    opened.client.prepare("DELETE FROM agents WHERE id = ?").run(recipientA);
+    expect(store.reconcileUnavailableActivationRecipients("2026-07-15T01:00:00.000Z")).toEqual({ settled: 1 });
+    expect(store.terminalActivations(projectId)).toEqual([
+      expect.objectContaining({ id: reconciliation, outcome: "recipient_unavailable" }),
+    ]);
+    expect(() => store.settleUnavailableActivation({
+      activationId: targeted,
+      projectId,
+      idempotencyKey: "still-live",
+    })).toThrow("still available");
+
+    opened.client.prepare("DELETE FROM agents WHERE id = ?").run(recipientB);
+    const input = {
+      activationId: targeted, projectId, idempotencyKey: "repair-once",
+      reason: "verified deleted recipient", now: "2026-07-15T01:01:00.000Z",
+    };
+    expect(store.settleUnavailableActivation(input)).toEqual({
+      settled: true, replayed: false, status: "recipient_unavailable",
+    });
+    expect(store.settleUnavailableActivation(input)).toEqual({
+      settled: true, replayed: true, status: "recipient_unavailable",
+    });
+  });
+
   it("resumes the same injected run when possible and otherwise records ambiguity", () => {
     store.enqueueMessageActivation({
       projectId, agentId: recipientA, messageId: "resume-1", kind: "ordinary", payload: { text: "Work" },
