@@ -1,8 +1,9 @@
-import type { CoordinationV3Store, ProviderOperation, SchedulerLease, SteeringLease } from "@ponderosa/agents";
+import type { ActivationTerminalOutcome, CoordinationV3Store, ProviderOperation, SchedulerLease, SteeringLease } from "@ponderosa/agents";
 
 export interface CoordinationV3DispatchResult {
   accepted: boolean;
   retryable?: boolean;
+  terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
   outcomeUnknown?: boolean;
   error?: string;
 }
@@ -39,6 +40,7 @@ export class CoordinationV3Scheduler {
       pollMs?: number;
       leaseMs?: number;
       coalesceLimit?: number;
+      maxDeliveryFailures?: number;
       now?: () => number;
       setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
       clearTimer?: (timer: NodeJS.Timeout) => void;
@@ -185,6 +187,10 @@ export class CoordinationV3Scheduler {
               workerId: this.options.workerId,
               sameRunResumable: false,
               retryDelayMs: result.retryable === false ? 30_000 : 500,
+              retryable: result.retryable,
+              terminalOutcome: result.terminalOutcome,
+              error: result.error,
+              maxDeliveryFailures: this.options.maxDeliveryFailures,
               now: new Date((this.options.now ?? Date.now)()).toISOString(),
             });
           } catch (error) {

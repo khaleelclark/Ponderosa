@@ -66,6 +66,10 @@ interface ActivationRow {
   dedupe_key: string;
   payload_json: string;
   available_at: string;
+  delivery_failures: number;
+  last_delivery_error: string | null;
+  terminal_outcome: ActivationTerminalOutcome | null;
+  terminal_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -156,6 +160,7 @@ export interface SchedulerLease {
 
 export type ActivationDispatchPolicy = "steer_or_run" | "next_run";
 export type ActivationPromptClass = "human" | "blocker" | "coordination" | "ordinary";
+export type ActivationTerminalOutcome = "recipient_unavailable" | "permanent_failure" | "retry_exhausted";
 
 export interface RuntimeCommunicationV3Input {
   id: string;
@@ -209,6 +214,23 @@ export interface PendingActivationV3View {
   state: "pending" | "retry_pending";
   payload: unknown;
   createdAt: string;
+}
+
+export interface TerminalActivationV3View {
+  id: string;
+  projectId: string;
+  agentId: string;
+  kind: string;
+  outcome: ActivationTerminalOutcome;
+  deliveryFailures: number;
+  lastDeliveryError?: string;
+  terminalAt: string;
+}
+
+export interface SettleUnavailableActivationResult {
+  settled: boolean;
+  replayed: boolean;
+  status: "recipient_unavailable" | "not_pending";
 }
 
 export interface CoordinationWaitCycleV3 {
@@ -479,6 +501,92 @@ export class CoordinationV3Store {
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
     }));
+  }
+
+  terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
+    const rows = this.sqlite.prepare(`
+      SELECT id, project_id, agent_id, kind, terminal_outcome, delivery_failures,
+        last_delivery_error, terminal_at
+      FROM agent_activations
+      WHERE terminal_outcome IS NOT NULL AND (? IS NULL OR project_id = ?)
+      ORDER BY terminal_at DESC, id DESC LIMIT ?
+    `).all(projectId ?? null, projectId ?? null, Math.max(1, Math.min(limit, 500))) as Array<{
+      id: string; project_id: string; agent_id: string; kind: string;
+      terminal_outcome: ActivationTerminalOutcome; delivery_failures: number;
+      last_delivery_error: string | null; terminal_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      agentId: row.agent_id,
+      kind: row.kind,
+      outcome: row.terminal_outcome,
+      deliveryFailures: row.delivery_failures,
+      ...(row.last_delivery_error ? { lastDeliveryError: row.last_delivery_error } : {}),
+      terminalAt: row.terminal_at,
+    }));
+  }
+
+  /** Idempotent, preconditioned operator repair for one known poison
+   * Activation. It cannot override in-flight or ambiguous provider work. */
+  settleUnavailableActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    reason?: string;
+    now?: string;
+  }): SettleUnavailableActivationResult {
+    if (!input.idempotencyKey.trim()) throw new Error("settlement idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    const error = (input.reason?.trim() || "activation recipient is missing or archived").slice(0, 2_000);
+    const hash = payloadHash({ activationId: input.activationId, reason: error });
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<Omit<SettleUnavailableActivationResult, "replayed">>(
+        input.projectId, "user:local-operator", "settle_unavailable_activation", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const activation = this.sqlite.prepare(`
+        SELECT id, agent_id, state, terminal_outcome FROM agent_activations
+        WHERE id = ? AND project_id = ?
+      `).get(input.activationId, input.projectId) as {
+        id: string; agent_id: string; state: string; terminal_outcome: ActivationTerminalOutcome | null;
+      } | undefined;
+      if (!activation) throw new Error("activation not found in project");
+      if (this.agentSurvives(activation.agent_id)) throw new Error("activation recipient is still available");
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
+        WHERE id = ? AND state IN ('pending', 'retry_pending')
+      `).run(now, error, now, activation.id).changes;
+      const result: Omit<SettleUnavailableActivationResult, "replayed"> = changed === 1 || activation.terminal_outcome === "recipient_unavailable"
+        ? { settled: changed === 1, status: "recipient_unavailable" }
+        : { settled: false, status: "not_pending" };
+      this.recordIdempotency(
+        input.projectId, "user:local-operator", "settle_unavailable_activation",
+        input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
+  }
+
+  /** Startup integrity repair for detached work that can never be delivered.
+   * Orphaned Runs must be recovered first so their pre-submission Activations
+   * return to retry_pending before this scan. */
+  reconcileUnavailableActivationRecipients(now = new Date().toISOString()): { settled: number } {
+    const error = "activation recipient is missing or archived during startup reconciliation";
+    const changed = this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+        terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
+      WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
+        SELECT 1 FROM agents
+        WHERE agents.id = agent_activations.agent_id
+          AND agents.project_id = agent_activations.project_id
+          AND agents.archived = 0
+      )
+    `).run(now, error, now).changes;
+    return { settled: changed };
   }
 
   communicationRecipientAgentIds(communicationId: string): string[] {
@@ -1032,6 +1140,9 @@ export class CoordinationV3Store {
     deadLetteredProviderOperations: number;
     pendingTriggerOccurrences: number;
     deadLetteredTriggerOccurrences: number;
+    recipientUnavailableActivations: number;
+    permanentFailureActivations: number;
+    retryExhaustedActivations: number;
   } {
     const count = (table: string, predicate: string): number => (this.sqlite.prepare(
       `SELECT COUNT(*) AS count FROM ${table} WHERE ${predicate}`,
@@ -1048,6 +1159,9 @@ export class CoordinationV3Store {
       deadLetteredProviderOperations: count("provider_operation_outbox", "state = 'failed'"),
       pendingTriggerOccurrences: count("trigger_occurrences", "state = 'pending'"),
       deadLetteredTriggerOccurrences: count("trigger_occurrences", "state = 'dead_lettered'"),
+      recipientUnavailableActivations: count("agent_activations", "terminal_outcome = 'recipient_unavailable'"),
+      permanentFailureActivations: count("agent_activations", "terminal_outcome = 'permanent_failure'"),
+      retryExhaustedActivations: count("agent_activations", "terminal_outcome = 'retry_exhausted'"),
     };
   }
 
@@ -1422,9 +1536,10 @@ export class CoordinationV3Store {
         now,
       });
       this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        UPDATE agent_activations SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
         WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
-      `).run(now, agentId);
+      `).run(now, "activation recipient was deleted", now, agentId);
       this.sqlite.prepare(`
         UPDATE trigger_occurrences
         SET state = 'dead_lettered', last_error = 'recipient Agent deleted',
@@ -1484,9 +1599,10 @@ export class CoordinationV3Store {
         now,
       });
       this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        UPDATE agent_activations SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
         WHERE agent_id = ? AND scope_key = ? AND state IN ('pending', 'retry_pending')
-      `).run(now, agentId, scopeKey);
+      `).run(now, "activation recipient is no longer a member of the Team Chat", now, agentId, scopeKey);
       this.sqlite.prepare(`
         UPDATE trigger_occurrences
         SET state = 'dead_lettered', last_error = 'Team Chat membership removed',
@@ -1926,7 +2042,11 @@ export class CoordinationV3Store {
     now?: string;
     retryDelayMs?: number;
     leaseMs?: number;
-  }): "retry" | "resume_same_run" | "outcome_unknown" {
+    retryable?: boolean;
+    terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
+    error?: string;
+    maxDeliveryFailures?: number;
+  }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
       const run = this.getFencedRun(input.runId, input.fencingToken);
@@ -1935,20 +2055,55 @@ export class CoordinationV3Store {
         sameRunResumable: input.sameRunResumable,
       });
       if (disposition === "retry") {
+        const error = (input.error ?? "scheduler dispatch rejected").slice(0, 2_000);
+        const requestedMaximum = input.maxDeliveryFailures ?? 5;
+        const maximum = Number.isFinite(requestedMaximum)
+          ? Math.max(1, Math.floor(requestedMaximum)) : 5;
+        const terminalOutcome = input.retryable === false
+          ? input.terminalOutcome ?? "permanent_failure"
+          : undefined;
         const availableAt = new Date(Date.parse(now) + (input.retryDelayMs ?? 1_000)).toISOString();
         this.sqlite.prepare(`
           UPDATE scheduler_runs SET status = 'failed', updated_at = ?, terminal_at = ?
           WHERE id = ? AND fencing_token = ?
         `).run(now, now, input.runId, input.fencingToken);
         this.sqlite.prepare(`
-          UPDATE agent_activations SET state = 'retry_pending', available_at = ?, updated_at = ?
+          UPDATE agent_activations
+          SET delivery_failures = delivery_failures + 1,
+            last_delivery_error = ?,
+            state = CASE
+              WHEN ? IS NOT NULL OR delivery_failures + 1 >= ? THEN 'failed'
+              ELSE 'retry_pending'
+            END,
+            terminal_outcome = CASE
+              WHEN ? IS NOT NULL THEN ?
+              WHEN delivery_failures + 1 >= ? THEN 'retry_exhausted'
+              ELSE NULL
+            END,
+            terminal_at = CASE
+              WHEN ? IS NOT NULL OR delivery_failures + 1 >= ? THEN ?
+              ELSE NULL
+            END,
+            available_at = ?, updated_at = ?
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
             AND state = 'attached'
-        `).run(availableAt, now, input.runId);
+        `).run(
+          error,
+          terminalOutcome ?? null, maximum,
+          terminalOutcome ?? null, terminalOutcome ?? null, maximum,
+          terminalOutcome ?? null, maximum, now,
+          availableAt, now, input.runId,
+        );
         this.sqlite.prepare(`
           UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state = 'pending'
         `).run(now, now, input.runId);
+        const pending = (this.sqlite.prepare(`
+          SELECT COUNT(*) AS count FROM agent_activations
+          WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+            AND state = 'retry_pending'
+        `).get(input.runId) as { count: number }).count;
+        if (pending === 0) return "terminal";
       } else if (disposition === "resume_same_run") {
         const nextFence = this.nextFence(run.agent_id as string);
         const leaseExpiresAt = new Date(Date.parse(now) + (input.leaseMs ?? 30_000)).toISOString();

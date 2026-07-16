@@ -54,6 +54,10 @@ describe("Communication V3 agent deletion", () => {
       `).get(recipient.id, `conversation:${chatA.id}`)).toEqual({ count: 0 });
       expect(agents.sqlite.prepare("SELECT state FROM trigger_occurrences WHERE id = ?").get(trigger.occurrenceId))
         .toEqual({ state: "dead_lettered" });
+      expect(agents.sqlite.prepare(`
+        SELECT state, terminal_outcome FROM agent_activations
+        WHERE agent_id = ? AND scope_key = ?
+      `).get(recipient.id, `conversation:${chatA.id}`)).toEqual({ state: "failed", terminal_outcome: "recipient_unavailable" });
     } finally {
       agents.close();
     }
@@ -111,6 +115,9 @@ describe("Communication V3 agent deletion", () => {
       expect(agents.getAgent(recipient.id)).toBeUndefined();
       expect(agents.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'deleted-recipient'").get())
         .toEqual({ state: "recipient_unavailable" });
+      expect(agents.sqlite.prepare(`
+        SELECT state, terminal_outcome FROM agent_activations WHERE agent_id = ?
+      `).get(recipient.id)).toEqual({ state: "failed", terminal_outcome: "recipient_unavailable" });
     } finally {
       agents.close();
     }

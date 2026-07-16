@@ -86,6 +86,32 @@ describe("Communication V3 central scheduler", () => {
     });
   });
 
+  it("propagates deterministic recipient loss without scheduling another Run", async () => {
+    const now = Date.parse("2026-07-15T00:00:00.000Z");
+    store.enqueueMessageActivation({
+      projectId, agentId: agentA, messageId: "deleted", kind: "human", payload: { text: "Wake" },
+      now: new Date(now).toISOString(),
+    });
+    let attempts = 0;
+    const scheduler = new CoordinationV3Scheduler(store, async () => {
+      attempts += 1;
+      return {
+        accepted: false,
+        retryable: false,
+        terminalOutcome: "recipient_unavailable",
+        error: "agent not found",
+      };
+    }, { workerId: "scheduler", now: () => now, maxConcurrentRuns: 2 });
+
+    expect(await scheduler.drainOnce()).toBe(1);
+    expect(await scheduler.drainOnce()).toBe(0);
+    expect(attempts).toBe(1);
+    expect(store.schedulerMetrics()).toMatchObject({
+      pendingActivations: 0, failedRuns: 1, recipientUnavailableActivations: 1,
+    });
+    expect(scheduler.snapshotMetrics()).toMatchObject({ claimedRuns: 1, rejectedRuns: 1 });
+  });
+
   it("enforces one central concurrency budget across agents", async () => {
     const now = "2026-07-15T00:00:00.000Z";
     store.enqueueMessageActivation({ projectId, agentId: agentA, messageId: "a", kind: "ordinary", payload: {}, now });

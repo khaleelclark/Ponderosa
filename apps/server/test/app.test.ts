@@ -1341,6 +1341,100 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: stri
 }
 
 describe("server chunk F", () => {
+  it("repairs unavailable pending recipients before the startup scheduler can claim them", async () => {
+    const project = store.createProject({ label: "Startup repair", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Deleted", engine: "codex" });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const activationId = coordination.enqueueMessageActivation({
+      projectId: project.id, agentId: agent.id, messageId: "startup-poison", kind: "human", payload: { text: "Wake" },
+    });
+    store.sqlite.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    expect(coordination.terminalActivations(project.id)).toContainEqual(expect.objectContaining({
+      id: activationId,
+      outcome: "recipient_unavailable",
+      deliveryFailures: 0,
+    }));
+    expect(coordination.schedulerMetrics()).toMatchObject({ pendingActivations: 0, failedRuns: 0 });
+    await app.close();
+  });
+
+  it("classifies a dispatch 404 as recipient_unavailable without another attempt", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    await app.ready();
+    const project = store.createProject({ label: "Dispatch recipient loss", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Deleted", engine: "codex" });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const activationId = coordination.enqueueMessageActivation({
+      projectId: project.id, agentId: agent.id, messageId: "dispatch-poison", kind: "human", payload: { text: "Wake" },
+    });
+    store.sqlite.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
+
+    await vi.waitFor(() => expect(coordination.terminalActivations(project.id)).toContainEqual(
+      expect.objectContaining({ id: activationId, outcome: "recipient_unavailable", deliveryFailures: 1 }),
+    ));
+    const failedRuns = coordination.schedulerMetrics().failedRuns;
+    await sleep(25);
+    expect(coordination.schedulerMetrics()).toMatchObject({
+      pendingActivations: 0,
+      failedRuns,
+      recipientUnavailableActivations: 1,
+    });
+    await app.close();
+  });
+
+  it("exposes an idempotent targeted repair and its terminal delivery diagnostics", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000 },
+    });
+    await app.ready();
+    const project = store.createProject({ label: "Activation repair", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Deleted", engine: "codex" });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const activation = coordination.enqueueMessageActivation({
+      projectId: project.id, agentId: agent.id, messageId: "poison", kind: "human", payload: { text: "Wake" },
+    });
+    store.sqlite.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
+
+    const payload = {
+      projectId: project.id,
+      idempotencyKey: "repair-poison-once",
+      reason: "verified recipient deletion",
+    };
+    const repaired = await app.inject({
+      method: "POST",
+      url: `/api/communication-v3/activations/${activation}/settle-recipient-unavailable`,
+      payload,
+    });
+    expect(repaired.statusCode, repaired.body).toBe(200);
+    expect(repaired.json()).toEqual({
+      settled: true, replayed: false, status: "recipient_unavailable",
+    });
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/communication-v3/activations/${activation}/settle-recipient-unavailable`,
+      payload,
+    });
+    expect(replay.json()).toEqual({
+      settled: true, replayed: true, status: "recipient_unavailable",
+    });
+    const metrics = (await app.inject({ method: "GET", url: "/api/communication-v3/metrics" })).json<{
+      storage: { recipientUnavailableActivations: number };
+      recentTerminalActivations: Array<{ id: string; outcome: string }>;
+    }>();
+    expect(metrics.storage.recipientUnavailableActivations).toBe(1);
+    expect(metrics.recentTerminalActivations).toContainEqual(
+      expect.objectContaining({ id: activation, outcome: "recipient_unavailable" }),
+    );
+    await app.close();
+  });
+
   it("detects a received-but-unpersisted event as stalled without cancelling the owned run", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

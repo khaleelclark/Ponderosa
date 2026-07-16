@@ -197,6 +197,8 @@ export interface CreateServerOptions {
     /** Scheduler ownership lease. Defaults to the provider execution lease so
      * ordinary long turns cannot be mistaken for abandoned work. */
     leaseMs?: number;
+    /** Terminalize a repeatedly rejected Activation after this many dispatch attempts. */
+    maxDeliveryFailures?: number;
   };
   /** Deterministic message-claim race seam; never enabled in production configuration. */
   messageLifecycleFaults?: {
@@ -2046,10 +2048,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(communication?.eventId ? { v3CommunicationEventId: communication.eventId } : {}),
         },
       });
+      const accepted = response.statusCode >= 200 && response.statusCode < 300;
+      const retryable = response.statusCode === 409 || response.statusCode === 429 || response.statusCode >= 500;
       return {
-        accepted: response.statusCode >= 200 && response.statusCode < 300,
-        retryable: response.statusCode === 409 || response.statusCode === 429 || response.statusCode >= 500,
-        ...(response.statusCode >= 200 && response.statusCode < 300 ? {} : { error: response.body }),
+        accepted,
+        retryable,
+        ...(!accepted && !retryable ? {
+          terminalOutcome: response.statusCode === 404
+            ? "recipient_unavailable" as const
+            : "permanent_failure" as const,
+        } : {}),
+        ...(accepted ? {} : { error: response.body }),
       };
     },
     {
@@ -2057,6 +2066,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns,
       pollMs: opts.communicationV3?.pollMs,
       leaseMs: coordinationV3LeaseMs,
+      maxDeliveryFailures: opts.communicationV3?.maxDeliveryFailures,
       dispatchSteering: async (lease, prompt) => {
         const run = activeRuns.get(lease.agentId);
         if (!run || run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken || !run.runtimeSession) {
@@ -2301,6 +2311,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.addHook("onReady", async () => {
     await reconcileRuntimeCommunicationProjections();
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
+    coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
     coordinationV3Scheduler.start();
     const reconcileAssets = async () => {
@@ -3174,8 +3185,38 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       enabled: true,
       storage: coordinationV3.schedulerMetrics(),
       scheduler: coordinationV3Scheduler.snapshotMetrics(),
+      recentTerminalActivations: coordinationV3.terminalActivations(undefined, 100),
       waitCycleWarnings: coordinationV3.waitGraphCycles(),
     };
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { projectId?: string; idempotencyKey?: string; reason?: string };
+  }>("/api/communication-v3/activations/:id/settle-recipient-unavailable", async (request, reply) => {
+    const projectId = request.body?.projectId?.trim() ?? "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    const reason = request.body?.reason?.trim();
+    if (!projectId) return reply.code(400).send({ error: "projectId is required" });
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    }
+    if (reason && reason.length > 2_000) return reply.code(400).send({ error: "reason must not exceed 2000 characters" });
+    try {
+      const result = coordinationV3.settleUnavailableActivation({
+        activationId: request.params.id,
+        projectId,
+        idempotencyKey,
+        ...(reason ? { reason } : {}),
+      });
+      if (result.status === "not_pending") return reply.code(409).send(result);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === "activation not found in project") return reply.code(404).send({ error: message });
+      if (message === "activation recipient is still available") return reply.code(409).send({ error: message });
+      return reply.code(400).send({ error: message });
+    }
   });
 
   app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
