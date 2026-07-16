@@ -18,10 +18,6 @@ import {
   Checkbox,
   FormControlLabel,
   IconButton,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
   FormControl,
   InputLabel,
   MenuItem,
@@ -42,6 +38,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { AllAgentsView, AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
+import { NotificationPanel } from "./components/NotificationPanel";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
@@ -243,7 +240,7 @@ export default function App({
             label={engines.some((engine) => engine.authenticated) ? "Engine ready" : "Engine auth needed"}
             color={engines.some((engine) => engine.authenticated) ? "success" : "warning"}
             variant="outlined"
-            sx={{ maxWidth: { xs: 132, sm: "none" } }}
+            sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" } }}
           />
           <Button
             variant="outlined"
@@ -257,12 +254,9 @@ export default function App({
           </Button>
           <Tooltip title="Search chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><SearchIcon /></IconButton></Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
-          <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
+          <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
-          </Box>
-          <Box sx={{ ml: 0.5, display: { xs: "block", sm: "none" } }}>
-            <TokenUsageButton scope="overall" label="Overall" compact />
           </Box>
           <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={() => setNotificationSettingsOpen(true)} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
@@ -301,8 +295,13 @@ export default function App({
             </Alert>
           </Box>
         ) : projects.length === 0 && !projectsQuery.isLoading ? (
-          <Box sx={{ p: 2 }}>
-            <Alert severity="info">Create a project to get started.</Alert>
+          <Box sx={{ minHeight: 0, display: "grid", placeItems: "center", p: 2 }}>
+            <Stack spacing={1.5} sx={{ alignItems: "center", maxWidth: 480, textAlign: "center", p: { xs: 2.5, sm: 4 }, border: 1, borderColor: "divider", borderRadius: 3, bgcolor: "background.paper" }}>
+              <Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 56, height: 56 }} />
+              <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
+              <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
+              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
+            </Stack>
           </Box>
         ) : route.kind === "projects" ? (
           <AllProjectsView
@@ -393,28 +392,13 @@ export default function App({
         </DialogActions>
       </Dialog>
       <HostFolderPicker open={folderPickerOpen} initialPath={projectPath || undefined} onClose={() => setFolderPickerOpen(false)} onChoose={(hostPath) => { setProjectPath(hostPath); setFolderPickerOpen(false); }} />
-      <Dialog open={notificationPanelOpen} onClose={() => setNotificationPanelOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Notifications</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1} sx={{ pt: 1 }}>
-            {Array.from((notificationsQuery.data ?? []).reduce((groups, item) => {
-              const key = `${item.projectId}:${item.conversationId ?? "project"}`;
-              const group = groups.get(key) ?? []; group.push(item); groups.set(key, group); return groups;
-            }, new Map<string, import("@ponderosa/core").WorkspaceNotificationDto[]>()).entries()).map(([key, items]) => {
-              const [projectId = "", conversationId] = key.split(":");
-              const project = projects.find((candidate) => candidate.id === projectId);
-              return <Box key={key} sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
-                <Button fullWidth sx={{ justifyContent: "flex-start", px: 1.5 }} onClick={() => { if (conversationId && conversationId !== "project") { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId, conversationId }); } }}>
-                  {project?.label ?? "Project"} · {conversationId && conversationId !== "project" ? "Project chat" : "Project"} ({items.length})
-                </Button>
-                <List dense disablePadding>{items.map((item) => <ListItem key={item.id} disablePadding><ListItemButton selected={!item.readAt} onClick={() => { if (item.conversationId) { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId: item.projectId, conversationId: item.conversationId, ...(item.communicationEventId ? { focusMessageId: item.communicationEventId } : {}) }); } }}><ListItemText primary={item.title} secondary={item.body} /></ListItemButton></ListItem>)}</List>
-              </Box>;
-            })}
-            {(notificationsQuery.data ?? []).length === 0 ? <Typography color="text.secondary">No notifications.</Typography> : null}
-          </Stack>
-        </DialogContent>
-        <DialogActions><Button onClick={() => setNotificationPanelOpen(false)}>Done</Button></DialogActions>
-      </Dialog>
+      <NotificationPanel
+        open={notificationPanelOpen}
+        projects={projects}
+        notifications={notificationsQuery.data ?? []}
+        onClose={() => setNotificationPanelOpen(false)}
+        onNavigate={navigate}
+      />
       <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Settings</DialogTitle>
         <DialogContent>

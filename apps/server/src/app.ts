@@ -6246,6 +6246,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/notifications", async () => workspace.listNotifications());
+  app.post("/api/notifications/read", async () => {
+    const cursor = workspace.cursor();
+    const read = workspace.readAllNotifications();
+    publishWorkspaceSince(cursor);
+    return { read };
+  });
+  app.delete("/api/notifications", async () => {
+    const cursor = workspace.cursor();
+    const cleared = workspace.clearNotifications();
+    publishWorkspaceSince(cursor);
+    return { cleared };
+  });
   app.post<{ Params: { id: string } }>("/api/conversations/:id/notifications/read", async (request, reply) => {
     if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
     const cursor = workspace.cursor();

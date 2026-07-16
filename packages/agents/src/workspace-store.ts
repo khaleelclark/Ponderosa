@@ -23,6 +23,8 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "draft_deleted"; draftId: string }
     | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
+    | { kind: "notifications_read_all"; readAt: string }
+    | { kind: "notifications_cleared"; notificationIds: string[] }
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
 };
@@ -107,6 +109,19 @@ export class WorkspaceStore {
       for (const [id, item] of this.notifications) {
         if (item.conversationId === record.mutation.conversationId && !item.readAt) {
           this.notifications.set(id, { ...item, readAt: record.mutation.readAt });
+        }
+      }
+    }
+    if (record.mutation?.kind === "notifications_read_all") {
+      for (const [id, item] of this.notifications) {
+        if (!item.readAt) this.notifications.set(id, { ...item, readAt: record.mutation.readAt });
+      }
+    }
+    if (record.mutation?.kind === "notifications_cleared") {
+      for (const notificationId of record.mutation.notificationIds) {
+        this.notifications.delete(notificationId);
+        for (const key of this.pushDeliveries.keys()) {
+          if (key.startsWith(`${notificationId}\u0000`)) this.pushDeliveries.delete(key);
         }
       }
     }
@@ -219,6 +234,26 @@ export class WorkspaceStore {
     if (!unread) return;
     const readAt = new Date().toISOString();
     this.append({ type: "notification_changed", conversationId, action: "read" }, { kind: "notifications_read", conversationId, readAt });
+  }
+
+  readAllNotifications(): number {
+    const unread = this.listNotifications().filter((item) => !item.readAt);
+    if (unread.length === 0) return 0;
+    this.append(
+      { type: "notification_changed", action: "read" },
+      { kind: "notifications_read_all", readAt: new Date().toISOString() },
+    );
+    return unread.length;
+  }
+
+  clearNotifications(): number {
+    const notificationIds = this.listNotifications().map((item) => item.id);
+    if (notificationIds.length === 0) return 0;
+    this.append(
+      { type: "notification_changed", action: "cleared" },
+      { kind: "notifications_cleared", notificationIds },
+    );
+    return notificationIds.length;
   }
 
   putPushSubscription(input: Omit<WebPushSubscriptionDto, "updatedAt">): WebPushSubscriptionDto {
