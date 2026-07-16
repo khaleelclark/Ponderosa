@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import { create, unstable_batchedUpdates } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -29,6 +29,21 @@ describe("composer clipboard attachments", () => {
     expect(view.root.findAll((node) => node.children.includes("Use #agent to target an agent and @ to reference a file."))).not.toHaveLength(0);
     expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Add attachment or capability")).toHaveLength(1);
     expect(view.root.findAll((node) => node.props.variant === "standard" && node.props.multiline)).toHaveLength(1);
+    view.unmount();
+  });
+
+  it("refreshes runtime discovery whenever the capability menu opens", () => {
+    const refresh = vi.fn();
+    const view = renderComposer(<Composer
+      disabled={false}
+      running={false}
+      capabilities={[]}
+      onCapabilitiesOpen={refresh}
+      onSend={() => undefined}
+    />);
+    const trigger = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Add attachment or capability")[0]!;
+    trigger.props.onClick({ currentTarget: null });
+    expect(refresh).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 

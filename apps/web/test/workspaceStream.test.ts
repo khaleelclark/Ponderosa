@@ -1,7 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { conversationChangedQueryKeys, reconcileWorkspaceCursor } from "../src/hooks/useWorkspaceStream";
+import { QueryClient } from "@tanstack/react-query";
+import { conversationChangedQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor } from "../src/hooks/useWorkspaceStream";
 
 describe("workspace stream cursor recovery", () => {
+  it("invalidates only the changed project's runtime discovery cache", async () => {
+    const client = new QueryClient();
+    client.setQueryData(["engine-capabilities", "project-a"], ["old-a"]);
+    client.setQueryData(["engine-capabilities", "project-b"], ["old-b"]);
+
+    await invalidateWorkspaceCapabilities(client, { kind: "runtime-change", projectId: "project-a" });
+
+    expect(client.getQueryState(["engine-capabilities", "project-a"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["engine-capabilities", "project-b"])?.isInvalidated).toBe(false);
+  });
+
+  it("invalidates all runtime discovery caches on reconnect", async () => {
+    const client = new QueryClient();
+    client.setQueryData(["engine-capabilities", "project-a"], ["old-a"]);
+    client.setQueryData(["engine-capabilities", "project-b"], ["old-b"]);
+
+    await invalidateWorkspaceCapabilities(client, { kind: "reconnect" });
+
+    expect(client.getQueryState(["engine-capabilities", "project-a"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["engine-capabilities", "project-b"])?.isInvalidated).toBe(true);
+  });
+
+  it("converges capability cache boundaries independently in multiple tabs", async () => {
+    const tabs = [new QueryClient(), new QueryClient()];
+    for (const tab of tabs) tab.setQueryData(["engine-capabilities", "project-a"], ["old"]);
+
+    await Promise.all(tabs.map((tab) => invalidateWorkspaceCapabilities(tab, { kind: "runtime-change", projectId: "project-a" })));
+
+    expect(tabs.map((tab) => tab.getQueryState(["engine-capabilities", "project-a"])?.isInvalidated)).toEqual([true, true]);
+  });
+
   it("converges independent tabs after sleep/reconnect and ignores duplicate replay", () => {
     let phone = 0;
     let desktop = 0;

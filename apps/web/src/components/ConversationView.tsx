@@ -53,6 +53,17 @@ import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
 
+export function conversationComposerRuntime(
+  engine: Pick<EngineDto, "id" | "authenticated"> | undefined,
+  engineCapabilities: ProjectEngineCapabilitiesDto[],
+): { commands: EngineCommand[]; capabilities: ProjectEngineCapabilitiesDto["composerCapabilities"] } {
+  const discovered = engineCapabilities.find((item) => item.engineId === engine?.id);
+  return {
+    commands: discovered?.commands ?? [],
+    capabilities: engine?.authenticated ? discovered?.composerCapabilities ?? [] : [],
+  };
+}
+
 function MasterRespondingIndicator({ agents, healthByAgentId }: {
   agents: AgentDto[];
   healthByAgentId: Map<string, AgentHealthDto>;
@@ -659,10 +670,8 @@ export function ConversationView({
   }
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
-  const activeEngineCapabilities = engineCapabilities.find((item) => item.engineId === activeEngine?.id);
-  const commands: EngineCommand[] = [
-    ...(activeEngineCapabilities?.commands ?? []),
-  ];
+  const composerRuntime = conversationComposerRuntime(activeEngine, engineCapabilities);
+  const commands = composerRuntime.commands;
   const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
   const models = activeEngine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
     ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
@@ -1062,6 +1071,9 @@ export function ConversationView({
             Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
           </Alert>
         ) : null}
+        {/* Team/broadcast attachment transport is supplied by the companion
+            broadcast-attachments change. The shared Composer intentionally
+            keeps its default enabled control so the branches compose. */}
         <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
           conversationDraftId={activeView === "collaboration" ? `collaboration:${conversationId}` : conversationId}
@@ -1074,9 +1086,9 @@ export function ConversationView({
           disabled={activeView === "main" ? busy && !operationRunning : collaborate.isPending}
           running={activeView === "main" && operationRunning}
           mentionHandles={mentionHandles}
-          commands={activeView === "main" ? commands : []}
-          capabilities={activeView === "main" && activeEngine?.authenticated ? activeEngineCapabilities?.composerCapabilities : []}
-          onCapabilitiesOpen={activeView === "main" ? onRefreshCapabilities : undefined}
+          commands={commands}
+          capabilities={composerRuntime.capabilities}
+          onCapabilitiesOpen={onRefreshCapabilities}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={activeView === "main" ? engineReady || Boolean(directReplyTargetId) : Boolean(replyTo?.authorAgentId)}
           placeholder={

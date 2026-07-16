@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -72,5 +72,42 @@ describe("engine capability discovery", () => {
       expect.objectContaining({ id: "connector:gmail", kind: "connector", status: "available" }),
     ]));
     expect(capabilities.some((capability) => capability.id === "connector:offline")).toBe(false);
+  });
+
+  it.each([
+    ["an absolute skills root", (version: string, outside: string) => outside],
+    ["a traversing skills root", () => "../outside"],
+  ])("rejects plugin manifests with %s", (_label, declaredSkills) => {
+    const root = mkdtempSync(path.join(tmpdir(), "pond-plugin-containment-"));
+    roots.push(root);
+    const plugin = path.join(root, "remote", "unsafe");
+    const version = path.join(plugin, "1.0.0");
+    const outside = path.join(root, "outside");
+    mkdirSync(path.join(version, ".codex-plugin"), { recursive: true });
+    mkdirSync(path.join(outside, "escaped"), { recursive: true });
+    writeFileSync(path.join(plugin, ".codex-remote-plugin-install.json"), "{}");
+    writeFileSync(path.join(outside, "escaped", "SKILL.md"), "---\nname: escaped\n---\n");
+    writeFileSync(path.join(version, ".codex-plugin", "plugin.json"), JSON.stringify({
+      name: "unsafe",
+      skills: declaredSkills(version, outside),
+    }));
+
+    expect(discoverEnginePlugins([{ path: root, requireInstallMarker: true }])).toEqual([]);
+  });
+
+  it("rejects a plugin skills symlink that escapes its version root", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pond-plugin-symlink-"));
+    roots.push(root);
+    const plugin = path.join(root, "remote", "unsafe-link");
+    const version = path.join(plugin, "1.0.0");
+    const outside = path.join(root, "outside-skills");
+    mkdirSync(path.join(version, ".codex-plugin"), { recursive: true });
+    mkdirSync(path.join(outside, "escaped"), { recursive: true });
+    symlinkSync(outside, path.join(version, "skills"), "dir");
+    writeFileSync(path.join(plugin, ".codex-remote-plugin-install.json"), "{}");
+    writeFileSync(path.join(outside, "escaped", "SKILL.md"), "---\nname: escaped\n---\n");
+    writeFileSync(path.join(version, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "unsafe-link", skills: "./skills" }));
+
+    expect(discoverEnginePlugins([{ path: root, requireInstallMarker: true }])).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import type { WorkspaceEvent, WorkspaceEventEnvelope } from "@ponderosa/core";
 import { api } from "../api";
@@ -15,6 +15,22 @@ export interface WorkspaceCursorReconciliation {
   cursor: number;
   duplicate: boolean;
   gap: boolean;
+}
+
+export type WorkspaceCapabilityBoundary =
+  | { kind: "runtime-change"; projectId: string }
+  | { kind: "reconnect" };
+
+/** Apply the same adapter-discovery cache boundary in every mounted tab. */
+export function invalidateWorkspaceCapabilities(
+  queryClient: QueryClient,
+  boundary: WorkspaceCapabilityBoundary,
+): Promise<void> {
+  return queryClient.invalidateQueries({
+    queryKey: boundary.kind === "runtime-change"
+      ? ["engine-capabilities", boundary.projectId]
+      : ["engine-capabilities"],
+  });
 }
 
 /** Pure ordered-cursor reducer shared by every tab's stream consumer. */
@@ -85,7 +101,7 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "usage_changed") void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       else if (event.type === "runtime_capabilities_changed") {
-        void queryClient.invalidateQueries({ queryKey: ["engine-capabilities", event.projectId] });
+        void invalidateWorkspaceCapabilities(queryClient, { kind: "runtime-change", projectId: event.projectId });
       }
       else void queryClient.invalidateQueries({ queryKey: ["notifications"] });
     };
@@ -94,7 +110,7 @@ export function useWorkspaceStream(): void {
       onStatus: (status) => {
         // Reconnect is a capability boundary: skills/plugins/connectors can
         // change while a phone is backgrounded or the server is unavailable.
-        void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
+        void invalidateWorkspaceCapabilities(queryClient, { kind: "reconnect" });
         const previousInstance = window.localStorage.getItem(INSTANCE_KEY);
         if (status.reset || (previousInstance && previousInstance !== status.instanceId) || cursor.current > status.cursor) {
           cursor.current = 0;

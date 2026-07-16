@@ -1,6 +1,6 @@
 import { execFile as nodeExecFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import type { EngineCommand, EngineComposerCapability, EngineMcpServer } from "@ponderosa/core";
 
@@ -51,6 +51,32 @@ interface PluginManifest {
   };
 }
 
+/**
+ * Resolve a plugin-declared resource without allowing it to escape the
+ * installed plugin version. The lexical check rejects absolute/traversal
+ * paths; the realpath check also fences symlink escapes.
+ */
+function resolvePluginResource(versionRoot: string, declaredPath: string): string | undefined {
+  if (path.isAbsolute(declaredPath) || declaredPath.split(/[\\/]+/u).includes("..")) return undefined;
+  const normalizedRoot = path.resolve(versionRoot);
+  const candidate = path.resolve(normalizedRoot, path.normalize(declaredPath));
+  const lexicalRelative = path.relative(normalizedRoot, candidate);
+  if (lexicalRelative === ".." || lexicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(lexicalRelative)) return undefined;
+  // A plugin may declare an optional resource that is not installed. Its
+  // normalized location is still contained and discovery will simply find no
+  // commands there.
+  if (!existsSync(candidate)) return candidate;
+  try {
+    const realRoot = realpathSync(normalizedRoot);
+    const realCandidate = realpathSync(candidate);
+    const realRelative = path.relative(realRoot, realCandidate);
+    if (realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) return undefined;
+    return realCandidate;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface DiscoveredEnginePlugin {
   capability: EngineComposerCapability;
   commands: EngineCommand[];
@@ -85,9 +111,11 @@ export function discoverEnginePlugins(
             ? manifest.description.trim()
             : "Runtime plugin";
         const versionRoot = path.dirname(path.dirname(manifestFile));
-        const skillsPath = typeof manifest.skills === "string" && manifest.skills.trim()
-          ? path.resolve(versionRoot, manifest.skills)
-          : path.join(versionRoot, "skills");
+        const declaredSkillsPath = typeof manifest.skills === "string" && manifest.skills.trim()
+          ? manifest.skills.trim()
+          : "skills";
+        const skillsPath = resolvePluginResource(versionRoot, declaredSkillsPath);
+        if (!skillsPath) continue;
         plugins.set(name, {
           capability: {
             id: `plugin:${name}`,
