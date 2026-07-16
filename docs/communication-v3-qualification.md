@@ -2,23 +2,24 @@
 
 ## Decision
 
-Communication V3 is ready for review behind its existing feature gate. It
-consistently removes unnecessary execution turns and closes the scheduler crash
-windows exercised here. The expanded reruns do **not** prove a stable total-cost
-or wall-time advantage: provider behavior inside the same four-run execution
-shape varied enough to reverse those metrics. The evidence supports a
-reliability and execution-shape improvement; cost and latency remain workload-
-and-provider-dependent hypotheses.
+Communication V3 is deployed, and V3.1 removes the remaining executable V2
+scheduler compatibility layer. V3 consistently removes unnecessary execution
+turns and closes the scheduler crash windows exercised here. The expanded reruns
+do **not** prove a stable total-cost or wall-time advantage: provider behavior
+inside the same four-run execution shape varied enough to reverse those metrics.
+The evidence supports reliability and execution-shape improvements; cost and
+latency remain workload- and provider-dependent hypotheses.
 
-Production remains on V2. The isolated V3 service used a separate data
-directory and port; no production project, service, or data was reset.
+The comparisons below are retained historical qualification evidence. Their
+isolated data directories, ports, feature flags, and V2 service descriptions do
+not describe the current executable product.
 
 ## Controlled setup
 
 - Machine: Pine, so both conditions shared provider latency and host load.
 - V2: deployed Ponderosa at `127.0.0.1:8787`.
-- V3: isolated worktree/service at `127.0.0.1:19818` with
-  `PONDEROSA_COMMUNICATION_VERSION=3`.
+- V3: isolated historical worktree/service at `127.0.0.1:19818`; at the time,
+  the now-removed `PONDEROSA_COMMUNICATION_VERSION=3` flag selected it.
 - Repository: byte-identical Campaign Ledger base tree
   `b5464eaa5c3d333dd7e44ebbeae900ede61198bc`.
 - Task: implement Budget Amendment Requests from the same prompt.
@@ -403,8 +404,9 @@ projections, and canonical audit reconciliation.
 
 The real-agent result is one matched application-change task, not evidence that
 V3 always improves latency or every domain. Additional shapes and non-software
-domains should be qualified after review. The feature gate should remain in
-place until the reset/cutover procedure is explicitly authorized.
+domains should be qualified after review. The later cutover made V3
+unconditional and removed the feature gate; new qualification must use isolated
+fresh data rather than legacy scheduler replay.
 
 ## Preserved evidence
 

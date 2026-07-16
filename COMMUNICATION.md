@@ -9,7 +9,7 @@ and rendered labels never grant visibility or trigger work.
 The executable source of this matrix is `deriveCommunicationBehavior` in
 `packages/core/src/communication.ts`.
 
-| Canonical intent | Project chat | Team chat | Agent chat audit | Delivery / run | Future-agent context |
+| Canonical intent | Project chat | Team chat | Agent chat audit | Activation / recipient | Future-agent context |
 | --- | --- | --- | --- | --- | --- |
 | `broadcast` | yes, when conversation-associated | no | author only | none | organizational |
 | user `user_dm` | yes, when conversation-associated | no | explicit agent recipients | explicit agents | local only |
@@ -20,7 +20,7 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
 ## Invariants
 
 - A broadcast never starts, steers, or queues an agent.
-- Only explicit agent recipients may receive a delivery or run trigger.
+- Only explicit agent recipients may receive a message-derived Activation.
 - Correlated agent work is a Request, waiting is an optional Join over immutable
   request IDs, and a reason to run is an Activation. A human or urgent activation
   never implicitly cancels an existing Join. Behavior is never inferred from
@@ -35,6 +35,6 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
 - V1 `direct_to_user` records remain replayable, but all new bidirectional user
   communication is represented by `user_dm`.
 - A plain Project request is represented by both an organizational Broadcast and
-  a canonical `RunTrigger` linking that request to its one responsible agent.
-  The Broadcast itself still creates no delivery. The separate trigger authorizes
-  the responsible agent's run and local audit without parsing arbitrary tags.
+  a deduplicated SQLite `Activation` for its one responsible agent. The Broadcast
+  itself stays passive; the separate Activation authorizes scheduler action
+  without parsing arbitrary tags.

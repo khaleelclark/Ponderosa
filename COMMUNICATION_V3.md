@@ -7,6 +7,10 @@ This contract is the scheduler and coordination source of truth. The executable
 request reducer lives in `packages/core/src/coordination-v3.ts`. Authorization,
 idempotency, and persistence surround that pure reducer.
 
+Communication V3.1 is unconditional. There is no executable V2 scheduler,
+feature flag, migration reader, or compatibility delivery ledger. Deployments
+reset pre-cutover test data instead of replaying ambiguous scheduler state.
+
 ## Objects and ownership
 
 - **Agent:** durable identity.
@@ -189,7 +193,7 @@ The cutover gate must prove:
 - cancellation fences every late output;
 - terminal joins cause at most one actionable wake;
 - provider failure at each transaction boundary recovers deterministically; and
-- V2 communication tables and handlers have no readers or writers.
+- V2 scheduler files, tables, routes, and handlers have no readers or writers.
 
 ## Provider-visible tools
 

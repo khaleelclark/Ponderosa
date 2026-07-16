@@ -4,7 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, TokenUsage, WorkItemStatus } from "./events.js";
-import type { CommunicationDocumentReference, CommunicationIntent, RunTriggerRecord, VerifiedCitationRecord } from "./communication.js";
+import type { CommunicationDocumentReference, CommunicationIntent, VerifiedCitationRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -569,39 +569,6 @@ export interface AgentSpawnResponse {
   replayed: boolean;
 }
 
-export type AgentWaitMode = "all" | "any" | "quorum";
-
-/** Runtime-control behavior for a Collaboration delivery while its recipient waits. */
-export type AgentCollaborationWaitBehavior = "queue" | "report" | "interrupt";
-
-/** Inspectable progress for one active durable wait latch. */
-export interface AgentWaitDto {
-  waitId: string;
-  mode: AgentWaitMode;
-  expectedAgentIds: string[];
-  receivedAgentIds: string[];
-  quorum: number;
-  deadline?: string;
-  createdAt: string;
-}
-
-/** Agent-facing durable wait registration. Ownership comes from the bearer capability. */
-export interface AgentWaitRequest {
-  mode: AgentWaitMode;
-  expectedAgentIds: string[];
-  quorum?: number;
-  deadline?: string;
-}
-
-export interface AgentWaitResponse {
-  waitId: string;
-  mode: AgentWaitMode;
-  expectedAgentIds: string[];
-  quorum: number;
-  deadline?: string;
-  replayed: boolean;
-}
-
 /** PATCH /api/agents/:id body (rename / archive). */
 export interface UpdateAgentRequest {
   title?: string;
@@ -697,9 +664,6 @@ export type AgentRunWakeCause =
   | "project_request"
   | "direct_message"
   | "collaboration"
-  | "wait_satisfied"
-  | "wait_deadline"
-  | "wait_interrupted"
   | "managed_failure";
 
 /** One canonical execution of an Agent. */
@@ -953,12 +917,10 @@ export interface AgentCoordinationV3Dto {
 export interface AgentDetailDto {
   agent: AgentDto;
   messages: MessageDto[];
-  runTriggers: RunTriggerRecord[];
   runOutput: RunOutputDto[];
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];
   runs: AgentRunDto[];
-  activeWait?: AgentWaitDto;
   coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
@@ -1032,8 +994,8 @@ export type SendAgentMessageRequest = AgentMessageRequestBase & (
       intent: "collaboration";
       /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
       recipientAgentIds: string[];
-      /** Queue silently, count as an expected report, or interrupt an active wait. */
-      waitBehavior: AgentCollaborationWaitBehavior;
+      /** Urgent collaboration may steer; ordinary collaboration queues. */
+      urgency?: "ordinary" | "urgent";
     }
 );
 

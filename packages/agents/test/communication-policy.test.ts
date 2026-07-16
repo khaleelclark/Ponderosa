@@ -26,11 +26,11 @@ describe("V1 communication behavior matrix", () => {
         { surface: "direct_agent_audit", projectionKey: "agent-a" },
       ],
       deliveryRecipients: [],
-      runTriggerAgentIds: [],
+      actionableAgentIds: [],
     });
   });
 
-  it("keeps a user broadcast non-delivering until a separate RunTrigger exists", () => {
+  it("keeps a user broadcast passive; explicit dispatch is represented by a separate Activation", () => {
     const event: CommunicationEvent = {
       ...base,
       eventId: "user-broadcast",
@@ -43,7 +43,7 @@ describe("V1 communication behavior matrix", () => {
       contextPolicy: "organizational",
       projectionTargets: [{ surface: "conversation", projectionKey: base.conversationId }],
       deliveryRecipients: [],
-      runTriggerAgentIds: [],
+      actionableAgentIds: [],
     });
   });
 
@@ -65,7 +65,7 @@ describe("V1 communication behavior matrix", () => {
         { surface: "user_inbox", projectionKey: "user-1" },
       ],
       deliveryRecipients: [{ kind: "agent", agentId: "agent-a" }],
-      runTriggerAgentIds: ["agent-a"],
+      actionableAgentIds: ["agent-a"],
     });
   });
 
@@ -86,7 +86,7 @@ describe("V1 communication behavior matrix", () => {
         { surface: "user_inbox", projectionKey: "user-1" },
       ],
       deliveryRecipients: [{ kind: "user", userId: "user-1" }],
-      runTriggerAgentIds: [],
+      actionableAgentIds: [],
     });
   });
 
@@ -113,7 +113,7 @@ describe("V1 communication behavior matrix", () => {
         { kind: "agent", agentId: "agent-b" },
         { kind: "agent", agentId: "agent-c" },
       ],
-      runTriggerAgentIds: ["agent-b", "agent-c"],
+      actionableAgentIds: ["agent-b", "agent-c"],
     });
   });
 
@@ -136,7 +136,7 @@ describe("V1 communication behavior matrix", () => {
         { surface: "user_inbox", projectionKey: "user-1" },
       ],
       deliveryRecipients: [{ kind: "user", userId: "user-1" }],
-      runTriggerAgentIds: [],
+      actionableAgentIds: [],
     });
   });
 });

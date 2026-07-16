@@ -2,21 +2,15 @@ import { createInterface } from "node:readline";
 import {
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
-  PONDEROSA_SEND_MESSAGE_TOOL,
-  PONDEROSA_SPAWN_AGENT_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
-  PONDEROSA_WAIT_FOR_REPORTS_TOOL,
 } from "@ponderosa/core";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
-const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
-const waitUrl = process.env.PONDEROSA_AGENT_WAIT_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
-const communicationV3 = process.env.PONDEROSA_COMMUNICATION_VERSION === "3";
 
 function send(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -41,7 +35,7 @@ async function handle(request: RpcRequest): Promise<void> {
       jsonrpc: "2.0",
       id: request.id,
       result: {
-        tools: communicationV3 ? [
+        tools: [
           {
             name: "coordinate",
             description: PONDEROSA_COORDINATE_TOOL.description,
@@ -57,22 +51,6 @@ async function handle(request: RpcRequest): Promise<void> {
             description: PONDEROSA_MESSAGE_TOOL.description,
             inputSchema: PONDEROSA_MESSAGE_TOOL.inputSchema,
           },
-        ] : [
-          {
-            name: "send_message",
-            description: PONDEROSA_SEND_MESSAGE_TOOL.description,
-            inputSchema: PONDEROSA_SEND_MESSAGE_TOOL.inputSchema,
-          },
-          {
-            name: "spawn_agent",
-            description: PONDEROSA_SPAWN_AGENT_TOOL.description,
-            inputSchema: PONDEROSA_SPAWN_AGENT_TOOL.inputSchema,
-          },
-          {
-            name: "wait_for_reports",
-            description: PONDEROSA_WAIT_FOR_REPORTS_TOOL.description,
-            inputSchema: PONDEROSA_WAIT_FOR_REPORTS_TOOL.inputSchema,
-          },
         ],
       },
     });
@@ -80,21 +58,13 @@ async function handle(request: RpcRequest): Promise<void> {
   }
   if (request.method === "tools/call") {
     const params = request.params as { name?: unknown; arguments?: unknown } | undefined;
-    const targetUrl = communicationV3
-      ? params?.name === "coordinate"
-        ? coordinateUrl
-        : params?.name === "update_request"
-          ? updateRequestUrl
-          : params?.name === "message"
-            ? messageUrl
-            : undefined
-      : params?.name === "send_message"
-      ? messageUrl
-      : params?.name === "spawn_agent"
-        ? spawnUrl
-        : params?.name === "wait_for_reports"
-          ? waitUrl
-        : undefined;
+    const targetUrl = params?.name === "coordinate"
+      ? coordinateUrl
+      : params?.name === "update_request"
+        ? updateRequestUrl
+        : params?.name === "message"
+          ? messageUrl
+          : undefined;
     if (!targetUrl || !messageToken) {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable." }] } });
       return;

@@ -8,11 +8,6 @@ import webpush from "web-push";
 import type {
   Adapter,
   ApiPriceProfile,
-  AgentSpawnRequest,
-  AgentWaitRequest,
-  AgentWaitResponse,
-  AgentRunWakeCause,
-  AgentCollaborationWaitBehavior,
   AgentMessageChannel,
   AgentEvent,
   CommunicationEvent,
@@ -79,30 +74,21 @@ import {
   deriveCommunicationBehavior,
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
-  PONDEROSA_SEND_MESSAGE_TOOL,
-  PONDEROSA_SPAWN_AGENT_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
-  PONDEROSA_WAIT_FOR_REPORTS_TOOL,
   TERMINAL_REQUEST_STATES,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
 import { artifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
-import { shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
-import { RunLedger, type RunFence, type RuntimeOwnershipState } from "./run-ledger.js";
-import {
-  CollaborationDeliveryStore,
-  type CollaborationDelivery,
-  type CollaborationDeliveryBatch,
-} from "./handoffs.js";
 import { UserReactionStore } from "./user-reactions.js";
-import { AgentWaitStore, type AgentWaitCondition, type AgentWaitEvaluation } from "./agent-waits.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
+
+type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -154,10 +140,8 @@ export interface CreateServerOptions {
     stallAfterMs?: number;
     onOwnershipState?: (context: { agentId: string; runId: string; generation: number; state: RuntimeOwnershipState }) => void;
   };
-  /** Isolated Communication V3 qualification gate. Production V2 remains the
-   * default until the measured cutover is explicitly enabled. */
+  /** Communication V3 scheduler tuning. V3 is unconditional. */
   communicationV3?: {
-    enabled: boolean;
     maxConcurrentRuns?: number;
     pollMs?: number;
     /** Scheduler ownership lease. Defaults to the provider execution lease so
@@ -178,7 +162,6 @@ interface ActiveRun {
   leaseExpiresAt: string;
   controller: AbortController;
   messageCapability: string;
-  deliveryIds?: string[];
   leaseTimer?: NodeJS.Timeout;
   livenessTimer?: NodeJS.Timeout;
   generation: number;
@@ -199,15 +182,6 @@ interface PersistentRuntime {
   idleSince?: number;
   idleTimer?: NodeJS.Timeout;
 }
-
-export const COLLABORATION_DISPATCH_LIMITS = {
-  maxBatchDeliveries: 20,
-  maxBatchUtf8Bytes: 224 * 1024,
-  maxDispatchAttempts: 5,
-  baseRetryMs: 250,
-  maxRetryMs: 30_000,
-  jitterRatio: 0.2,
-} as const;
 
 /**
  * Collaboration room projections are a display timeline, not an authorization
@@ -268,19 +242,12 @@ interface PendingTurn {
   effort?: string;
   agentMentionDepth: number;
   agentMentionTrail: string[];
-  collaborationConversationId?: string;
   sourceChannel?: "main";
   sourceConversationId?: string;
   sourceAuthorAgentId?: string;
-  /** Set only by the server's persisted collaboration delivery dispatcher. */
-  collaborationDeliveryId?: string;
-  /** Fixed snapshot; deliveries queued after dispatch begins are excluded. */
-  collaborationDeliveryIds?: string[];
   replyTo?: MessageReferenceDto;
   replyToMessageId?: string;
   attachmentIds?: string[];
-  /** Server-owned structural reason the resulting Run was activated. */
-  wakeCause?: AgentRunWakeCause;
 }
 
 interface AgentMessageCapability {
@@ -341,19 +308,6 @@ function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, t
 
 function advanceMentionTrail(mentionTrail: string[], messageFingerprint: string): string[] {
   return [...mentionTrail, messageFingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
-}
-
-function mergeMentionTrails(deliveries: CollaborationDelivery[]): string[] {
-  const merged: string[] = [];
-  const seen = new Set<string>();
-  for (const delivery of deliveries) {
-    for (const fingerprint of delivery.mentionTrail) {
-      if (seen.has(fingerprint)) continue;
-      seen.add(fingerprint);
-      merged.push(fingerprint);
-    }
-  }
-  return merged;
 }
 
 function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
@@ -468,41 +422,6 @@ export function runtimeIdentityPrompt(
   ].join("\n");
 }
 
-function agentMessagingPrompt(): string[] {
-  return [
-    "Communication scope is immutable. Choose the scope when creating a message; never try to promote or re-scope an existing message.",
-    "Your ordinary runtime response is execution-scoped output saved in your Work log tab. It is never delivered to the manager, agents, or organization.",
-    "If anyone should receive information, explicitly call the Ponderosa send-message tool with exactly one intent: direct_to_user, collaboration, or broadcast.",
-    "The tool is named ponderosa_send_message in Codex and mcp__ponderosa__send_message in Claude.",
-    'Example arguments: {"intent":"collaboration","recipientAgentIds":["stable-agent-id"],"text":"Please review this","idempotencyKey":"stable-retry-key"}.',
-    'Set intent to "broadcast", "direct_to_user", or "collaboration". The server owns routing and renders #broadcast, #user, and recipient #tags; never write routing tags into message text.',
-    'For a long-form result, keep text as a concise summary and add document: {"title":"Useful title","content":"# Full Markdown...","mediaType":"text/markdown"}. Documents may be up to 256 KiB; do not truncate them into the 4,000-character summary.',
-    'A document inherits the message intent exactly. Broadcast documents are organizational; direct_to_user and collaboration documents remain private to that audience.',
-    'When context contains a document id, retrieve the full Markdown only when needed with: curl -sS "$PONDEROSA_DOCUMENT_URL/<document-id>" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
-    "Agents cannot create reactions. A user emoji reaction arrives as a private notification with immutable reply context identifying the message they reacted to.",
-    "Collaboration requires a non-empty recipientAgentIds array containing stable IDs from the visible-agent metadata.",
-    'Discover current teammates with GET "$PONDEROSA_AGENT_DIRECTORY_URL" or one stable identity with GET "$PONDEROSA_AGENT_DIRECTORY_URL/<agent-id>" using the same Bearer token.',
-    "The organization graph describes accountability and lifecycle ownership, not permitted communication paths.",
-    "Contact the smallest set of agents who need to act on the information. You may collaborate directly across reporting branches when another agent owns the affected work, has the needed expertise, requested the work, or will consume the result.",
-    "Reply directly to the agent who requested work. Send decisions to affected owners, deliverables to their consumers, and blockers to whoever can resolve them. Escalate to a manager only for priority conflicts, scope or ownership decisions, unresolved disagreements, resource needs, or outcomes that manager owns.",
-    "Managers are decision owners and synthesizers, not message relays. Do not send them routine peer coordination merely because they are above you in the organization.",
-    "Every Collaboration message must carry an actionable request, decision, handoff, evidence, blocker, or completion result. Do not send acknowledgments, greetings, thanks, duplicate updates, speculative status chatter, or FYI-only messages that wake an agent without requiring action.",
-    'For Collaboration, set waitBehavior to "report" only for a completed or blocked outcome that should count toward an expected reporter latch. Use "queue" for non-urgent progress or coordination that can wait for the recipient\'s current latch. Use "interrupt" only for an urgent blocker that must cancel the current wait.',
-    "If you are a top-level agent, Broadcast completed answers and task results from a shared Conversation request, plus other durable organizational knowledge such as decisions, verified findings, outcomes, or material blockers.",
-    "Never Broadcast acknowledgments, questions, thanks, routine progress, promises to act, or duplicate confirmations.",
-    "Use Collaboration for agent-to-agent coordination. Use direct_to_user only for a question or private update the user themselves needs, never as an automatic completion receipt. If a private finding later matters organizationally, create a new Broadcast summary; the private source remains unchanged.",
-    "A valid collaboration intent is persisted and queued as a separate follow-up turn when the recipient is active; it is never injected into an in-flight response.",
-    "After asking another agent to work, register a durable wait when your next action depends on one or more reports, then end your turn. Do not poll, sleep, or remain active. Agents run independently and return results through Collaboration.",
-    "The wait tool is ponderosa_wait_for_reports in Codex and mcp__ponderosa__wait_for_reports in Claude. Supply stable expectedAgentIds and mode all, any, or quorum. Matching reports persist without waking you until the condition is satisfied; a user message or managed-agent failure wakes you immediately.",
-    "Registering a wait is execution control, not a communication event. Do not Direct Message or Broadcast merely to announce that you registered a wait or are waiting.",
-    "Never include your own stable agent ID in Collaboration recipients. After a wait completes, deliver the synthesis to the original requester or accountable consumer; keep an internal-only note in Work log.",
-    "Each collaboration intent is a separate FIFO delivery (not coalesced). If one arrives while you are active, it waits for a safe turn boundary. If that active turn is cancelled, queued deliveries remain queued; a cancelled delivery turn itself is retried.",
-    "Your direct reports are ordinary agents with their own chat, activity, files, and execution audit. Coordinate with them and any other relevant agent using stable IDs from the directory.",
-    "Accumulate results across notification turns and deliver one integrated result to the requester or accountable outcome owner once the expected work has reported.",
-    'If your runtime context is becoming unwieldy, request a fresh session after this turn with: curl -sS -X POST "$PONDEROSA_AGENT_ROLLOVER_URL" -H "Authorization: Bearer $PONDEROSA_AGENT_MESSAGE_TOKEN"',
-  ];
-}
-
 function communicationV3Prompt(): string[] {
   return [
     "Communication V3 separates messages, correlated requests, joins, activations, and runs.",
@@ -554,28 +473,24 @@ function normalizedRuntimeSelection(adapter: Adapter, model?: string, effort?: s
   };
 }
 
-function sharedRequestCompletionPrompt(communicationV3 = false): string {
+function sharedRequestCompletionPrompt(): string {
   return [
     "Required completion contract for this Project-chat request:",
     "- Before this run ends, send exactly one broadcast containing the final answer, completed result, or material blocker for the user.",
     "- The user cannot see your ordinary runtime response; it is audit-only Work log output.",
     "- Do not finish with only ordinary response text. Do not broadcast an acknowledgment or promise to act.",
     "- Use this exact completion action, replacing <final answer> with your concise result:",
-    communicationV3
-      ? '  Call ponderosa_message with {"intent":"broadcast","text":"<final answer>","idempotencyKey":"stable-completion-key"}.'
-      : '  Call the Ponderosa send-message tool with {"intent":"broadcast","text":"<final answer>"}.',
+    '  Call ponderosa_message with {"intent":"broadcast","text":"<final answer>","idempotencyKey":"stable-completion-key"}.',
   ].join("\n");
 }
 
-function directUserRequestCompletionPrompt(communicationV3 = false): string {
+function directUserRequestCompletionPrompt(): string {
   return [
     "Required completion contract for this private user-to-agent request:",
     "- Before this run ends, send exactly one direct_to_user message containing the answer, completed result, question, or material blocker for the user.",
     "- Do not Broadcast this private reply. Broadcast is only for a separate durable organizational update you intentionally choose to make.",
     "- The user cannot see your ordinary runtime response; it is audit-only Work log output.",
-    communicationV3
-      ? '- Call ponderosa_message with {"intent":"direct_to_user","text":"<reply>","idempotencyKey":"stable-reply-key"}.'
-      : '- Call the Ponderosa send-message tool with {"intent":"direct_to_user","text":"<reply>"}.',
+    '- Call ponderosa_message with {"intent":"direct_to_user","text":"<reply>","idempotencyKey":"stable-reply-key"}.',
   ].join("\n");
 }
 
@@ -595,19 +510,6 @@ function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], agents
       return `${author}: ${message.text}`;
     }) : ["(No Broadcasts yet.)"]),
   ].join("\n");
-}
-
-function agentSpawnPrompt(): string[] {
-  return [
-    "When creating another agent under Ponderosa, never use an engine's internal spawn_agent, Task, or subagent mechanism; those agents are untracked and forbidden.",
-    "Use only Ponderosa's managed-agent creation bridge. The new agent is a normal agent that reports directly to you:",
-    "The tool is named ponderosa_spawn_agent in Codex and mcp__ponderosa__spawn_agent in Claude.",
-    'Example arguments: {"displayName":"Safe name","initialMessage":"Optional task, role, or introduction","runtime":"codex","model":"gpt-5.6-luna","effort":"high","idempotencyKey":"stable-key"}.',
-    "Set model and effort when the report should use a different tier. If omitted, the child inherits your current model and effort as durable defaults.",
-    "initialMessage is optional. You may create an idle report and introduce or steer it later through ordinary Collaboration.",
-    "Do not send managerAgentId, parentAgentId, agentId, conversationId, or execution ownership fields. Ponderosa derives the reporting line from your active capability.",
-    "After asking reports to work, register a durable wait for the expected stable agent IDs when synthesis depends on their replies, then end your turn. Do not poll or sleep.",
-  ];
 }
 
 function managerRelationshipPrompt(agent: Pick<AgentDto, "managerAgentId">): string[] {
@@ -647,7 +549,6 @@ function conversationPrompt(
   currentMessageId?: string,
   incremental = false,
   routingMetadata?: string,
-  communicationV3 = false,
 ): string {
   const names = new Map(agents.map((agent) => [agent.id, agent.title]));
   const transcript = messages
@@ -673,7 +574,7 @@ function conversationPrompt(
     "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
     "When this turn is complete, give only the new direct update or result. Do not repeat a Broadcast or Collaboration message you already sent.",
     "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
-    ...(communicationV3 ? communicationV3Prompt() : agentMessagingPrompt()),
+    ...communicationV3Prompt(),
   ];
   return [
     ...staticInstructions,
@@ -690,60 +591,11 @@ function conversationPrompt(
   ].join("\n");
 }
 
-/** Collaboration context is opt-in: it is assembled only for an explicit recipient delivery. */
-function collaborationPrompt(
-  messages: ConversationMessageDto[],
-  agents: AgentDto[],
-  currentRequest: string,
-  context: InboundMessageContext,
-  currentMessageId?: string,
-  incremental = false,
-  routingMetadata?: string,
-  communicationV3 = false,
-): string {
-  const names = new Map(agents.map((agent) => [agent.id, agent.title]));
-  const transcript = messages
-    .map((message) => {
-      const speaker = message.authorAgentId
-        ? names.get(message.authorAgentId) ?? "Agent"
-        : message.role === "user"
-          ? "Manager"
-          : "Team";
-      const quoted = message.replyTo ? ` (replying to: ${message.replyTo.text.replace(/\s+/g, " ").slice(0, 500)})` : "";
-      const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
-      return `${speaker}${quoted}: ${message.text}${document} [message id: ${message.id}]`;
-    })
-    .join("\n");
-  const staticInstructions = incremental ? [] : [
-    "You are collaborating with teammates in Ponderosa's opt-in team chat.",
-    "You received this context because you were an explicit collaboration recipient.",
-    "This is the only chat for agent-to-agent coordination. Respond directly to the latest requester and any other agent who needs the result; reporting relationships do not limit recipients.",
-    "To involve a teammate, send a collaboration intent with their stable agent ID; the server routes it and renders any display handle.",
-    "Do not move agent-to-agent coordination into the shared user Conversation. Only explicit Broadcast creates durable organization-wide context there.",
-    "You may use the separately supplied shared Broadcast context, but do not claim access to private Project-chat messages.",
-    "If this collaboration-triggered turn produces a result, question, or material blocker another agent needs, explicitly send it with Collaboration to the smallest set who need it. If nobody needs to act, do not create an acknowledgment merely to close the turn. Ordinary runtime output is Work log only and does not deliver information.",
-    ...(communicationV3 ? communicationV3Prompt() : agentMessagingPrompt()),
-  ];
-  return [
-    ...staticInstructions,
-    ...(routingMetadata ? [routingMetadata] : []),
-    ...messageContextPrompt(context),
-    "",
-    incremental ? "New collaboration messages since the last accepted turn:" : "Collaboration chat history:",
-    transcript || (incremental ? "(No new room messages.)" : "(No earlier collaboration messages.)"),
-    `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
-    "",
-    ...(currentMessageId ? [`Latest message id: ${currentMessageId}`] : []),
-    "Latest message for you:",
-    currentRequest,
-  ].join("\n");
-}
-
-function individualChatPrompt(currentRequest: string, context: InboundMessageContext, communicationV3 = false): string {
+function individualChatPrompt(currentRequest: string, context: InboundMessageContext): string {
   return [
     "You are replying in your individual Ponderosa agent chat.",
     ...messageContextPrompt(context),
-    ...(communicationV3 ? communicationV3Prompt() : agentMessagingPrompt()),
+    ...communicationV3Prompt(),
     "",
     "Latest message for you:",
     currentRequest,
@@ -1053,8 +905,7 @@ function serializedCostComponents(components: RawCostComponents): ProjectedApiCo
  */
 export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
   switch (event.type) {
-    case "agent_lifecycle":
-    case "agent_wait_changed": return "lifecycle";
+    case "agent_lifecycle": return "lifecycle";
     case "file_change": return "file";
     case "command":
     case "work_item_update":
@@ -1209,8 +1060,7 @@ export function projectedRunCost(
 
 export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new AgentStore(opts.dataDir);
-  const communicationV3Enabled = opts.communicationV3?.enabled ?? process.env.PONDEROSA_COMMUNICATION_VERSION === "3";
-  const coordinationV3 = communicationV3Enabled ? new CoordinationV3Store(store.sqlite) : undefined;
+  const coordinationV3 = new CoordinationV3Store(store.sqlite);
   const coordinationV3WorkerId = `server:${process.pid}`;
   const workspace = new WorkspaceStore(opts.dataDir);
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
@@ -1347,10 +1197,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const activeRuns = new Map<string, ActiveRun>();
   const runtimeSessions = new Map<string, PersistentRuntime>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
-  const collaborationDeliveries = new CollaborationDeliveryStore(opts.dataDir);
-  const agentWaits = new AgentWaitStore(opts.dataDir);
   const userReactions = new UserReactionStore(opts.dataDir);
-  const runLedger = new RunLedger(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineCapabilityCache = new Map<string, { expiresAt: number; value: Promise<ProjectEngineCapabilitiesDto> }>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
@@ -1423,19 +1270,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
   const scheduledSessionRollovers = new Map<string, string>();
-  const dispatchingTurns = new Set<string>();
-  const deliveryRetryTimers = new Map<string, NodeJS.Timeout>();
-  const waitDeadlineTimers = new Map<string, NodeJS.Timeout>();
-  const deliveryDispatches = new Set<Promise<void>>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct agent request.
-  const collaborationDispatchKey = randomUUID();
   // Prevent an internal dequeue from being appended to the tail if another
   // request claims the agent in the tiny dispatch race window.
-  const turnDispatchKey = randomUUID();
   // Capability used by Project chat to invoke the same active-run send path as
   // Agent chat without allowing clients to forge canonical communication IDs.
-  const projectDeliveryKey = randomUUID();
   const v3DispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
   const directReplyClaims = new Set<string>();
@@ -1495,9 +1335,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const setExecutionLeaseTimer = opts.executionLeaseScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearExecutionLeaseTimer = opts.executionLeaseScheduling?.clearTimer ?? clearTimeout;
   const leaseExpiry = () => new Date(executionLeaseNow() + executionLeaseMs).toISOString();
-  const deliveryNow = opts.deliveryScheduling?.now ?? Date.now;
-  const deliveryRandom = opts.deliveryScheduling?.random ?? Math.random;
-  const setDeliveryTimer = opts.deliveryScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const runtimeStallAfterMs = opts.runtimeEventFaults?.stallAfterMs ?? 30_000;
   const runtimeIdleTtlMs = opts.runtimeSessionScheduling?.idleTtlMs ?? 90_000;
   const configuredMaxIdleSessions = Number.parseInt(process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS ?? "", 10);
@@ -1546,24 +1383,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     trimIdleRuntimeSessions();
   }
 
-  const runFence = (agentId: string, run: ActiveRun): RunFence => ({ agentId, runId: run.runId, generation: run.generation });
-
   const ownsV3Run = (run: ActiveRun): boolean => Boolean(
-    coordinationV3 && run.v3SchedulerRunId && run.v3FencingToken !== undefined &&
+    run.v3SchedulerRunId && run.v3FencingToken !== undefined &&
     coordinationV3.ownsRun(run.v3SchedulerRunId, run.v3FencingToken, coordinationV3WorkerId),
   );
 
   function ownsActiveRun(agentId: string, run: ActiveRun): boolean {
-    return activeRuns.get(agentId) === run && (run.v3SchedulerRunId ? ownsV3Run(run) : runLedger.owns(runFence(agentId, run)));
+    return activeRuns.get(agentId) === run && ownsV3Run(run);
   }
 
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
-    if (run.v3SchedulerRunId) {
-      if (!ownsV3Run(run)) return false;
-    } else {
-      const claim = runLedger.transition(runFence(agentId, run), state);
-      if (!claim) return false;
-    }
+    if (!ownsV3Run(run)) return false;
     run.ownershipState = state;
     opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state });
     return true;
@@ -1573,8 +1403,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!ownsActiveRun(agentId, run) || run.ownershipState === "cancelling") return false;
     const at = new Date().toISOString();
     run.lastEventReceivedAt = at;
-    if (run.v3SchedulerRunId) return true;
-    return Boolean(runLedger.transition(runFence(agentId, run), run.ownershipState, { lastEventReceivedAt: at }));
+    return true;
   }
 
   async function waitBeforeRuntimePersist(agentId: string, run: ActiveRun, event: AgentEvent): Promise<boolean> {
@@ -1588,9 +1417,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const at = new Date().toISOString();
     run.lastEventPersistedAt = at;
     const recovered = run.ownershipState === "stalled";
-    if (!run.v3SchedulerRunId) {
-      runLedger.transition(runFence(agentId, run), recovered ? "running" : run.ownershipState, { lastEventPersistedAt: at });
-    }
     if (recovered) {
       run.ownershipState = "running";
       opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state: "running" });
@@ -1641,35 +1467,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     clearRunLivenessTimer(run);
     agentMessageCapabilities.delete(run.messageCapability);
     scheduledSessionRollovers.delete(agentId);
-    if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
-      try {
-        coordinationV3!.failRun({
-          runId: run.v3SchedulerRunId,
-          fencingToken: run.v3FencingToken,
-          workerId: coordinationV3WorkerId,
-          sameRunResumable: Boolean(run.runtimeSession?.isAlive()),
-        });
-      } catch { /* the advanced fence already rejects late runtime output */ }
-    } else {
-      runLedger.transition(runFence(agentId, run), "failed");
-    }
+    try {
+      coordinationV3.failRun({
+        runId: run.v3SchedulerRunId!,
+        fencingToken: run.v3FencingToken!,
+        workerId: coordinationV3WorkerId,
+        sameRunResumable: Boolean(run.runtimeSession?.isAlive()),
+      });
+    } catch { /* the advanced fence already rejects late runtime output */ }
     const lifecycle = store.appendEvent(agentId, {
       type: "agent_lifecycle", status: "failed", reason: "execution_lease_expired", executionId: run.executionId,
     });
     publish(agentId, lifecycle);
     notifyManagerOfChildFailure(agentId, run.executionId, "execution lease expired");
-    if (run.deliveryIds?.length) {
-      for (const id of run.deliveryIds) {
-        collaborationDeliveries.retryFailedTurn(id, "execution lease expired");
-      }
-    }
     const persistentRuntime = runtimeSessions.get(agentId);
     if (persistentRuntime) {
       removePersistentRuntime(agentId, persistentRuntime);
       void persistentRuntime.session.close().catch(() => undefined);
     }
     run.controller.abort();
-    runDeliveryDispatch(agentId);
+    coordinationV3Scheduler?.notify();
   }
 
   function renewExecutionLease(agentId: string, run: ActiveRun): boolean {
@@ -1678,7 +1495,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     run.leaseExpiresAt = leaseExpiry();
     run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(agentId, run), executionLeaseMs);
     run.leaseTimer.unref?.();
-    if (coordinationV3 && run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
+    if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
       coordinationV3.renewLease(
         run.v3SchedulerRunId,
         run.v3FencingToken,
@@ -1699,7 +1516,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     activeRuns.delete(agentId);
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
-    if (!run.v3SchedulerRunId) runLedger.transition(runFence(agentId, run), state);
     return true;
   }
 
@@ -1725,42 +1541,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function agentDetail(agentId: string): import("@ponderosa/core").AgentDetailDto | undefined {
     const detail = store.getAgentDetail(agentId);
     if (!detail) return detail;
-    const wait = agentWaits.active(agentId);
     return {
       ...detail,
       messages: withUserReactions(store.getProjectedAgentMessages(agentId)),
-      ...(coordinationV3 ? { coordinationV3: coordinationV3.agentSnapshot(agentId) } : {}),
-      ...(wait ? {
-        activeWait: agentWaits.progress(wait, collaborationDeliveries.pending(agentId), collaborationDeliveries),
-      } : {}),
+      coordinationV3: coordinationV3.agentSnapshot(agentId),
     };
   }
 
-  function activeWaitDto(agentId: string): import("@ponderosa/core").AgentWaitDto | null {
-    const wait = agentWaits.active(agentId);
-    return wait ? agentWaits.progress(wait, collaborationDeliveries.pending(agentId), collaborationDeliveries) : null;
-  }
-
-  function publishWaitChanged(agentId: string): void {
-    if (closed || !store.getAgent(agentId)) return;
-    const stored = store.appendEvent(agentId, { type: "agent_wait_changed", activeWait: activeWaitDto(agentId) });
-    publish(agentId, stored);
-  }
-
   function publishCoordinationV3Changed(agentId: string): void {
-    if (closed || !coordinationV3 || !store.getAgent(agentId)) return;
+    if (closed || !store.getAgent(agentId)) return;
     const stored = store.appendEvent(agentId, {
       type: "coordination_v3_changed",
       coordination: coordinationV3.agentSnapshot(agentId),
     });
     publish(agentId, stored);
-  }
-
-  function finishWaitEvaluation(evaluation: AgentWaitEvaluation): void {
-    if (!evaluation.wait || !evaluation.completion) return;
-    agentWaits.finish(evaluation.wait, evaluation.completion.status, evaluation.completion.reason);
-    clearWaitDeadline(evaluation.wait.agentId);
-    publishWaitChanged(evaluation.wait.agentId);
   }
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
@@ -1774,18 +1568,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (received > persisted && now - received >= runtimeStallAfterMs) transitionRun(agentId, run, "stalled");
     }
     const ownership = new Map<string, ActiveRunObservation>(activeRuns);
-    for (const claim of runLedger.all()) {
-      if (claim.state === "interrupted" && !ownership.has(claim.agentId)) ownership.set(claim.agentId, {
-        startedAt: claim.createdAt, executionId: claim.runId, ownershipState: "interrupted",
-      });
-    }
     return projectAgentHealth({
       scope,
       agents,
       activeRuns: ownership,
       compactingAgents: scheduledSessionRollovers,
-      activeWaits: new Map(agentWaits.allActive().map((wait) => [wait.agentId, wait.createdAt])),
-      queuedDeliveries: (agentId) => collaborationDeliveries.pending(agentId),
+      availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       events: (agentId) => store.readEvents(agentId),
     });
   }
@@ -1821,9 +1609,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       },
     },
   });
-  const coordinationV3Scheduler = coordinationV3 ? new CoordinationV3Scheduler(
+  const coordinationV3Scheduler = new CoordinationV3Scheduler(
     coordinationV3,
     async (lease, prompt) => {
+      const activationPayloads = lease.activations
+        .map((activation) => activation.payload)
+        .filter((payload): payload is Record<string, unknown> => Boolean(payload) && typeof payload === "object");
+      const communication = activationPayloads
+        .map((payload) => payload.communication)
+        .find((value): value is CommunicationEvent => value !== null && typeof value === "object" && "eventId" in value);
+      const dispatch = activationPayloads
+        .map((payload) => payload.dispatch)
+        .find((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
+      const recipientDispatch = Array.isArray(dispatch?.recipients)
+        ? dispatch.recipients.find((value): value is Record<string, unknown> =>
+            Boolean(value) && typeof value === "object" && value.agentId === lease.agentId)
+        : undefined;
+      const dispatchAttachments = Array.isArray(recipientDispatch?.attachments)
+        ? recipientDispatch.attachments
+        : Array.isArray(dispatch?.attachments) ? dispatch.attachments : [];
+      const attachmentIds = dispatchAttachments
+        .map((value) => value && typeof value === "object" && "id" in value ? value.id : undefined)
+        .filter((value): value is string => typeof value === "string");
+      const dispatchText = typeof dispatch?.text === "string" ? dispatch.text : prompt;
+      const sourceConversationId = typeof dispatch?.sourceConversationId === "string"
+        ? dispatch.sourceConversationId
+        : typeof dispatch?.conversationId === "string" ? dispatch.conversationId : undefined;
+      const sourceChannel = dispatch?.sourceChannel === "main" ? "main" : undefined;
       const response = await app.inject({
         method: "POST",
         url: `/api/agents/${encodeURIComponent(lease.agentId)}/messages`,
@@ -1832,11 +1644,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           "x-ponderosa-v3-dispatch": v3DispatchKey,
         },
         payload: {
-          text: prompt,
+          text: dispatchText,
+          ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : {}),
+          ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort } : {}),
+          ...(sourceConversationId ? { sourceConversationId } : {}),
+          ...(sourceChannel ? { sourceChannel } : {}),
+          ...(dispatch?.shareWithOrganization === true ? { shareWithOrganization: true } : {}),
+          ...(typeof dispatch?.replyToMessageId === "string" ? { replyToMessageId: dispatch.replyToMessageId } : {}),
+          ...(attachmentIds.length ? { attachmentIds } : {}),
           v3SchedulerRunId: lease.runId,
           v3FencingToken: lease.fencingToken,
           v3InjectionId: lease.injectionId,
           v3FreshProviderSession: coordinationV3.runStartsNewRecipientRequest(lease.runId, lease.agentId),
+          v3ActivationPrompt: prompt,
+          ...(communication?.eventId ? { v3CommunicationEventId: communication.eventId } : {}),
         },
       });
       return {
@@ -1907,394 +1728,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return { accepted: true };
       },
     },
-  ) : undefined;
+  );
   for (const mediaType of ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/zip", "application/octet-stream"]) {
     app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: ASSET_LIMITS.maxRequestBytes }, (_request, body, done) => done(null, body));
   }
 
-  function pendingTurnFromDelivery(delivery: CollaborationDelivery): PendingTurn {
-    return {
-      text: delivery.text,
-      communicationEventId: delivery.communicationEventId,
-      model: delivery.model,
-      effort: delivery.effort,
-      agentMentionDepth: delivery.relayDepth,
-      agentMentionTrail: delivery.mentionTrail,
-      collaborationConversationId: delivery.kind === "direct" ? undefined : delivery.conversationId,
-      sourceChannel: delivery.sourceChannel,
-      sourceConversationId: delivery.sourceChannel === "main" ? delivery.conversationId : undefined,
-      sourceAuthorAgentId: delivery.authorAgentId,
-      collaborationDeliveryId: delivery.id,
-      replyToMessageId: delivery.replyToMessageId,
-      replyTo: delivery.replyTo,
-      attachmentIds: delivery.attachmentIds,
-      wakeCause: delivery.wakeCause ?? (delivery.kind === "manager_notification"
-        ? "managed_failure"
-        : delivery.kind === "direct"
-          ? "direct_message"
-          : "collaboration"),
-    };
-  }
-
-  function canShareCollaborationBatch(first: CollaborationDelivery, candidate: CollaborationDelivery): boolean {
-    return first.kind !== "direct" && candidate.kind !== "direct" &&
-      !first.replyToMessageId && !candidate.replyToMessageId;
-  }
-
-  function formatDeliveryBatch(batch: CollaborationDeliveryBatch): string {
-    const entries = batch.deliveries.map((delivery, index) => {
-      const authorAgent = delivery.authorAgentId ? store.getAgent(delivery.authorAgentId) : undefined;
-      const author = authorAgent
-        ? `${authorAgent.title} (#${agentMentionHandle(authorAgent.title)}, agent ${authorAgent.id})`
-        : "Manager";
-      return [
-        `--- Entry ${index + 1} ---`,
-        `Author: ${author}`,
-        `UTC timestamp: ${delivery.createdAt}`,
-        "Original message (exact):",
-        delivery.text,
-      ].join("\n");
-    });
-    return [
-      `CollaborationDeliveryBatch (${batch.deliveries.length} deliveries; canonical server order)`,
-      ...entries,
-    ].join("\n\n");
-  }
-
-  function pendingTurnFromBatch(deliveries: CollaborationDelivery[]): PendingTurn {
-    const first = deliveries[0]!;
-    const base = pendingTurnFromDelivery(first);
-    const mentionTrail = mergeMentionTrails(deliveries);
-    return {
-      ...base,
-      text: formatDeliveryBatch({ deliveries }),
-      agentMentionDepth: mentionTrail.length,
-      agentMentionTrail: mentionTrail,
-      communicationEventId: undefined,
-      sourceAuthorAgentId: undefined,
-      collaborationDeliveryId: undefined,
-      collaborationDeliveryIds: deliveries.map((delivery) => delivery.id),
-      wakeCause: deliveries.find((delivery) => delivery.wakeCause)?.wakeCause ?? base.wakeCause,
-    };
-  }
-
-  function pendingTurnTriggerEventIds(pendingTurn: PendingTurn): string[] {
-    const deliveryEventIds = (pendingTurn.collaborationDeliveryIds ?? (pendingTurn.collaborationDeliveryId
-      ? [pendingTurn.collaborationDeliveryId]
-      : []))
-      .map((id) => collaborationDeliveries.get(id)?.communicationEventId)
-      .filter((id): id is string => Boolean(id));
-    return [...new Set([pendingTurn.communicationEventId, ...deliveryEventIds]
-      .filter((id): id is string => Boolean(id)))];
-  }
-
-  function boundedDeliveryBatch(pending: CollaborationDelivery[]): CollaborationDelivery[] {
-    const first = pending[0];
-    if (!first) return [];
-    if (first.kind === "direct" || first.replyToMessageId) return [first];
-    const batch: CollaborationDelivery[] = [];
-    for (const candidate of pending) {
-      if (!canShareCollaborationBatch(first, candidate) || batch.length >= COLLABORATION_DISPATCH_LIMITS.maxBatchDeliveries) break;
-      const proposed = [...batch, candidate];
-      // A batch is one causal turn. Never flatten away an earlier delivery's
-      // replay evidence just to fit the bounded lineage window; leave the
-      // candidate queued for its own subsequent turn instead.
-      if (mergeMentionTrails(proposed).length > MAX_AGENT_MENTION_REPLAY_WINDOW) break;
-      const bytes = Buffer.byteLength(formatDeliveryBatch({ deliveries: proposed }), "utf8");
-      if (bytes > COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes) break;
-      batch.push(candidate);
-    }
-    return batch;
-  }
-
-  function dispatchRetryDelay(attempt: number): number {
-    const exponential = Math.min(
-      COLLABORATION_DISPATCH_LIMITS.maxRetryMs,
-      COLLABORATION_DISPATCH_LIMITS.baseRetryMs * (2 ** Math.max(0, attempt - 1)),
-    );
-    const jitter = exponential * COLLABORATION_DISPATCH_LIMITS.jitterRatio * ((deliveryRandom() * 2) - 1);
-    return Math.max(0, Math.round(exponential + jitter));
-  }
-
-  function clearWaitDeadline(agentId: string): void {
-    const timer = waitDeadlineTimers.get(agentId);
-    if (timer) clearTimeout(timer);
-    waitDeadlineTimers.delete(agentId);
-  }
-
-  function scheduleWaitDeadline(wait: AgentWaitCondition): void {
-    clearWaitDeadline(wait.agentId);
-    if (!wait.deadline || wait.status !== "active") return;
-    const delay = Math.max(0, Date.parse(wait.deadline) - deliveryNow());
-    const timer = setDeliveryTimer(() => {
-      waitDeadlineTimers.delete(wait.agentId);
-      const active = agentWaits.active(wait.agentId);
-      if (!active || active.id !== wait.id) return;
-      const evaluation = agentWaits.evaluate(wait.agentId, collaborationDeliveries.pending(wait.agentId), collaborationDeliveries, deliveryNow());
-      if (evaluation.completion?.status !== "expired") return;
-      queueCollaborationDelivery({
-        messageId: `wait-deadline:${wait.id}`,
-        targetAgentId: wait.agentId,
-        text: `Durable wait deadline reached. Continue with the reports received so far and explicitly identify any missing reporters from: ${wait.expectedAgentIds.join(", ")}.`,
-        relayDepth: 0,
-        mentionTrail: [],
-        kind: "manager_notification",
-        wakeCause: "wait_deadline",
-      });
-      finishWaitEvaluation(evaluation);
-    }, delay);
-    timer.unref?.();
-    waitDeadlineTimers.set(wait.agentId, timer);
-  }
-
-  function scheduleDeliveryDispatch(agentId: string, delayMs = 0): void {
-    if (closed || activeRuns.has(agentId) || deliveryRetryTimers.has(agentId)) return;
-    const timer = setDeliveryTimer(() => {
-      deliveryRetryTimers.delete(agentId);
-      runDeliveryDispatch(agentId);
-    }, delayMs);
-    timer.unref?.();
-    deliveryRetryTimers.set(agentId, timer);
-  }
-
-  function runDeliveryDispatch(agentId: string): void {
-    const dispatch = dispatchNextTurn(agentId);
-    deliveryDispatches.add(dispatch);
-    void dispatch.finally(() => deliveryDispatches.delete(dispatch));
-  }
-
-  /**
-   * Persist before enqueueing. A tag therefore survives cancellation, process
-   * restart, and dispatch races instead of existing only in collaboration history.
-   */
-  function queueCollaborationDelivery(
-    input: Omit<CollaborationDelivery, "id" | "status" | "createdAt"> & { createdAt?: string },
-    options: { schedule?: boolean } = {},
-  ): CollaborationDelivery | undefined {
-    if (closed) return undefined;
-    const queued = collaborationDeliveries.queue(input);
-    if (queued.delivery.communicationEventId) {
-      const target = store.getAgent(queued.delivery.targetAgentId);
-      if (target) {
-        store.appendCommunicationProjection(target.projectId, {
-          eventId: queued.delivery.communicationEventId,
-          surface: "agent_inbox",
-          projectionKey: target.id,
-          projectedAt: queued.delivery.createdAt,
-        });
-      }
-    }
-    if (!queued.replayed && queued.delivery.kind === "direct" && queued.delivery.sourceChannel === "main" && queued.delivery.conversationId) {
-      appendWorkspace({
-        type: "queued_message_changed",
-        conversationId: queued.delivery.conversationId,
-        deliveryId: queued.delivery.id,
-        action: "queued",
-      });
-    }
-    if (!queued.replayed && agentWaits.active(queued.delivery.targetAgentId)) {
-      publishWaitChanged(queued.delivery.targetAgentId);
-    }
-    if (options.schedule !== false) scheduleDeliveryDispatch(queued.delivery.targetAgentId);
-    return queued.delivery;
-  }
-
-  async function deliverProjectMessage(
-    delivery: CollaborationDelivery,
-    activeRunDelivery: "steer" | "queue",
-  ): Promise<{ queued: boolean; state: "queued" | "steered" | "started" }> {
-    if (delivery.status !== "queued") {
-      return { queued: false, state: "started" };
-    }
-    if (activeRunDelivery === "queue" && activeRuns.has(delivery.targetAgentId)) {
-      scheduleDeliveryDispatch(delivery.targetAgentId);
-      return { queued: true, state: "queued" };
-    }
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/agents/${delivery.targetAgentId}/messages`,
-      headers: {
-        ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
-        "x-ponderosa-project-delivery": projectDeliveryKey,
-      },
-      payload: {
-        text: delivery.text,
-        communicationEventId: delivery.communicationEventId,
-        sourceConversationId: delivery.conversationId,
-        sourceChannel: delivery.sourceChannel,
-        activeRunDelivery,
-        model: delivery.model,
-        effort: delivery.effort,
-        replyToMessageId: delivery.replyToMessageId,
-        attachmentIds: delivery.attachmentIds,
-      },
-    });
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      collaborationDeliveries.markDelivered(delivery.id);
-      collaborationDeliveries.acknowledge(delivery.id);
-      appendWorkspace({
-        type: "queued_message_changed",
-        conversationId: delivery.conversationId ?? "",
-        deliveryId: delivery.id,
-        action: "started",
-      });
-      const body = response.json() as { steered?: boolean };
-      return { queued: false, state: body.steered ? "steered" : "started" };
-    }
-    if (response.statusCode === 409) {
-      scheduleDeliveryDispatch(delivery.targetAgentId);
-      return { queued: true, state: "queued" };
-    }
-    throw new Error(`project delivery rejected (${response.statusCode})`);
-  }
-
-  async function dispatchNextTurn(agentId: string): Promise<void> {
-    if (closed) return;
-    if (activeRuns.has(agentId)) return;
-    if (dispatchingTurns.has(agentId)) {
-      scheduleDeliveryDispatch(agentId);
-      return;
-    }
-    dispatchingTurns.add(agentId);
-    let retryScheduled = false;
-    let waitHeld = false;
-    try {
-    const pending = collaborationDeliveries.pending(agentId);
-    const waitEvaluation = agentWaits.evaluate(agentId, pending, collaborationDeliveries, deliveryNow());
-    if (waitEvaluation.hold) {
-      waitHeld = true;
-      return;
-    }
-    const delivery = pending[0];
-    if (!delivery) return;
-    const eligibleAt = delivery.nextDispatchAt ? Date.parse(delivery.nextDispatchAt) : 0;
-    if (eligibleAt > deliveryNow()) {
-      scheduleDeliveryDispatch(agentId, eligibleAt - deliveryNow());
-      return;
-    }
-    // Direct follow-ups retain their exact existing behavior and remain FIFO
-    // barriers. Every consecutive collaboration delivery for this recipient is
-    // one fixed snapshot, regardless of author or relay metadata.
-    const batch = boundedDeliveryBatch(pending);
-    if (batch.length === 0) {
-      collaborationDeliveries.fail(delivery.id, `delivery exceeds ${COLLABORATION_DISPATCH_LIMITS.maxBatchUtf8Bytes} UTF-8 batch bytes; dead-lettered`);
-      return;
-    }
-    const deliveryIds = batch.map((item) => item.id);
-    const durableBatch = waitEvaluation.wakeCause
-      ? collaborationDeliveries.persistBatchWakeCause(deliveryIds, waitEvaluation.wakeCause)
-      : batch;
-    finishWaitEvaluation(waitEvaluation);
-    const baseTurn = durableBatch.length > 1 ? pendingTurnFromBatch(durableBatch) : pendingTurnFromDelivery(durableBatch[0]!);
-    const next: PendingTurn = {
-      ...baseTurn,
-      wakeCause: waitEvaluation.wakeCause ?? baseTurn.wakeCause,
-    };
-    collaborationDeliveries.markBatchDelivered(deliveryIds);
-    const injectedStatus = opts.deliveryScheduling?.claimStatus?.();
-    const response = injectedStatus === undefined ? await app.inject({
-      method: "POST",
-      url: `/api/agents/${agentId}/messages`,
-      headers: {
-        ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
-        ...(deliveryIds.length
-          ? { "x-ponderosa-collaboration-dispatch": collaborationDispatchKey }
-          : {}),
-        "x-ponderosa-turn-dispatch": turnDispatchKey,
-      },
-      payload: next,
-    }) : { statusCode: injectedStatus };
-    // `app.close()` may have run while the internal injection was in flight.
-    // Never mutate a delivery ledger after shutdown has revoked its data dir.
-    if (closed) return;
-    // Another request may have claimed the agent between our check and the
-    // injected request. Put this turn back at the head without changing order.
-    if (response.statusCode === 409) {
-      collaborationDeliveries.requeueBatch(deliveryIds, true);
-    } else if (response.statusCode === 429 || response.statusCode >= 500) {
-      const attempt = Math.max(...deliveryIds.map((id) => collaborationDeliveries.get(id)?.dispatchAttempts ?? 0)) + 1;
-      const delay = dispatchRetryDelay(attempt);
-      const nextDispatchAt = new Date(deliveryNow() + delay).toISOString();
-      const retried = collaborationDeliveries.retryDispatchBatch(
-        deliveryIds,
-        `delivery dispatch rejected (${response.statusCode})`,
-        nextDispatchAt,
-        COLLABORATION_DISPATCH_LIMITS.maxDispatchAttempts,
-      );
-      if (retried.some((item) => item.status === "queued")) {
-        scheduleDeliveryDispatch(agentId, delay);
-        retryScheduled = true;
-      } else {
-        const failed = retried[0];
-        const target = failed ? store.getAgent(failed.targetAgentId) : undefined;
-        if (failed?.conversationId && target) {
-          appendCollaborationSystemNotice(
-            failed.conversationId,
-            `⚠️ #${agentMentionHandle(target.title)} was not notified because their follow-up delivery exhausted bounded retries. The handoff is retained as failed; retry manually or contact the manager.`,
-            `delivery-failure:${failed.id}`,
-          );
-        }
-      }
-    } else if (response.statusCode >= 300) {
-      collaborationDeliveries.failBatch(deliveryIds, `delivery dispatch rejected (${response.statusCode})`);
-      const delivery = collaborationDeliveries.get(deliveryIds[0]!);
-      const target = delivery ? store.getAgent(delivery.targetAgentId) : undefined;
-      if (delivery?.conversationId && target) {
-        appendCollaborationSystemNotice(
-          delivery.conversationId,
-          `⚠️ #${agentMentionHandle(target.title)} was not notified because their follow-up delivery failed. The handoff remains recorded; retry or contact the manager.`,
-          `delivery-failure:${delivery.id}`,
-        );
-      }
-    }
-    } finally {
-      dispatchingTurns.delete(agentId);
-      if (!closed && !retryScheduled && !waitHeld && !activeRuns.has(agentId) && collaborationDeliveries.pendingCount(agentId) > 0) {
-        scheduleDeliveryDispatch(agentId);
-      }
-    }
-  }
-
-  /**
-   * Repair the crash window between appending a canonical collaboration message
-   * and appending its recipient inbox record. The persisted boundary prevents an
-   * upgrade from replaying messages created before durable delivery existed.
-   */
-  function reconcileCanonicalInbox(): string[] {
-    const boundary = collaborationDeliveries.reconciliationBoundary();
-    const recipients = new Set<string>();
-    for (const project of store.listProjects()) {
-      for (const master of store.listConversations(project.id)) {
-        for (const { message, intent, messageReceiptKey, deliveryOrderKey } of store.getConversationDeliveryIntents(master.id, boundary)) {
-          const target = store.getAgent(intent.targetAgentId);
-          if (!target || target.archived || !target.conversationIds.includes(master.id)) continue;
-          if (messageReceiptKey) collaborationDeliveries.rememberMessageReceipt(messageReceiptKey, message.id);
-          const queued = collaborationDeliveries.queue({
-            conversationId: master.id,
-            messageId: message.id,
-            communicationEventId: message.communicationEventId,
-            targetAgentId: intent.targetAgentId,
-            authorAgentId: message.authorAgentId,
-            text: message.text,
-            relayDepth: intent.relayDepth,
-            mentionTrail: intent.mentionTrail,
-            kind: intent.kind,
-            audience: intent.audience,
-            waitBehavior: intent.waitBehavior,
-            createdAt: message.createdAt,
-            orderKey: deliveryOrderKey,
-            sourceChannel: intent.kind === "direct" ? "main" : undefined,
-            attachmentIds: intent.kind === "direct" ? message.attachments?.map((item) => item.id) : undefined,
-          });
-          recipients.add(intent.targetAgentId);
-        }
-      }
-    }
-    return [...recipients];
-  }
-
   function reconcileRuntimeCommunicationProjections(): number {
-    if (!coordinationV3) return 0;
     let projected = 0;
     for (const row of coordinationV3.runtimeCommunications()) {
       const payload = row.payload && typeof row.payload === "object"
@@ -2320,7 +1759,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawns" || request.url === "/api/agent-waits" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -2353,21 +1792,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.addHook("onReady", async () => {
-    // Resume handoffs left queued or unacknowledged by a previous process after
-    // Fastify has finished registering the internal dispatch route.
     reconcileRuntimeCommunicationProjections();
-    const interruptedDeliveryIds = new Set(runLedger.all()
-      .filter((claim) => claim.state === "interrupted")
-      .flatMap((claim) => claim.deliveryIds ?? []));
-    const recipients = new Set(collaborationDeliveries.recoverUnacknowledged(interruptedDeliveryIds));
-    for (const agentId of reconcileCanonicalInbox()) recipients.add(agentId);
-    for (const wait of agentWaits.allActive()) scheduleWaitDeadline(wait);
-    for (const agentId of recipients) {
-      scheduleDeliveryDispatch(agentId);
-    }
-    coordinationV3?.recoverOrphanedRuns(coordinationV3WorkerId);
-    coordinationV3?.expireDue();
-    coordinationV3Scheduler?.start();
+    coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
+    coordinationV3.expireDue();
+    coordinationV3Scheduler.start();
     const reconcileAssets = async () => {
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
@@ -2383,16 +1811,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     closed = true;
-    await coordinationV3Scheduler?.stop();
-    for (const timer of deliveryRetryTimers.values()) clearTimeout(timer);
-    deliveryRetryTimers.clear();
-    for (const timer of waitDeadlineTimers.values()) clearTimeout(timer);
-    waitDeadlineTimers.clear();
+    await coordinationV3Scheduler.stop();
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
-      if (run.v3SchedulerRunId && run.v3FencingToken !== undefined && coordinationV3) {
+      if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
         try {
           coordinationV3.failRun({
             runId: run.v3SchedulerRunId,
@@ -2401,8 +1825,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             sameRunResumable: false,
           });
         } catch { /* an already advanced fence is terminal */ }
-      } else {
-        transitionRun(agentId, run, "interrupted");
       }
       run.controller.abort();
     }
@@ -2410,7 +1832,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const runtime of runtimeSessions.values()) cancelRuntimeIdleClose(runtime);
     await Promise.allSettled([...runtimeSessions.values()].map(({ session }) => session.close()));
     runtimeSessions.clear();
-    await Promise.allSettled([...deliveryDispatches]);
     assets.close();
     store.close();
   });
@@ -2486,6 +1907,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     agentId: string,
     event: CommunicationEvent,
     renderedText: string,
+    attachments?: ImageAttachmentDto[],
   ): void {
     if (store.readCommunicationProjections(event.projectId).some((projection) =>
       projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
@@ -2501,6 +1923,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         renderedText,
         createdAt: event.createdAt,
         ...(event.sender.kind === "agent" ? { authorAgentId: event.sender.agentId } : {}),
+        ...(attachments?.length ? { attachments } : {}),
       },
     });
   }
@@ -2564,7 +1987,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     text: string,
     _relayDepth: number,
     mentionTrail: string[],
-    waitBehavior?: AgentCollaborationWaitBehavior,
   ): { text: string; intents: ConversationDeliveryIntent[]; error?: string } {
     const detail = store.getCollaborationViewDetail(conversationId);
     const members = new Map((detail?.agents ?? []).map((agent) => [agent.id, agent]));
@@ -2587,44 +2009,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionTrail: nextTrail,
         kind: "tag",
         audience: "mention",
-        ...(waitBehavior ? { waitBehavior } : {}),
       });
     }
     return { text: renderedText, intents };
-  }
-
-  function queueRecordedCollaborationMessage(
-    conversationId: string,
-    message: ConversationMessageDto,
-    authorAgentId: string | undefined,
-    intents: ConversationDeliveryIntent[],
-  ): void {
-    const orderKey = store.getConversationMessageDeliveryOrderKey(conversationId, message.id);
-    const master = store.getConversation(conversationId);
-    const communication = master && message.communicationEventId
-      ? store.getCommunicationEvent(master.projectId, message.communicationEventId)
-      : undefined;
-    const deliveryText = communication?.document
-      ? `${message.text}\n\nDocument: ${communication.document.title} (id: ${communication.document.id}). Retrieve it on demand with PONDEROSA_DOCUMENT_URL.`
-      : message.text;
-    for (const intent of intents) {
-      queueCollaborationDelivery({
-        conversationId,
-        messageId: message.id,
-        communicationEventId: message.communicationEventId,
-        targetAgentId: intent.targetAgentId,
-        authorAgentId,
-        text: deliveryText,
-        relayDepth: intent.relayDepth,
-        mentionTrail: intent.mentionTrail,
-        kind: intent.kind,
-        audience: intent.audience,
-        waitBehavior: intent.waitBehavior,
-        createdAt: message.createdAt,
-        orderKey,
-        replyToMessageId: message.replyTo?.messageId,
-      });
-    }
   }
 
   function appendBlockedMentionWarnings(
@@ -2667,24 +2054,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const manager = child?.managerAgentId ? store.getAgent(child.managerAgentId) : undefined;
     if (!child || !manager || manager.archived) return;
     const createdAt = new Date().toISOString();
-    queueCollaborationDelivery({
-      conversationId: child.conversationIds.find((id) => manager.conversationIds.includes(id)),
-      messageId: `managed-agent:${child.id}:${executionId}:failure`,
-      targetAgentId: manager.id,
-      authorAgentId: child.id,
-      text: [
+    const id = `managed-agent:${child.id}:${executionId}:failure`;
+    const text = [
         "Internal managed-agent update (not a chat message).",
         `${child.title} (${child.id}) encountered a runtime failure during execution ${executionId}.`,
         `Failure: ${failure}`,
         "The agent remains in your organization and can be steered or retried.",
-      ].join("\n"),
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "manager_notification",
-      wakeCause: "managed_failure",
-      createdAt,
-      orderKey: store.nextDeliveryOrderKey(createdAt),
+      ].join("\n");
+    coordinationV3.recordRuntimeCommunication({
+      id,
+      projectId: child.projectId,
+      sender: { kind: "system", component: "runtime-supervisor", childAgentId: child.id },
+      intent: "managed_child_failure",
+      audience: { agentId: manager.id },
+      payload: { text, childAgentId: child.id, executionId, failure },
+      activation: {
+        agentId: manager.id,
+        kind: "managed_child_failure",
+        priority: 90,
+        dispatchPolicy: "steer_or_run",
+        promptClass: "blocker",
+      },
+      now: createdAt,
     });
+    publishCoordinationV3Changed(manager.id);
+    coordinationV3Scheduler.notify();
   }
 
   app.get("/api/agent-directory", async (request, reply) => {
@@ -2811,7 +2205,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         try {
           const routing = resolveExplicitCollaborationIntents(
             capability.conversationId, author.id, [item.recipientAgentId], item.text,
-            capability.mentionDepth, capability.mentionTrail, "queue",
+            capability.mentionDepth, capability.mentionTrail,
           );
           if (routing.error) throw new Error(routing.error);
           const communication = recordCommunication({
@@ -2914,9 +2308,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         error: 'ponderosa_message requires an intent property equal to "broadcast", "direct_to_user", or "collaboration"; do not use intent:"user_dm" or direct_to_user:true',
       });
     }
-    if (intent !== "collaboration" && "waitBehavior" in request.body && request.body.waitBehavior !== undefined) {
-      return reply.code(400).send({ error: "waitBehavior is only valid for collaboration" });
-    }
     if (v3Urgency !== undefined && v3Urgency !== "ordinary" && v3Urgency !== "urgent") {
       return reply.code(400).send({ error: "urgency must be ordinary or urgent" });
     }
@@ -2946,16 +2337,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
-    if (receiptKey) {
-      const previousMessageId = collaborationDeliveries.messageReceipt(receiptKey);
-      if (previousMessageId) return { intent, messageId: previousMessageId, replayed: true };
-    }
+    const communicationEventId = receiptKey
+      ? `runtime-${createHash("sha256").update(`${currentAuthor?.projectId ?? "unknown"}\0${receiptKey}`).digest("hex")}`
+      : randomUUID();
+    const replay = coordinationV3.runtimeCommunication(communicationEventId);
+    const replayPayload = replay?.payload && typeof replay.payload === "object"
+      ? replay.payload as { communication?: CommunicationEvent }
+      : undefined;
+    const replayCommunication = replayPayload?.communication ?? replay?.payload as CommunicationEvent | undefined;
 
     if (!currentAuthor || currentAuthor.archived) {
       return reply.code(409).send({ error: "agent is no longer available" });
     }
     const document = documentTitle && documentContent ? {
-      id: randomUUID(), title: documentTitle, mediaType: "text/markdown" as const,
+      id: replayCommunication?.document?.id ?? randomUUID(), title: documentTitle, mediaType: "text/markdown" as const,
       content: documentContent, byteLength: Buffer.byteLength(documentContent, "utf8"),
       authorAgentId: capability.agentId, executionId: capability.runId,
       createdAt: new Date().toISOString(),
@@ -2963,7 +2358,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
-        eventId: randomUUID(),
+        eventId: communicationEventId,
         schemaVersion: 2,
         projectId: currentAuthor.projectId,
         ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
@@ -2973,10 +2368,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         text,
         ...(document ? { document } : {}),
         ...(citations.length ? { citations } : {}),
-        createdAt: new Date().toISOString(),
+        createdAt: replay?.createdAt ?? new Date().toISOString(),
         ...(idempotencyKey ? { idempotencyKey } : {}),
       };
-      coordinationV3?.recordRuntimeCommunication({
+      const intake = coordinationV3.recordRuntimeCommunication({
         id: proposedCommunication.eventId,
         projectId: currentAuthor.projectId,
         sender: proposedCommunication.sender,
@@ -2985,6 +2380,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         payload: proposedCommunication,
         now: proposedCommunication.createdAt,
       });
+      if (intake.replayed) {
+        const existing = store.readEvents(capability.agentId).find((item) =>
+          item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
+        return { intent, eventId: proposedCommunication.eventId, messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId, replayed: true };
+      }
       const communication = recordCommunication(proposedCommunication);
       store.appendCommunicationProjection(currentAuthor.projectId, {
         eventId: communication.eventId,
@@ -3008,7 +2408,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
       publish(capability.agentId, stored);
       const messageId = `agent-event-${stored.seq}`;
-      if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, messageId);
       return { intent, eventId: communication.eventId, messageId, replayed: false };
     }
     if (!capability.conversationId) {
@@ -3025,15 +2424,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
       }
       if (recipientAgentIds.length > 100) return reply.code(400).send({ error: "collaboration supports at most 100 recipients" });
-      const waitBehavior = communicationV3Enabled
-        ? v3Urgency === "urgent" ? "interrupt" : "queue"
-        : request.body.waitBehavior;
-      if (!communicationV3Enabled && waitBehavior === undefined) {
-        return reply.code(400).send({ error: "collaboration requires explicit waitBehavior" });
-      }
-      if (waitBehavior !== undefined && !(waitBehavior === "queue" || waitBehavior === "report" || waitBehavior === "interrupt")) {
-        return reply.code(400).send({ error: "waitBehavior must be queue, report, or interrupt" });
-      }
       const resolved = resolveExplicitCollaborationIntents(
         capability.conversationId,
         capability.agentId,
@@ -3041,13 +2431,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         text,
         capability.mentionDepth,
         capability.mentionTrail,
-        waitBehavior,
       );
       if (resolved.error) return reply.code(400).send({ error: resolved.error });
       renderedText = resolved.text;
       routing = { intents: resolved.intents, blocked: [] };
     }
-    const terminalOutcomeRequesterIds = intent === "collaboration" && coordinationV3 && v3Urgency !== "urgent"
+    const terminalOutcomeRequesterIds = intent === "collaboration" && v3Urgency !== "urgent"
       ? new Set(coordinationV3.terminalOutcomeRequesterIdsForRun(
         active.v3SchedulerRunId ?? active.runId,
         capability.agentId,
@@ -3061,7 +2450,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     );
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const proposedCommunication: CommunicationEvent = intent === "broadcast" ? {
-      eventId: randomUUID(),
+      eventId: communicationEventId,
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
       conversationId: capability.conversationId,
@@ -3071,10 +2460,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       text: scopedText,
       ...(document ? { document } : {}),
       ...(citations.length ? { citations } : {}),
-      createdAt: new Date().toISOString(),
+      createdAt: replay?.createdAt ?? new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
-      eventId: randomUUID(),
+      eventId: communicationEventId,
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
       conversationId: capability.conversationId,
@@ -3085,10 +2474,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       text,
       ...(document ? { document } : {}),
       ...(citations.length ? { citations } : {}),
-      createdAt: new Date().toISOString(),
+      createdAt: replay?.createdAt ?? new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey } : {}),
     };
-    coordinationV3?.recordRuntimeCommunication({
+    const intake = coordinationV3.recordRuntimeCommunication({
       id: proposedCommunication.eventId,
       projectId: currentAuthor.projectId,
       sender: proposedCommunication.sender,
@@ -3107,6 +2496,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       } : {}),
       now: proposedCommunication.createdAt,
     });
+    if (intake.replayed) {
+      const existing = store.getConversationMessages(capability.conversationId, channel)
+        .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
+      return {
+        intent,
+        eventId: proposedCommunication.eventId,
+        messageId: existing?.id ?? proposedCommunication.eventId,
+        replayed: true,
+        ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
+      };
+    }
     const communication = recordCommunication(proposedCommunication);
     const message = store.appendConversationMessage(
       capability.conversationId,
@@ -3129,19 +2529,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
       publish(capability.agentId, authorAudit);
     }
-    if (receiptKey) collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
     if (intent === "collaboration") {
-      if (coordinationV3) {
-        for (const delivery of routing.intents) {
-          if (communication?.intent === "collaboration") {
-            projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
-          }
-          publishCoordinationV3Changed(delivery.targetAgentId);
+      for (const delivery of routing.intents) {
+        if (communication?.intent === "collaboration") {
+          projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
         }
-        coordinationV3Scheduler?.notify();
-      } else {
-        queueRecordedCollaborationMessage(capability.conversationId, message, capability.agentId, routing.intents);
+        publishCoordinationV3Changed(delivery.targetAgentId);
       }
+      coordinationV3Scheduler.notify();
       appendBlockedMentionWarnings(capability.conversationId, routing.blocked);
     }
     return {
@@ -3190,190 +2585,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     scheduledSessionRollovers.set(capability.agentId, new Date().toISOString());
     return { scheduled: true, afterRunId: capability.runId };
   });
-
-  app.post<{ Body: AgentWaitRequest }>("/api/agent-waits", async (request, reply): Promise<AgentWaitResponse | unknown> => {
-    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    const capability = token ? agentMessageCapabilities.get(token) : undefined;
-    const active = capability ? activeRuns.get(capability.agentId) : undefined;
-    const agent = capability ? store.getAgent(capability.agentId) : undefined;
-    if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token || !agent) {
-      return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
-    }
-    const mode = request.body?.mode;
-    const expectedAgentIds = Array.isArray(request.body?.expectedAgentIds)
-      ? [...new Set(request.body.expectedAgentIds.map((id) => id?.trim()).filter(Boolean))]
-      : [];
-    if (!(mode === "all" || mode === "any" || mode === "quorum")) {
-      return reply.code(400).send({ error: "mode must be all, any, or quorum" });
-    }
-    if (expectedAgentIds.length === 0 || expectedAgentIds.length > 100 || expectedAgentIds.length !== request.body.expectedAgentIds.length) {
-      return reply.code(400).send({ error: "expectedAgentIds must contain 1 to 100 unique stable agent IDs" });
-    }
-    const expectedAgents = expectedAgentIds.map((id) => store.getAgent(id));
-    if (expectedAgents.some((candidate) => !candidate || candidate.archived || candidate.projectId !== agent.projectId || candidate.id === agent.id)) {
-      return reply.code(400).send({ error: "every expected reporter must be another active agent in this project" });
-    }
-    const quorum = mode === "all" ? expectedAgentIds.length : mode === "any" ? 1 : request.body.quorum;
-    if (!Number.isInteger(quorum) || quorum! < 1 || quorum! > expectedAgentIds.length) {
-      return reply.code(400).send({ error: "quorum must be an integer between 1 and the number of expected reporters" });
-    }
-    const deadline = request.body.deadline?.trim();
-    if (deadline && (!Number.isFinite(Date.parse(deadline)) || Date.parse(deadline) <= deliveryNow())) {
-      return reply.code(400).send({ error: "deadline must be a future ISO-8601 timestamp" });
-    }
-    const registered = agentWaits.register({
-      agentId: agent.id,
-      executionId: capability.runId,
-      mode,
-      expectedAgentIds,
-      quorum: quorum!,
-      deliveryWatermark: collaborationDeliveries.watermark(),
-      ...(deadline ? { deadline } : {}),
-    });
-    scheduleWaitDeadline(registered.wait);
-    if (!registered.replayed) publishWaitChanged(agent.id);
-    return {
-      waitId: registered.wait.id,
-      mode: registered.wait.mode,
-      expectedAgentIds: registered.wait.expectedAgentIds,
-      quorum: registered.wait.quorum,
-      ...(registered.wait.deadline ? { deadline: registered.wait.deadline } : {}),
-      replayed: registered.replayed,
-    };
-  });
-
-  app.post<{ Body: AgentSpawnRequest & Record<string, unknown> }>(
-    "/api/agent-spawns",
-    async (request, reply) => {
-      const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-      const capability = token ? agentMessageCapabilities.get(token) : undefined;
-      const active = capability ? activeRuns.get(capability.agentId) : undefined;
-      const parent = capability ? store.getAgent(capability.agentId) : undefined;
-      if (!capability || !active || active.runId !== capability.runId || active.messageCapability !== token || !parent) {
-        return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
-      }
-      const forbiddenOwnership = ["managerAgentId", "parentAgentId", "agentId", "conversationId", "executionId"]
-        .find((field) => request.body && field in request.body);
-      if (forbiddenOwnership) {
-        return reply.code(403).send({ error: `ownership field ${forbiddenOwnership} is server-controlled` });
-      }
-      const input = request.body;
-      const displayName = input?.displayName?.trim();
-      const initialMessage = input?.initialMessage?.trim();
-      const idempotencyKey = input?.idempotencyKey?.trim();
-      if (!displayName || !idempotencyKey) {
-        return reply.code(400).send({ error: "displayName and idempotencyKey are required" });
-      }
-      if (displayName.length > 100 || (initialMessage?.length ?? 0) > MAX_TEXT_LENGTH || idempotencyKey.length > 200) {
-        return reply.code(400).send({ error: "agent creation fields exceed their size limits" });
-      }
-      const conversationId = capability.conversationId ?? parent.conversationId;
-      const conversation = conversationId ? store.getConversation(conversationId) : undefined;
-      if (!conversation || conversation.projectId !== parent.projectId || !parent.conversationIds.includes(conversation.id)) {
-        return reply.code(409).send({ error: "spawning agent must belong to an active conversation" });
-      }
-      const roomId = conversation.id;
-      const preset = input.presetId ? store.getAgentPreset(input.presetId) : undefined;
-      if (input.presetId && (!preset || preset.projectId !== parent.projectId || !preset.enabled)) {
-        return reply.code(400).send({ error: "preset is unavailable for this project" });
-      }
-      const runtime = preset?.engine ?? input.runtime?.trim() ?? parent.activeEngine;
-      const configuredRuntime = engines.get(runtime);
-      if (!configuredRuntime) return reply.code(400).send({ error: "runtime is not configured" });
-      const parentRuns = store.getRuns(parent.id);
-      const latestParentRun = [...parentRuns].reverse().find((run) => run.engine === runtime);
-      const inheritParentSelection = runtime === parent.activeEngine;
-      const requestedModel = input.model?.trim() || undefined;
-      const requestedEffort = input.effort?.trim() || undefined;
-      const inherited = inheritParentSelection
-        ? normalizedRuntimeSelection(
-            configuredRuntime.adapter,
-            latestParentRun ? latestParentRun.model : parent.model ?? parent.presetSnapshot?.model,
-            latestParentRun ? latestParentRun.effort : parent.effort ?? parent.presetSnapshot?.effort,
-          )
-        : {};
-      const hasModelOverride = preset?.model !== undefined || input.model !== undefined;
-      const modelOverride = preset?.model ?? requestedModel;
-      if (hasModelOverride) {
-        const modelError = runtimeSelectionError(configuredRuntime.adapter, modelOverride, undefined);
-        if (modelError) return reply.code(400).send({ error: modelError });
-      }
-      const model = hasModelOverride ? modelOverride : inherited.model;
-      const hasEffortOverride = preset?.effort !== undefined || input.effort !== undefined;
-      const effortOverride = preset?.effort ?? requestedEffort;
-      if (hasEffortOverride) {
-        const effortError = runtimeSelectionError(configuredRuntime.adapter, model, effortOverride);
-        if (effortError) return reply.code(400).send({ error: effortError });
-      }
-      const effort = hasEffortOverride ? effortOverride : hasModelOverride ? undefined : inherited.effort;
-
-      const replay = store.findAgentSpawn(parent.id, capability.runId, idempotencyKey);
-      if (replay) {
-        if (replay.title !== displayName || replay.spawnPrompt !== initialMessage || replay.activeEngine !== runtime ||
-          replay.model !== model || replay.effort !== effort || replay.presetSnapshot?.id !== preset?.id) {
-          return reply.code(409).send({ error: "idempotencyKey was already used with different agent creation fields" });
-        }
-        return { agent: replay, accepted: true, replayed: true };
-      }
-
-      let child: AgentDto | undefined;
-      try {
-        child = store.createAgent(parent.projectId, {
-          title: displayName,
-          engine: runtime,
-          conversationId: roomId,
-          model,
-          effort,
-          presetId: preset?.id,
-          managerAgentId: parent.id,
-        }, {
-          agentId: parent.id,
-          executionId: capability.runId,
-          idempotencyKey,
-          prompt: initialMessage,
-        });
-        if (initialMessage) {
-          const routing = resolveExplicitCollaborationIntents(
-            roomId,
-            parent.id,
-            [child.id],
-            initialMessage,
-            capability.mentionDepth,
-            capability.mentionTrail,
-            "queue",
-          );
-          if (routing.error) throw new Error(routing.error);
-          const communication = recordCommunication({
-            eventId: randomUUID(),
-            schemaVersion: 2,
-            projectId: parent.projectId,
-            conversationId: roomId,
-            sender: { kind: "agent", agentId: parent.id, executionId: capability.runId },
-            intent: "collaboration",
-            audience: { kind: "agents", agentIds: [child.id] },
-            text: initialMessage,
-            createdAt: new Date().toISOString(),
-            idempotencyKey: `agent-spawn:${capability.runId}:${idempotencyKey}`,
-          });
-          const message = store.appendConversationMessage(
-            roomId,
-            { role: "assistant", text: routing.text },
-            parent.id,
-            "collaboration",
-            routing.intents,
-            undefined,
-            communication.eventId,
-          );
-          if (!message) throw new Error("spawn message could not be recorded");
-          queueRecordedCollaborationMessage(roomId, message, parent.id, routing.intents);
-        }
-        return reply.code(201).send({ agent: child, accepted: true, replayed: false });
-      } catch (error) {
-        if (child) store.deleteAgent(child.id);
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "agent could not be created" });
-      }
-    },
-  );
 
   app.get("/api/health", async (): Promise<HealthDto> => ({
     status: "ok",
@@ -3587,15 +2798,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         await runtime.session.close().catch(() => undefined);
       }
       subscribers.delete(agentId);
-      dispatchingTurns.delete(agentId);
       scheduledSessionRollovers.delete(agentId);
-      clearWaitDeadline(agentId);
     }
-    collaborationDeliveries.deleteAgents(agentIds);
-    agentWaits.deleteAgents(agentIds);
     userReactions.deleteProject(project.id);
     contextCursors.deleteAgents(agentIds);
-    runLedger.deleteAgents(agentIds);
     store.deleteProject(project.id);
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
     for (const agentId of agentIds) deletingAgentIds.delete(agentId);
@@ -3806,8 +3012,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
-      if (!text) return reply.code(400).send({ error: "text is required" });
-      if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+      if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text is required and must be 65536 characters or fewer" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100) {
         return reply.code(400).send({ error: "1 to 100 recipients are required" });
@@ -3817,8 +3022,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "recipient agent IDs must be unique" });
       }
       for (const recipient of recipients) {
-        const attachmentIds = recipient.attachmentIds ?? [];
-        if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
+        const ids = recipient.attachmentIds ?? [];
+        if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(ids).size !== ids.length) {
           return reply.code(400).send({ error: "each recipient supports at most 4 unique attachments" });
         }
       }
@@ -3828,57 +3033,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (targets.some((target) => !target || target.archived || !target.conversationIds.includes(master.id))) {
         return reply.code(404).send({ error: "direct message recipient not found" });
       }
-      const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
-      const persistedIntents = () => store.getConversationDeliveryIntents(master.id)
-        .filter((item) => item.messageReceiptKey === receiptKey && item.intent.kind === "direct");
-      const queueMissingDeliveries = async (message: ConversationMessageDto): Promise<MultiAgentDirectMessageResponse["recipients"]> => {
-        return Promise.all(persistedIntents().map(async ({ intent, deliveryOrderKey }) => {
-          const existingDelivery = collaborationDeliveries.getForMessageTarget(message.id, intent.targetAgentId);
-          const delivery = existingDelivery ?? queueCollaborationDelivery({
-            conversationId: master.id,
-            messageId: message.id,
-            communicationEventId: message.communicationEventId,
-            targetAgentId: intent.targetAgentId,
-            text,
-            relayDepth: intent.relayDepth,
-            mentionTrail: intent.mentionTrail,
-            kind: "direct",
-            createdAt: message.createdAt,
-            orderKey: deliveryOrderKey,
-            sourceChannel: "main",
-            replyToMessageId,
-            attachmentIds: intent.attachmentIds,
-          }, { schedule: false });
-          if (!delivery) throw new Error("direct message delivery could not be persisted");
-          const result = await deliverProjectMessage(delivery, activeRunDelivery);
-          return { agentId: intent.targetAgentId, deliveryId: delivery.id, ...result };
-        }));
-      };
-      const existingMessageId = collaborationDeliveries.messageReceipt(receiptKey);
-      const existing = existingMessageId
-        ? store.getConversationMessages(master.id).find((message) => message.id === existingMessageId)
-        : store.getConversationMessageByReceiptKey(master.id, receiptKey);
-      if (existing) {
-        const intents = persistedIntents();
-        const persistedRecipients = intents.map(({ intent }) => ({
-          agentId: intent.targetAgentId,
-          attachmentIds: intent.attachmentIds ?? [],
-        }));
-        const requestedRecipients = recipients.map((recipient) => ({ agentId: recipient.agentId, attachmentIds: recipient.attachmentIds ?? [] }));
-        const sameRequest = existing.text === text && existing.replyTo?.messageId === replyToMessageId &&
-          JSON.stringify(persistedRecipients) === JSON.stringify(requestedRecipients);
-        if (!sameRequest) return reply.code(409).send({ error: "idempotency key was used with another direct message" });
-        collaborationDeliveries.rememberMessageReceipt(receiptKey, existing.id);
-        return {
-          messageId: existing.id,
-          replayed: true,
-          recipients: await queueMissingDeliveries(existing),
-        } satisfies MultiAgentDirectMessageResponse;
-      }
-      if (directReplyClaims.has(receiptKey)) {
-        return reply.code(409).send({ error: "direct message with this idempotency key is in progress", retryable: true });
-      }
-      directReplyClaims.add(receiptKey);
       try {
         const attachmentsByAgent = await Promise.all(recipients.map(async (recipient) => {
           const attached = await Promise.all((recipient.attachmentIds ?? []).map((id) => assetMetadata(recipient.agentId, id)));
@@ -3888,55 +3042,96 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           return attached as ImageAttachmentDto[];
         }));
-        const intents: ConversationDeliveryIntent[] = recipients.map((recipient) => ({
-          targetAgentId: recipient.agentId,
-          relayDepth: 0,
-          mentionTrail: [],
-          kind: "direct",
-          ...(recipient.attachmentIds?.length ? { attachmentIds: recipient.attachmentIds } : {}),
-        }));
-        const communication = recordCommunication({
-          eventId: randomUUID(), schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
+        const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
+        const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
+        const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+        const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+        const communication: CommunicationEvent = {
+          eventId, schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
           sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
           audience: { kind: "user_agents", userId: "local-operator", agentIds: agentIds as [string, ...string[]] },
-          text, createdAt: new Date().toISOString(), idempotencyKey: receiptKey,
+          text, createdAt, idempotencyKey: receiptKey,
+        };
+        const intents: ConversationDeliveryIntent[] = recipients.map((recipient) => ({
+          targetAgentId: recipient.agentId, relayDepth: 0, mentionTrail: [], kind: "direct",
+          ...(recipient.attachmentIds?.length ? { attachmentIds: recipient.attachmentIds } : {}),
+        }));
+        const intake = coordinationV3.recordRuntimeCommunication({
+          id: eventId,
+          projectId: master.projectId,
+          sender: communication.sender,
+          intent: communication.intent,
+          audience: communication.audience,
+          payload: {
+            communication,
+            dispatch: {
+              conversationId: master.id,
+              text,
+              replyToMessageId: replyToMessageId ?? null,
+              recipients: recipients.map((recipient, index) => ({
+                agentId: recipient.agentId,
+                attachments: (attachmentsByAgent[index] ?? []).map((item) => ({
+                  id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
+                })),
+              })),
+            },
+          },
+          activations: recipients.map((recipient, index) => ({
+            agentId: recipient.agentId,
+            kind: "human_message",
+            priority: 100,
+            dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
+            promptClass: "human",
+            dedupeKey: `communication:${eventId}:${recipient.agentId}:${index}`,
+          })),
+          now: createdAt,
         });
-        if (!communication) return reply.code(503).send({ error: "direct message could not be recorded" });
+        recordCommunication(communication);
         store.appendCommunicationProjection(master.projectId, {
-          eventId: communication.eventId,
-          surface: "user_inbox",
-          projectionKey: "local-operator",
-          projectedAt: communication.createdAt,
+          eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
         });
-        let message: ConversationMessageDto | undefined;
-        try {
-          message = store.appendConversationMessage(
-            master.id,
-            { text, replyToMessageId, attachments: attachmentsByAgent[0] },
-            undefined,
-            "main",
-            intents,
-            receiptKey,
-            communication.eventId,
-          );
-        } catch (error) {
-          return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct message" });
+        let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+        if (!message) {
+          try {
+            message = store.appendConversationMessage(
+              master.id,
+              { text, replyToMessageId, attachments: attachmentsByAgent[0] },
+              undefined,
+              "main",
+              intents,
+              receiptKey,
+              eventId,
+            );
+          } catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct message" });
+          }
         }
-        if (!message) return reply.code(404).send({ error: "conversation not found" });
-        collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
+        if (!message) return reply.code(503).send({ error: "direct message projection could not be recorded; retry is safe" });
+        if (!intake.replayed) {
+          await Promise.all(recipients.map((recipient) => assets.associate(master.projectId, recipient.agentId, recipient.attachmentIds ?? [])));
+          recipients.forEach((recipient, index) =>
+            projectCommunicationToAgentAudit(recipient.agentId, communication, text, attachmentsByAgent[index]),
+          );
+        }
+        for (const recipient of recipients) publishCoordinationV3Changed(recipient.agentId);
+        coordinationV3Scheduler.notify();
         return {
           messageId: message.id,
-          replayed: false,
-          recipients: await queueMissingDeliveries(message),
+          replayed: intake.replayed,
+          recipients: recipients.map((recipient, index) => ({
+            agentId: recipient.agentId,
+            queued: true,
+            deliveryId: intake.activationIds?.[index],
+            state: "queued" as const,
+          })),
         } satisfies MultiAgentDirectMessageResponse;
       } catch (error) {
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
-        throw error;
-      } finally {
-        directReplyClaims.delete(receiptKey);
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "direct message conflict" });
       }
     },
   );
+
 
   app.post<{ Body: CreateUserReactionRequest }>("/api/user-reactions", async (request, reply) => {
     const projectId = request.body?.projectId?.trim() ?? "";
@@ -3947,55 +3142,67 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!isSingleEmoji(emoji)) return reply.code(400).send({ error: "emoji must be one emoji grapheme" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const communication = store.getCommunicationEvent(projectId, communicationEventId);
-    if (!communication || communication.sender.kind !== "agent") {
-      return reply.code(404).send({ error: "agent-authored message not found" });
-    }
+    if (!communication || communication.sender.kind !== "agent") return reply.code(404).send({ error: "agent-authored message not found" });
     const target = store.getAgent(communication.sender.agentId);
-    if (!target || target.archived || target.projectId !== projectId) {
-      return reply.code(404).send({ error: "message author not found" });
-    }
-    let result: ReturnType<UserReactionStore["set"]>;
+    if (!target || target.archived || target.projectId !== projectId) return reply.code(404).send({ error: "message author not found" });
+    const id = `reaction-${createHash("sha256").update(`${projectId}\0${idempotencyKey}`).digest("hex")}`;
+    const existing = coordinationV3.runtimeCommunication(id);
+    const event = {
+      id,
+      idempotencyKey,
+      projectId,
+      communicationEventId,
+      targetAuthorAgentId: target.id,
+      emoji,
+      replyTo: {
+        messageId: communicationEventId,
+        text: communication.text,
+        role: "assistant" as const,
+        authorAgentId: target.id,
+      },
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+    };
+    let intake;
     try {
-      result = userReactions.set({
-        idempotencyKey,
+      intake = coordinationV3.recordRuntimeCommunication({
+        id,
         projectId,
-        communicationEventId,
-        targetAuthorAgentId: target.id,
-        emoji,
-        replyTo: {
-          messageId: communicationEventId,
-          text: communication.text,
-          role: "assistant",
-          authorAgentId: target.id,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "reaction",
+        audience: { agentId: target.id },
+        payload: {
+          reaction: event,
+          notification: { text: `the user reacted with ${emoji}`, reactedTo: event.replyTo },
         },
+        activation: {
+          agentId: target.id,
+          kind: "user_reaction",
+          priority: 100,
+          dispatchPolicy: "steer_or_run",
+          promptClass: "human",
+        },
+        now: event.createdAt,
       });
+      userReactions.record(event);
+      if (!intake.replayed) {
+        const stored = store.appendEvent(target.id, {
+          type: "user_message", text: `the user reacted with ${emoji}`, replyTo: event.replyTo,
+        });
+        publish(target.id, stored);
+      }
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "reaction conflict" });
     }
-    const deliveryMessageId = `reaction:${result.event.id}`;
-    const existingDelivery = collaborationDeliveries.getForMessageTarget(deliveryMessageId, target.id);
-    const wasBusy = activeRuns.has(target.id);
-    const delivery = existingDelivery ?? queueCollaborationDelivery({
-      conversationId: communication.conversationId ?? target.conversationId,
-      messageId: deliveryMessageId,
-      targetAgentId: target.id,
-      text: `the user reacted with ${emoji}`,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "direct",
-      createdAt: result.event.createdAt,
-      orderKey: store.nextDeliveryOrderKey(result.event.createdAt),
-      replyToMessageId: communicationEventId,
-      replyTo: result.event.replyTo,
-    });
-    if (!delivery) return reply.code(503).send({ error: "reaction notification could not be persisted" });
+    publishCoordinationV3Changed(target.id);
+    coordinationV3Scheduler.notify();
     return {
-      replayed: result.replayed,
-      queued: existingDelivery ? existingDelivery.status === "queued" : wasBusy,
+      replayed: intake.replayed,
+      queued: true,
       targetAuthorAgentId: target.id,
       reactions: userReactions.forCommunication(communicationEventId),
     } satisfies CreateUserReactionResponse;
   });
+
 
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
     "/api/conversations/:id/direct-replies",
@@ -4006,9 +3213,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
       const attachmentIds = request.body?.attachmentIds ?? [];
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
-      if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
-        return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
-      }
+      if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       if (!text && attachmentIds.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
       if (!replyToMessageId || !targetAuthorAgentId) return reply.code(400).send({ error: "reply target and author are required" });
@@ -4018,162 +3223,120 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       const master = store.getConversation(request.params.id);
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
-      const receiptKey = `direct-reply:${master.id}:${idempotencyKey}`;
-      const existingMessageId = collaborationDeliveries.messageReceipt(receiptKey);
-      const existing = existingMessageId
-        ? store.getConversationMessages(master.id).find((message) => message.id === existingMessageId)
-        : store.getConversationMessageByReceiptKey(master.id, receiptKey);
       const target = store.getAgent(targetAuthorAgentId);
       if (!target || target.archived || !target.conversationIds.includes(master.id)) return reply.code(404).send({ error: "direct reply target not found" });
-      const renderedText = `#${agentMentionHandle(target.title)} ${text}`.trimEnd();
-      if (existing) {
-        const sameRequest = existing.text === renderedText && existing.replyTo?.messageId === replyToMessageId &&
-          existing.replyTo.authorAgentId === targetAuthorAgentId &&
-          JSON.stringify(existing.attachments?.map((item) => item.id) ?? []) === JSON.stringify(attachmentIds);
-        if (!sameRequest) return reply.code(409).send({ error: "idempotency key was used with another direct reply" });
-        collaborationDeliveries.rememberMessageReceipt(receiptKey, existing.id);
-        let delivery = collaborationDeliveries.getForMessageTarget(existing.id, targetAuthorAgentId);
-        if (!delivery) {
-          const persisted = store.getConversationDeliveryIntents(master.id).find(({ message, intent, messageReceiptKey }) =>
-            message.id === existing.id && messageReceiptKey === receiptKey &&
-            intent.kind === "direct" && intent.targetAgentId === targetAuthorAgentId,
-          );
-          if (!persisted) {
-            return reply.code(503).send({
-              error: "direct reply delivery intent is unavailable; retry after recovery",
-              retryable: true,
-            });
-          }
-          try {
-            delivery = queueCollaborationDelivery({
-              conversationId: master.id,
-              messageId: existing.id,
-              communicationEventId: existing.communicationEventId,
-              targetAgentId: persisted.intent.targetAgentId,
-              text,
-              relayDepth: persisted.intent.relayDepth,
-              mentionTrail: persisted.intent.mentionTrail,
-              kind: "direct",
-              createdAt: existing.createdAt,
-              orderKey: persisted.deliveryOrderKey,
-              sourceChannel: "main",
-              replyToMessageId,
-              attachmentIds: existing.attachments?.map((item) => item.id),
-            }, { schedule: false });
-          } catch {
-            delivery = undefined;
-          }
-          if (!delivery) {
-            return reply.code(503).send({
-              error: "direct reply delivery could not be persisted; retry is safe",
-              retryable: true,
-            });
-          }
-        }
-        const deliveryResult = await deliverProjectMessage(delivery, activeRunDelivery);
-        return {
-          messageId: existing.id,
-          targetAuthorAgentId,
-          replayed: true,
-          deliveryId: delivery.id,
-          ...deliveryResult,
-        } satisfies DirectReplyResponse;
-      }
-      if (directReplyClaims.has(receiptKey)) {
-        return reply.code(409).send({ error: "direct reply with this idempotency key is in progress", retryable: true });
-      }
-      directReplyClaims.add(receiptKey);
-      try {
       const attached = await Promise.all(attachmentIds.map((id) => assetMetadata(target.id, id)));
       if (attached.some((item) => !item || item.agentId !== target.id)) return reply.code(404).send({ error: "direct reply attachment not found" });
       const attachments = attached as ImageAttachmentDto[];
-      const intent: ConversationDeliveryIntent = {
-        targetAgentId: target.id,
-        relayDepth: 0,
-        mentionTrail: [],
-        kind: "direct",
-      };
-      const communication = recordCommunication({
-        eventId: randomUUID(),
-        schemaVersion: 2,
-        projectId: master.projectId,
-        conversationId: master.id,
-        sender: { kind: "user", userId: "local-operator" },
-        intent: "user_dm",
+      const receiptKey = `direct-reply:${master.id}:${idempotencyKey}`;
+      const eventId = `direct-reply-${createHash("sha256").update(receiptKey).digest("hex")}`;
+      const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+      const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+      const communication: CommunicationEvent = {
+        eventId, schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
-        text,
-        createdAt: new Date().toISOString(),
-        idempotencyKey: receiptKey,
-      });
-      let message: ConversationMessageDto | undefined;
+        text, createdAt, idempotencyKey: receiptKey,
+      };
+      let intake;
       try {
-        message = store.appendConversationMessage(
-          master.id,
-          { text: renderedText, replyToMessageId, directReplyToAuthorAgentId: target.id, attachments },
-          undefined,
-          "main",
-          [intent],
-          receiptKey,
-          communication?.eventId,
-        );
+        intake = coordinationV3.recordRuntimeCommunication({
+          id: eventId,
+          projectId: master.projectId,
+          sender: communication.sender,
+          intent: communication.intent,
+          audience: communication.audience,
+          payload: {
+            communication,
+            dispatch: {
+              conversationId: master.id,
+              text,
+              replyToMessageId,
+              targetAuthorAgentId,
+              attachments: attachments.map((item) => ({
+                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
+              })),
+            },
+          },
+          activation: {
+            agentId: target.id,
+            kind: "human_message",
+            priority: 100,
+            dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
+            promptClass: "human",
+          },
+          now: createdAt,
+        });
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "direct reply conflict" });
       }
-      if (!message) return reply.code(404).send({ error: "conversation not found" });
-      collaborationDeliveries.rememberMessageReceipt(receiptKey, message.id);
-      const delivery = queueCollaborationDelivery({
-        conversationId: master.id,
-        messageId: message.id,
-        communicationEventId: message.communicationEventId,
-        targetAgentId: target.id,
-        text,
-        relayDepth: 0,
-        mentionTrail: [],
-        kind: "direct",
-        createdAt: message.createdAt,
-        orderKey: store.getConversationMessageDeliveryOrderKey(master.id, message.id),
-        sourceChannel: "main",
-        replyToMessageId,
-        attachmentIds,
-      }, { schedule: false });
-      if (!delivery) return reply.code(503).send({ error: "direct reply delivery could not be persisted" });
-      const deliveryResult = await deliverProjectMessage(delivery, activeRunDelivery);
+      recordCommunication(communication);
+      store.appendCommunicationProjection(master.projectId, {
+        eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
+      });
+      const renderedText = `#${agentMentionHandle(target.title)} ${text}`.trimEnd();
+      let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
+      if (!message) {
+        try {
+          message = store.appendConversationMessage(
+            master.id,
+            { text: renderedText, replyToMessageId, directReplyToAuthorAgentId: target.id, attachments },
+            undefined,
+            "main",
+            [{ targetAgentId: target.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+            receiptKey,
+            eventId,
+          );
+        } catch (error) {
+          return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
+        }
+      }
+      if (!message) return reply.code(503).send({ error: "direct reply projection could not be recorded; retry is safe" });
+      if (!intake.replayed) {
+        await assets.associate(master.projectId, target.id, attachmentIds);
+        projectCommunicationToAgentAudit(target.id, communication, text, attachments);
+      }
+      publishCoordinationV3Changed(target.id);
+      coordinationV3Scheduler.notify();
       return {
         messageId: message.id,
         targetAuthorAgentId: target.id,
-        replayed: false,
-        deliveryId: delivery.id,
-        ...deliveryResult,
+        replayed: intake.replayed,
+        queued: true,
+        deliveryId: intake.activationId,
+        state: "queued",
       } satisfies DirectReplyResponse;
-      } finally {
-        directReplyClaims.delete(receiptKey);
-      }
     },
   );
+
 
   app.get<{ Params: { id: string } }>("/api/conversations/:id/queued-messages", async (request, reply) => {
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
-    const messages = new Map(store.getConversationMessages(conversation.id, "main").map((message) => [message.id, message]));
-    const queued = collaborationDeliveries.listForConversation(conversation.id).flatMap((delivery) => {
-      if (delivery.status !== "queued" || delivery.kind !== "direct" || delivery.sourceChannel !== "main") return [];
-      const communication = delivery.communicationEventId
-        ? store.getCommunicationEvent(conversation.projectId, delivery.communicationEventId)
+    const pending = coordinationV3.pendingActivations(conversation.projectId);
+    const perAgentPosition = new Map<string, number>();
+    return pending.flatMap((activation) => {
+      const payload = activation.payload && typeof activation.payload === "object"
+        ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string; text?: string } }
         : undefined;
-      const message = messages.get(delivery.messageId);
-      if (!communication || communication.sender.kind !== "user" || communication.sender.userId !== "local-operator" || !message) return [];
+      const communication = payload?.communication;
+      if (payload?.dispatch?.conversationId !== conversation.id ||
+          communication?.sender.kind !== "user" || communication.sender.userId !== "local-operator") return [];
+      const position = (perAgentPosition.get(activation.agentId) ?? 0) + 1;
+      perAgentPosition.set(activation.agentId, position);
+      const message = store.getConversationMessages(conversation.id, "main")
+        .find((candidate) => candidate.communicationEventId === communication.eventId);
       return [{
-        deliveryId: delivery.id,
-        messageId: delivery.messageId,
+        deliveryId: activation.id,
+        messageId: message?.id ?? communication.eventId,
         conversationId: conversation.id,
-        targetAgentId: delivery.targetAgentId,
-        text: message.text,
-        position: collaborationDeliveries.pending(delivery.targetAgentId).findIndex((item) => item.id === delivery.id) + 1,
-        createdAt: delivery.createdAt,
+        targetAgentId: activation.agentId,
+        text: message?.text ?? payload.dispatch?.text ?? communication.text,
+        position,
+        createdAt: activation.createdAt,
         status: "queued",
       } satisfies QueuedConversationMessageDto];
     });
-    return queued;
   });
 
   app.post<{
@@ -4181,39 +3344,39 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Body: CancelQueuedMessageRequest;
   }>("/api/conversations/:id/queued-messages/:deliveryId/cancel", async (request, reply) => {
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-    if (!idempotencyKey || idempotencyKey.length > 200) {
-      return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    }
+    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
-    const delivery = collaborationDeliveries.get(request.params.deliveryId);
-    if (!delivery || delivery.conversationId !== conversation.id || delivery.kind !== "direct" || delivery.sourceChannel !== "main") {
-      return reply.code(404).send({ error: "queued message not found" });
+    const activation = coordinationV3.pendingActivations(conversation.projectId)
+      .find((candidate) => candidate.id === request.params.deliveryId);
+    if (!activation) {
+      const result = coordinationV3.cancelPendingActivation({
+        activationId: request.params.deliveryId,
+        projectId: conversation.projectId,
+        idempotencyKey,
+      });
+      return result.cancelled
+        ? result satisfies CancelQueuedMessageResponse
+        : reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     }
-    const communication = delivery.communicationEventId
-      ? store.getCommunicationEvent(conversation.projectId, delivery.communicationEventId)
+    const payload = activation.payload && typeof activation.payload === "object"
+      ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string } }
       : undefined;
-    if (!communication || communication.sender.kind !== "user" || communication.sender.userId !== "local-operator") {
+    if (payload?.dispatch?.conversationId !== conversation.id) return reply.code(404).send({ error: "queued message not found" });
+    if (payload.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
       return reply.code(403).send({ error: "only your own queued messages can be cancelled" });
     }
-    if (delivery.status === "cancelled") {
-      return { cancelled: true, replayed: true, status: "cancelled" } satisfies CancelQueuedMessageResponse;
-    }
-    if (delivery.status !== "queued") {
-      return reply.code(409).send({
-        cancelled: false,
-        replayed: false,
-        status: "delivery_started",
-        error: "delivery has already started; no history or runtime context was changed",
-      } satisfies CancelQueuedMessageResponse & { error: string });
-    }
-    const cancelled = collaborationDeliveries.cancelQueued(delivery.id, `cancelled by local operator (${idempotencyKey})`);
-    if (cancelled?.status !== "cancelled") {
-      return reply.code(409).send({ cancelled: false, replayed: false, status: "delivery_started" } satisfies CancelQueuedMessageResponse);
-    }
-    appendWorkspace({ type: "queued_message_changed", conversationId: conversation.id, deliveryId: delivery.id, action: "cancelled" });
-    return { cancelled: true, replayed: false, status: "cancelled" } satisfies CancelQueuedMessageResponse;
+    const result = coordinationV3.cancelPendingActivation({
+      activationId: activation.id,
+      projectId: conversation.projectId,
+      idempotencyKey,
+    });
+    if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
+    appendWorkspace({ type: "queued_message_changed", conversationId: conversation.id, deliveryId: activation.id, action: "cancelled" });
+    publishCoordinationV3Changed(activation.agentId);
+    return result satisfies CancelQueuedMessageResponse;
   });
+
 
   app.post<{
     Params: { id: string; messageId: string };
@@ -4221,63 +3384,94 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>("/api/conversations/:id/messages/:messageId/corrections", async (request, reply) => {
     const text = request.body?.text?.trim() ?? "";
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-    const activeRunDelivery = "queue" as const;
     if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "correction text is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     if (request.body?.activeRunDelivery && request.body.activeRunDelivery !== "queue") return reply.code(400).send({ error: "corrections always queue a new turn" });
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
     const receiptKey = `correction:${conversation.id}:${idempotencyKey}`;
-    const existing = store.getConversationMessageByReceiptKey(conversation.id, receiptKey);
-    if (existing) {
-      if (existing.text !== text || existing.correctionOfMessageId !== request.params.messageId) return reply.code(409).send({ error: "idempotency key was used for another correction" });
-      const delivery = collaborationDeliveries.listForConversation(conversation.id).find((item) => item.messageId === existing.id);
-      if (!delivery) return reply.code(503).send({ error: "correction delivery is unavailable; retry is safe" });
-      const result = await deliverProjectMessage(delivery, activeRunDelivery);
-      return { originalMessageId: request.params.messageId, correctionMessageId: existing.id, replayed: true, queued: result.queued } satisfies CorrectConversationMessageResponse;
-    }
     const messages = store.getConversationMessages(conversation.id, "main");
     const latestOperatorMessage = messages.filter((message) => message.role === "user" && !message.authorAgentId).at(-1);
-    if (!latestOperatorMessage || latestOperatorMessage.id !== request.params.messageId) {
+    const existingMessage = store.getConversationMessageByReceiptKey(conversation.id, receiptKey);
+    if (!existingMessage && (!latestOperatorMessage || latestOperatorMessage.id !== request.params.messageId)) {
       return reply.code(409).send({ error: "only your latest sent message can be corrected" });
     }
-    if (latestOperatorMessage.correctedByMessageId) return reply.code(409).send({ error: "this message already has an immutable correction" });
-    const originalEventId = latestOperatorMessage.communicationEventId;
-    const targets = originalEventId
-      ? [...new Set(store.readRunTriggers(conversation.projectId).filter((item) => item.communicationEventId === originalEventId).map((item) => item.agentId))]
-      : [];
+    if (!existingMessage && latestOperatorMessage?.correctedByMessageId) return reply.code(409).send({ error: "this message already has an immutable correction" });
+    const original = existingMessage
+      ? messages.find((message) => message.id === existingMessage.correctionOfMessageId)
+      : latestOperatorMessage;
+    const originalEventId = original?.communicationEventId;
+    const targets = originalEventId ? coordinationV3.communicationRecipientAgentIds(originalEventId) : [];
     if (targets.length !== 1) {
-      return reply.code(409).send({ error: targets.length === 0 ? "message delivery has not started" : "messages that triggered multiple agents cannot be corrected as one turn" });
+      return reply.code(409).send({ error: targets.length === 0 ? "message delivery has not been scheduled" : "messages sent to multiple agents cannot be corrected as one turn" });
     }
     const target = store.getAgent(targets[0]!);
     if (!target || target.archived || !target.conversationIds.includes(conversation.id)) return reply.code(409).send({ error: "the original recipient is no longer available" });
-    const communication = recordCommunication({
-      eventId: randomUUID(), schemaVersion: 2, projectId: conversation.projectId, conversationId: conversation.id,
+    const eventId = `correction-${createHash("sha256").update(receiptKey).digest("hex")}`;
+    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+    const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+    const communication: CommunicationEvent = {
+      eventId, schemaVersion: 2, projectId: conversation.projectId, conversationId: conversation.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
       audience: { kind: "user_agent", userId: "local-operator", agentId: target.id }, text,
-      createdAt: new Date().toISOString(), idempotencyKey: receiptKey, correctionOfEventId: originalEventId,
+      createdAt, idempotencyKey: receiptKey, correctionOfEventId: originalEventId,
+    };
+    let intake;
+    try {
+      intake = coordinationV3.recordRuntimeCommunication({
+        id: eventId,
+        projectId: conversation.projectId,
+        sender: communication.sender,
+        intent: "correction",
+        audience: communication.audience,
+        payload: {
+          communication,
+          dispatch: {
+            conversationId: conversation.id,
+            text,
+            correctionOfMessageId: request.params.messageId,
+            correctionOfEventId: originalEventId,
+          },
+        },
+        activation: {
+          agentId: target.id,
+          kind: "message_correction",
+          priority: 100,
+          dispatchPolicy: "next_run",
+          promptClass: "human",
+        },
+        now: createdAt,
+      });
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "correction conflict" });
+    }
+    recordCommunication(communication);
+    store.appendCommunicationProjection(conversation.projectId, {
+      eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
     });
-    store.appendCommunicationProjection(conversation.projectId, { eventId: communication.eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: communication.createdAt });
-    const message = store.appendConversationMessage(
-      conversation.id,
-      { text, replyToMessageId: latestOperatorMessage.id },
-      undefined,
-      "main",
-      [{ targetAgentId: target.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
-      receiptKey,
-      communication.eventId,
-    );
-    if (!message) return reply.code(503).send({ error: "correction could not be recorded" });
-    const delivery = queueCollaborationDelivery({
-      conversationId: conversation.id, messageId: message.id, communicationEventId: message.communicationEventId,
-      targetAgentId: target.id, text, relayDepth: 0, mentionTrail: [], kind: "direct",
-      createdAt: message.createdAt, orderKey: store.getConversationMessageDeliveryOrderKey(conversation.id, message.id),
-      sourceChannel: "main", replyToMessageId: latestOperatorMessage.id,
-    }, { schedule: false });
-    if (!delivery) return reply.code(503).send({ error: "correction delivery could not be persisted" });
-    const result = await deliverProjectMessage(delivery, activeRunDelivery);
-    return { originalMessageId: latestOperatorMessage.id, correctionMessageId: message.id, replayed: false, queued: result.queued } satisfies CorrectConversationMessageResponse;
+    let message = existingMessage;
+    if (!message) {
+      message = store.appendConversationMessage(
+        conversation.id,
+        { text, replyToMessageId: request.params.messageId },
+        undefined,
+        "main",
+        [{ targetAgentId: target.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+        receiptKey,
+        eventId,
+      );
+    }
+    if (!message) return reply.code(503).send({ error: "correction projection could not be recorded; retry is safe" });
+    publishCoordinationV3Changed(target.id);
+    coordinationV3Scheduler.notify();
+    return {
+      originalMessageId: request.params.messageId,
+      correctionMessageId: message.id,
+      replayed: intake.replayed,
+      queued: true,
+    } satisfies CorrectConversationMessageResponse;
   });
+
 
   app.get<{ Params: { id: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
     const detail = collaborationViewDetail(request.params.id);
@@ -4335,19 +3529,47 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "reply target is not visible to every collaboration recipient" });
       }
     }
-    const communication = recordCommunication({
-      eventId: idempotencyKey
+    const eventId = idempotencyKey
         ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
-        : randomUUID(),
+        : randomUUID();
+    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+    const communication: CommunicationEvent = {
+      eventId,
       schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
-      text, createdAt: new Date().toISOString(),
+      text, createdAt: existingRuntime?.createdAt ?? new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey: `collaboration:${master.id}:${idempotencyKey}` } : {}),
-    });
+    };
+    let intake;
+    try {
+      intake = coordinationV3.recordRuntimeCommunication({
+        id: eventId,
+        projectId: master.projectId,
+        sender: communication.sender,
+        intent: communication.intent,
+        audience: communication.audience,
+        payload: {
+          communication,
+          dispatch: { conversationId: master.id, text: renderedText, replyToMessageId: request.body.replyToMessageId ?? null },
+        },
+        activations: routing.intents.map((intent, index) => ({
+          agentId: intent.targetAgentId,
+          kind: "human_message",
+          priority: 100,
+          dispatchPolicy: "steer_or_run",
+          promptClass: "human",
+          dedupeKey: `communication:${eventId}:${intent.targetAgentId}:${index}`,
+        })),
+        now: communication.createdAt,
+      });
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
+    }
+    recordCommunication(communication);
     const replayedMessage = detail.messages.find((candidate) => candidate.communicationEventId === communication.eventId);
-    if (replayedMessage) {
+    if (replayedMessage && intake.replayed) {
       return {
         message: replayedMessage,
         audience: hasEveryoneMention(text) ? "everyone" : "mention",
@@ -4365,7 +3587,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       communication?.eventId,
     ); } catch { return reply.code(400).send({ error: "reply target was not found in this conversation" }); }
     const notifiedAgentIds: string[] = [];
-    queueRecordedCollaborationMessage(request.params.id, message!, undefined, routing.intents);
+    for (const intent of routing.intents) {
+      store.appendCommunicationProjection(master.projectId, {
+        eventId, surface: "agent_inbox", projectionKey: intent.targetAgentId, projectedAt: communication.createdAt,
+      });
+      projectCommunicationToAgentAudit(intent.targetAgentId, communication, renderedText);
+      publishCoordinationV3Changed(intent.targetAgentId);
+    }
+    coordinationV3Scheduler.notify();
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetAgentId));
     return {
       message,
@@ -4452,85 +3681,77 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: error instanceof Error ? error.message : "agent could not be created" });
       }
       if (initialMessage) {
-        if (agent.managerAgentId && agent.conversationId) {
-          const routing = resolveExplicitCollaborationIntents(
-            agent.conversationId,
-            "user:local-operator",
-            [agent.id],
-            initialMessage,
-            0,
-            [],
-          );
-          if (routing.error) {
-            store.deleteAgent(agent.id);
-            return reply.code(400).send({ error: routing.error });
-          }
-          const communication = recordCommunication({
-            eventId: randomUUID(), schemaVersion: 2, projectId: agent.projectId, conversationId: agent.conversationId,
-            sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
-            audience: { kind: "agents", agentIds: [agent.id] }, text: initialMessage,
-            createdAt: new Date().toISOString(),
-            ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
+        const createdAt = new Date().toISOString();
+        const eventId = `agent-opening:${agent.id}`;
+        const managed = Boolean(agent.managerAgentId);
+        const communication: CommunicationEvent = managed ? {
+          eventId, schemaVersion: 2, projectId: agent.projectId,
+          ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
+          sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+          audience: { kind: "agents", agentIds: [agent.id] },
+          text: initialMessage, createdAt,
+          ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
+        } : {
+          eventId, schemaVersion: 2, projectId: agent.projectId,
+          ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
+          sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+          audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+          text: initialMessage, createdAt,
+        };
+        coordinationV3.recordRuntimeCommunication({
+          id: eventId,
+          projectId: agent.projectId,
+          sender: communication.sender,
+          intent: "managed_agent_opening",
+          audience: communication.audience,
+          payload: {
+            communication,
+            dispatch: {
+              conversationId: agent.conversationId ?? null,
+              text: initialMessage,
+              replyToMessageId: request.body.replyToMessageId ?? null,
+              model: request.body.model ?? null,
+              effort: request.body.effort ?? null,
+            },
+          },
+          activation: {
+            agentId: agent.id,
+            kind: "managed_agent_opening",
+            priority: 100,
+            dispatchPolicy: "steer_or_run",
+            promptClass: "human",
+          },
+          now: createdAt,
+        });
+        recordCommunication(communication);
+        if (communication.intent === "user_dm") {
+          store.appendCommunicationProjection(agent.projectId, {
+            eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
           });
-          const message = store.appendConversationMessage(
-            agent.conversationId,
-            { role: "user", text: routing.text },
-            undefined,
-            "collaboration",
-            routing.intents,
-            undefined,
-            communication.eventId,
-          );
-          if (!message) {
-            store.deleteAgent(agent.id);
-            return reply.code(409).send({ error: "managed agent opening message could not be recorded" });
-          }
-          queueRecordedCollaborationMessage(agent.conversationId, message, undefined, routing.intents);
-          return agent;
         }
-        let initialCommunicationEventId: string | undefined;
         if (agent.conversationId) {
-          const communication = recordCommunication({
-            eventId: randomUUID(), schemaVersion: 2, projectId: agent.projectId, conversationId: agent.conversationId,
-            sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
-            audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text: initialMessage,
-            createdAt: new Date().toISOString(),
-          });
-          initialCommunicationEventId = communication?.eventId;
-          if (communication?.intent === "user_dm") store.appendCommunicationProjection(agent.projectId, {
-            eventId: communication.eventId,
-            surface: "user_inbox",
-            projectionKey: communication.audience.userId,
-            projectedAt: communication.createdAt,
-          });
           store.appendConversationMessage(
             agent.conversationId,
-            { text: `#${agentMentionHandle(agent.title)} ${initialMessage}`, replyToMessageId: request.body.replyToMessageId },
-            undefined, "main", undefined, undefined, initialCommunicationEventId,
+            {
+              role: "user",
+              text: managed ? `#${agentMentionHandle(agent.title)} ${initialMessage}` : `#${agentMentionHandle(agent.title)} ${initialMessage}`,
+              replyToMessageId: request.body.replyToMessageId,
+            },
+            undefined,
+            managed ? "collaboration" : "main",
+            managed ? [{ targetAgentId: agent.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention" }] : undefined,
+            undefined,
+            eventId,
           );
         }
-        const turn = await app.inject({
-          method: "POST",
-          url: `/api/agents/${agent.id}/messages`,
-          headers: {
-            ...(opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : {}),
-            ...(initialCommunicationEventId ? { "x-ponderosa-turn-dispatch": turnDispatchKey } : {}),
-          },
-          payload: {
-            text: initialMessage,
-            model: request.body.model,
-            effort: request.body.effort,
-            sourceChannel: "main",
-            ...(agent.conversationId ? { sourceConversationId: agent.conversationId } : {}),
-            ...(request.body.replyToMessageId ? { replyToMessageId: request.body.replyToMessageId } : {}),
-            ...(initialCommunicationEventId ? { communicationEventId: initialCommunicationEventId } : {}),
-          },
+        const audit = store.appendEvent(agent.id, {
+          type: "user_message", text: initialMessage, communicationEventId: eventId,
         });
-        if (turn.statusCode >= 400) {
-          store.deleteAgent(agent.id);
-          return reply.code(turn.statusCode).send(turn.json());
-        }
+        publish(agent.id, audit);
+        publishCoordinationV3Changed(agent.id);
+        coordinationV3Scheduler.notify();
       }
+
       return agent;
     },
   );
@@ -4604,7 +3825,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         await runtime.session.close().catch(() => undefined);
       }
     }
-    const deleted = store.deleteAgent(id, (agentId) => coordinationV3?.handleAgentDeletion(agentId));
+    const deleted = store.deleteAgent(id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
     if (!deleted) {
       for (const agent of subtree) deletingAgentIds.delete(agent.id);
       return reply.code(404).send({ error: "agent not found" });
@@ -4613,16 +3834,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const workspaceCursor = workspace.cursor();
     for (const agentId of deletedAgentIds) {
       subscribers.delete(agentId);
-      dispatchingTurns.delete(agentId);
       scheduledSessionRollovers.delete(agentId);
-      clearWaitDeadline(agentId);
       workspace.deleteDraft(`agent:${agentId}`);
       await fs.rm(draftAttachmentDir(`agent:${agentId}`), { recursive: true, force: true });
     }
-    collaborationDeliveries.deleteAgents(deletedAgentIds);
-    agentWaits.deleteAgents(deletedAgentIds);
     contextCursors.deleteAgents(deletedAgentIds);
-    runLedger.deleteAgents(deletedAgentIds);
     publishWorkspaceSince(workspaceCursor);
     for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
     return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
@@ -4711,28 +3927,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       effort?: string;
       agentMentionDepth?: number;
       agentMentionTrail?: string[];
-      collaborationConversationId?: string;
-      collaborationDeliveryId?: string;
-      collaborationDeliveryIds?: string[];
       sourceChannel?: "main";
       shareWithOrganization?: boolean;
       activeRunDelivery?: "steer" | "queue";
       sourceConversationId?: string;
-      sourceAuthorAgentId?: string;
       replyToMessageId?: string;
-      /** Server-only immutable context for a delivery that is not itself a chat message. */
-      replyTo?: MessageReferenceDto;
       attachmentIds?: string[];
-      /** Server-only link used when one action projects into room and audit timelines. */
-      communicationEventId?: string;
-      /** Server-only structural activation cause supplied by the durable dispatcher. */
-      wakeCause?: AgentRunWakeCause;
       /** Server-only Communication V3 execution identity. */
       v3SchedulerRunId?: string;
       v3FencingToken?: number;
       v3InjectionId?: string;
       /** Server-only provider-cache disposition derived from durable V3 causes. */
       v3FreshProviderSession?: boolean;
+      /** Server-only durable activation bundle assembled by the scheduler. */
+      v3ActivationPrompt?: string;
+      /** Server-only canonical authored communication referenced by the activation. */
+      v3CommunicationEventId?: string;
     };
   }>(
     "/api/agents/:id/messages",
@@ -4742,28 +3952,37 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!agent) return reply.code(404).send({ error: "agent not found" });
       const project = store.getProject(agent.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      const allowedMessageFields = new Set([
+        "text", "model", "effort", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
+        "shareWithOrganization", "activeRunDelivery", "sourceConversationId", "replyToMessageId",
+        "attachmentIds", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
+        "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
+      ]);
+      if (Object.keys(request.body ?? {}).some((key) => !allowedMessageFields.has(key))) {
+        return reply.code(400).send({ error: "unknown message field" });
+      }
       const engine = engines.get(agent.activeEngine);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim() ?? "";
-      const internalV3Dispatch = communicationV3Enabled && request.headers["x-ponderosa-v3-dispatch"] === v3DispatchKey;
+      const internalV3Dispatch = request.headers["x-ponderosa-v3-dispatch"] === v3DispatchKey;
       const v3SchedulerRunId = request.body.v3SchedulerRunId;
       const v3FencingToken = request.body.v3FencingToken;
       const v3InjectionId = request.body.v3InjectionId;
       const v3FreshProviderSession = request.body.v3FreshProviderSession;
+      const v3ActivationPrompt = request.body.v3ActivationPrompt;
+      const v3CommunicationEventId = request.body.v3CommunicationEventId;
       if ((v3SchedulerRunId !== undefined || v3FencingToken !== undefined || v3InjectionId !== undefined ||
-          v3FreshProviderSession !== undefined) && !internalV3Dispatch) {
+          v3FreshProviderSession !== undefined || v3ActivationPrompt !== undefined ||
+          v3CommunicationEventId !== undefined) && !internalV3Dispatch) {
         return reply.code(403).send({ error: "V3 scheduler identity is server-controlled" });
       }
       if (internalV3Dispatch && (!v3SchedulerRunId || !Number.isSafeInteger(v3FencingToken) || !v3InjectionId ||
-          typeof v3FreshProviderSession !== "boolean")) {
+          typeof v3FreshProviderSession !== "boolean" || !v3ActivationPrompt)) {
         return reply.code(400).send({ error: "V3 scheduler run, fencing token, injection ID, and provider-session disposition are required" });
       }
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
-      }
-      if (request.body.wakeCause !== undefined && request.headers["x-ponderosa-turn-dispatch"] !== turnDispatchKey) {
-        return reply.code(403).send({ error: "wake cause is server-controlled" });
       }
       const priorRuns = store.getRuns(agent.id);
       const latestRun = priorRuns.at(-1);
@@ -4798,16 +4017,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (messageAttachments.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
       if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
-      const collaborationConversationId = request.body.collaborationConversationId;
-      if (collaborationConversationId !== undefined && !agent.conversationIds.includes(collaborationConversationId)) {
-        return reply.code(400).send({ error: "team chat does not belong to agent" });
-      }
-      if (
-        collaborationConversationId !== undefined &&
-        request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey
-      ) {
-        return reply.code(403).send({ error: "collaboration context must be delivered by an explicit recipient event" });
-      }
       const sourceConversationId = request.body.sourceConversationId;
       if (sourceConversationId !== undefined && !agent.conversationIds.includes(sourceConversationId)) {
         return reply.code(400).send({ error: "conversation does not belong to agent" });
@@ -4819,13 +4028,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       const shareWithOrganization = request.body.shareWithOrganization === true;
-      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceConversationId || collaborationConversationId)) {
+      if (shareWithOrganization && (request.body.sourceChannel !== "main" || !sourceConversationId)) {
         return reply.code(400).send({ error: "shared turns must originate from a Conversation" });
       }
       const directMessageConversationId = sourceConversationId ?? agent.conversationId;
-      if (request.body.replyTo && request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey) {
-        return reply.code(403).send({ error: "reply context is server-controlled" });
-      }
       const directReplyTarget = request.body.replyToMessageId
         ? agentMessages(agent.id).find((message) => message.id === request.body.replyToMessageId)
         : undefined;
@@ -4833,37 +4039,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? store.getConversationMessages(directMessageConversationId, "main")
             .find((message) => message.id === request.body.replyToMessageId)
         : undefined;
-      const sourceCollaborationReply = request.body.replyToMessageId && collaborationConversationId
-        ? store.getConversationMessages(collaborationConversationId, "collaboration")
-            .find((message) => message.id === request.body.replyToMessageId)
-        : undefined;
-      if (request.body.replyToMessageId && !request.body.replyTo && !directReplyTarget && !sourceMasterReply && !sourceCollaborationReply) {
+      if (request.body.replyToMessageId && !directReplyTarget && !sourceMasterReply) {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
       }
-      const collaborationDeliveryId = request.body.collaborationDeliveryId;
-      const collaborationDeliveryIds = request.body.collaborationDeliveryIds;
-      const requestedDeliveryIds = collaborationDeliveryIds ?? (collaborationDeliveryId ? [collaborationDeliveryId] : []);
-      const inboxDeliveries = requestedDeliveryIds.map((id) => collaborationDeliveries.get(id));
-      const inboxDelivery = inboxDeliveries[0];
-      if (
-        requestedDeliveryIds.length > 0 &&
-        (request.headers["x-ponderosa-collaboration-dispatch"] !== collaborationDispatchKey ||
-          inboxDeliveries.some((delivery) => delivery?.targetAgentId !== agent.id || delivery.status !== "delivered") ||
-          (inboxDelivery?.kind !== "direct" && !collaborationConversationId))
-      ) {
-        return reply.code(403).send({ error: "collaboration delivery must be dispatched by the server" });
-      }
-      const inheritedCommunicationEventId = requestedDeliveryIds.length === 1
-        ? inboxDelivery?.communicationEventId : undefined;
-      const serverCommunicationEventId = request.body.communicationEventId;
-      const internalProjectDelivery = request.headers["x-ponderosa-project-delivery"] === projectDeliveryKey;
-      if (serverCommunicationEventId && request.headers["x-ponderosa-turn-dispatch"] !== turnDispatchKey && !internalProjectDelivery) {
-        return reply.code(403).send({ error: "communication event identity is server-controlled" });
-      }
-      if (serverCommunicationEventId && !store.getCommunicationEvent(project.id, serverCommunicationEventId)) {
-        return reply.code(400).send({ error: "communication event was not found in this project" });
-      }
-      const proposedCommunication: CommunicationEvent | undefined = internalV3Dispatch || serverCommunicationEventId || requestedDeliveryIds.length > 0
+      const proposedCommunication: CommunicationEvent | undefined = internalV3Dispatch
         ? undefined
         : shareWithOrganization ? {
             eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
@@ -4877,30 +4056,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text,
             createdAt: new Date().toISOString(),
           };
-      const intendedCommunicationEventId = internalV3Dispatch
-        ? undefined
-        : serverCommunicationEventId ?? proposedCommunication?.eventId ?? inheritedCommunicationEventId;
+      const intendedCommunicationEventId = proposedCommunication?.eventId;
       let v3Intake: ReturnType<CoordinationV3Store["recordRuntimeCommunication"]> | undefined;
-      if (communicationV3Enabled && !internalV3Dispatch && intendedCommunicationEventId) {
-        const humanDirected = proposedCommunication?.sender.kind === "user" ||
-          (!request.body.sourceAuthorAgentId && requestedDeliveryIds.length === 0);
-        const canonicalCommunication = proposedCommunication ??
-          store.getCommunicationEvent(project.id, intendedCommunicationEventId);
-        v3Intake = coordinationV3!.recordRuntimeCommunication({
+      if (!internalV3Dispatch && intendedCommunicationEventId && proposedCommunication) {
+        v3Intake = coordinationV3.recordRuntimeCommunication({
           id: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
           projectId: project.id,
-          sender: proposedCommunication?.sender ?? { kind: request.body.sourceAuthorAgentId ? "agent" : "user" },
-          intent: proposedCommunication?.intent ?? "direct_dispatch",
+          sender: proposedCommunication.sender,
+          intent: proposedCommunication.intent,
           audience: { agentId: agent.id },
           payload: {
-            communication: canonicalCommunication ?? null,
+            communication: proposedCommunication,
             dispatch: {
               text,
               communicationEventId: intendedCommunicationEventId,
               sourceConversationId: sourceConversationId ?? null,
               sourceChannel: request.body.sourceChannel ?? null,
               shareWithOrganization,
-              replyTo: request.body.replyTo ?? null,
+              replyToMessageId: request.body.replyToMessageId ?? null,
               attachments: messageAttachments.map((item) => ({
                 id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
                 localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
@@ -4911,24 +4084,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           },
           activation: {
             agentId: agent.id,
-            kind: humanDirected ? "human_message" : requestedDeliveryIds.length ? "coordination_message" : "ordinary_message",
-            priority: humanDirected ? 100 : 60,
+            kind: "human_message",
+            priority: 100,
             dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
-            promptClass: humanDirected ? "human" : "coordination",
+            promptClass: "human",
           },
           now: proposedCommunication?.createdAt,
         });
       }
       const communicationEventId = internalV3Dispatch
-        ? undefined
-        : proposedCommunication
-          ? recordCommunication(proposedCommunication).eventId
-          : intendedCommunicationEventId;
+        ? v3CommunicationEventId
+        : proposedCommunication ? recordCommunication(proposedCommunication).eventId : undefined;
       const communication = communicationEventId
         ? store.getCommunicationEvent(project.id, communicationEventId)
         : undefined;
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
-      const sharedTaskTurn = Boolean(sharedCommunication && (shareWithOrganization || serverCommunicationEventId));
+      const sharedTaskTurn = Boolean(sharedCommunication && shareWithOrganization);
       const directUserTaskTurn = Boolean(
         communication?.schemaVersion === 2 &&
         communication.intent === "user_dm" &&
@@ -4938,7 +4109,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : communication.audience.agentIds.includes(agent.id)),
       );
       let sourceMasterMessage: ConversationMessageDto | undefined;
-      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId) {
+      if (communicationEventId) {
         if (communication?.schemaVersion === 2 && communication.intent === "user_dm") {
           store.appendCommunicationProjection(project.id, {
             eventId: communicationEventId,
@@ -4948,14 +4119,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           });
         }
       }
-      if (!serverCommunicationEventId && requestedDeliveryIds.length === 0 && communicationEventId && directMessageConversationId) {
-        sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
-          role: "user",
-          text: sharedCommunication ? text : `#${agentMentionHandle(agent.title)} ${text}`,
-          attachments: messageAttachments,
-          replyToMessageId: sourceMasterReply?.id,
-        }, undefined, "main", undefined, undefined, communicationEventId);
-        if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [agent.id], messageAttachments);
+      if (communicationEventId && directMessageConversationId) {
+        if (internalV3Dispatch) {
+          sourceMasterMessage = store.getConversationMessages(directMessageConversationId, "main")
+            .find((message) => message.communicationEventId === communicationEventId);
+        } else {
+          sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
+            role: "user",
+            text: sharedCommunication ? text : `#${agentMentionHandle(agent.title)} ${text}`,
+            attachments: messageAttachments,
+            replyToMessageId: sourceMasterReply?.id,
+          }, undefined, "main", undefined, undefined, communicationEventId);
+          if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [agent.id], messageAttachments);
+        }
       }
       if (!sourceMasterMessage && communication && directMessageConversationId) {
         sourceMasterMessage = store.getConversationMessages(directMessageConversationId, "main")
@@ -4986,36 +4162,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         effort: request.body.effort,
         agentMentionDepth: mentionDepth ?? 0,
         agentMentionTrail: mentionTrail,
-        collaborationConversationId,
-        collaborationDeliveryId,
-        collaborationDeliveryIds,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
-        sourceAuthorAgentId: request.body.sourceAuthorAgentId,
         replyToMessageId: request.body.replyToMessageId,
-        replyTo: request.body.replyTo ?? (request.body.replyToMessageId
+        replyTo: request.body.replyToMessageId
           ? (() => {
-              const replyTarget = directReplyTarget ?? sourceMasterReply ?? sourceCollaborationReply;
+              const replyTarget = directReplyTarget ?? sourceMasterReply;
               return replyTarget ? { messageId: replyTarget.id, text: replyTarget.text, role: replyTarget.role } : undefined;
             })()
-          : undefined),
-        wakeCause: request.body.wakeCause,
+          : undefined,
       };
       const auditText = text;
-      if (communicationV3Enabled && !internalV3Dispatch) {
+      if (!internalV3Dispatch) {
         if (!v3Intake?.activationId) {
           return reply.code(500).send({ error: "actionable communication did not create an activation" });
         }
         if (!v3Intake.replayed) {
           await assets.associate(agent.projectId, agent.id, attachmentIds);
-          if (sharedCommunication) {
-            // A directed Project request is still a canonical Broadcast. Its
-            // explicit communication-to-agent edge authorizes the responsible
-            // agent's audit projection; the V3 Activation remains the sole
-            // scheduler authority. Persist the edge before projecting so a
-            // successfully committed intake cannot return a scope error.
-            store.recordRunTrigger(project.id, sharedCommunication.eventId, agent.id, sharedCommunication.createdAt);
-            projectBroadcastToAgentAudit(agent.id, sharedCommunication, messageAttachments);
-          } else {
+          if (!sharedCommunication) {
             const stored = store.appendEvent(agent.id, {
               type: "user_message", text: auditText, communicationEventId,
               replyTo: pendingTurn.replyTo, attachments: messageAttachments,
@@ -5023,7 +4186,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             publish(agent.id, stored);
           }
         }
-        coordinationV3Scheduler?.notify();
+        coordinationV3Scheduler.notify();
         publishCoordinationV3Changed(agent.id);
         return reply.code(202).send({
           queued: true,
@@ -5032,79 +4195,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           communicationEventId,
         });
       }
-      if (requestedDeliveryIds.length === 0 && !internalV3Dispatch) {
-        if (agentWaits.cancel(agent.id, "user message override")) {
-          clearWaitDeadline(agent.id);
-          publishWaitChanged(agent.id);
-        }
-      }
       const existingRun = activeRuns.get(agent.id);
       if (existingRun) {
-        if (internalV3Dispatch) {
-          return reply.code(409).send({ error: "agent already has an active run", retryable: true });
-        }
-        if (messageAttachments.length) return reply.code(409).send({ error: "wait for the active turn before sending attachments", retryable: true });
-        const triggerEventIds = pendingTurnTriggerEventIds(pendingTurn);
-        if (triggerEventIds.length > 0) {
-          try {
-            store.recordRunTriggers(project.id, triggerEventIds, agent.id);
-          } catch (error) {
-            return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });
-          }
-        }
-        if (activeRunDelivery === "steer" && existingRun.runtimeSession) {
-          const steered = await existingRun.runtimeSession.steer({
-            prompt: `${runtimeIdentityPrompt(agent, existingRun.runId)}\n\nSteering update for the active turn:\n${text}${replyContext(pendingTurn.replyTo)}`,
-            kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
-            model: request.body.model,
-            effort: request.body.effort,
-            clientMessageId: communicationEventId,
-          });
-          if (steered.status === "accepted") {
-            const stored = store.appendEvent(agent.id, {
-              type: "user_message",
-              text: auditText,
-              communicationEventId,
-              replyTo: pendingTurn.replyTo,
-            });
-            publish(agent.id, stored);
-            if (requestedDeliveryIds.length > 0) {
-              collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
-            }
-            renewExecutionLease(agent.id, existingRun);
-            return { queued: false, steered: true, runId: existingRun.runId, mode: "steer", communicationEventId };
-          }
-        }
-        // A dispatcher that lost the claim race needs to restore the dequeued
-        // item at the head itself; ordinary manager and agent messages join the
-        // FIFO queue and receive an explicit acknowledgement.
-        if (request.headers["x-ponderosa-turn-dispatch"] === turnDispatchKey || internalProjectDelivery) {
-          return reply.code(409).send({ error: "agent already has an active run" });
-        }
-        const createdAt = new Date().toISOString();
-        const delivery = queueCollaborationDelivery({
-          conversationId: sourceConversationId ?? agent.conversationId,
-          messageId: `direct-${randomUUID()}`,
-          communicationEventId,
-          targetAgentId: agent.id,
-          text,
-          relayDepth: mentionDepth ?? 0,
-          mentionTrail,
-          kind: "direct",
-          createdAt,
-          orderKey: store.nextDeliveryOrderKey(createdAt),
-          model: request.body.model,
-          effort: request.body.effort,
-          sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
-          replyToMessageId: request.body.replyToMessageId,
-        });
-        if (!delivery) return reply.code(503).send({ error: "turn could not be persisted" });
-        const position = collaborationDeliveries.pendingCount(agent.id);
-        return reply.code(202).send({ queued: true, position, communicationEventId });
+        return reply.code(409).send({ error: "agent already has an active run", retryable: true });
       }
 
       const fullHistory: ChatMessage[] = agentMessages(agent.id)
         .filter((message) => {
+          // The current authored message is already represented by the durable
+          // Activation. Do not pay for it a second time in seeded history.
+          if (communicationEventId && message.communicationEventId === communicationEventId) return false;
           if (!message.communicationEventId) return true;
           const communication = store.getCommunicationEvent(project.id, message.communicationEventId);
           if (communication?.intent !== "broadcast") return true;
@@ -5162,20 +4262,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const conversation = routingConversationId
         ? conversationDetail(routingConversationId)
         : undefined;
-      const collaboration = collaborationConversationId
-        ? collaborationViewDetail(collaborationConversationId)
-        : undefined;
-      const sourceChannel: AgentMessageChannel = collaboration
-        ? "collaboration"
-        : request.body.sourceChannel === "main"
+      const sourceChannel: AgentMessageChannel = request.body.sourceChannel === "main"
           ? "main"
           : "individual";
-      const contextAgents = collaboration?.agents ?? conversation?.agents ?? [agent];
-      const sourceAuthor = collaboration && request.body.sourceAuthorAgentId
-        ? contextAgents.find((candidate) => candidate.id === request.body.sourceAuthorAgentId)?.title ?? "Agent"
-        : "Manager";
+      const contextAgents = conversation?.agents ?? [agent];
+      const sourceAuthor = "Manager";
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextAgents, agent.id);
-      const cursorChannel = sourceChannel === "main" || sourceChannel === "collaboration" ? sourceChannel : undefined;
+      const cursorChannel = sourceChannel === "main" ? sourceChannel : undefined;
       const cursorConversationId = cursorChannel ? routingConversationId : undefined;
       const cursorModel = effectiveModel ?? "(default)";
       const routingMetadata = cursorConversationId && cursorChannel
@@ -5203,14 +4296,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const sameEngineModelEpoch = !latestSessionCursor ||
         (latestSessionCursor.engine === agent.activeEngine && latestSessionCursor.model === cursorModel);
       const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
-      const allRoomMessagesIncludingCurrent = collaboration
-        ? recipientCollaborationMessages(
-            collaboration.messages,
-            store.readCommunicationEvents(project.id),
-            project.id,
-            agent.id,
-          )
-        : conversation && sourceChannel === "main"
+      const allRoomMessagesIncludingCurrent = conversation && sourceChannel === "main"
           ? organizationalMasterMessages(
               conversation.messages,
               store.readCommunicationEvents(project.id),
@@ -5243,9 +4329,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const changedRoutingMetadata = !previousCursor || previousCursor.routingHash !== routingHash
         ? routingMetadata
         : undefined;
-      const basePrompt = collaboration
-        ? collaborationPrompt(roomMessages, collaboration.agents, text, context, inboxDelivery?.messageId, incremental, changedRoutingMetadata, communicationV3Enabled)
-        : conversation && sourceChannel === "main"
+      const basePrompt = conversation && sourceChannel === "main"
           ? conversationPrompt(
               roomMessages,
               conversation.agents,
@@ -5255,9 +4339,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               sourceMasterMessage?.id,
               incremental,
               changedRoutingMetadata,
-              communicationV3Enabled,
             )
-          : resumeSessionId ? continuationPrompt(text, context) : individualChatPrompt(text, context, communicationV3Enabled);
+          : resumeSessionId ? continuationPrompt(text, context) : individualChatPrompt(text, context);
       const guidedPrompt = agent.presetSnapshot?.guidance
         ? `Agent preset snapshot (${agent.presetSnapshot.name}):\n${agent.presetSnapshot.guidance}\n\n${basePrompt}`
         : basePrompt;
@@ -5270,19 +4353,27 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : directoryAgent),
       };
       const completionContract = sharedTaskTurn
-        ? sharedRequestCompletionPrompt(communicationV3Enabled)
-        : directUserTaskTurn ? directUserRequestCompletionPrompt(communicationV3Enabled) : "";
+        ? sharedRequestCompletionPrompt()
+        : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
       const stableDirectory = directoryForTurn.agents.map(({ status: _status, currentActivity: _activity, ...entry }) => entry);
       const organizationEnvelopeHash = createHash("sha256").update(JSON.stringify(stableDirectory)).digest("hex");
       const previousOrganizationEnvelope = organizationEnvelopeStates.get(agent.id);
-      const fullSessionEnvelope = `${teamDirectoryPrompt(directoryForTurn)}\n\n${communicationV3Enabled ? communicationV3Prompt().join("\n") : agentSpawnPrompt().join("\n")}\n\n`;
+      const fullSessionEnvelope = `${teamDirectoryPrompt(directoryForTurn)}\n\n${communicationV3Prompt().join("\n")}\n\n`;
       // A retained provider session already has this stable organization
       // envelope. Repeat it only for a new/rolled-over session, after a server
       // restart or warm eviction, or when roster/roles/reporting lines changed.
       // Live status remains available through PONDEROSA_AGENT_DIRECTORY_URL.
       const sessionEnvelope = resumeSessionId && previousOrganizationEnvelope?.sessionId === resumeSessionId &&
         previousOrganizationEnvelope.hash === organizationEnvelopeHash ? "" : fullSessionEnvelope;
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\nThe live team directory and current activity are available from PONDEROSA_AGENT_DIRECTORY_URL when routing or discovery requires them.${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}`;
+      // Scheduler metadata restores the primary authored request above. A
+      // single Activation therefore must not be serialized into the prompt a
+      // second time. A coalesced Run still receives its remaining sources as
+      // one bounded bundle. Steering uses the Activation prompt directly.
+      const additionalActivationIndex = v3ActivationPrompt?.indexOf("\nActivation 2:") ?? -1;
+      const coalescedActivationContext = internalV3Dispatch && additionalActivationIndex >= 0
+        ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
+        : "";
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\nThe live team directory and current activity are available from PONDEROSA_AGENT_DIRECTORY_URL when routing or discovery requires them.${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
       // session and therefore must restore the envelope even if the first
@@ -5298,26 +4389,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       let durableClaim: { generation: number };
       try {
-        if (internalV3Dispatch) {
-          coordinationV3!.markRunStarted(runId, v3FencingToken!);
-          publishCoordinationV3Changed(agent.id);
-          durableClaim = { generation: v3FencingToken! };
-        } else {
-          durableClaim = runLedger.claim(agent.id, runId, requestedDeliveryIds);
-        }
+        coordinationV3.markRunStarted(runId, v3FencingToken!);
+        publishCoordinationV3Changed(agent.id);
+        durableClaim = { generation: v3FencingToken! };
       } catch {
         return reply.code(409).send({ error: "agent run ownership changed; retry safely", retryable: true });
       }
       const failUnstartedClaim = (cancelled = false): void => {
-        if (internalV3Dispatch) {
-          if (cancelled) coordinationV3!.cancelRun(runId);
-          else coordinationV3!.failRun({
-            runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId,
-            sameRunResumable: false, retryDelayMs: 0,
-          });
-        } else {
-          runLedger.transition({ agentId: agent.id, runId, generation: durableClaim.generation }, cancelled ? "cancelled" : "failed");
-        }
+        if (cancelled) coordinationV3.cancelAgentRun({ agentId: agent.id, idempotencyKey: `unstarted:${runId}` });
+        else coordinationV3.failRun({
+          runId, fencingToken: v3FencingToken!, workerId: coordinationV3WorkerId,
+          sameRunResumable: false, retryDelayMs: 0,
+        });
       };
       await opts.messageLifecycleFaults?.afterRunClaim?.({
         agentId: agent.id,
@@ -5329,20 +4412,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(404).send({ error: "agent not found" });
       }
 
-      const triggerEventIds = pendingTurnTriggerEventIds(pendingTurn);
-      if (triggerEventIds.length > 0) {
-        try {
-          store.recordRunTriggers(project.id, triggerEventIds, agent.id);
-        } catch (error) {
-          failUnstartedClaim();
-          return reply.code(409).send({ error: error instanceof Error ? error.message : "message cannot trigger this agent" });
-        }
-      }
-
-      const userStored = internalV3Dispatch ? undefined : store.appendEvent(agent.id, {
-          type: "user_message", text: auditText, communicationEventId: pendingTurn.communicationEventId,
-          replyTo: pendingTurn.replyTo, attachments: messageAttachments,
-        });
       try {
         await assets.associate(agent.projectId, agent.id, attachmentIds);
       } catch (error) {
@@ -5353,26 +4422,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         failUnstartedClaim(true);
         return reply.code(404).send({ error: "agent not found" });
       }
-      if (userStored) publish(agent.id, userStored);
-
       const startedAt = new Date().toISOString();
       const trackedV3FencingToken = internalV3Dispatch ? v3FencingToken : undefined;
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
-        wakeCause: pendingTurn.wakeCause ?? (sharedTaskTurn
+        wakeCause: sharedTaskTurn
           ? "project_request"
           : directUserTaskTurn
             ? "direct_message"
-            : requestedDeliveryIds.length
-              ? "collaboration"
-              : "direct_message"),
+              : "collaboration",
         ...(effectiveModel ? { model: effectiveModel } : {}),
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       });
       publish(agent.id, runningLifecycle);
       const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
-        ...(requestedDeliveryIds.length ? { deliveryIds: requestedDeliveryIds } : {}),
         ...(trackedV3FencingToken !== undefined
           ? { v3SchedulerRunId: runId, v3FencingToken: trackedV3FencingToken }
           : {}),
@@ -5402,11 +4466,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
             PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
-            PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawns`,
-            PONDEROSA_AGENT_WAIT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-waits`,
             PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
             PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
-            PONDEROSA_COMMUNICATION_VERSION: communicationV3Enabled ? "3" : "2",
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -5421,25 +4482,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: communicationV3Enabled
-                ? [PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL]
-                : [PONDEROSA_SEND_MESSAGE_TOOL, PONDEROSA_SPAWN_AGENT_TOOL, PONDEROSA_WAIT_FOR_REPORTS_TOOL],
+              dynamicTools: [PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL],
               handleDynamicToolCall: async (call) => {
-                const url = communicationV3Enabled
-                  ? call.name === PONDEROSA_COORDINATE_TOOL.name
-                    ? "/api/agent-coordinate"
-                    : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
-                      ? "/api/agent-request-updates"
-                      : call.name === PONDEROSA_MESSAGE_TOOL.name
-                        ? "/api/agent-messages"
-                        : undefined
-                  : call.name === PONDEROSA_SEND_MESSAGE_TOOL.name
-                    ? "/api/agent-messages"
-                    : call.name === PONDEROSA_SPAWN_AGENT_TOOL.name
-                      ? "/api/agent-spawns"
-                      : call.name === PONDEROSA_WAIT_FOR_REPORTS_TOOL.name
-                        ? "/api/agent-waits"
-                        : undefined;
+                const url = call.name === PONDEROSA_COORDINATE_TOOL.name
+                  ? "/api/agent-coordinate"
+                  : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
+                    ? "/api/agent-request-updates"
+                    : call.name === PONDEROSA_MESSAGE_TOOL.name
+                      ? "/api/agent-messages"
+                      : undefined;
                 if (!url) {
                   return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
                 }
@@ -5478,7 +4529,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     if (!persistentTurnStarted) {
                       await persistentRuntime!.session.startTurn({
                         prompt,
-                        kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
+                        kind: "collaboration",
                         model: effectiveModel,
                         effort: effectiveEffort,
                         clientMessageId: communicationEventId,
@@ -5513,7 +4564,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     if (!persistentTurnStarted) {
                       await persistentRuntime!.session.startTurn({
                         prompt,
-                        kind: requestedDeliveryIds.length > 0 ? "collaboration" : "user_message",
+                        kind: "collaboration",
                         model: effectiveModel,
                         effort: effectiveEffort,
                         clientMessageId: communicationEventId,
@@ -5544,8 +4595,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 });
 
           let sessionId = resumeSessionId;
-          let rolloverAttempted = false;
-          let sawMaterialRuntimeEvent = false;
           while (true) {
             const bufferedSessionEvents: AgentEvent[] = [];
             let retryFresh = false;
@@ -5577,25 +4626,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 bufferedSessionEvents.push(event);
                 continue;
               }
-              if (
-                !communicationV3Enabled &&
-                sessionId &&
-                !rolloverAttempted &&
-                !sawMaterialRuntimeEvent &&
-                event.type === "error" &&
-                shouldRolloverEngineSession(engine.adapter.id, event.message)
-              ) {
-                store.clearResumeSession(agent.id, "resume_compaction_failed");
-                sessionId = undefined;
-                rolloverAttempted = true;
-                retryFresh = true;
-                break;
-              }
-
               for (const buffered of bufferedSessionEvents.splice(0)) {
                 persistRuntimeEvent(agent.id, activeRun, buffered);
               }
-              if (event.type !== "error") sawMaterialRuntimeEvent = true;
               const logEvent: LogEvent = event.type === "text" || event.type === "reasoning" || event.type === "work_item_update" || event.type === "turn_done"
                 ? { ...event, executionId: runId }
                 : event;
@@ -5651,7 +4684,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
           if (released && activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined) {
             try {
-              if (controller.signal.aborted) coordinationV3!.cancelRun(activeRun.v3SchedulerRunId);
+              if (controller.signal.aborted) coordinationV3!.cancelAgentRun({
+                agentId: agent.id,
+                idempotencyKey: `runtime-abort:${activeRun.v3SchedulerRunId}`,
+              });
               else if (runError) coordinationV3!.failRun({
                 runId: activeRun.v3SchedulerRunId,
                 fencingToken: activeRun.v3FencingToken,
@@ -5667,15 +4703,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           if (released) {
             agentMessageCapabilities.delete(messageCapability);
-          }
-          if (released && !closed && requestedDeliveryIds.length) {
-            // A cancelled delivery turn is not an acknowledgement. Put it back
-            // into the durable queue; ordinary pending deliveries remain queued.
-            if (controller.signal.aborted) collaborationDeliveries.requeueBatch(requestedDeliveryIds);
-            else if (runError) {
-              for (const id of requestedDeliveryIds) collaborationDeliveries.retryFailedTurn(id, runError);
-            }
-            else collaborationDeliveries.acknowledgeBatch(requestedDeliveryIds);
           }
           if (released && !closed && !controller.signal.aborted && !runError && cursorConversationId && cursorChannel) {
             const acceptedSessionId = store.resumeSessionId(agent.id);
@@ -5694,9 +4721,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           const retainedRuntime = runtimeSessions.get(agent.id);
           if (released && retainedRuntime && !closed) scheduleRuntimeIdleClose(agent.id, retainedRuntime);
-          // Mentions received while this agent was working are never dropped.
-          // Start the oldest queued follow-up as soon as its current turn closes.
-          if (released) runDeliveryDispatch(agent.id);
+          if (released) coordinationV3Scheduler.notify();
         }
       })();
 
@@ -5938,55 +4963,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const stopResponse = (cancelled: boolean, replayed: boolean): CancelAgentRunResponse | { cancelled: boolean } =>
       idempotencyKey ? { cancelled, replayed } : { cancelled };
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    if (coordinationV3) {
-      const current = activeRuns.get(request.params.id);
-      const result = coordinationV3.cancelAgentRun({
-        agentId: request.params.id,
-        idempotencyKey: idempotencyKey ?? `run:${current?.runId ?? "idle"}`,
-      });
-      if (result.cancelled && !result.replayed && store.getAgent(request.params.id)) {
-        const lifecycle = store.appendEvent(request.params.id, {
-          type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",
-          executionId: result.runId ?? current?.runId ?? "cancelled",
-        });
-        publish(request.params.id, lifecycle);
-      }
-      coordinationV3Scheduler?.notify();
-      publishCoordinationV3Changed(request.params.id);
-      return stopResponse(result.cancelled, result.replayed);
-    }
-    if (idempotencyKey) {
-      const previous = runLedger.stopReceipt(request.params.id, idempotencyKey);
-      if (previous) return stopResponse(previous.cancelled, true);
-    }
-    const run = activeRuns.get(request.params.id);
-    if (!run || !transitionRun(request.params.id, run, "cancelling")) {
-      if (idempotencyKey) runLedger.rememberStop(request.params.id, idempotencyKey, false);
-      return stopResponse(false, false);
-    }
-    // Persist the receipt immediately after the ownership CAS. A second tab
-    // can arrive while the runtime session is asynchronously closing; it must
-    // replay the accepted stop rather than race and record a false result.
-    if (idempotencyKey) runLedger.rememberStop(request.params.id, idempotencyKey, true);
-    if (run.deliveryIds?.length) collaborationDeliveries.cancelBatch(run.deliveryIds, "cancelled by user");
-    const released = releaseActiveRun(request.params.id, run, "cancelled");
-    if (released) {
-      agentMessageCapabilities.delete(run.messageCapability);
-      scheduledSessionRollovers.delete(request.params.id);
-    }
-    run.controller.abort();
-    const runtime = runtimeSessions.get(request.params.id);
-    if (runtime) {
-      removePersistentRuntime(request.params.id, runtime);
-      await runtime.session.close().catch(() => undefined);
-    }
-    const lifecycle = store.appendEvent(request.params.id, {
-      type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",
-      executionId: run.executionId,
+    const current = activeRuns.get(request.params.id);
+    const result = coordinationV3.cancelAgentRun({
+      agentId: request.params.id,
+      idempotencyKey: idempotencyKey ?? `run:${current?.runId ?? "idle"}`,
     });
-    publish(request.params.id, lifecycle);
-    if (released) runDeliveryDispatch(request.params.id);
-    return stopResponse(true, false);
+    if (result.cancelled && !result.replayed && store.getAgent(request.params.id)) {
+      const lifecycle = store.appendEvent(request.params.id, {
+        type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",
+        executionId: result.runId ?? current?.runId ?? "cancelled",
+      });
+      publish(request.params.id, lifecycle);
+    }
+    coordinationV3Scheduler.notify();
+    publishCoordinationV3Changed(request.params.id);
+    return stopResponse(result.cancelled, result.replayed);
   });
 
   app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {

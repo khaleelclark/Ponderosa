@@ -13,6 +13,7 @@ export interface CoordinationV3SchedulerMetrics {
   rejectedRuns: number;
   outboxSignals: number;
   dispatchLatencyMs: number[];
+  lastDispatchError?: string;
 }
 
 export class CoordinationV3Scheduler {
@@ -157,6 +158,7 @@ export class CoordinationV3Scheduler {
           this.metrics.acceptedRuns += 1;
         } else {
           this.metrics.rejectedRuns += 1;
+          this.metrics.lastDispatchError = result.error ?? "scheduler dispatch rejected";
           this.store.failRun({
             runId: lease.runId,
             fencingToken: lease.fencingToken,

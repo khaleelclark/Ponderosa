@@ -180,6 +180,16 @@ export interface RuntimeCommunicationV3View {
   createdAt: string;
 }
 
+export interface PendingActivationV3View {
+  id: string;
+  projectId: string;
+  agentId: string;
+  kind: string;
+  state: "pending" | "retry_pending";
+  payload: unknown;
+  createdAt: string;
+}
+
 export interface SteeringLease {
   runId: string;
   projectId: string;
@@ -360,6 +370,79 @@ export class CoordinationV3Store {
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
     }));
+  }
+
+  runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT id, project_id, payload_json, created_at FROM runtime_communications WHERE id = ?
+    `).get(id) as { id: string; project_id: string; payload_json: string; created_at: string } | undefined;
+    return row ? {
+      id: row.id,
+      projectId: row.project_id,
+      payload: JSON.parse(row.payload_json) as unknown,
+      createdAt: row.created_at,
+    } : undefined;
+  }
+
+  pendingActivations(projectId?: string): PendingActivationV3View[] {
+    const rows = this.sqlite.prepare(`
+      SELECT id, project_id, agent_id, kind, state, payload_json, created_at
+      FROM agent_activations
+      WHERE state IN ('pending', 'retry_pending') AND (? IS NULL OR project_id = ?)
+      ORDER BY priority DESC, created_at, id
+    `).all(projectId ?? null, projectId ?? null) as Array<{
+      id: string; project_id: string; agent_id: string; kind: string;
+      state: "pending" | "retry_pending"; payload_json: string; created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      agentId: row.agent_id,
+      kind: row.kind,
+      state: row.state,
+      payload: JSON.parse(row.payload_json) as unknown,
+      createdAt: row.created_at,
+    }));
+  }
+
+  communicationRecipientAgentIds(communicationId: string): string[] {
+    return (this.sqlite.prepare(`
+      SELECT DISTINCT activation.agent_id
+      FROM activation_sources source
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      JOIN runtime_communications communication ON communication.id = source.source_id
+      WHERE source.source_kind = 'communication'
+        AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
+      ORDER BY activation.agent_id
+    `).all(communicationId, communicationId) as Array<{ agent_id: string }>).map((row) => row.agent_id);
+  }
+
+  cancelPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { cancelled: boolean; replayed: boolean; status: "cancelled" | "delivery_started" } {
+    if (!input.idempotencyKey.trim()) throw new Error("cancellation idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    const hash = payloadHash({ activationId: input.activationId });
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ cancelled: boolean; status: "cancelled" | "delivery_started" }>(
+        input.projectId, "user:local-operator", "cancel_activation", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
+      `).run(now, input.activationId, input.projectId).changes;
+      const result = changed === 1
+        ? { cancelled: true, status: "cancelled" as const }
+        : { cancelled: false, status: "delivery_started" as const };
+      this.recordIdempotency(
+        input.projectId, "user:local-operator", "cancel_activation", input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
   }
 
   activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
@@ -1448,15 +1531,6 @@ export class CoordinationV3Store {
         operationId: Number(operation.lastInsertRowid),
       };
     })();
-  }
-
-  /** Compatibility wrapper for store-level callers. Runtime cancellation must
-   * use cancelAgentRun so the receipt and provider interrupt are transactional. */
-  cancelRun(runId: string, now = new Date().toISOString()): number {
-    const row = this.sqlite.prepare(`SELECT agent_id FROM scheduler_runs WHERE id = ?`).get(runId) as { agent_id: string } | undefined;
-    if (!row) throw new Error("run not found");
-    const result = this.cancelAgentRun({ agentId: row.agent_id, idempotencyKey: `legacy:${runId}`, now });
-    return result.fencingToken ?? (this.sqlite.prepare(`SELECT fencing_token FROM scheduler_runs WHERE id = ?`).get(runId) as { fencing_token: number }).fencing_token;
   }
 
   claimProviderOperations(workerId: string, limit = 20, now = new Date().toISOString(), staleMs = 30_000): ProviderOperation[] {

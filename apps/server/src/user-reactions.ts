@@ -55,6 +55,22 @@ export class UserReactionStore {
     return { event, replayed: false };
   }
 
+  record(event: UserReactionEvent): { event: UserReactionEvent; replayed: boolean } {
+    const previous = this.byIdempotencyKey.get(event.idempotencyKey);
+    if (previous) {
+      const same = previous.id === event.id && previous.projectId === event.projectId &&
+        previous.communicationEventId === event.communicationEventId &&
+        previous.targetAuthorAgentId === event.targetAuthorAgentId && previous.emoji === event.emoji;
+      if (!same) throw new Error("idempotency key was used for another reaction");
+      return { event: previous, replayed: true };
+    }
+    const active = this.byCommunicationEmoji.get(this.stateKey(event.communicationEventId, event.emoji));
+    if (active) return { event: active, replayed: true };
+    appendFileSync(this.file, `${JSON.stringify(event)}\n`, "utf8");
+    this.remember(event);
+    return { event, replayed: false };
+  }
+
   forCommunication(communicationEventId: string): MessageReactionDto[] {
     return this.events
       .filter((event) => event.communicationEventId === communicationEventId)

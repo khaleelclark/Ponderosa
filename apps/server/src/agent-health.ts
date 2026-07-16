@@ -8,8 +8,7 @@ export interface AgentHealthProjectionInput {
   agents: AgentDto[];
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
   compactingAgents?: ReadonlyMap<string, string>;
-  activeWaits?: ReadonlyMap<string, string>;
-  queuedDeliveries: (agentId: string) => QueuedDeliveryObservation[];
+  availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
   events: (agentId: string) => StoredLogEvent[];
   now?: string;
 }
@@ -45,8 +44,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
   const agents: AgentHealthDto[] = input.agents.map((agent) => {
     const active = input.activeRuns.get(agent.id);
     const compactingAt = input.compactingAgents?.get(agent.id);
-    const waitingSince = input.activeWaits?.get(agent.id);
-    const queued = input.queuedDeliveries(agent.id)[0];
+    const availability = input.availability?.(agent.id);
     const events = input.events(agent.id);
     const activeEvent = active ? eventObservation(events, active.startedAt) : undefined;
     const managerAgentId = agent.managerAgentId && agentIds.has(agent.managerAgentId) ? agent.managerAgentId : undefined;
@@ -59,8 +57,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     }
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
-    else if (waitingSince) observation = { status: "waiting", statusTimestamp: waitingSince, reason: "awaiting_reports" };
-    else if (queued) observation = { status: "waiting", statusTimestamp: queued.createdAt, reason: "queued_delivery" };
+    else if (availability === "waiting" || availability === "runnable") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: availability === "waiting" ? "awaiting_reports" : "queued_delivery" };
     else observation = eventObservation(events) ?? { status: "idle", statusTimestamp: agent.updatedAt, reason: "no_active_work" };
     return {
       agentId: agent.id,

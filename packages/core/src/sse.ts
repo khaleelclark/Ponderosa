@@ -4,7 +4,7 @@
 // by seq (critical for phones locking/unlocking).
 
 import type { AgentEvent } from "./events.js";
-import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause, AgentOutputEvent, AgentWaitDto, AgentCoordinationV3Dto, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
+import type { AgentExecutionDeltaEvent, AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause, AgentOutputEvent, AgentCoordinationV3Dto, ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
 
 /** Canonical agent events visible on the live wire, including server-owned records. */
 export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" }>
@@ -13,7 +13,6 @@ export type AgentStreamEvent = Exclude<AgentEvent, { type: "text" | "reasoning" 
   | { type: "user_message"; communicationEventId?: string; text: string; replyTo?: MessageReferenceDto; attachments?: ImageAttachmentDto[] }
   | { type: "session_reset"; reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" }
   | { type: "communication_projection"; communicationEventId: string; text: string; role?: "user" | "assistant" | "system"; attachments?: ImageAttachmentDto[] }
-  | { type: "agent_wait_changed"; activeWait: AgentWaitDto | null }
   | { type: "coordination_v3_changed"; coordination: AgentCoordinationV3Dto }
   | { type: "agent_lifecycle"; status: AgentRunStatus; reason: AgentLifecycleReason; executionId: string; wakeCause?: AgentRunWakeCause };
 

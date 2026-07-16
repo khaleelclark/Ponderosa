@@ -108,20 +108,8 @@ export interface CommunicationBehavior {
     projectionKey: string;
   }>;
   deliveryRecipients: CommunicationRecipient[];
-  /** Agent deliveries that are allowed to start or steer a run. */
-  runTriggerAgentIds: string[];
-}
-
-export type RunTriggerSource = "project_request" | "direct_message" | "collaboration";
-
-/** Durable proof that one accepted communication was dispatched to one agent. */
-export interface RunTriggerRecord {
-  triggerId: string;
-  projectId: string;
-  agentId: string;
-  communicationEventId: string;
-  source: RunTriggerSource;
-  createdAt: string;
+  /** Agent recipients for which the authored event is actionable. */
+  actionableAgentIds: string[];
 }
 
 function uniqueSorted(values: readonly string[]): string[] {
@@ -185,17 +173,17 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
   }
 
   const deliveryRecipients: CommunicationRecipient[] = [];
-  const runTriggerAgentIds: string[] = [];
+  const actionableAgentIds: string[] = [];
   if (event.intent === "collaboration") {
     for (const agentId of agentIds) {
       deliveryRecipients.push({ kind: "agent", agentId });
-      runTriggerAgentIds.push(agentId);
+      actionableAgentIds.push(agentId);
     }
   } else if (event.schemaVersion === 2 && event.intent === "user_dm") {
     if (event.sender.kind === "user") {
       for (const agentId of agentIds) {
         deliveryRecipients.push({ kind: "agent", agentId });
-        runTriggerAgentIds.push(agentId);
+        actionableAgentIds.push(agentId);
       }
     } else if (userId) {
       deliveryRecipients.push({ kind: "user", userId });
@@ -208,7 +196,7 @@ export function deriveCommunicationBehavior(event: CommunicationEvent): Communic
     contextPolicy: event.intent === "broadcast" ? "organizational" : "local_only",
     projectionTargets,
     deliveryRecipients,
-    runTriggerAgentIds: uniqueSorted(runTriggerAgentIds),
+    actionableAgentIds: uniqueSorted(actionableAgentIds),
   };
 }
 
