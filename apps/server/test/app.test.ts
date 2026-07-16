@@ -2549,6 +2549,84 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("recovers an attachment-only communication after the SQLite commit crash window", async () => {
+    const project = store.createProject({ label: "Attachment recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const stagingApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    const uploaded = await stagingApp.inject({
+      method: "POST", url: `/api/agents/${agent.id}/attachments`,
+      headers: { "content-type": "application/pdf", "x-ponderosa-filename": "brief.pdf" },
+      payload: Buffer.from("%PDF-1.7\nrecovery evidence"),
+    });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    const attachment = uploaded.json<{ id: string; name: string; mediaType: string; size: number }>();
+    await stagingApp.close();
+    store = new AgentStore(dataDir);
+
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "", createdAt: new Date().toISOString(),
+    };
+    new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+      id: `dispatch:${event.eventId}:${agent.id}`,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: { agentId: agent.id },
+      payload: {
+        communication: event,
+        dispatch: {
+          text: "",
+          attachments: [{
+            id: attachment.id, name: attachment.name,
+            mediaType: attachment.mediaType, size: attachment.size,
+          }],
+        },
+      },
+      activation: {
+        agentId: agent.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
+      },
+      now: event.createdAt,
+    });
+    const malformedEventId = randomUUID();
+    new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+      id: `dispatch:${malformedEventId}:${agent.id}`,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: { agentId: agent.id },
+      payload: {
+        communication: { ...event, eventId: malformedEventId },
+        dispatch: { text: "", attachments: [{ id: "missing" }] },
+      },
+      now: event.createdAt,
+    });
+
+    const recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toMatchObject({
+      text: "",
+      attachments: [expect.objectContaining({
+        id: attachment.id, agentId: agent.id, name: "brief.pdf", state: "associated",
+      })],
+    });
+    expect(store.getCommunicationEvent(project.id, malformedEventId)).toBeUndefined();
+    expect((await recoveredApp.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(200);
+    await recoveredApp.close();
+  });
+
   it("serves every room timeline from canonical projections", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Cutover", hostPath: repoDir });
@@ -3104,8 +3182,13 @@ describe("server chunk F", () => {
     const attachment = uploaded.json<{ id: string; name: string; url: string }>();
     expect(attachment.name).toBe("screen.png");
     expect(attachment.url).not.toContain(dataDir);
-    const send = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect this", attachmentIds: [attachment.id] } });
+    const send = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "", attachmentIds: [attachment.id] } });
     expect(send.statusCode).toBe(202);
+    const communicationEventId = send.json<{ communicationEventId: string }>().communicationEventId;
+    expect(store.getCommunicationEvent(agent.projectId, communicationEventId)).toMatchObject({
+      text: "",
+      attachments: [expect.objectContaining({ id: attachment.id, agentId: agent.id, name: "screen.png" })],
+    });
     await waitForRun(agent.id);
     expect(store.getMessages(agent.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, agentId: agent.id });
     store.rebuildProjections();

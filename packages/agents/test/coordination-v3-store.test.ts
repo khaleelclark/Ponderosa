@@ -95,8 +95,8 @@ describe("CoordinationV3Store transactions", () => {
       },
     }).replayed).toBe(true);
     expect(store.runtimeCommunications(projectId)).toEqual([
-      { id: "broadcast", projectId, payload: { text: "FYI" }, createdAt: now },
-      { id: "direct", projectId, payload: { text: "Start" }, createdAt: now },
+      { id: "broadcast", projectId, audience: { kind: "organization", id: projectId }, payload: { text: "FYI" }, createdAt: now },
+      { id: "direct", projectId, audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, createdAt: now },
     ]);
   });
 

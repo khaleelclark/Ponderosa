@@ -88,6 +88,13 @@ jobs:
           DEPLOY_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          diagnose() {
+            echo "Ponderosa failed readiness; collecting service diagnostics."
+            sudo -n /usr/bin/systemctl status ponderosa.service --no-pager -n 100 || true
+            sudo -n /usr/bin/journalctl -u ponderosa.service --no-pager -n 200 || true
+            sudo -n /usr/bin/ss -ltnp 'sport = :8787' || true
+          }
+          trap diagnose ERR
           sudo -n /usr/bin/systemctl is-active --quiet ponderosa.service
           HEALTH_JSON="$(curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 2 http://127.0.0.1:8787/api/health)"
           HEALTH_JSON="$HEALTH_JSON" node -e '

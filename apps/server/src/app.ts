@@ -1733,7 +1733,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: ASSET_LIMITS.maxRequestBytes }, (_request, body, done) => done(null, body));
   }
 
-  function reconcileRuntimeCommunicationProjections(): number {
+  async function reconcileRuntimeCommunicationProjections(): Promise<number> {
     let projected = 0;
     for (const row of coordinationV3.runtimeCommunications()) {
       const payload = row.payload && typeof row.payload === "object"
@@ -1741,7 +1741,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : undefined;
       const candidate = payload?.communication ?? row.payload;
       if (!candidate || typeof candidate !== "object") continue;
-      const event = candidate as Partial<CommunicationEvent>;
+      let event = candidate as Partial<CommunicationEvent>;
       if (
         typeof event.eventId !== "string" ||
         typeof event.projectId !== "string" ||
@@ -1749,9 +1749,52 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         typeof event.createdAt !== "string" ||
         event.projectId !== row.projectId
       ) continue;
-      if (!store.getCommunicationEvent(row.projectId, event.eventId)) {
-        recordCommunication(candidate as CommunicationEvent);
-        projected += 1;
+      const communicationEventId = event.eventId;
+      let recoveredAttachmentIds: string[] = [];
+      let recoveredAttachmentAgentId: string | undefined;
+      if (!event.text.trim() && !event.attachments?.length) {
+        const audience = row.audience && typeof row.audience === "object"
+          ? row.audience as Record<string, unknown>
+          : undefined;
+        const dispatch = payload?.dispatch && typeof payload.dispatch === "object"
+          ? payload.dispatch as Record<string, unknown>
+          : undefined;
+        const rawAttachments = Array.isArray(dispatch?.attachments) ? dispatch.attachments : [];
+        recoveredAttachmentAgentId = typeof audience?.agentId === "string" ? audience.agentId : undefined;
+        if (recoveredAttachmentAgentId && rawAttachments.length) {
+          const recovered: ImageAttachmentDto[] = [];
+          for (const raw of rawAttachments) {
+            if (!raw || typeof raw !== "object") continue;
+            const expected = raw as Record<string, unknown>;
+            if (typeof expected.id !== "string") continue;
+            const metadata = await assetMetadata(recoveredAttachmentAgentId, expected.id);
+            if (!metadata || metadata.name !== expected.name || metadata.mediaType !== expected.mediaType || metadata.size !== expected.size) continue;
+            const {
+              projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile,
+              associatedAt: _associatedAt, ...publicAsset
+            } = metadata;
+            recovered.push({ ...publicAsset, state: "associated" });
+          }
+          if (recovered.length === rawAttachments.length) {
+            recoveredAttachmentIds = recovered.map((attachment) => attachment.id);
+            event = { ...event, attachments: recovered };
+          }
+        }
+      }
+      if (!store.getCommunicationEvent(row.projectId, communicationEventId)) {
+        try {
+          recordCommunication(event as CommunicationEvent);
+          if (recoveredAttachmentAgentId && recoveredAttachmentIds.length) {
+            await assets.associate(row.projectId, recoveredAttachmentAgentId, recoveredAttachmentIds);
+          }
+          projected += 1;
+        } catch (error) {
+          app.log.error({
+            err: error,
+            runtimeCommunicationId: row.id,
+            communicationEventId,
+          }, "runtime communication projection recovery failed");
+        }
       }
     }
     return projected;
@@ -1792,7 +1835,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.addHook("onReady", async () => {
-    reconcileRuntimeCommunicationProjections();
+    await reconcileRuntimeCommunicationProjections();
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.expireDue();
     coordinationV3Scheduler.start();
@@ -2975,6 +3018,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       intent: "broadcast",
       audience: { kind: "organization", organizationId: master.projectId },
       text,
+      ...(validatedAssets.length ? { attachments: validatedAssets } : {}),
       createdAt: new Date().toISOString(),
       ...(idempotencyKey ? { idempotencyKey: `broadcast:${master.id}:${idempotencyKey}` } : {}),
     });
@@ -3040,7 +3084,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) {
             throw new AssetError(413, "message asset quota exceeded");
           }
-          return attached as ImageAttachmentDto[];
+          return (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
+            const {
+              projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile,
+              associatedAt: _associatedAt, ...publicAsset
+            } = item;
+            return { ...publicAsset, state: "associated" as const };
+          }) as ImageAttachmentDto[];
         }));
         const receiptKey = `multi-direct:${master.id}:${idempotencyKey}`;
         const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
@@ -3050,7 +3100,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           eventId, schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
           sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
           audience: { kind: "user_agents", userId: "local-operator", agentIds: agentIds as [string, ...string[]] },
-          text, createdAt, idempotencyKey: receiptKey,
+          text,
+          ...(attachmentsByAgent.some((items) => items.length) ? { attachments: attachmentsByAgent.flat() } : {}),
+          createdAt, idempotencyKey: receiptKey,
         };
         const intents: ConversationDeliveryIntent[] = recipients.map((recipient) => ({
           targetAgentId: recipient.agentId, relayDepth: 0, mentionTrail: [], kind: "direct",
@@ -3852,12 +3904,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     reply.code(501).send({ error: "search is a v2 endpoint" }),
   );
 
-  const assetMetadata = async (agentId: string, id: string) => {
+  async function assetMetadata(agentId: string, id: string) {
     const agent = store.getAgent(agentId);
     if (!agent) return undefined;
     const metadata = await assets.read(agent.projectId, agent.id, id);
     return metadata && await assets.content(agent.projectId, agent.id, id, false) ? metadata : undefined;
-  };
+  }
 
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
   app.get("/api/attachment-limits", async () => limits);
@@ -4048,12 +4100,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
             sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
             audience: { kind: "organization", organizationId: project.id }, text,
+            ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
             createdAt: new Date().toISOString(),
           } : {
             eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
             ...((sourceConversationId ?? agent.conversationId) ? { conversationId: sourceConversationId ?? agent.conversationId } : {}),
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
             audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text,
+            ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
             createdAt: new Date().toISOString(),
           };
       const intendedCommunicationEventId = proposedCommunication?.eventId;
