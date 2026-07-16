@@ -7,6 +7,7 @@ describe("mobile-critical durable navigation", () => {
     { kind: "allAgents" },
     { kind: "project", projectId: "project / one" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },
+    { kind: "conversation", projectId: "project / one", conversationId: "control room", messageId: "event #1" },
     { kind: "agents", projectId: "project / one" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {

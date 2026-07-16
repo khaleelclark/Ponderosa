@@ -21,10 +21,22 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "draft"; draft: ConversationDraftDto }
     | { kind: "draft_conflict"; conflict: ConversationDraftConflictDto }
     | { kind: "draft_deleted"; draftId: string }
-    | { kind: "notification"; notification: WorkspaceNotificationDto }
+    | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
-    | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string };
+    | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
+    | { kind: "push_delivery"; delivery: PushDeliveryRecord };
 };
+
+export interface PushDeliveryRecord {
+  notificationId: string;
+  deviceId: string;
+  subscriptionUpdatedAt: string;
+  status: "pending" | "delivered" | "abandoned";
+  attempts: number;
+  nextAttemptAt: string;
+  deliveredAt?: string;
+  lastError?: string;
+}
 
 const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   projectSort: "last_used",
@@ -45,6 +57,7 @@ export class WorkspaceStore {
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
+  private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private preferences = DEFAULT_PREFERENCES;
 
   constructor(dataDir: string) {
@@ -76,7 +89,20 @@ export class WorkspaceStore {
       this.draftConflicts.set(conversationId, conflicts.slice(-20));
     }
     if (record.mutation?.kind === "draft_deleted") this.drafts.delete(record.mutation.draftId);
-    if (record.mutation?.kind === "notification") this.notifications.set(record.mutation.notification.id, record.mutation.notification);
+    if (record.mutation?.kind === "notification") {
+      this.notifications.set(record.mutation.notification.id, record.mutation.notification);
+      for (const target of record.mutation.pushTargets ?? []) {
+        const key = this.pushDeliveryKey(record.mutation.notification.id, target.deviceId);
+        if (!this.pushDeliveries.has(key)) this.pushDeliveries.set(key, {
+          notificationId: record.mutation.notification.id,
+          deviceId: target.deviceId,
+          subscriptionUpdatedAt: target.subscriptionUpdatedAt,
+          status: "pending",
+          attempts: 0,
+          nextAttemptAt: record.ts,
+        });
+      }
+    }
     if (record.mutation?.kind === "notifications_read") {
       for (const [id, item] of this.notifications) {
         if (item.conversationId === record.mutation.conversationId && !item.readAt) {
@@ -85,8 +111,13 @@ export class WorkspaceStore {
       }
     }
     if (record.mutation?.kind === "push_subscription") {
+      for (const replacedDeviceId of record.mutation.replacedDeviceIds ?? []) this.pushSubscriptions.delete(replacedDeviceId);
       if (record.mutation.subscription) this.pushSubscriptions.set(record.mutation.deviceId, record.mutation.subscription);
       else this.pushSubscriptions.delete(record.mutation.deviceId);
+    }
+    if (record.mutation?.kind === "push_delivery") {
+      const delivery = record.mutation.delivery;
+      this.pushDeliveries.set(this.pushDeliveryKey(delivery.notificationId, delivery.deviceId), delivery);
     }
   }
 
@@ -160,13 +191,19 @@ export class WorkspaceStore {
     this.append({ type: "draft_changed", conversationId: draftId, revision: current.revision + 1, cleared: true }, { kind: "draft_deleted", draftId });
   }
 
-  createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">): WorkspaceNotificationDto {
+  createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false): WorkspaceNotificationDto {
     if (input.communicationEventId) {
       const existing = [...this.notifications.values()].find((item) => item.communicationEventId === input.communicationEventId);
       if (existing) return existing;
     }
     const notification = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
-    this.append({ type: "notification_changed", notificationId: notification.id, conversationId: notification.conversationId, action: "created" }, { kind: "notification", notification });
+    const pushTargets = queueWebPush
+      ? [...this.pushSubscriptions.values()].map(({ deviceId, updatedAt }) => ({ deviceId, subscriptionUpdatedAt: updatedAt }))
+      : undefined;
+    this.append(
+      { type: "notification_changed", notificationId: notification.id, conversationId: notification.conversationId, action: "created" },
+      { kind: "notification", notification, ...(pushTargets?.length ? { pushTargets } : {}) },
+    );
     return notification;
   }
 
@@ -185,8 +222,20 @@ export class WorkspaceStore {
   }
 
   putPushSubscription(input: Omit<WebPushSubscriptionDto, "updatedAt">): WebPushSubscriptionDto {
+    const existing = this.pushSubscriptions.get(input.deviceId);
+    if (existing && existing.endpoint === input.endpoint && existing.expirationTime === input.expirationTime &&
+      existing.keys.p256dh === input.keys.p256dh && existing.keys.auth === input.keys.auth) return existing;
     const subscription = { ...input, updatedAt: new Date().toISOString() };
-    this.append({ type: "push_subscription_changed", deviceId: input.deviceId, action: "upserted" }, { kind: "push_subscription", deviceId: input.deviceId, subscription });
+    // A browser subscription endpoint identifies one physical subscription. If
+    // local storage was cleared, replace its stale device ID instead of sending
+    // every notification twice to the same endpoint.
+    const replacedDeviceIds = [...this.pushSubscriptions.values()]
+      .filter((candidate) => candidate.deviceId !== input.deviceId && candidate.endpoint === input.endpoint)
+      .map((candidate) => candidate.deviceId);
+    this.append(
+      { type: "push_subscription_changed", deviceId: input.deviceId, action: "upserted" },
+      { kind: "push_subscription", deviceId: input.deviceId, subscription, ...(replacedDeviceIds.length ? { replacedDeviceIds } : {}) },
+    );
     return subscription;
   }
 
@@ -196,6 +245,71 @@ export class WorkspaceStore {
   }
 
   listPushSubscriptions(): WebPushSubscriptionDto[] { return [...this.pushSubscriptions.values()]; }
+
+  hasPushSubscription(deviceId: string): boolean { return this.pushSubscriptions.has(deviceId); }
+
+  getNotification(notificationId: string): WorkspaceNotificationDto | undefined {
+    return this.notifications.get(notificationId);
+  }
+
+  duePushDeliveries(now = new Date()): Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> {
+    const due = now.toISOString();
+    const result: Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> = [];
+    for (const delivery of this.pushDeliveries.values()) {
+      if (delivery.status !== "pending" || delivery.nextAttemptAt > due) continue;
+      const notification = this.notifications.get(delivery.notificationId);
+      const subscription = this.pushSubscriptions.get(delivery.deviceId);
+      // A replaced/rotated subscription must not receive work queued for the
+      // old endpoint. Its new subscription begins with the next notification.
+      if (!notification || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
+      result.push({ delivery, notification, subscription });
+    }
+    return result;
+  }
+
+  updatePushDelivery(input: {
+    notificationId: string;
+    deviceId: string;
+    status: PushDeliveryRecord["status"];
+    nextAttemptAt?: string;
+    deliveredAt?: string;
+    lastError?: string;
+  }): PushDeliveryRecord | undefined {
+    const key = this.pushDeliveryKey(input.notificationId, input.deviceId);
+    const current = this.pushDeliveries.get(key);
+    if (!current || current.status !== "pending") return current;
+    const delivery: PushDeliveryRecord = {
+      ...current,
+      status: input.status,
+      attempts: current.attempts + 1,
+      nextAttemptAt: input.nextAttemptAt ?? current.nextAttemptAt,
+      ...(input.deliveredAt ? { deliveredAt: input.deliveredAt } : {}),
+      ...(input.lastError ? { lastError: input.lastError.slice(0, 160) } : {}),
+    };
+    const action = input.status === "delivered" ? "delivered" : input.status === "abandoned" ? "abandoned" : "retry_scheduled";
+    this.append(
+      { type: "push_delivery_changed", notificationId: input.notificationId, deviceId: input.deviceId, action },
+      { kind: "push_delivery", delivery },
+    );
+    return delivery;
+  }
+
+  listPushDeliveries(): PushDeliveryRecord[] { return [...this.pushDeliveries.values()]; }
+
+  nextPushDeliveryAt(): string | undefined {
+    return [...this.pushDeliveries.values()]
+      .filter((delivery) => {
+        if (delivery.status !== "pending") return false;
+        const subscription = this.pushSubscriptions.get(delivery.deviceId);
+        return subscription?.updatedAt === delivery.subscriptionUpdatedAt && this.notifications.has(delivery.notificationId);
+      })
+      .map((delivery) => delivery.nextAttemptAt)
+      .sort()[0];
+  }
+
+  private pushDeliveryKey(notificationId: string, deviceId: string): string {
+    return `${notificationId}\u0000${deviceId}`;
+  }
 }
 
 function normalizeNotifications(input: unknown): NotificationPreferencesDto {

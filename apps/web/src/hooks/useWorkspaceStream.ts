@@ -103,7 +103,7 @@ export function useWorkspaceStream(): void {
       else if (event.type === "runtime_capabilities_changed") {
         void invalidateWorkspaceCapabilities(queryClient, { kind: "runtime-change", projectId: event.projectId });
       }
-      else void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      else if (event.type === "notification_changed") void queryClient.invalidateQueries({ queryKey: ["notifications"] });
     };
     const subscription = api.subscribeWorkspace(cursor.current, {
       onEvent: apply,

@@ -51,7 +51,7 @@ import {
 } from "./routing";
 import type { ColorMode } from "./theme";
 import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
-import { disableWebPush, syncWebPush } from "./pushNotifications";
+import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
 
 export default function App({
   colorMode,
@@ -88,8 +88,7 @@ export default function App({
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
-  const [notificationPermission, setNotificationPermission] = useState(() => typeof Notification === "undefined" ? "unsupported" : Notification.permission);
-  const [pushStatus, setPushStatus] = useState<string>();
+  const [pushState, setPushState] = useState<WebPushState>({ kind: "permission_default", message: "Checking browser push status…" });
   const [pushBusy, setPushBusy] = useState(false);
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -107,9 +106,19 @@ export default function App({
   }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, queryClient]);
 
   useEffect(() => {
-    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-    void syncWebPush(false).then(setPushStatus).catch((error: unknown) => setPushStatus(error instanceof Error ? error.message : "Push registration failed."));
+    const refresh = () => { void inspectWebPush().then(setPushState); };
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      void syncWebPush(false).then(setPushState);
+    } else refresh();
+    const unsubscribe = subscribeWebPushChanges(refresh);
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { unsubscribe(); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
+
+  useEffect(() => {
+    void closeReadPushNotifications(notificationsQuery.data ?? []);
+  }, [notificationsQuery.data]);
 
   const routedProjectId = routeProjectId(route);
   const selectedProjectId =
@@ -362,7 +371,7 @@ export default function App({
                 <Button fullWidth sx={{ justifyContent: "flex-start", px: 1.5 }} onClick={() => { if (conversationId && conversationId !== "project") { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId, conversationId }); } }}>
                   {project?.label ?? "Project"} · {conversationId && conversationId !== "project" ? "Project chat" : "Project"} ({items.length})
                 </Button>
-                <List dense disablePadding>{items.map((item) => <ListItem key={item.id} disablePadding><ListItemButton onClick={() => { if (item.conversationId) { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId: item.projectId, conversationId: item.conversationId }); } }}><ListItemText primary={item.title} secondary={item.body} /></ListItemButton></ListItem>)}</List>
+                <List dense disablePadding>{items.map((item) => <ListItem key={item.id} disablePadding><ListItemButton selected={!item.readAt} onClick={() => { if (item.conversationId) { setNotificationPanelOpen(false); navigate({ kind: "conversation", projectId: item.projectId, conversationId: item.conversationId, ...(item.communicationEventId ? { messageId: item.communicationEventId } : {}) }); } }}><ListItemText primary={item.title} secondary={item.body} /></ListItemButton></ListItem>)}</List>
               </Box>;
             })}
             {(notificationsQuery.data ?? []).length === 0 ? <Typography color="text.secondary">No notifications.</Typography> : null}
@@ -387,22 +396,21 @@ export default function App({
               const all = key !== "allMessages" && preferences.notifications.allMessages;
               return <FormControlLabel key={key} control={<Checkbox checked={preferences.notifications[key]} disabled={all} onChange={(event) => savePreferences({ notifications: { ...preferences.notifications, [key]: event.target.checked } })} />} label={all ? `${label} (included by All messages)` : label} />;
             })}
-            <Alert severity={notificationPermission === "granted" ? "success" : notificationPermission === "denied" ? "warning" : "info"}>
-              In-app notifications remain available. Browser push permission: {notificationPermission}.
-              {pushStatus ? ` ${pushStatus}` : ""}
+            <Alert severity={pushState.kind === "active" ? "success" : ["permission_denied", "insecure_origin", "host_unconfigured", "subscription_failed"].includes(pushState.kind) ? "warning" : "info"}>
+              {pushState.message} In-app notifications remain available.
+              {pushState.kind === "host_unconfigured" && pushState.setupCommand ? <Typography component="code" variant="caption" sx={{ display: "block", mt: 1, overflowWrap: "anywhere" }}>{pushState.setupCommand}</Typography> : null}
             </Alert>
-            {notificationPermission !== "unsupported" && notificationPermission !== "denied" ? (
+            {["permission_default", "permission_granted", "subscription_failed"].includes(pushState.kind) ? (
               <Button variant="outlined" disabled={pushBusy} onClick={() => {
                 setPushBusy(true);
-                void syncWebPush(true).then((message) => { setPushStatus(message); setNotificationPermission(Notification.permission); })
-                  .catch((error: unknown) => { setPushStatus(error instanceof Error ? error.message : "Push registration failed."); setNotificationPermission(Notification.permission); })
+                void syncWebPush(true).then(setPushState)
                   .finally(() => setPushBusy(false));
-              }}>Enable browser push</Button>
+              }}>{pushState.kind === "subscription_failed" ? "Retry browser push" : "Enable browser push"}</Button>
             ) : null}
-            {notificationPermission === "granted" ? (
+            {pushState.kind === "active" ? (
               <Button color="inherit" disabled={pushBusy} onClick={() => {
                 setPushBusy(true);
-                void disableWebPush().then(setPushStatus).catch((error: unknown) => setPushStatus(error instanceof Error ? error.message : "Push removal failed."))
+                void disableWebPush().then(setPushState)
                   .finally(() => setPushBusy(false));
               }}>Disable on this device</Button>
             ) : null}

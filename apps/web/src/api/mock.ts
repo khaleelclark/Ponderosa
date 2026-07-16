@@ -472,7 +472,7 @@ export const mockApi: PonderosaApi = {
   updateWorkspacePreferences(request) { workspacePreferences = { ...workspacePreferences, ...request, updatedAt: new Date().toISOString() }; return delay(workspacePreferences); },
   listNotifications() { return delay([]); },
   clearConversationNotifications() { return delay(undefined); },
-  getWebPushStatus() { return delay({ configured: false }); },
+  getWebPushStatus() { return delay({ configured: false, configuration: "missing" as const, detail: "Run host setup.", setupCommand: "pnpm --filter @ponderosa/server push:configure" }); },
   upsertWebPushSubscription() { return delay(undefined); },
   deleteWebPushSubscription() { return delay(undefined); },
   async sendDirectReply(conversationId, request) {

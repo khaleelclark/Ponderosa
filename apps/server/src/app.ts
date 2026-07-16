@@ -97,6 +97,7 @@ import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { UserReactionStore } from "./user-reactions.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
+import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -204,6 +205,17 @@ export interface CreateServerOptions {
   messageLifecycleFaults?: {
     beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
     afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
+  };
+  /** Web Push configuration/test seams. Production reads host-only VAPID env. */
+  webPush?: {
+    publicKey?: string;
+    privateKey?: string;
+    subject?: string;
+    sender?: WebPushSender;
+    retryDelaysMs?: readonly number[];
+    now?: () => number;
+    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+    clearTimer?: (timer: NodeJS.Timeout) => void;
   };
 }
 
@@ -1187,36 +1199,41 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     for (const event of workspace.readSince(cursor)) publishWorkspace(event);
   };
   const vapid = {
-    publicKey: process.env.PONDEROSA_VAPID_PUBLIC_KEY?.trim(),
-    privateKey: process.env.PONDEROSA_VAPID_PRIVATE_KEY?.trim(),
-    subject: process.env.PONDEROSA_VAPID_SUBJECT?.trim() || "mailto:admin@localhost",
+    publicKey: (opts.webPush?.publicKey ?? process.env.PONDEROSA_VAPID_PUBLIC_KEY)?.trim(),
+    privateKey: (opts.webPush?.privateKey ?? process.env.PONDEROSA_VAPID_PRIVATE_KEY)?.trim(),
+    subject: (opts.webPush?.subject ?? process.env.PONDEROSA_VAPID_SUBJECT)?.trim() || "mailto:admin@localhost",
   };
-  const webPushConfigured = Boolean(vapid.publicKey && vapid.privateKey);
-  if (webPushConfigured) webpush.setVapidDetails(vapid.subject, vapid.publicKey!, vapid.privateKey!);
-  async function deliverPush(notification: import("@ponderosa/core").WorkspaceNotificationDto): Promise<void> {
-    if (!webPushConfigured) return;
-    await Promise.allSettled(workspace.listPushSubscriptions().map(async (subscription) => {
-      try {
-        await webpush.sendNotification({ endpoint: subscription.endpoint, expirationTime: subscription.expirationTime, keys: subscription.keys }, JSON.stringify({
-          notificationId: notification.id,
-          title: notification.title,
-          body: notification.body,
-          projectId: notification.projectId,
-          conversationId: notification.conversationId,
-          url: notification.conversationId
-            ? `/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(notification.conversationId)}`
-            : `/projects/${encodeURIComponent(notification.projectId)}`,
-        }), { TTL: 60 * 60, urgency: "normal", topic: notification.id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) });
-      } catch (error) {
-        const status = (error as { statusCode?: number }).statusCode;
-        if (status === 404 || status === 410) {
-          const cursor = workspace.cursor();
-          workspace.deletePushSubscription(subscription.deviceId);
-          publishWorkspaceSince(cursor);
-        }
-      }
-    }));
+  let webPushConfiguration: "active" | "missing" | "invalid" = "missing";
+  let webPushConfigurationDetail = "This host has no VAPID keypair. Run the setup command, then restart Ponderosa.";
+  let webPushSender: WebPushSender | undefined;
+  if (Boolean(vapid.publicKey) !== Boolean(vapid.privateKey)) {
+    webPushConfiguration = "invalid";
+    webPushConfigurationDetail = "The host VAPID configuration is incomplete. Regenerate the protected configuration file.";
+  } else if (vapid.publicKey && vapid.privateKey) {
+    try {
+      if (!opts.webPush?.sender) webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
+      webPushSender = opts.webPush?.sender ?? {
+        async send(subscription, payload, options) {
+          await webpush.sendNotification(subscription, payload, options);
+        },
+      };
+      webPushConfiguration = "active";
+      webPushConfigurationDetail = "Host VAPID configuration is active.";
+    } catch {
+      webPushConfiguration = "invalid";
+      webPushConfigurationDetail = "The host VAPID configuration is invalid. Regenerate the protected configuration file.";
+    }
   }
+  const webPushConfigured = webPushConfiguration === "active";
+  const webPushDelivery = webPushSender ? new WebPushDeliveryManager({
+    store: workspace,
+    sender: webPushSender,
+    onWorkspaceEvents: publishWorkspaceSince,
+    ...(opts.webPush?.retryDelaysMs ? { retryDelaysMs: opts.webPush.retryDelaysMs } : {}),
+    ...(opts.webPush?.now ? { now: opts.webPush.now } : {}),
+    ...(opts.webPush?.setTimer ? { setTimer: opts.webPush.setTimer } : {}),
+    ...(opts.webPush?.clearTimer ? { clearTimer: opts.webPush.clearTimer } : {}),
+  }) : undefined;
   store.recoverInterruptedExecutions();
   const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
@@ -1426,16 +1443,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // policy tests/audit, but never materialize an operator notification.
       if (kind && stored.event.intent !== "collaboration" && notificationPreferenceMatches(preference, stored.event, kind)) {
         const cursor = workspace.cursor();
-        const notification = workspace.createNotification({
+        workspace.createNotification({
           projectId: stored.event.projectId,
           ...(stored.event.conversationId ? { conversationId: stored.event.conversationId } : {}),
           communicationEventId: stored.event.eventId,
           kind,
           title: store.getAgent(stored.event.sender.agentId)?.title ?? "Agent response",
           body: stored.event.text.slice(0, 240),
-        });
+        }, webPushConfigured);
         publishWorkspaceSince(cursor);
-        void deliverPush(notification);
+        webPushDelivery?.notify();
       }
       if (stored.event.conversationId) appendWorkspace({ type: "conversation_changed", projectId: stored.event.projectId, conversationId: stored.event.conversationId, action: "message" });
     }
@@ -2314,6 +2331,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
     coordinationV3Scheduler.start();
+    webPushDelivery?.start();
     const reconcileAssets = async () => {
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
@@ -2378,6 +2396,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onClose", async () => {
     closed = true;
+    await webPushDelivery?.stop();
     await coordinationV3Scheduler.stop();
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
@@ -5768,9 +5787,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return { read: true };
   });
 
-  app.get("/api/push/status", async () => ({
+  app.get<{ Querystring: { deviceId?: string } }>("/api/push/status", async (request) => ({
     configured: webPushConfigured,
+    configuration: webPushConfiguration,
+    detail: webPushConfigurationDetail,
+    setupCommand: "pnpm --filter @ponderosa/server push:configure && sudo systemctl restart ponderosa",
     ...(webPushConfigured ? { publicKey: vapid.publicKey } : {}),
+    ...(request.query.deviceId ? { deviceRegistered: workspace.hasPushSubscription(request.query.deviceId) } : {}),
   }));
 
   app.put<{ Params: { deviceId: string }; Body: WebPushSubscriptionDto }>("/api/push/subscriptions/:deviceId", async (request, reply) => {
