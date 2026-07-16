@@ -71,7 +71,7 @@ describe("composer submission availability", () => {
 });
 
 describe("explicit queue control", () => {
-  it("appears for text or attachment-only drafts while the agent is responding", () => {
+  it("appears for text or attachment-only drafts only while the agent is responding", () => {
     expect(shouldShowQueueControl({ text: "later", hasAttachments: false, agentResponding: true, disabled: false })).toBe(true);
     expect(shouldShowQueueControl({ text: "   ", hasAttachments: true, agentResponding: true, disabled: false })).toBe(true);
     expect(shouldShowQueueControl({ text: "   ", hasAttachments: false, agentResponding: true, disabled: false })).toBe(false);

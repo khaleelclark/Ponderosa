@@ -278,6 +278,42 @@ describe("composer clipboard attachments", () => {
     URL.revokeObjectURL = originalRevoke;
   });
 
+  it("queues an attachment-only busy draft and returns to ordinary Send without losing it", async () => {
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = (value) => `blob:${(value as File).name}`;
+    URL.revokeObjectURL = () => undefined;
+    const queued: Array<{ text: string; files: File[] }> = [];
+    const client = new QueryClient();
+    const attachment = file("busy-context.pdf", "application/pdf");
+    const props = {
+      disabled: false,
+      running: false,
+      agentResponding: true,
+      onSend: () => undefined,
+      onQueue: (text: string, files: File[]) => { queued.push({ text, files }); },
+    };
+    const view = create(<QueryClientProvider client={client}><Composer {...props} /></QueryClientProvider>);
+    pasteTarget(view).props.onPaste(clipboard([attachment]));
+
+    const queue = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")[0]!;
+    expect(queue.props.disabled).toBeFalsy();
+    queue.props.onClick();
+    expect(queued).toEqual([{ text: "", files: [attachment] }]);
+    await Promise.resolve();
+
+    // A second staged draft survives the canonical busy -> available switch;
+    // Queue disappears and the ordinary Send action remains accessible.
+    pasteTarget(view).props.onPaste(clipboard([attachment]));
+    view.update(<QueryClientProvider client={client}><Composer {...props} agentResponding={false} onQueue={undefined} /></QueryClientProvider>);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")).toHaveLength(0);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")).toHaveLength(1);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Remove busy-context.pdf")).toHaveLength(1);
+    view.unmount();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  });
+
   it("leaves plain text paste alone and ignores file paste while disabled or running", () => {
     for (const props of [{ disabled: true, running: false }, { disabled: false, running: true }]) {
       let prevented = false;
