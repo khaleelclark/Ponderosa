@@ -1769,7 +1769,7 @@ export function Composer({
               <Button
                 size="small"
                 variant="outlined"
-                disabled={!canSend || files.length > 0}
+                disabled={!canSend}
                 onClick={queue}
                 aria-label="Queue message"
                 sx={{ minHeight: 44 }}

@@ -2,7 +2,7 @@ import type { AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
 import { agentRoleProfile } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { agentActivity, agentRosterIndent, agentStatusLabel, deriveAgentStatus, mergeAgentStatuses, orderedAgentOrganization } from "../src/agents";
-import { eligibleOrganizationParents } from "../src/components/AgentDetail";
+import { directAgentDeliveryNotice, eligibleOrganizationParents } from "../src/components/AgentDetail";
 
 const organizationAgent = (id: string, title: string, parent?: string): AgentDto => ({
   id, title, projectId: "project", conversationIds: [], activeEngine: "codex", state: {},
@@ -18,6 +18,16 @@ function detailWith(runStatuses: Array<"running" | "completed" | "failed">, work
 }
 
 describe("visible agent status", () => {
+  it("reports the canonical durable FIFO position returned by the server", () => {
+    expect(directAgentDeliveryNotice({ queued: true, position: 3 })).toBe(
+      "Queued in position 3; it will start when the current response finishes.",
+    );
+    expect(directAgentDeliveryNotice({ queued: false, runId: "run", mode: "steer", steered: true })).toBe(
+      "Steered into the active turn.",
+    );
+    expect(directAgentDeliveryNotice({ queued: false, runId: "run", mode: "continue" })).toBeUndefined();
+  });
+
   it("prioritizes a live run over projected state", () => {
     expect(deriveAgentStatus(detailWith(["completed"]), { running: true })).toBe("running");
   });

@@ -40,7 +40,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -65,6 +65,13 @@ export function formatExecutionElapsed(startedAt: string, now = Date.now()): str
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+export function directAgentDeliveryNotice(response: SendMessageResponse): string | undefined {
+  if (response.queued) {
+    return `Queued in position ${response.position}; it will start when the current response finishes.`;
+  }
+  return response.steered ? "Steered into the active turn." : undefined;
 }
 
 function RespondingIndicator({ agentName, startedAt }: { agentName: string; startedAt: string }): JSX.Element {
@@ -362,13 +369,7 @@ export function AgentDetail({
             {
               onSuccess: (response) => {
                 setReplyTo(undefined);
-                setQueuedMessageNotice(
-                  response.queued
-                    ? `Queued in position ${response.position}; it will start when the current response finishes.`
-                    : response.steered
-                      ? "Steered into the active turn."
-                      : undefined,
-                );
+                setQueuedMessageNotice(directAgentDeliveryNotice(response));
                 void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.agent.projectId] });
               },
             },

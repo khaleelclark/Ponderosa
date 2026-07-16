@@ -123,6 +123,7 @@ describe("composer clipboard attachments", () => {
     pasteTarget(view).props.onPaste(clipboard([image]));
 
     const queue = view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")[0]!;
+    expect(queue.props.disabled).not.toBe(true);
     queue.props.onClick();
     await Promise.resolve();
 
@@ -131,6 +132,54 @@ describe("composer clipboard attachments", () => {
     view.unmount();
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
+  });
+
+  it("returns from Queue to ordinary Send after canonical busy state reconnects as available", async () => {
+    let sent: { text: string; files: File[] } | undefined;
+    const queryClient = new QueryClient();
+    const composer = (agentResponding: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <Composer
+          disabled={false}
+          running={false}
+          agentResponding={agentResponding}
+          onSend={(text, files) => { sent = { text, files }; }}
+          onQueue={() => undefined}
+        />
+      </QueryClientProvider>
+    );
+    const view = create(composer(true));
+    const textarea = pasteTarget(view);
+    textarea.props.onChange({ target: { value: "keep this draft", selectionStart: 15 } });
+
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")).toHaveLength(1);
+    expect(textarea.props.inputProps["aria-label"]).toBe("Message");
+    expect(textarea.props.inputProps.enterKeyHint).toBe("send");
+
+    view.update(composer(false));
+    const reconnectedTextarea = pasteTarget(view);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Queue message")).toHaveLength(0);
+    expect(view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")).toHaveLength(1);
+    expect(reconnectedTextarea.props.value).toBe("keep this draft");
+    expect(reconnectedTextarea.props.inputProps["aria-label"]).toBe("Message");
+    expect(reconnectedTextarea.props.inputProps.enterKeyHint).toBe("send");
+
+    let prevented = 0;
+    reconnectedTextarea.props.onKeyDown({
+      key: "Enter", shiftKey: false, repeat: false, metaKey: false, ctrlKey: false,
+      nativeEvent: { isComposing: true }, preventDefault: () => { prevented += 1; },
+    });
+    expect(sent).toBeUndefined();
+    expect(prevented).toBe(0);
+
+    reconnectedTextarea.props.onKeyDown({
+      key: "Enter", shiftKey: false, repeat: false, metaKey: false, ctrlKey: false,
+      nativeEvent: { isComposing: false }, preventDefault: () => { prevented += 1; },
+    });
+    await Promise.resolve();
+    expect(prevented).toBe(1);
+    expect(sent).toEqual({ text: "keep this draft", files: [] });
+    view.unmount();
   });
 
   it("preserves queued text and attachments after failure so the draft can be retried", async () => {
