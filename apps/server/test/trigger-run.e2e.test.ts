@@ -81,4 +81,52 @@ describe("V3.2 Trigger Run context", () => {
       await app.close();
     }
   });
+
+  it("treats a post-claim Trigger disable as cancellation without waking the manager", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-race-data-"));
+    const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-race-repo-"));
+    cleanup.push(dataDir, repoDir);
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: "Trigger race", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const worker = store.createAgent(project.id, {
+      title: "Worker", engine: "codex", conversationId: conversation.id, managerAgentId: manager.id,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.createTriggerDefinition({
+      id: "disable-race", projectId: project.id, conversationId: conversation.id, agentId: worker.id,
+      name: "Disable race", instructions: "Do work", sourceKind: "webhook", sourceConfig: { replayWindowSeconds: 300 },
+    });
+    coordination.recordTriggerOccurrence({
+      triggerId: "disable-race", occurrenceKey: "one", payload: {}, provenance: { source: "test" },
+    });
+    const disabled = deferred<void>();
+    const app = createServer({
+      dataDir, store, engines: [{ adapter: new CaptureAdapter(), authStatus: async () => ({ authenticated: true }) }],
+      logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 1 },
+      messageLifecycleFaults: {
+        afterRunClaim: ({ agentId }) => {
+          if (agentId === worker.id) {
+            coordination.updateTriggerDefinition("disable-race", { enabled: false });
+            disabled.resolve();
+          }
+        },
+      },
+    });
+    try {
+      await app.ready();
+      await disabled.promise;
+      const deadline = Date.now() + 2_000;
+      while (store.getRuns(worker.id).at(-1)?.status !== "cancelled" && Date.now() < deadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      expect(store.sqlite.prepare(`SELECT status FROM scheduler_runs WHERE agent_id = ?`).get(worker.id)).toEqual({ status: "cancelled" });
+      expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ?`).get(manager.id)).toEqual({ count: 0 });
+      expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM scheduler_runs WHERE agent_id = ?`).get(manager.id)).toEqual({ count: 0 });
+      expect(store.getRuns(worker.id).at(-1)).toMatchObject({ status: "cancelled" });
+    } finally {
+      await app.close();
+    }
+  });
 });

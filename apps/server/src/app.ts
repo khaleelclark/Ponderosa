@@ -6585,6 +6585,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let lastTextSeq: number | undefined;
         let v3PromptInjected = false;
         let providerWorkObserved = false;
+        let schedulerCancelled = false;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -6805,16 +6806,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
         } catch (err) {
           if (closed || controller.signal.aborted || !ownsActiveRun(agent.id, activeRun)) return;
+          schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
+          if (schedulerCancelled) return;
           const message = err instanceof Error ? err.message : String(err);
           persistRuntimeEvent(agent.id, activeRun, { type: "error", message });
           runError = message;
         } finally {
           const owned = ownsActiveRun(agent.id, activeRun);
+          schedulerCancelled ||= Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
+          if (schedulerCancelled && !owned && !closed && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {
+            const cancelled = store.appendEvent(agent.id, {
+              type: "agent_lifecycle",
+              status: "cancelled",
+              reason: "agent_cancelled",
+              executionId: runId,
+            });
+            publish(agent.id, cancelled);
+          }
           if (owned && scheduledSessionRollovers.delete(agent.id)) {
             store.clearResumeSession(agent.id, "explicit_compaction");
           }
           if (owned && !closed && !controller.signal.aborted) {
-            if (!runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
+            if (!schedulerCancelled && !runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
               const output = store.appendEvent(agent.id, {
                 type: "agent_output",
                 executionId: runId,
@@ -6826,8 +6839,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             }
             const terminal = store.appendEvent(agent.id, {
               type: "agent_lifecycle",
-              status: runError ? "failed" : "completed",
-              reason: runError ? "runtime_error" : "turn_completed",
+              status: schedulerCancelled ? "cancelled" : runError ? "failed" : "completed",
+              reason: schedulerCancelled ? "agent_cancelled" : runError ? "runtime_error" : "turn_completed",
               executionId: runId,
             });
             publish(agent.id, terminal);
@@ -6836,7 +6849,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               sessionId: acceptedSessionId,
               hash: organizationEnvelopeHash,
             });
-            if (runError) {
+            if (runError && !schedulerCancelled) {
               if (classifyProviderFailure(runError) === "authentication") {
                 engineAvailability.record({
                   engineId: agent.activeEngine,
@@ -6855,10 +6868,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               });
             }
           }
-          const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
+          const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
           if (released && activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined) {
             try {
-              if (controller.signal.aborted) coordinationV3!.cancelAgentRun({
+              if (schedulerCancelled) {
+                // Trigger disable/delete already terminalized and fenced this
+                // uninjected Run atomically. Do not reinterpret it as failure.
+              } else if (controller.signal.aborted) coordinationV3!.cancelAgentRun({
                 agentId: agent.id,
                 idempotencyKey: `runtime-abort:${activeRun.v3SchedulerRunId}`,
               });
@@ -6885,7 +6901,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (released) {
             agentMessageCapabilities.delete(messageCapability);
           }
-          if (released && !closed && !controller.signal.aborted && !runError) {
+          if (released && !closed && !controller.signal.aborted && !schedulerCancelled && !runError) {
             const acceptedSessionId = store.resumeSessionId(agent.id);
             if (acceptedSessionId && cursorConversationId && cursorChannel) {
               contextCursors.commit({

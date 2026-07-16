@@ -1223,6 +1223,12 @@ export class CoordinationV3Store {
     return row ? this.triggerOccurrenceDto(row) : undefined;
   }
 
+  isSchedulerRunCancelled(runId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_runs WHERE id = ? AND status = 'cancelled'
+    `).get(runId));
+  }
+
   private triggerOccurrenceDto(row: TriggerOccurrenceRow): TriggerOccurrenceDto {
     const triggerSnapshot = JSON.parse(row.trigger_snapshot_json) as TriggerOccurrenceDto["triggerSnapshot"];
     return {
