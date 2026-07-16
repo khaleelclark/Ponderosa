@@ -41,6 +41,9 @@ Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
 # Optional warm-runtime pool size. Active runs are never evicted; idle agents
 # resume their durable provider session after eviction. Defaults to 8.
 # Environment=PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=8
+# Optional host Chromium/Chrome binary for run-scoped interactive browsers.
+# Common /usr/bin paths are detected automatically.
+# Environment=PONDEROSA_BROWSER_EXECUTABLE=/usr/bin/chromium
 #
 # IMPORTANT — engine binaries on PATH. Ponderosa spawns `codex` and `claude` by
 # name. systemd's default PATH is minimal and usually does NOT include npm-global

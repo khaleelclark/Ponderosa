@@ -146,6 +146,16 @@ cursors. Workspace event IDs are monotonic and replayable after Last-Event-ID;
 clients deduplicate, detect gaps, refetch affected resources, and reconnect after
 mobile backgrounding without maintaining divergent browser truth.
 
+An active Run may own one engine-agnostic host browser that remains alive across
+ordinary chat navigation. Agent Detail presents its live page in a collapsible
+panel, makes agent/operator control ownership explicit, and fences stale input so
+both cannot type simultaneously. Browser lifecycle, navigation, console output,
+and explicit screenshots are execution activity/artifacts, never chat. The
+operator surface is scoped to the exact project, Agent, conversation, and Run and
+must not become a general host/browser proxy. The transport and teardown boundary
+is specified in
+[`docs/interactive-agent-browser.md`](./docs/interactive-agent-browser.md).
+
 Workspace/user state is recorded in append-only canonical logs with rebuildable
 projections, separate from per-agent execution logs and canonical Communication.
 SQLite and browser storage remain caches/projections for authored workspace and

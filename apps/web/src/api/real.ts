@@ -43,6 +43,9 @@ import type {
   TokenUsageSummaryDto,
   CancelAgentRunResponse,
   GlobalChatSearchResponseDto,
+  BrowserSessionDto,
+  BrowserControlRequest,
+  BrowserOperatorInputRequest,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
@@ -79,6 +82,10 @@ function toQuery(params: Record<string, string | number | undefined>): string {
   }
   const serialized = query.toString();
   return serialized ? `?${serialized}` : "";
+}
+
+function browserPath(projectId: string, agentId: string, runId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser`;
 }
 
 export const realApi: PonderosaApi = {
@@ -338,6 +345,33 @@ export const realApi: PonderosaApi = {
   },
   compactSession(agentId) {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
+  },
+  getBrowserSession(projectId, agentId, runId) {
+    return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId));
+  },
+  openBrowserSession(projectId, agentId, runId) {
+    return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "POST" });
+  },
+  reconnectBrowserSession(projectId, agentId, runId) {
+    return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/reconnect`, { method: "POST" });
+  },
+  closeBrowserSession(projectId, agentId, runId) {
+    return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "DELETE" });
+  },
+  setBrowserControl(projectId, agentId, runId, request) {
+    return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/control`, {
+      method: "PUT", body: JSON.stringify(request satisfies BrowserControlRequest),
+    });
+  },
+  sendBrowserInput(projectId, agentId, runId, request) {
+    return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/input`, {
+      method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
+    });
+  },
+  async getBrowserFrame(projectId, agentId, runId) {
+    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame`, { cache: "no-store" });
+    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
   },
   subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {
     const url = `/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({

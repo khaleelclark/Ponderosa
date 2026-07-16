@@ -60,6 +60,9 @@ import type {
   TokenUsageSummaryDto,
   CancelAgentRunResponse,
   GlobalChatSearchResponseDto,
+  BrowserSessionDto,
+  BrowserControlRequest,
+  BrowserOperatorInputRequest,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -163,6 +166,13 @@ export interface PonderosaApi {
   deleteAttachment(agentId: string, attachmentId: string): Promise<void>;
   cancelRun(agentId: string, idempotencyKey?: string): Promise<CancelAgentRunResponse>;
   compactSession(agentId: string): Promise<{ compacted: boolean }>;
+  getBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto>;
+  openBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto>;
+  reconnectBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto>;
+  closeBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto>;
+  setBrowserControl(projectId: string, agentId: string, runId: string, request: BrowserControlRequest): Promise<BrowserSessionDto>;
+  sendBrowserInput(projectId: string, agentId: string, runId: string, request: BrowserOperatorInputRequest): Promise<BrowserSessionDto>;
+  getBrowserFrame(projectId: string, agentId: string, runId: string): Promise<{ blob: Blob; revision: number }>;
   subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription;
   subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription;
 }

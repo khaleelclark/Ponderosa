@@ -118,6 +118,22 @@ describe("projectEvent — routing (SPEC §5)", () => {
     expect(art?.kind === "insert_artifact" && art.row.kind).toBe("test_report");
   });
 
+  it("explicit browser screenshot → a run-scoped screenshot Artifact, never Chat", () => {
+    const { ops } = projectEvent(T, initProjectionState("codex"), stored(4, {
+      type: "browser_screenshot",
+      sessionId: "browser-1",
+      executionId: "run-real",
+      path: "browser/frame.png",
+      width: 1280,
+      height: 720,
+    }));
+    const artifact = ops.find((op) => op.kind === "insert_artifact");
+    expect(artifact?.kind === "insert_artifact" && artifact.row).toMatchObject({
+      id: "agent-1:a:4:0", executionId: "run-real", kind: "screenshot", path: "browser/frame.png",
+    });
+    expect(ops.some((op) => op.kind === "insert_message")).toBe(false);
+  });
+
   it("session → set_session for engine-agnostic resume", () => {
     const { ops } = projectEvent(T, initProjectionState("codex"), stored(1, {
       type: "session",

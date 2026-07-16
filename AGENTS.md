@@ -177,7 +177,9 @@ Ordinary runtime output → execution-scoped Work log
   projections and authoritative V3 scheduling state (`better-sqlite3` + Drizzle).
 - **Primary engine:** Codex CLI (`codex exec --json`, `codex exec resume`).
   **Secondary:** Claude Agent SDK.
-- **Transport:** SSE for the live `AgentEvent` stream; REST for actions.
+- **Transport:** SSE for live events; REST for actions and bounded interactive
+  browser frames. The browser boundary is defined in
+  [`docs/interactive-agent-browser.md`](./docs/interactive-agent-browser.md).
 
 ### Interaction invariants
 

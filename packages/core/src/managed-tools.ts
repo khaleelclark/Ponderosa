@@ -136,3 +136,57 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
     }],
   },
 };
+
+/** Engine-agnostic, host-owned browser tools. These are execution capabilities,
+ * not Communication V3 tools, and are authorized only during their owning Run. */
+export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
+  {
+    name: "ponderosa_browser_open",
+    description: "Open or reuse the host-managed browser session owned by this exact run. Only http(s) URLs are accepted. Returns a bounded semantic page snapshot.",
+    inputSchema: {
+      type: "object", additionalProperties: false,
+      properties: { url: { type: "string", minLength: 1, maxLength: 2048 } },
+    },
+  },
+  {
+    name: "ponderosa_browser_navigate",
+    description: "Navigate the owned browser to an http(s) URL. Fails while the operator has control.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["url"],
+      properties: { url: { type: "string", minLength: 1, maxLength: 2048 } },
+    },
+  },
+  {
+    name: "ponderosa_browser_inspect",
+    description: "Inspect the owned browser's current URL, title, and a bounded semantic snapshot of visible controls and text.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
+    name: "ponderosa_browser_act",
+    description: "Operate the owned browser by CSS selector or key. Fails while the operator has control. Fill text is never copied into the activity summary.",
+    inputSchema: {
+      type: "object", additionalProperties: false, required: ["action"],
+      properties: {
+        action: { type: "string", enum: ["click", "fill", "key"] },
+        selector: { type: "string", minLength: 1, maxLength: 500 },
+        text: { type: "string", maxLength: 4000 },
+        key: { type: "string", minLength: 1, maxLength: 40 },
+      },
+    },
+  },
+  {
+    name: "ponderosa_browser_screenshot",
+    description: "Capture the current browser viewport as a run-scoped PNG artifact. Live operator frames are not persisted unless this tool is called.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
+    name: "ponderosa_browser_take_control",
+    description: "Return browser input control to the agent. Control ownership is explicit so agent and operator input cannot race.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
+    name: "ponderosa_browser_close",
+    description: "Close the browser session owned by this run and delete its temporary browser profile.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+];

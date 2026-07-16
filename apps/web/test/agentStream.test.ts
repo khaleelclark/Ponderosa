@@ -169,4 +169,27 @@ describe("updateAgentDetail", () => {
     expect(twice.activity).toEqual([expect.objectContaining({ seq: 9, event: envelope.event })]);
     expect(twice.changedFiles).toEqual([expect.objectContaining({ path: "src/index.ts", diff: "+export {}" })]);
   });
+
+  it("keeps browser lifecycle in Activity and explicit screenshots in Files & results", () => {
+    const detail = {
+      messages: [], runOutput: [], activity: [], changedFiles: [], runs: [], workItems: [], artifacts: [],
+      agent: { activeEngine: "codex", projectId: "project" },
+    } as unknown as AgentDetailDto;
+    const lifecycle = updateAgentDetail("agent-1", {
+      seq: 10, ts: "2026-07-11T08:00:05.000Z",
+      event: { type: "browser_session", sessionId: "browser", executionId: "run-1", status: "ready", controlOwner: "agent", controlEpoch: 1 },
+    } as SseEventEnvelope, detail);
+    const screenshot = updateAgentDetail("agent-1", {
+      seq: 11, ts: "2026-07-11T08:00:06.000Z",
+      event: { type: "browser_screenshot", sessionId: "browser", executionId: "run-1", path: "browser/frame.png", width: 1280, height: 720 },
+    } as SseEventEnvelope, lifecycle);
+    expect(screenshot.messages).toEqual([]);
+    expect(screenshot.activity).toEqual([
+      expect.objectContaining({ event: expect.objectContaining({ type: "browser_session" }) }),
+      expect.objectContaining({ event: expect.objectContaining({ type: "browser_screenshot" }) }),
+    ]);
+    expect(screenshot.artifacts).toEqual([expect.objectContaining({
+      id: "agent-1:a:11:0", executionId: "run-1", kind: "screenshot", mediaType: "image/png",
+    })]);
+  });
 });

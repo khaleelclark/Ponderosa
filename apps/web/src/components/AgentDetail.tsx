@@ -53,6 +53,7 @@ import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, Runs
 import { TokenUsageButton } from "./TokenUsageButton";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
+import { BrowserPanel } from "./BrowserPanel";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts";
 
@@ -462,7 +463,7 @@ export function AgentDetail({
   };
 
   return (
-    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
       <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
@@ -603,6 +604,8 @@ export function AgentDetail({
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
       </Box>
+
+      <BrowserPanel projectId={detail.agent.projectId} agentId={agentId} runId={runtimeActivity?.executionId} />
 
       <Tabs
         aria-label="Agent details"

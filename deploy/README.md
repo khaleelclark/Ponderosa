@@ -52,3 +52,18 @@ and the public key. `missing` includes the safe setup command; `invalid` means t
 host file is incomplete or contains unusable VAPID material. The browser settings
 screen separately reports unsupported browsers, insecure origins, default or
 denied permission, subscription failure, and an active device subscription.
+
+## Enable interactive agent browsers
+
+Install Chromium or Google Chrome on the host. Ponderosa checks common system
+paths automatically. If the browser lives elsewhere, set its absolute executable
+path in the systemd environment:
+
+```ini
+Environment=PONDEROSA_BROWSER_EXECUTABLE=/opt/google/chrome/chrome
+```
+
+Restart Ponderosa after changing the unit. Each active browser receives a fresh
+temporary profile below `PONDEROSA_DATA_DIR`; Ponderosa never reuses the
+operator's normal browser profile or stores browser credentials. Keep the
+executable choice in host configuration rather than the repository.

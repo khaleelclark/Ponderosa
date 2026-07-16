@@ -298,6 +298,73 @@ completion/cancellation/expiry/explicit-close/shutdown teardown; message,
 connection, reconnect, timeout, and backpressure bounds; multi-tab behavior; and
 continued assets, nested/root-relative links, favicons, HTTP streaming, and SSE.
 
+### 4.8 Interactive agent browser transport
+
+Ponderosa may start one engine-agnostic, host-managed Chromium/Chrome session
+for an Agent's exact active Project, Agent, Run, and optional Conversation. The
+runtime uses a server-issued, run-bound capability to request semantic actions;
+the authenticated operator uses REST to observe frames and explicitly transfer
+input control. The browser panel is a view over that owned host resource. It is
+not a remote provider session and never uses a provider API key.
+
+The server launches the browser with a fresh restrictive profile beneath
+`PONDEROSA_DATA_DIR`, a minimal environment, and anonymous CDP pipes. It does not
+bind a DevTools port or expose CDP, arbitrary navigation, browser control, or a
+general HTTP/TCP proxy to clients. Operator routes must resolve the exact active
+run on every request. Runtime browser calls must present the exact ephemeral
+capability held by that same authoritative run. Full host access remains an
+agent capability; these routes do not widen the scoped file-browser API.
+
+#### Control and lifecycle fencing
+
+Agent actions, operator input, and control transfers share one FIFO for the
+session. Each action captures both the browser-process lifecycle epoch and the
+control epoch. Both are checked when the action reaches the front of the FIFO
+and again before its result can update canonical state or emit audit events.
+Consequently, a queued old-owner action cannot execute after a control transfer,
+and an in-flight old-process action cannot complete after close or reconnect.
+Control transfer waits for an already in-flight action rather than allowing
+simultaneous agent/operator input.
+
+Concurrent opens for the same immutable scope share one opening promise and one
+process. Close, replacement, or ownership loss fences an opening immediately;
+if process creation finishes afterward, the late process is terminated and its
+temporary profile removed. Driver close is idempotent. Reconnect replaces the
+process only after fencing queued work and never changes the immutable owner
+scope.
+
+Normal completion, runtime failure, cancellation, execution-lease expiry,
+project deletion, agent deletion, explicit close, reconnect replacement, and
+daemon shutdown all close the browser predictably. Shutdown awaits teardown.
+Lifecycle, navigation, control, console, and screenshot records remain canonical
+Activity/Artifacts events and are not rendered as Chat conversation.
+
+#### URL and credential boundary
+
+Only non-userinfo `http:` and `https:` navigation inputs are accepted. A page's
+current URL is untrusted even after an allowed navigation because redirects can
+introduce OAuth callbacks, bearer tokens, signed-download parameters, or
+credential-bearing fragments or userinfo. Before a URL crosses into a DTO,
+canonical event, audit summary, snapshot, console record, or failure display,
+Ponderosa strips userinfo and the entire fragment and redacts known
+credential-bearing query values. Inspect snapshots are recursively sanitized,
+including their title, visible text, and control labels; titles and
+console/failure text receive the same credential redaction.
+
+The manager retains a reconnect target only when the sanitized current URL has
+no credential-bearing query or userinfo. Fragments are never retained. OAuth
+codes and state, access/refresh/ID/session tokens, API/client secrets, SAML
+payloads, signatures, and AWS/Google signed query fields are therefore never
+restored or replayed after reconnect. If the current URL is non-replayable,
+reconnect opens a blank page and requires an explicit fresh navigation.
+
+Frames are bounded screenshots, not an unrestricted interactive stream.
+Screenshots are written with restrictive permissions to the owning Agent's
+artifact directory. Commands, navigation steps, console messages, and images
+remain in Tasks/Artifacts. The design does not introduce WebSocket transport;
+any future live browser transport or broader proxy requires a separate design
+and authorization review.
+
 ## 5. Design-record maintenance
 
 Do not use this file as a duplicate implementation manual. Domain behavior stays

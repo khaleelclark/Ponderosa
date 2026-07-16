@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import type { BrowserDriver } from "../src/browser-session-manager.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -578,6 +579,7 @@ class MockAdapter implements Adapter {
   beforeResponse?: (opts: SeedOptions) => Promise<void>;
   failuresRemaining = 0;
   failNextTurn = false;
+  failureAfterBeforeResponse?: string;
   turnUsage?: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
 
   listModels(): ModelOption[] {
@@ -625,6 +627,12 @@ class MockAdapter implements Adapter {
     const beforeResponse = this.beforeResponse;
     this.beforeResponse = undefined;
     if (beforeResponse) await beforeResponse(opts);
+    if (this.failureAfterBeforeResponse) {
+      const message = this.failureAfterBeforeResponse;
+      this.failureAfterBeforeResponse = undefined;
+      yield { type: "error", message };
+      return;
+    }
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
     yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
@@ -841,6 +849,241 @@ describe("human-facing chat projection boundary", () => {
     expect(detail.activity.length).toBeGreaterThan(0);
     expect(detail.changedFiles.length).toBeGreaterThan(0);
     await app.close();
+  });
+});
+
+describe("interactive browser API", () => {
+  const trackedBrowserDriver = (): BrowserDriver => ({
+    pageInfo: async () => ({ url: "about:blank", title: "Blank" }),
+    navigate: async (url) => ({ url, title: "Page" }),
+    inspect: async () => JSON.stringify({ url: "about:blank", controls: [] }),
+    click: async () => ({ url: "about:blank", title: "Blank" }),
+    fill: async () => ({ url: "about:blank", title: "Blank" }),
+    key: async () => ({ url: "about:blank", title: "Blank" }),
+    pointer: async () => ({ url: "about:blank", title: "Blank" }),
+    type: async () => ({ url: "about:blank", title: "Blank" }),
+    scroll: async () => ({ url: "about:blank", title: "Blank" }),
+    capture: async () => Buffer.from("89504e470d0a1a0a", "hex"),
+    close: vi.fn(async () => undefined),
+  });
+
+  const startBrowserRun = async (app: ReturnType<typeof createServer>, headers?: Record<string, string>) => {
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", headers,
+      payload: { label: "Browser lifecycle", hostPath: repoDir, defaultEngine: "codex" },
+    })).json<{ id: string }>();
+    const agent = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`, headers,
+      payload: { title: "Browser lifecycle agent", engine: "codex" },
+    })).json<{ id: string }>();
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, headers, payload: { text: "Use the browser" },
+    })).statusCode).toBe(202);
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("running");
+    await waitForSeedCount(1);
+    const runId = store.getRuns(agent.id)[0]!.id;
+    const browserUrl = `/api/projects/${project.id}/agents/${agent.id}/runs/${runId}/browser`;
+    expect((await app.inject({ method: "POST", url: browserUrl, headers })).statusCode).toBe(200);
+    return { project, agent, runId, browserUrl };
+  };
+
+  it("authorizes operator DELETE against the exact run and tears down its session", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({
+      dataDir, store, engines, logger: false, authToken: "operator-secret",
+      browserDriverFactory: async () => driver,
+    });
+    const operator = { authorization: "Bearer operator-secret" };
+    const { agent, runId, browserUrl } = await startBrowserRun(app, operator);
+
+    expect((await app.inject({ method: "DELETE", url: browserUrl })).statusCode).toBe(401);
+    expect((await app.inject({
+      method: "DELETE", url: browserUrl.replace(runId, "foreign-run"), headers: operator,
+    })).statusCode).toBe(404);
+    const closed = await app.inject({ method: "DELETE", url: browserUrl, headers: operator });
+    expect(closed.statusCode).toBe(200);
+    expect(closed.json()).toMatchObject({ projectId: expect.any(String), agentId: agent.id, runId, status: "closed" });
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason: "operator_closed", executionId: runId }),
+    }));
+    await app.close();
+    expect(driver.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("authorizes run-capability close and tears down only its owned browser session", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { agent, runId } = await startBrowserRun(app);
+    const capability = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+
+    expect((await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: "Bearer foreign-capability" },
+      payload: { operation: "close" },
+    })).statusCode).toBe(401);
+    const closed = await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: `Bearer ${capability}` },
+      payload: { operation: "close" },
+    });
+    expect(closed.statusCode).toBe(200);
+    expect(closed.json()).toMatchObject({ session: { agentId: agent.id, runId, status: "closed" } });
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason: "agent_closed", executionId: runId }),
+    }));
+    expect((await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: `Bearer ${capability}` },
+      payload: { operation: "inspect" },
+    })).statusCode).toBe(409);
+    await app.close();
+    expect(driver.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("authenticates and scopes operator/agent control to the exact active run", async () => {
+    adapter.mode = "hang";
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    const driver: BrowserDriver = {
+      pageInfo: async () => ({ url: "about:blank", title: "Blank" }),
+      navigate: async (url) => ({ url, title: "Page" }),
+      inspect: async () => JSON.stringify({ url: "about:blank", controls: [] }),
+      click: async () => ({ url: "about:blank", title: "Blank" }),
+      fill: async () => ({ url: "about:blank", title: "Blank" }),
+      key: async () => ({ url: "about:blank", title: "Blank" }),
+      pointer: async () => ({ url: "about:blank", title: "Blank" }),
+      type: async () => ({ url: "about:blank", title: "Blank" }),
+      scroll: async () => ({ url: "about:blank", title: "Blank" }),
+      capture: async () => png,
+      close: async () => undefined,
+    };
+    const app = createServer({
+      dataDir, store, engines, logger: false, authToken: "operator-secret",
+      browserDriverFactory: async () => driver,
+    });
+    const operator = { authorization: "Bearer operator-secret" };
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", headers: operator,
+      payload: { label: "Browser", hostPath: repoDir, defaultEngine: "codex" },
+    })).json<{ id: string }>();
+    const agent = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`, headers: operator,
+      payload: { title: "Browser agent", engine: "codex" },
+    })).json<{ id: string }>();
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, headers: operator, payload: { text: "Open a browser" },
+    })).statusCode).toBe(202);
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("running");
+    await waitForSeedCount(1);
+    const runId = store.getRuns(agent.id)[0]!.id;
+    const root = `/api/projects/${project.id}/agents/${agent.id}/runs/${runId}/browser`;
+
+    expect((await app.inject({ method: "POST", url: root })).statusCode).toBe(401);
+    const opened = await app.inject({ method: "POST", url: root, headers: operator });
+    expect(opened.statusCode).toBe(200);
+    expect(opened.json()).toMatchObject({ projectId: project.id, agentId: agent.id, runId, status: "ready", controlOwner: "agent" });
+    expect((await app.inject({ method: "GET", url: root.replace(runId, "foreign-run"), headers: operator })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: root.replace(project.id, "foreign-project"), headers: operator })).statusCode).toBe(404);
+
+    const controlled = await app.inject({
+      method: "PUT", url: `${root}/control`, headers: operator,
+      payload: { owner: "operator", expectedControlEpoch: 1 },
+    });
+    expect(controlled.json()).toMatchObject({ controlOwner: "operator", controlEpoch: 2 });
+    expect((await app.inject({
+      method: "POST", url: `${root}/input`, headers: operator,
+      payload: { kind: "click", x: 15, y: 20, expectedControlEpoch: 1 },
+    })).statusCode).toBe(409);
+    expect((await app.inject({
+      method: "POST", url: `${root}/input`, headers: operator,
+      payload: { kind: "click", x: 15, y: 20, expectedControlEpoch: 2 },
+    })).statusCode).toBe(200);
+
+    const environment = adapter.seeds[0]!.environment!;
+    expect(environment.PONDEROSA_AGENT_BROWSER_URL).toMatch(/\/api\/agent-browser$/);
+    const capabilityHeaders = { authorization: `Bearer ${environment.PONDEROSA_AGENT_MESSAGE_TOKEN}` };
+    expect((await app.inject({ method: "POST", url: "/api/agent-browser", payload: { operation: "inspect" } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/agent-browser", headers: capabilityHeaders, payload: { operation: "inspect" } })).statusCode).toBe(200);
+    await app.inject({ method: "PUT", url: `${root}/control`, headers: operator, payload: { owner: "agent", expectedControlEpoch: 2 } });
+    expect((await app.inject({ method: "POST", url: "/api/agent-browser", headers: capabilityHeaders, payload: { operation: "screenshot" } })).statusCode).toBe(200);
+    const screenshot = store.getArtifacts(agent.id).find((artifact) => artifact.kind === "screenshot")!;
+    expect(screenshot).toMatchObject({ mediaType: "image/png", previewUrl: expect.any(String) });
+    expect((await app.inject({ method: "GET", url: screenshot.previewUrl!, headers: operator })).rawPayload).toEqual(png);
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers: operator, payload: { idempotencyKey: "browser-stop" } });
+    await expect.poll(async () => (await app.inject({ method: "GET", url: root, headers: operator })).statusCode).toBe(404);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "browser_session", status: "closed" }) }));
+    await app.close();
+  });
+
+  it.each([
+    { terminal: "completed" as const, failure: undefined, reason: "run_completed" },
+    { terminal: "failed" as const, failure: "browser owner failed", reason: "run_failed" },
+  ])("tears down on normal $terminal run termination", async ({ terminal, failure, reason }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    adapter.beforeResponse = async () => gate;
+    adapter.failureAfterBeforeResponse = failure;
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { agent } = await startBrowserRun(app);
+
+    release();
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe(terminal);
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason }),
+    }));
+    await app.close();
+  });
+
+  it("tears down the browser when the owning execution lease expires", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({
+      dataDir, store, engines, logger: false, browserDriverFactory: async () => driver,
+      executionLeaseScheduling: { leaseMs: 80, heartbeatMs: 1_000 },
+    });
+    const { agent } = await startBrowserRun(app);
+
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status, { timeout: 2_000 }).toBe("failed");
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({ type: "browser_session", status: "closed", reason: "run_lease_expired" }),
+    }));
+    await app.close();
+  });
+
+  it("tears down the browser before deleting its owning project", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { project } = await startBrowserRun(app);
+
+    expect((await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` })).statusCode).toBe(200);
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    await app.close();
+  });
+
+  it("tears down the browser before deleting its owning agent", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { agent } = await startBrowserRun(app);
+
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    await app.close();
+  });
+
+  it("tears down the browser during daemon shutdown", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    await startBrowserRun(app);
+
+    await app.close();
+    expect(driver.close).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -2949,7 +3192,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("runs correlated V3 work through exactly three tools and a fenced activation cycle", async () => {
+  it("runs correlated V3 work through exactly three coordination tools and a fenced activation cycle", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({
@@ -2970,9 +3213,12 @@ describe("server chunk F", () => {
     expect(started.json()).toMatchObject({ queued: true, position: 1 });
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
     const requesterRuntime = persistent.openedOptions[0]!;
-    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual([
+    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name).filter((name) => [
+      "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
+    ].includes(name))).toEqual([
       "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
     ]);
+    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.required)
       .toEqual(["updateId", "kind"]);
     expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);

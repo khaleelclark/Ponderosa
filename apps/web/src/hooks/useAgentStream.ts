@@ -9,7 +9,8 @@ export interface ExecutionItem {
   id: string;
   seq: number;
   ts: string;
-  event: Extract<AgentEvent, { type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" }>;
+  event: Extract<AgentEvent, { type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
+    "browser_session" | "browser_action" | "browser_console" | "browser_screenshot" }>;
 }
 
 export interface StreamState {
@@ -32,6 +33,10 @@ const executionTypes: ReadonlySet<string> = new Set([
   "tool_call",
   "tool_result",
   "error",
+  "browser_session",
+  "browser_action",
+  "browser_console",
+  "browser_screenshot",
 ]);
 
 export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {
@@ -310,6 +315,19 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
       path: `test-result-${seq}.md`,
       summary: event.summary,
       createdAt: ts,
+    };
+    return { ...detail, artifacts: [...artifacts, artifact] };
+  }
+
+  if (event.type === "browser_screenshot") {
+    const artifacts = compactDefined(detail.artifacts);
+    const id = projectedArtifactId(agentId, seq);
+    if (artifacts.some((artifact) => artifact.id === id)) return detail;
+    const root = `/api/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(id)}`;
+    const artifact: ArtifactDto = {
+      id, agentId, executionId: event.executionId, kind: "screenshot", path: event.path,
+      summary: `Browser screenshot (${event.width}×${event.height})`, createdAt: ts,
+      mediaType: "image/png", previewUrl: root, downloadUrl: `${root}?download=1`,
     };
     return { ...detail, artifacts: [...artifacts, artifact] };
   }

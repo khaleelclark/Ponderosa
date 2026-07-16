@@ -23,6 +23,10 @@ export interface TokenUsage {
   totalTokens?: number;
 }
 
+export type BrowserControlOwner = "agent" | "operator";
+export type BrowserSessionStatus = "opening" | "ready" | "closed" | "failed";
+export type BrowserActionKind = "navigate" | "click" | "type" | "key" | "scroll" | "inspect" | "control";
+
 /**
  * The normalized agent event union — SPEC §5, verbatim in shape.
  *
@@ -41,6 +45,41 @@ export type AgentEvent =
   | { type: "command"; command: string; cwd: string } // → Run activity / Artifact
   | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string } // → Artifact
   | { type: "test_result"; passed: boolean; summary: string } // → Artifact
+  | {
+      type: "browser_session";
+      sessionId: string;
+      executionId: string;
+      status: BrowserSessionStatus;
+      controlOwner: BrowserControlOwner;
+      controlEpoch: number;
+      url?: string;
+      title?: string;
+      reason?: string;
+    }
+  | {
+      type: "browser_action";
+      sessionId: string;
+      executionId: string;
+      actor: BrowserControlOwner;
+      action: BrowserActionKind;
+      summary: string;
+      url?: string;
+    }
+  | {
+      type: "browser_console";
+      sessionId: string;
+      executionId: string;
+      level: "log" | "info" | "warning" | "error";
+      text: string;
+    }
+  | {
+      type: "browser_screenshot";
+      sessionId: string;
+      executionId: string;
+      path: string;
+      width: number;
+      height: number;
+    }
   | { type: "work_item_update"; workItemId: string; status: WorkItemStatus; title?: string; executionId?: string }
   | {
       type: "turn_done";
