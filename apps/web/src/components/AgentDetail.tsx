@@ -35,6 +35,8 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
@@ -48,6 +50,7 @@ import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { projectedMessageIdForFocus } from "../messageFocus";
+import { compactViewportQuery } from "../responsive";
 import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 import { TokenUsageButton } from "./TokenUsageButton";
