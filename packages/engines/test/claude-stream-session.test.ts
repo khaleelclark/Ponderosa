@@ -66,7 +66,7 @@ describe("Claude persistent stream-json runtime", () => {
         PONDEROSA_AGENT_MESSAGE_URL: "http://127.0.0.1:8787/api/agent-messages",
         PONDEROSA_AGENT_MESSAGE_TOKEN: "run-token",
       },
-      dynamicTools: [{ name: "ponderosa_send_message", description: "Send", inputSchema: {} }],
+      dynamicTools: [{ name: "ponderosa_message", description: "Send", inputSchema: {} }],
     });
     const flagIndex = capturedArgs.indexOf("--mcp-config");
     expect(flagIndex).toBeGreaterThan(-1);

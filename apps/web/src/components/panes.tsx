@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentActivityDto, AgentRunDto, AgentWaitDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, RunTriggerRecord, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, FileEntryDto, MessageDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -206,9 +206,6 @@ function wakeCauseLabel(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
     case "project_request": return "Project request";
     case "direct_message": return "Direct message";
     case "collaboration": return "Collaboration";
-    case "wait_satisfied": return "Expected reports received";
-    case "wait_deadline": return "Wait deadline";
-    case "wait_interrupted": return "Urgent wait interruption";
     case "managed_failure": return "Managed-agent failure";
   }
 }
@@ -708,23 +705,15 @@ export function WorkLogPane({ entries }: { entries: RunOutputDto[] }): JSX.Eleme
 
 export function RunsPane({
   runs,
-  activeWait,
   coordinationV3,
   workItems,
-  runTriggers,
-  messages,
   timeline,
 }: {
   runs: AgentRunDto[];
-  activeWait?: AgentWaitDto;
   coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
-  runTriggers: RunTriggerRecord[];
-  messages: MessageDto[];
   timeline: ExecutionItem[];
 }): JSX.Element {
-  const messageByCommunication = new Map(messages.flatMap((message) =>
-    message.communicationEventId ? [[message.communicationEventId, message] as const] : []));
   return (
     <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
@@ -737,13 +726,6 @@ export function RunsPane({
           </Typography>
         ) : null}
       </Stack>
-      {activeWait ? (
-        <Alert severity="info">
-          Waiting for reports: {activeWait.receivedAgentIds.length} of {activeWait.expectedAgentIds.length} received
-          {activeWait.mode === "quorum" ? ` · quorum ${activeWait.quorum}` : ` · ${activeWait.mode}`}
-          {activeWait.deadline ? ` · deadline ${new Date(activeWait.deadline).toLocaleString()}` : ""}
-        </Alert>
-      ) : null}
       {coordinationV3 ? (
         <Alert severity={coordinationV3.availability === "waiting" ? "info" : "success"}>
           Communication V3: {coordinationV3.availability}
@@ -816,38 +798,6 @@ export function RunsPane({
           </Paper>
         ))}
       </> : null}
-      <Divider />
-      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
-          Run triggers
-        </Typography>
-        <Typography variant="caption" color="text.secondary">{runTriggers.length}</Typography>
-      </Stack>
-      {runTriggers.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">No accepted run triggers yet.</Typography>
-      ) : runTriggers.map((trigger) => {
-        const sourceMessage = messageByCommunication.get(trigger.communicationEventId);
-        const sourceLabel = trigger.source === "project_request"
-          ? "Project request"
-          : trigger.source === "collaboration"
-            ? "Collaboration"
-            : "Direct message";
-        return (
-          <Paper key={trigger.triggerId} variant="outlined" sx={{ p: 1.25 }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: sourceMessage ? 0.75 : 0 }}>
-              <Chip size="small" variant="outlined" label={sourceLabel} />
-              <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-                {new Date(trigger.createdAt).toLocaleString()}
-              </Typography>
-            </Stack>
-            {sourceMessage ? (
-              <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                {sourceMessage.text}
-              </Typography>
-            ) : null}
-          </Paper>
-        );
-      })}
       <Divider />
       <Typography variant="overline" color="text.secondary">
         Timeline

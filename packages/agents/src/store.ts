@@ -1,7 +1,8 @@
-// AgentStore — the library that apps/server consumes. Ties together the on-disk
-// event logs (source of truth), the SQLite projections, and the pure projectors.
-// Exposes NO HTTP (SPEC §7). SQLite is never a source of truth: everything here is
-// derivable from the logs + the *.json files, and `rebuildProjections()` proves it.
+// AgentStore — the library that apps/server consumes. Authored communication and
+// execution telemetry remain event-log-owned and their SQLite views are
+// rebuildable. Communication V3 scheduler state is different: its requests,
+// joins, activations, Runs, leases, fences, injections, and idempotency records
+// are authoritative SQLite state. Exposes NO HTTP (SPEC §7).
 
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -28,7 +29,6 @@ import type {
   CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
-  RunTriggerRecord,
   ProjectedCommunicationMessage,
   AgentPresetDto, CreateAgentPresetRequest, UpdateAgentPresetRequest,
   ArtifactKind,
@@ -117,7 +117,6 @@ import {
   communicationContextPath,
   communicationProjectionsPath,
   messageDispatchesPath,
-  runTriggersPath,
   conversationJsonPath,
   conversationsDir,
   projectJsonPath,
@@ -194,7 +193,6 @@ export interface ConversationDeliveryIntent {
   /** The selector that authorized this recipient when the message was recorded. */
   audience?: "mention" | "everyone";
   /** Explicit behavior when the recipient has an active durable wait. */
-  waitBehavior?: import("@ponderosa/core").AgentCollaborationWaitBehavior;
   /** Target-owned staged assets delivered with this recipient turn. */
   attachmentIds?: string[];
 }
@@ -288,11 +286,6 @@ export class AgentStore {
     projections: CommunicationProjection[];
     byTuple: Map<string, CommunicationProjection>;
   }>();
-  private readonly runTriggerCache = new Map<string, {
-    records: RunTriggerRecord[];
-    byId: Map<string, RunTriggerRecord>;
-    byEventAgent: Map<string, RunTriggerRecord>;
-  }>();
   private readonly messageDispatchCache = new Map<string, MessageDispatchRecord[]>();
 
   constructor(private readonly dataDir: string) {
@@ -376,19 +369,6 @@ export class AgentStore {
     ]));
     cached = { projections: [...byTuple.values()], byTuple };
     this.communicationProjectionCache.set(projectId, cached);
-    return cached;
-  }
-
-  private runTriggerIndex(projectId: string) {
-    let cached = this.runTriggerCache.get(projectId);
-    if (cached) return cached;
-    const records = readRepairableJsonl<RunTriggerRecord>(runTriggersPath(this.dataDir, projectId), "run trigger log", true);
-    cached = {
-      records,
-      byId: new Map(records.map((record) => [record.triggerId, record])),
-      byEventAgent: new Map(records.map((record) => [`${record.communicationEventId}\u0000${record.agentId}`, record])),
-    };
-    this.runTriggerCache.set(projectId, cached);
     return cached;
   }
 
@@ -530,84 +510,6 @@ export class AgentStore {
     return this.communicationIndex(projectId).byId.get(eventId);
   }
 
-  /**
-   * Persist the explicit communication-to-agent edge before a run is started,
-   * steered, or queued. Text and room placement are never consulted.
-   */
-  recordRunTriggers(
-    projectId: string,
-    communicationEventIds: readonly string[],
-    agentId: string,
-    createdAt = new Date().toISOString(),
-  ): Array<{ trigger: RunTriggerRecord; replayed: boolean }> {
-    const uniqueEventIds = [...new Set(communicationEventIds)];
-    if (uniqueEventIds.length === 0) return [];
-    const agent = this.getAgent(agentId);
-    if (!agent || agent.projectId !== projectId || agent.archived) throw new Error("run trigger agent must be active in its project");
-    const candidates = uniqueEventIds.map((communicationEventId): RunTriggerRecord => {
-      const event = this.getCommunicationEvent(projectId, communicationEventId);
-      if (!event) throw new Error("run trigger communication was not found");
-      if (event.conversationId && !agent.conversationIds.includes(event.conversationId)) {
-        throw new Error("run trigger agent must belong to the communication conversation");
-      }
-      const behavior = deriveCommunicationBehavior(event);
-      const source = event.intent === "broadcast" && event.sender.kind === "user"
-        ? "project_request" as const
-        : behavior.runTriggerAgentIds.includes(agentId)
-          ? event.intent === "collaboration" ? "collaboration" as const : "direct_message" as const
-          : undefined;
-      if (!source) throw new Error("communication is not eligible to trigger this agent");
-      return {
-        triggerId: `${communicationEventId}:agent:${agentId}`,
-        projectId,
-        agentId,
-        communicationEventId,
-        source,
-        createdAt,
-      };
-    });
-    const index = this.runTriggerIndex(projectId);
-    for (const trigger of candidates) {
-      const existing = index.byId.get(trigger.triggerId);
-      if (existing && (existing.projectId !== trigger.projectId || existing.agentId !== trigger.agentId ||
-          existing.communicationEventId !== trigger.communicationEventId || existing.source !== trigger.source)) {
-        throw new Error("run trigger identity collision");
-      }
-    }
-    const fresh = candidates.filter((trigger) => !index.byId.has(trigger.triggerId));
-    if (fresh.length > 0) {
-      appendFsyncedJsonl(runTriggersPath(this.dataDir, projectId), fresh);
-      for (const trigger of fresh) {
-        index.records.push(trigger);
-        index.byId.set(trigger.triggerId, trigger);
-        index.byEventAgent.set(`${trigger.communicationEventId}\u0000${agentId}`, trigger);
-      }
-    }
-    const freshIds = new Set(fresh.map((trigger) => trigger.triggerId));
-    return candidates.map((trigger) => ({
-      trigger: index.byId.get(trigger.triggerId)!,
-      replayed: !freshIds.has(trigger.triggerId),
-    }));
-  }
-
-  recordRunTrigger(
-    projectId: string,
-    communicationEventId: string,
-    agentId: string,
-    createdAt = new Date().toISOString(),
-  ): { trigger: RunTriggerRecord; replayed: boolean } {
-    return this.recordRunTriggers(projectId, [communicationEventId], agentId, createdAt)[0]!;
-  }
-
-  readRunTriggers(projectId: string, agentId?: string): RunTriggerRecord[] {
-    if (!this.getProject(projectId)) throw new Error("run trigger project not found");
-    return this.runTriggerIndex(projectId).records.filter((record) => !agentId || record.agentId === agentId);
-  }
-
-  hasRunTrigger(projectId: string, communicationEventId: string, agentId: string): boolean {
-    return this.runTriggerIndex(projectId).byEventAgent.has(`${communicationEventId}\u0000${agentId}`);
-  }
-
   getCommunicationDocument(projectId: string, documentId: string) {
     const event = this.readCommunicationEvents(projectId).find((candidate) => candidate.document?.id === documentId);
     return event?.document ? { event, document: event.document } : undefined;
@@ -651,13 +553,6 @@ export class AgentStore {
         return Boolean(agent && agent.projectId === projectId && !agent.archived);
       }
       return true;
-    }
-    // A Project request is a Broadcast plus a separate, explicit RunTrigger.
-    // That edge authorizes only the responsible agent's local audit.
-    if (projection.surface === "direct_agent_audit" && event.intent === "broadcast" && event.sender.kind === "user") {
-      const agent = this.getAgent(projection.projectionKey);
-      return Boolean(agent && agent.projectId === projectId && !agent.archived &&
-        this.hasRunTrigger(projectId, event.eventId, projection.projectionKey));
     }
     return false;
   }
@@ -946,7 +841,6 @@ export class AgentStore {
     this.communicationEventCache.delete(id);
     this.contextClassificationCache.delete(id);
     this.communicationProjectionCache.delete(id);
-    this.runTriggerCache.delete(id);
     this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
       this.logs.delete(agentId);
@@ -1590,7 +1484,6 @@ export class AgentStore {
     return {
       agent,
       messages: this.getMessages(id),
-      runTriggers: this.readRunTriggers(agent.projectId, id),
       runOutput: this.getRunOutputs(id),
       activity: this.getActivity(id),
       changedFiles: this.getChangedFiles(id),
@@ -2424,7 +2317,7 @@ export class AgentStore {
    */
   clearResumeSession(
     agentId: string,
-    reason: "explicit_compaction" | "resume_compaction_failed",
+    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover",
   ): boolean {
     const row = this.db
       .select({ id: agents.id, activeSessionId: agents.activeSessionId })

@@ -1,15 +1,14 @@
-// On-disk layout (SPEC §7). Folders are the source of truth; SQLite is a
-// rebuildable projection over them.
+// On-disk layout (SPEC §7). Folders own authored state and telemetry; SQLite
+// owns Communication V3 scheduler state and rebuildable views of authored data.
 //
 //   $PONDEROSA_DATA_DIR/
-//     ponderosa.db                     ← SQLite projections (rebuildable)
+//     ponderosa.db                     ← projections + authoritative V3 runtime state
 //     projects/
 //       <project-id>/
 //         project.json                 ← label, host path, createdAt
 //         communication-events.jsonl   ← canonical cross-surface communication
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
-//         run-triggers.jsonl              ← accepted communication-to-agent dispatches
 //         agent-organization.jsonl    ← canonical mutable reporting relationships
 //         conversations/
 //           <conversation-id>/
@@ -64,10 +63,6 @@ export function communicationContextPath(dataDir: string, projectId: string): st
 
 export function communicationProjectionsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "communication-projections.jsonl");
-}
-
-export function runTriggersPath(dataDir: string, projectId: string): string {
-  return path.join(projectDir(dataDir, projectId), "run-triggers.jsonl");
 }
 
 export function agentPresetsPath(dataDir: string, projectId: string): string {

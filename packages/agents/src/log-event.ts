@@ -7,7 +7,7 @@
 // core stays untouched (no SPEC edit needed — this is an additive superset, not a
 // redefinition of a core type).
 
-import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentWaitDto, AgentCoordinationV3Dto, ImageAttachmentDto } from "@ponderosa/core";
+import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentCoordinationV3Dto, ImageAttachmentDto } from "@ponderosa/core";
 import type { AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
@@ -22,7 +22,7 @@ export interface UserMessageEvent {
 /** Clear a provider session while retaining the canonical agent history. */
 export interface SessionResetEvent {
   type: "session_reset";
-  reason: "explicit_compaction" | "resume_compaction_failed";
+  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover";
 }
 
 /** Direct Agent audit projection of one canonical communication event. */
@@ -47,12 +47,6 @@ export interface AgentLifecycleEvent {
   effort?: string;
 }
 
-/** Canonical stream update for one durable wait latch and its reporter progress. */
-export interface AgentWaitChangedEvent {
-  type: "agent_wait_changed";
-  activeWait: AgentWaitDto | null;
-}
-
 /** Live telemetry mirror of authoritative SQLite V3 coordination state. */
 export interface CoordinationV3ChangedEvent {
   type: "coordination_v3_changed";
@@ -63,7 +57,7 @@ export interface CoordinationV3ChangedEvent {
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | AgentWaitChangedEvent | CoordinationV3ChangedEvent |
+export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent |
   AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */

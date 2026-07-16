@@ -75,10 +75,10 @@ pay-per-token provider API keys.
    into execution data, never communication. To share a private finding more
    broadly, create a new communication with the intended scope.
 
-   Every accepted communication-to-agent dispatch has one durable `RunTrigger`
-   linking the canonical message to that agent. A plain Project request is an
-   organizational Broadcast plus a separate trigger for its responsible agent;
-   the Broadcast itself still does not deliver or wake agents.
+   Every accepted communication-to-agent dispatch has one deduplicated SQLite
+   `Activation` linking the canonical message to that agent. A plain Project
+   request is an organizational Broadcast plus a separate Activation for its
+   responsible agent; the Broadcast itself still does not wake agents.
 
 5. **Only Broadcasts are shared knowledge.** Plain Project-chat requests are
    intentionally created as Broadcasts. Visibility does not otherwise imply context
@@ -114,10 +114,10 @@ pay-per-token provider API keys.
    delivery, enter a future agent's context, or escape its originating agent and
    execution.
 
-   A `RunTrigger` explains why activation was accepted; an `AgentRun` is the
-   resulting execution and is keyed by its real execution ID. Create and finish
-   Runs only from explicit lifecycle events—never infer them from a user message,
-   rendered text, `turn_done`, or provider session continuity. `WorkItem` is
+   An `Activation` explains why execution was requested; an `AgentRun` is the
+   resulting execution and is keyed by its real execution ID. Only the scheduler
+   may create or claim Runs. Finish them from explicit lifecycle events—never
+   infer them from rendered text, `turn_done`, or provider session continuity. `WorkItem` is
    optional provider-reported progress inside or across Runs, not a synonym for
    either the prompt or execution. Artifacts, output, and activity retain their
    originating execution ID.
@@ -202,8 +202,8 @@ Ordinary runtime output → execution-scoped Work log
   Results return to their requester or consumer; managers receive escalations and
   outcomes they own rather than every operational exchange. Managed agents may
   Direct Message the user but cannot Broadcast; top-level agents own organizational
-  synthesis and publication. Runtime failure still wakes the direct manager through
-  an internal delivery without manufacturing chat.
+  synthesis and publication. Runtime failure creates one deduplicated Activation
+  for the direct manager without manufacturing chat.
 - Deleting a manager recursively deletes its remaining descendants. Promotion
   or re-parenting is an explicit user action performed before deletion; it never
   rewrites creator, communication, or execution history.
@@ -213,10 +213,10 @@ Ordinary runtime output → execution-scoped Work log
 - Explicit user cancellation is terminal for the active Run and its claimed
   activation. It immediately fences execution, revokes runtime capabilities,
   interrupts the provider, and must never requeue or respawn the
-  same delivery; later queued work remains eligible to run. Genuine runtime
+  same Activation; later queued work remains eligible to run. Genuine runtime
   failures may retain their separate bounded retry policy.
-- Collaboration delivery rejects exact replay within bounded recent causal
-  lineage, and batched deliveries preserve every constituent lineage. Do not add
+- Collaboration rejects exact replay within bounded recent causal lineage, and
+  coalesced Activations preserve every constituent lineage. Do not add
   an arbitrary total-handoff or topology cap without an observed product need;
   healthy organizations may coordinate for as long as their agents choose.
 - Activity and Changed Files are projections of canonical execution events.
@@ -270,9 +270,9 @@ that way; don't duplicate these types per app.
   foundation; UI comes last.
 - **Normalize at the edge.** Runtime-specific event shapes (Codex JSONL, Claude SDK
   events) are converted to `AgentEvent` inside `packages/engines` and nowhere else.
-- **Everything derives from the log.** If a communication, audit, or deliverable
-  projection is wrong, fix the projector—do not write to SQLite as a second
-  source of truth.
+- **Authority is domain-specific.** If an authored communication, audit, or
+  deliverable projection is wrong, fix the projector. Communication V3 runtime
+  state is written transactionally to SQLite and is not rebuilt from JSONL.
 - **Keep secrets out of the repo and images:** engine auth token files
   (`~/.codex`, Claude profile), OAuth secrets, `.env`. Never commit them.
 - **Persist execution events.** Commands, tool calls, file changes, failures, and
@@ -366,7 +366,8 @@ committing, or pushing.
   context.
 - ❌ Route messages by display name or agent-authored textual `@mentions`.
 - ❌ Re-send indiscriminate conversation and audit history to every fresh runtime.
-- ❌ Treat SQLite as the source of truth (it's a rebuildable projection).
+- ❌ Treat authored communication or telemetry projections as authoritative
+  SQLite state. Communication V3 scheduler tables are the deliberate exception.
 - ❌ Copy JobTracker's Next.js/Docker stack. (Reuse its **OAuth** pattern only.)
 - ❌ Introduce SSR / a Next.js app / a WebSocket transport without a strong
   architectural reason.

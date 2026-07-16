@@ -15,8 +15,7 @@ function project(options: {
   agents?: AgentDto[];
   active?: Map<string, { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "interrupted" }>;
   compacting?: Map<string, string>;
-  waiting?: Map<string, string>;
-  queued?: Record<string, Array<{ createdAt: string }>>;
+  availability?: Record<string, "running" | "runnable" | "waiting" | "idle">;
   events?: Record<string, StoredLogEvent[]>;
 } = {}) {
   return projectAgentHealth({
@@ -24,8 +23,7 @@ function project(options: {
     agents: options.agents ?? [agent("agent")],
     activeRuns: options.active ?? new Map(),
     compactingAgents: options.compacting ?? new Map(),
-    activeWaits: options.waiting ?? new Map(),
-    queuedDeliveries: (id) => options.queued?.[id] ?? [],
+    availability: (id) => options.availability?.[id] ?? "idle",
     events: (id) => options.events?.[id] ?? [],
     now: t1,
   });
@@ -62,10 +60,10 @@ describe("agent health projection", () => {
     });
   });
 
-  it("projects waiting from task approval and durable delivery", () => {
+  it("projects waiting from task approval and authoritative V3 availability", () => {
     expect(project({ active: new Map([["agent", { startedAt: t0 }]]), events: { agent: [event({ type: "work_item_update", workItemId: "item", status: "waiting_approval" })] } }).agents[0]?.reason).toBe("work_item_waiting_approval");
-    expect(project({ waiting: new Map([["agent", t1]]) }).agents[0]).toMatchObject({ status: "waiting", statusTimestamp: t1, reason: "awaiting_reports" });
-    expect(project({ queued: { agent: [{ createdAt: t1 }] } }).agents[0]?.reason).toBe("queued_delivery");
+    expect(project({ availability: { agent: "waiting" } }).agents[0]).toMatchObject({ status: "waiting", reason: "awaiting_reports" });
+    expect(project({ availability: { agent: "runnable" } }).agents[0]?.reason).toBe("queued_delivery");
   });
 
   it("returns completed work to idle and preserves failures", () => {

@@ -136,7 +136,9 @@ mobile backgrounding without maintaining divergent browser truth.
 
 Workspace/user state is recorded in append-only canonical logs with rebuildable
 projections, separate from per-agent execution logs and canonical Communication.
-SQLite and browser storage remain caches/projections rather than sources of truth.
+SQLite and browser storage remain caches/projections for authored workspace and
+user state. Communication V3 scheduler tables are authoritative for requests,
+joins, activations, Runs, leasing, fencing, cancellation, injection, and recovery.
 
 In-app notifications are durable. Opening a Project chat clears its unread state
 across devices. Notification preferences are synced and cover direct responses,

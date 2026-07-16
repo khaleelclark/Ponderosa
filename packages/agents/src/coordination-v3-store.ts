@@ -42,6 +42,7 @@ interface JoinRow {
   satisfying_outcomes_json: string;
   state: CoordinationJoinState;
   deadline_at: string | null;
+  continuation_request_ids_json: string;
 }
 
 interface ActivationRow {
@@ -79,6 +80,8 @@ export interface CoordinateV3Input {
     satisfyingOutcomes?: CoordinationRequestState[];
     deadlineAt?: string;
     requestIds?: string[];
+    /** Server-derived inbound requests that this join suspends and resumes. */
+    continuationRequestIds?: string[];
   };
 }
 
@@ -173,6 +176,16 @@ export interface RuntimeCommunicationV3Result {
 export interface RuntimeCommunicationV3View {
   id: string;
   projectId: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface PendingActivationV3View {
+  id: string;
+  projectId: string;
+  agentId: string;
+  kind: string;
+  state: "pending" | "retry_pending";
   payload: unknown;
   createdAt: string;
 }
@@ -359,6 +372,79 @@ export class CoordinationV3Store {
     }));
   }
 
+  runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT id, project_id, payload_json, created_at FROM runtime_communications WHERE id = ?
+    `).get(id) as { id: string; project_id: string; payload_json: string; created_at: string } | undefined;
+    return row ? {
+      id: row.id,
+      projectId: row.project_id,
+      payload: JSON.parse(row.payload_json) as unknown,
+      createdAt: row.created_at,
+    } : undefined;
+  }
+
+  pendingActivations(projectId?: string): PendingActivationV3View[] {
+    const rows = this.sqlite.prepare(`
+      SELECT id, project_id, agent_id, kind, state, payload_json, created_at
+      FROM agent_activations
+      WHERE state IN ('pending', 'retry_pending') AND (? IS NULL OR project_id = ?)
+      ORDER BY priority DESC, created_at, id
+    `).all(projectId ?? null, projectId ?? null) as Array<{
+      id: string; project_id: string; agent_id: string; kind: string;
+      state: "pending" | "retry_pending"; payload_json: string; created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      agentId: row.agent_id,
+      kind: row.kind,
+      state: row.state,
+      payload: JSON.parse(row.payload_json) as unknown,
+      createdAt: row.created_at,
+    }));
+  }
+
+  communicationRecipientAgentIds(communicationId: string): string[] {
+    return (this.sqlite.prepare(`
+      SELECT DISTINCT activation.agent_id
+      FROM activation_sources source
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      JOIN runtime_communications communication ON communication.id = source.source_id
+      WHERE source.source_kind = 'communication'
+        AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
+      ORDER BY activation.agent_id
+    `).all(communicationId, communicationId) as Array<{ agent_id: string }>).map((row) => row.agent_id);
+  }
+
+  cancelPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { cancelled: boolean; replayed: boolean; status: "cancelled" | "delivery_started" } {
+    if (!input.idempotencyKey.trim()) throw new Error("cancellation idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    const hash = payloadHash({ activationId: input.activationId });
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ cancelled: boolean; status: "cancelled" | "delivery_started" }>(
+        input.projectId, "user:local-operator", "cancel_activation", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
+      `).run(now, input.activationId, input.projectId).changes;
+      const result = changed === 1
+        ? { cancelled: true, status: "cancelled" as const }
+        : { cancelled: false, status: "delivery_started" as const };
+      this.recordIdempotency(
+        input.projectId, "user:local-operator", "cancel_activation", input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
+  }
+
   activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
     id: string; kind: string; promptClass: ActivationPromptClass; payload: unknown;
   }> {
@@ -382,7 +468,7 @@ export class CoordinationV3Store {
   }
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
-    const rows = this.sqlite.prepare(`
+    const directRows = this.sqlite.prepare(`
       SELECT DISTINCT request.id, request.created_at
       FROM scheduler_runs run
       JOIN scheduler_run_activations attached ON attached.run_id = run.id
@@ -396,8 +482,80 @@ export class CoordinationV3Store {
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
         AND source.source_kind IN ('request', 'request_update')
       ORDER BY request.created_at, request.id
-    `).all(runId, agentId) as Array<{ id: string }>;
-    return rows.map((row) => row.id);
+    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
+    const continuationRows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id, request.created_at
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN activation_sources source
+        ON source.activation_id = attached.activation_id AND source.source_kind = 'join'
+      JOIN coordination_joins join_record ON join_record.id = source.source_id
+      JOIN json_each(join_record.continuation_request_ids_json) continuation
+      JOIN coordination_requests request ON request.id = continuation.value
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND request.recipient_agent_id = run.agent_id
+    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
+    return [...new Map([...directRows, ...continuationRows].map((row) => [row.id, row])).values()]
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+      .map((row) => row.id);
+  }
+
+  /**
+   * Return requesters that already received an authoritative terminal outcome
+   * from this exact provider execution. An ordinary message to one of these
+   * agents is a passive audit copy: the request or its Join owns the wake.
+   * Matching the execution ID keeps earlier outcomes and unrelated messages
+   * actionable, while callers may still explicitly override this for urgency.
+   */
+  terminalOutcomeRequesterIdsForRun(runId: string, agentId: string, executionId: string): string[] {
+    const requestIds = this.requestIdsAttachedToRun(runId, agentId);
+    if (requestIds.length === 0) return [];
+    const terminalStates = [...TERMINAL_REQUEST_STATES];
+    const requestPlaceholders = requestIds.map(() => "?").join(", ");
+    const terminalPlaceholders = terminalStates.map(() => "?").join(", ");
+    const rows = this.sqlite.prepare(`
+      SELECT DISTINCT request.requester_agent_id
+      FROM coordination_requests request
+      WHERE request.id IN (${requestPlaceholders}) AND request.recipient_agent_id = ?
+        AND request.requester_agent_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM coordination_request_updates request_update
+          WHERE request_update.request_id = request.id
+            AND request_update.actor_kind = 'agent'
+            AND request_update.actor_id = ?
+            AND request_update.resulting_state IN (${terminalPlaceholders})
+            AND json_extract(request_update.payload_json, '$.executionId') = ?
+        )
+      ORDER BY request.requester_agent_id
+    `).all(
+      ...requestIds,
+      agentId,
+      agentId,
+      ...terminalStates,
+      executionId,
+    ) as Array<{ requester_agent_id: string }>;
+    return rows.map((row) => row.requester_agent_id);
+  }
+
+  /** Whether this Run consumes creation of a new request addressed to the
+   * recipient. V3.1 uses this durable causal edge to select a fresh provider
+   * cache without conflating provider memory with agent identity. Request
+   * updates (including answers), joins, and ordinary messages intentionally do
+   * not match and therefore retain continuity. */
+  runStartsNewRecipientRequest(runId: string, agentId: string): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 AS matched
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN activation_sources source ON source.activation_id = attached.activation_id
+      JOIN coordination_requests request
+        ON source.source_kind = 'request' AND request.id = source.source_id
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND request.recipient_agent_id = ?
+      LIMIT 1
+    `).get(runId, agentId, agentId) as { matched: number } | undefined;
+    return Boolean(row);
   }
 
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
@@ -474,6 +632,14 @@ export class CoordinationV3Store {
           throw new Error("every existing join request must be owned by the requester in this project");
         }
         const memberRequestIds = [...new Set([...requestIds, ...existingMemberRequestIds])];
+        const continuationRequestIds = [...new Set(input.join.continuationRequestIds ?? [])];
+        for (const requestId of continuationRequestIds) {
+          const continuation = this.getRequestRow(requestId);
+          if (continuation.project_id !== input.projectId || continuation.recipient_agent_id !== input.requesterAgentId ||
+              TERMINAL_REQUEST_STATES.has(continuation.state)) {
+            throw new Error("every join continuation must be a nonterminal request assigned to the join owner");
+          }
+        }
         joinId = input.join.id ?? randomUUID();
         const mode = input.join.mode;
         const quorum = mode === "all" ? memberRequestIds.length : mode === "any" ? 1 : input.join.quorum ?? 0;
@@ -491,10 +657,13 @@ export class CoordinationV3Store {
           quorum,
           satisfyingOutcomes: [...new Set(satisfying)].sort(),
           deadlineAt: input.join.deadlineAt ?? null,
+          continuationRequestIds: [...continuationRequestIds].sort(),
         });
         const equivalent = this.sqlite.prepare(`
           SELECT id FROM coordination_joins
-          WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ? AND state = 'open'
+          WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ?
+            AND state IN ('open', 'satisfied', 'impossible')
+          ORDER BY created_at LIMIT 1
         `).get(input.projectId, input.requesterAgentId, definitionHash) as { id: string } | undefined;
         if (equivalent) {
           joinId = equivalent.id;
@@ -505,16 +674,29 @@ export class CoordinationV3Store {
         this.sqlite.prepare(`
           INSERT INTO coordination_joins (
             id, project_id, owner_agent_id, mode, quorum,
-            satisfying_outcomes_json, state, deadline_at, definition_hash, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+            satisfying_outcomes_json, state, deadline_at, definition_hash,
+            continuation_request_ids_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
         `).run(
           joinId, input.projectId, input.requesterAgentId, mode, quorum,
-          stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash, now, now,
+          stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash,
+          stableJson(continuationRequestIds), now, now,
         );
         const insertMember = this.sqlite.prepare(`
           INSERT INTO coordination_join_members (join_id, request_id, position) VALUES (?, ?, ?)
         `);
         memberRequestIds.forEach((requestId, position) => insertMember.run(joinId, requestId, position));
+        for (const requestId of continuationRequestIds) {
+          const continuation = this.getRequestRow(requestId);
+          if (continuation.state === "open" || continuation.state === "in_progress") this.updateRequest({
+            requestId,
+            updateId: `join:${joinId}:waiting:${requestId}`,
+            kind: "waiting_dependency",
+            actor: { kind: "agent", id: input.requesterAgentId },
+            payload: { joinId, reason: "waiting_for_join" },
+            now,
+          });
+        }
         this.reevaluateRequestJoins(memberRequestIds[0]!, now);
       }
 
@@ -920,11 +1102,20 @@ export class CoordinationV3Store {
         LIMIT 1
       `).get(now) as { agent_id: string; project_id: string } | undefined;
       if (!candidate) return undefined;
-      const activations = this.sqlite.prepare(`
+      const queuedActivations = this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND state IN ('pending', 'retry_pending') AND available_at <= ?
-        ORDER BY priority DESC, created_at, id LIMIT ?
-      `).all(candidate.agent_id, now, limit) as ActivationRow[];
+        ORDER BY priority DESC, created_at, id LIMIT 64
+      `).all(candidate.agent_id, now) as ActivationRow[];
+      // A new inbound request starts a fresh provider task context. Human
+      // messages, join resumptions, answers, and blockers retain continuity,
+      // so combining the two classes would make session disposition ambiguous.
+      // Keep the lower-priority class pending for the next authoritative Run.
+      const startsFreshTask = (activation: ActivationRow) => activation.kind === "coordination_request";
+      const candidateStartsFreshTask = startsFreshTask(queuedActivations[0]!);
+      const activations = queuedActivations
+        .filter((activation) => startsFreshTask(activation) === candidateStartsFreshTask)
+        .slice(0, limit);
       if (activations.length === 0) return undefined;
       const fencingToken = this.nextFence(candidate.agent_id);
       const runId = randomUUID();
@@ -1205,7 +1396,13 @@ export class CoordinationV3Store {
       this.sqlite.prepare(`
         UPDATE scheduler_run_activations SET consumed_at = ? WHERE run_id = ?
       `).run(now, runId);
-      this.markRelatedRequestsOutcomeUnknown(runId, now, "run_completed_without_request_update", ["open", "in_progress"]);
+      this.markRelatedRequestsOutcomeUnknown(
+        runId,
+        now,
+        "run_completed_without_request_update",
+        ["open", "in_progress"],
+        ["open", "in_progress", "waiting_dependency"],
+      );
     })();
   }
 
@@ -1334,15 +1531,6 @@ export class CoordinationV3Store {
         operationId: Number(operation.lastInsertRowid),
       };
     })();
-  }
-
-  /** Compatibility wrapper for store-level callers. Runtime cancellation must
-   * use cancelAgentRun so the receipt and provider interrupt are transactional. */
-  cancelRun(runId: string, now = new Date().toISOString()): number {
-    const row = this.sqlite.prepare(`SELECT agent_id FROM scheduler_runs WHERE id = ?`).get(runId) as { agent_id: string } | undefined;
-    if (!row) throw new Error("run not found");
-    const result = this.cancelAgentRun({ agentId: row.agent_id, idempotencyKey: `legacy:${runId}`, now });
-    return result.fencingToken ?? (this.sqlite.prepare(`SELECT fencing_token FROM scheduler_runs WHERE id = ?`).get(runId) as { fencing_token: number }).fencing_token;
   }
 
   claimProviderOperations(workerId: string, limit = 20, now = new Date().toISOString(), staleMs = 30_000): ProviderOperation[] {
@@ -1589,6 +1777,14 @@ export class CoordinationV3Store {
       update_payload_json: string | null;
       update_created_at: string | null;
     }>;
+    const continuations = (JSON.parse(join.continuation_request_ids_json) as string[]).map((requestId) => {
+      const request = this.getRequestRow(requestId) as RequestRow & { payload_json: string };
+      return {
+        requestId: request.id,
+        state: request.state,
+        request: JSON.parse(request.payload_json) as unknown,
+      };
+    });
     this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
@@ -1611,6 +1807,10 @@ export class CoordinationV3Store {
             },
           } : {}),
         })),
+        ...(continuations.length ? {
+          continuations,
+          continuationInstruction: "Integrate the joined outcomes, then terminally update every nonterminal continuation request before ending this Run. Sending a message does not fulfill a correlated request.",
+        } : {}),
       },
       sourceKind: "join",
       sourceId: join.id,
@@ -1693,6 +1893,7 @@ export class CoordinationV3Store {
     now: string,
     reason: string,
     eligibleStates: CoordinationRequestState[],
+    continuationEligibleStates: CoordinationRequestState[] = eligibleStates,
   ): void {
     const placeholders = eligibleStates.map(() => "?").join(", ");
     const rows = this.sqlite.prepare(`
@@ -1710,7 +1911,22 @@ export class CoordinationV3Store {
         AND r.recipient_agent_id = run.agent_id
         AND r.state IN (${placeholders})
     `).all(runId, ...eligibleStates) as Array<{ id: string }>;
-    for (const row of rows) this.updateRequest({
+    const continuationPlaceholders = continuationEligibleStates.map(() => "?").join(", ");
+    const continuationRows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id
+      FROM scheduler_run_activations attached
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      JOIN activation_sources source
+        ON source.activation_id = attached.activation_id AND source.source_kind = 'join'
+      JOIN coordination_joins join_record ON join_record.id = source.source_id
+      JOIN json_each(join_record.continuation_request_ids_json) continuation
+      JOIN coordination_requests request ON request.id = continuation.value
+      WHERE attached.run_id = ?
+        AND request.recipient_agent_id = run.agent_id
+        AND request.state IN (${continuationPlaceholders})
+    `).all(runId, ...continuationEligibleStates) as Array<{ id: string }>;
+    const related = [...new Map([...rows, ...continuationRows].map((row) => [row.id, row])).values()];
+    for (const row of related) this.updateRequest({
       requestId: row.id,
       updateId: `system:outcome-unknown:${runId}:${row.id}`,
       kind: "outcome_unknown",

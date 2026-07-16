@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentStore } from "../src/store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, messageDispatchesPath, projectDir, projectJsonPath, runTriggersPath } from "../src/paths.js";
+import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -308,52 +308,6 @@ describe("AgentStore — canonical communication events", () => {
       .toThrow("target agent");
   });
 
-  it("uses a durable RunTrigger—not message text—to link a Project request to its responsible agent", () => {
-    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const room = store.createConversation(project.id, { title: "Room" });
-    const responsible = store.createAgent(project.id, { title: "Responsible", engine: "codex", conversationId: room.id });
-    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: room.id });
-    const request: CommunicationEvent = {
-      eventId: "project-request", schemaVersion: 2, projectId: project.id, conversationId: room.id,
-      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
-      audience: { kind: "organization", organizationId: project.id }, text: "#Other fix the build",
-      createdAt: "2026-07-13T00:00:00.000Z",
-    };
-    store.appendCommunicationEvent(request);
-
-    expect(() => store.appendEvent(responsible.id, {
-      type: "user_message", text: request.text, communicationEventId: request.eventId,
-    })).toThrow("scope cannot project");
-    const first = store.recordRunTrigger(project.id, request.eventId, responsible.id, request.createdAt);
-    expect(first).toMatchObject({ replayed: false, trigger: { source: "project_request", agentId: responsible.id } });
-    expect(store.recordRunTrigger(project.id, request.eventId, responsible.id, "later")).toEqual({
-      trigger: first.trigger,
-      replayed: true,
-    });
-    store.appendEvent(responsible.id, { type: "user_message", text: request.text, communicationEventId: request.eventId });
-    expect(store.getProjectedAgentMessages(responsible.id)).toHaveLength(1);
-    expect(store.getProjectedAgentMessages(other.id)).toHaveLength(0);
-    expect(readFileSync(runTriggersPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
-
-    const { event: direct } = store.appendCommunicationEvent({
-      eventId: "direct-trigger", schemaVersion: 2, projectId: project.id,
-      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
-      audience: { kind: "user_agent", userId: "local-operator", agentId: responsible.id },
-      text: "Follow up", createdAt: "2026-07-13T00:01:00.000Z",
-    });
-    const batch = store.recordRunTriggers(project.id, [request.eventId, direct.eventId], responsible.id, direct.createdAt);
-    expect(batch).toEqual([
-      { trigger: first.trigger, replayed: true },
-      { trigger: expect.objectContaining({ communicationEventId: direct.eventId, source: "direct_message" }), replayed: false },
-    ]);
-    expect(readFileSync(runTriggersPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(2);
-
-    store.close();
-    store = new AgentStore(dir);
-    expect(store.readRunTriggers(project.id, responsible.id)).toEqual([first.trigger, batch[1]!.trigger]);
-    expect(store.hasRunTrigger(project.id, request.eventId, responsible.id)).toBe(true);
-  });
-
   it("preserves an agent collaborator as the visible author in the recipient audit", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
@@ -648,7 +602,7 @@ describe("AgentStore — multi-conversation membership", () => {
 
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
-  { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1", wakeCause: "wait_satisfied" },
+  { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1", wakeCause: "direct_message" },
   { type: "session", sessionId: "sess-abc" },
   { type: "text", delta: "I'll handle this.", executionId: "run-1" },
   { type: "command", command: "pnpm test", cwd: "/repo" },
@@ -692,7 +646,7 @@ describe("AgentStore — append + projection", () => {
       path: "auth.ts", kind: "edit", lastSeq: 7, diff: "diff --git a/auth.ts b/auth.ts\n",
     })]);
     expect(detail.runs).toEqual([expect.objectContaining({
-      id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication", wakeCause: "wait_satisfied",
+      id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication", wakeCause: "direct_message",
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
     })]);
     expect(detail.workItems).toEqual([]);

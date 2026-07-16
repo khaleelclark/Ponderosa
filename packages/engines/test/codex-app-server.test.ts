@@ -108,7 +108,7 @@ describe("Codex app-server persistent runtime", () => {
       sandboxMode: "workspace-write",
       killGraceMs: 50,
       dynamicTools: [{
-        name: "ponderosa_send_message",
+        name: "ponderosa_message",
         description: "Send an explicitly scoped Ponderosa message.",
         inputSchema: { type: "object", required: ["intent", "text"] },
       }],
@@ -127,13 +127,13 @@ describe("Codex app-server persistent runtime", () => {
     await session.startTurn({ prompt: "send the result", kind: "user_message" });
     await collecting;
     expect(calls).toEqual([{
-      name: "ponderosa_send_message",
+      name: "ponderosa_message",
       arguments: { intent: "broadcast", text: "Managed result" },
     }]);
     expect(events).toContainEqual({
       type: "tool_call",
       id: "tool-1",
-      name: "ponderosa_send_message",
+      name: "ponderosa_message",
       input: { intent: "broadcast", text: "Managed result" },
     });
     expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", id: "tool-1" }));

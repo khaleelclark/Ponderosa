@@ -627,7 +627,6 @@ export const mockApi: PonderosaApi = {
     return delay({
       agent,
       messages: messages[agentId] ?? [],
-      runTriggers: [],
       runOutput: [],
       activity: [],
       changedFiles: [],

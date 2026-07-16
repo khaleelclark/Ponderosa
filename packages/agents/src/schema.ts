@@ -1,7 +1,6 @@
-// SQLite projection schema (SPEC §7) via Drizzle. These six tables are a
-// rebuildable index over the on-disk event logs — NEVER a source of truth
-// (AGENTS.md invariant: everything derives from the log). If a projection is
-// wrong, fix the projector, don't write here as a second source.
+// SQLite schema (SPEC §7) via Drizzle. Authored-state tables are rebuildable
+// indexes over event logs. Communication V3 tables are authoritative runtime
+// state; their transaction boundaries define scheduler correctness.
 
 import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
@@ -172,6 +171,7 @@ export const coordinationJoins = sqliteTable("coordination_joins", {
   satisfyingOutcomesJson: text("satisfying_outcomes_json").notNull(),
   state: text("state").notNull(),
   deadlineAt: text("deadline_at"),
+  continuationRequestIdsJson: text("continuation_request_ids_json").notNull().default("[]"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   terminalAt: text("terminal_at"),

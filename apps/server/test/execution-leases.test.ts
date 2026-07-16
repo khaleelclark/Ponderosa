@@ -3,9 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, SeedOptions } from "@ponderosa/core";
-import { AgentStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { createServer, type EngineRegistration } from "../src/app.js";
-import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 class LeaseAdapter implements Adapter {
   id = "codex";
@@ -103,7 +102,7 @@ const flush = async () => {
 };
 
 const eventually = async (condition: () => boolean) => {
-  for (let index = 0; index < 100; index += 1) {
+  for (let index = 0; index < 1_000; index += 1) {
     if (condition()) return;
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
@@ -173,7 +172,7 @@ describe("enforced execution leases", () => {
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     const app = server();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "hang" } });
-    await flush();
+    await eventually(() => adapter.seeds.length === 1);
     const capability = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
     await clock.advance(1_000);
@@ -185,8 +184,8 @@ describe("enforced execution leases", () => {
     })).statusCode).toBe(401);
 
     const second = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "new generation" } });
-    expect(second.statusCode).toBe(200);
-    await flush();
+    expect(second.statusCode).toBe(202);
+    await eventually(() => adapter.seeds.length === 2);
     adapter.releaseLateEvent();
     await flush();
 
@@ -219,7 +218,7 @@ describe("enforced execution leases", () => {
     await app.close();
   });
 
-  it("requeues a claimed collaboration delivery and resumes FIFO dispatch after expiry", async () => {
+  it("fails closed instead of replaying an injected activation after lease expiry", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Room" });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
@@ -233,55 +232,28 @@ describe("enforced execution leases", () => {
 
     await clock.advance(1_000);
     await flush();
-    await eventually(() => adapter.seeds.length === 2);
-    expect(adapter.seeds[1]!.prompt).toContain("#Agent queued follow-up");
     expect(store.readEvents(agent.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
+    expect(new CoordinationV3Store(store.sqlite).schedulerMetrics().outcomeUnknownRuns).toBe(1);
+    expect(adapter.seeds).toHaveLength(1);
     adapter.releaseLateEvent();
     await flush();
-    await eventually(() => store.readEvents(agent.id).some((item) => item.event.type === "text" && item.event.delta === "new generation completed"));
+    expect(store.readEvents(agent.id).some((item) => item.event.type === "text" && item.event.delta === "late event from expired generation")).toBe(false);
     await app.close();
   });
 
-  it("bounds repeated lease-expired recipient turns using the durable turn-attempt policy", async () => {
-    adapter.hangRuns = 2;
-    const project = store.createProject({ label: "Lease", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Room" });
-    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex", conversationId: master.id });
-    const app = server();
-    const queued = await app.inject({
-      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "bounded expiry", recipientAgentIds: [agent.id] },
-    });
-    const messageId = queued.json<{ message: { id: string } }>().message.id;
-    await eventually(() => adapter.seeds.length === 1);
-
-    await clock.advance(1_000);
-    await eventually(() => adapter.seeds.length === 2);
-    await clock.advance(1_000);
-    await flush();
-
-    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, agent.id);
-    expect(delivery).toMatchObject({ status: "failed", attempts: 2, failure: "execution lease expired" });
-    expect(adapter.seeds).toHaveLength(2);
-    expect(store.readEvents(agent.id).filter((item) =>
-      item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(2);
-    adapter.releaseAllLateEvents();
-    await flush();
-    await app.close();
-  });
-
-  it("clears supervision timers on shutdown and preserves restart interruption recovery", async () => {
+  it("clears supervision timers and preserves SQLite recovery state across restart", async () => {
     const project = store.createProject({ label: "Lease", hostPath: repoDir });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
     const app = server();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "hang" } });
-    await flush();
+    await eventually(() => adapter.seeds.length === 1);
     await app.close();
     await clock.advance(2_000);
     store = new AgentStore(dataDir);
     expect(store.readEvents(agent.id).some((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toBe(false);
     const restarted = createServer({ dataDir, store, engines, logger: false, executionLeaseScheduling: { leaseMs: 1_000, now: () => clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer } });
-    expect(store.readEvents(agent.id).filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_interrupted")).toHaveLength(1);
+    await restarted.ready();
+    expect(new CoordinationV3Store(store.sqlite).schedulerMetrics().outcomeUnknownRuns).toBe(1);
     await restarted.close();
   });
 });

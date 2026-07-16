@@ -52,9 +52,6 @@ function projectedWorkItemId(agentId: string, workItemId: string): string {
 export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
   const { event, seq, ts } = envelope;
 
-  if (event.type === "agent_wait_changed") {
-    return { ...detail, activeWait: event.activeWait ?? undefined };
-  }
 
   if (event.type === "coordination_v3_changed") {
     return { ...detail, coordinationV3: event.coordination };
@@ -164,7 +161,6 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     };
     return {
       ...detail,
-      ...(event.status === "running" ? { activeWait: undefined } : {}),
       runs: existing ? runs.map((run) => run.id === event.executionId ? nextRun : run) : [...runs, nextRun],
     };
   }

@@ -16,7 +16,7 @@ lines.on("line", (line) => {
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "inProgress" } } });
     if (dynamicToolEnabled) {
-      send({ method: "item/started", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "tool-1", tool: "ponderosa_send_message", arguments: { intent: "broadcast", text: "Managed result" }, status: "inProgress" } } });
+      send({ method: "item/started", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "tool-1", tool: "ponderosa_message", arguments: { intent: "broadcast", text: "Managed result" }, status: "inProgress" } } });
       send({
         id: 900,
         method: "item/tool/call",
@@ -24,7 +24,7 @@ lines.on("line", (line) => {
           threadId: "codex-thread-v1",
           turnId: "turn-1",
           callId: "tool-1",
-          tool: "ponderosa_send_message",
+          tool: "ponderosa_message",
           arguments: { intent: "broadcast", text: "Managed result" },
         },
       });
@@ -32,7 +32,7 @@ lines.on("line", (line) => {
     return;
   }
   if (message.id === 900 && message.result) {
-    send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "tool-1", tool: "ponderosa_send_message", arguments: { intent: "broadcast", text: "Managed result" }, status: "completed", success: true, contentItems: message.result.contentItems } } });
+    send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "tool-1", tool: "ponderosa_message", arguments: { intent: "broadcast", text: "Managed result" }, status: "completed", success: true, contentItems: message.result.contentItems } } });
     send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "agentMessage", id: "m2", text: "Sent through Ponderosa." } } });
     send({ method: "turn/completed", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "completed", error: null } } });
     return;

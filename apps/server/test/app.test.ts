@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
-import { CollaborationDeliveryStore } from "../src/handoffs.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -364,7 +363,7 @@ describe("token usage API", () => {
   it("reports provider usage at agent, project, and overall scopes after a real run", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     adapter.turnUsage = { inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 150 };
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Meter this run" } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Meter this run" } })).statusCode).toBe(202);
     await waitForRun(agent.id);
     await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("completed");
 
@@ -581,67 +580,6 @@ describe("project lifecycle API", () => {
 });
 
 describe("persistent engine steering", () => {
-  it("steers an active agent immediately instead of adding a FIFO delivery", async () => {
-    const steerable = new SteerableMockAdapter();
-    engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Steering", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Persistent", engine: "codex" });
-
-    const first = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Start working" } });
-    expect(first.statusCode).toBe(200);
-    await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
-    const original = store.getMessages(agent.id).find((message) => message.text === "Start working")!;
-    const second = await app.inject({
-      method: "POST",
-      url: `/api/agents/${agent.id}/messages`,
-      payload: { text: "Use the new direction", replyToMessageId: original.id },
-    });
-    expect(second.statusCode).toBe(200);
-    expect(second.json()).toMatchObject({ queued: false, steered: true, mode: "steer" });
-    expect(steerable.opened).toBe(1);
-    expect(steerable.steers).toEqual([expect.objectContaining({ kind: "user_message" })]);
-    expect(steerable.steers[0]?.prompt).toContain("Use the new direction");
-    expect(steerable.steers[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Start working");
-    await waitForRun(agent.id);
-    expect(store.getMessages(agent.id).map((message) => message.text)).toEqual([
-      "Start working", "Use the new direction",
-    ]);
-    expect(store.getAgentDetail(agent.id)?.runOutput).toEqual([
-      expect.objectContaining({ executionId: expect.any(String), kind: "response", text: "steered result", completed: true }),
-    ]);
-    expect(new CollaborationDeliveryStore(dataDir).pendingCount(agent.id)).toBe(0);
-    await app.close();
-  });
-
-  it("queues explicitly instead of steering an active agent", async () => {
-    const steerable = new SteerableMockAdapter();
-    engines = [{ adapter: steerable, authStatus: async () => ({ authenticated: true }) }];
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Explicit queue", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Persistent", engine: "codex" });
-
-    expect((await app.inject({
-      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Start working" },
-    })).statusCode).toBe(200);
-    await vi.waitFor(() => expect(steerable.starts).toHaveLength(1));
-    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
-      .toMatchObject({ agents: [expect.objectContaining({
-        agentId: agent.id,
-        runtimeActivity: { state: "responding", executionId: expect.any(String), startedAt: expect.any(String) },
-      })] });
-
-    const queued = await app.inject({
-      method: "POST", url: `/api/agents/${agent.id}/messages`,
-      payload: { text: "Do this after", activeRunDelivery: "queue" },
-    });
-    expect(queued.statusCode).toBe(202);
-    expect(queued.json()).toMatchObject({ queued: true, position: 1 });
-    expect(steerable.steers).toHaveLength(0);
-    expect(new CollaborationDeliveryStore(dataDir).pendingCount(agent.id)).toBe(1);
-    await app.close();
-  });
-
   it("reuses session-scoped capabilities while authorizing only the current turn", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
@@ -729,25 +667,6 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
-  it("closes an active persistent runtime and removes its ownership ledger when the agent is deleted", async () => {
-    const persistent = new SteerableMockAdapter();
-    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Delete active runtime", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Ephemeral", engine: "codex" });
-
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "keep running" } });
-    await vi.waitFor(() => expect(persistent.opened).toBe(1));
-
-    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
-    expect(deleted.statusCode).toBe(200);
-    expect(persistent.closed).toBe(1);
-    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
-      .toEqual({ cancelled: false });
-    await app.close();
-  });
-
   it("bounds the global warm-idle runtime pool and resumes an evicted agent normally", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
@@ -808,7 +727,8 @@ describe("persistent engine steering", () => {
     await vi.waitFor(() => expect(persistent.closed).toBe(1));
 
     const steered = await app.inject({ method: "POST", url: `/api/agents/${active.id}/messages`, payload: { text: "still alive" } });
-    expect(steered.json()).toMatchObject({ steered: true });
+    expect(steered.statusCode).toBe(202);
+    expect(steered.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
     await waitForRun(active.id);
     expect(persistent.opened).toBe(3);
     await app.close();
@@ -838,7 +758,7 @@ describe("server chunk F", () => {
     } });
     const project = store.createProject({ label: "Stall", hostPath: repoDir });
     const agent = store.createAgent(project.id, { title: "Stalled", engine: "codex" });
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "run" } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "run" } })).statusCode).toBe(202);
     await vi.waitFor(() => expect(received).toBe(true));
     await sleep(25);
     const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
@@ -1122,7 +1042,7 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "Use the new model default.", model: "alternate" },
     });
-    expect(changedModel.statusCode, changedModel.body).toBe(200);
+    expect(changedModel.statusCode, changedModel.body).toBe(202);
     await waitForRun(agent.id, 1);
     expect(adapter.seeds.at(-1)).toMatchObject({ model: "alternate", effort: undefined });
 
@@ -1131,7 +1051,7 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "Return to provider defaults.", model: "", effort: "" },
     });
-    expect(resetDefaults.statusCode, resetDefaults.body).toBe(200);
+    expect(resetDefaults.statusCode, resetDefaults.body).toBe(202);
     await waitForRun(agent.id, 2);
     expect(adapter.continues.at(-1)).toMatchObject({ model: undefined, effort: undefined });
 
@@ -1141,7 +1061,7 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "Continue while provider metadata is unavailable." },
     });
-    expect(unknownCache.statusCode, unknownCache.body).toBe(200);
+    expect(unknownCache.statusCode, unknownCache.body).toBe(202);
     await waitForRun(agent.id, 3);
     expect(adapter.continues.at(-1)).toMatchObject({ model: undefined, effort: undefined });
     models.mockRestore();
@@ -1296,7 +1216,8 @@ describe("server chunk F", () => {
     expect(prompt).toContain(`Your direct manager is the stable agent id ${manager.id}`);
     expect(prompt).toContain("That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.");
     expect(prompt).toContain("You may collaborate directly with any relevant agent in the project");
-    expect(prompt).toContain("Latest message for you:\n#Specialist Investigate the usability risk and report to your manager.");
+    expect(prompt).toContain("Communication V3 separates messages, correlated requests, joins, activations, and runs.");
+    expect(prompt).toContain("Investigate the usability risk and report to your manager.");
     expect(prompt).not.toContain("Required completion contract for this private user-to-agent request");
     await app.close();
   });
@@ -1318,23 +1239,22 @@ describe("server chunk F", () => {
         shareWithOrganization: true,
       },
     });
-    expect(shared.statusCode, shared.body).toBe(200);
+    expect(shared.statusCode, shared.body).toBe(202);
     await waitForRun(responsible.id);
 
-    const { communicationEventId: eventId, runId } = shared.json<{ communicationEventId: string; runId: string }>();
+    const { communicationEventId: eventId } = shared.json<{ communicationEventId: string }>();
+    const runId = store.getRuns(responsible.id).at(-1)!.id;
     expect(store.getCommunicationEvent(project.id, eventId)).toMatchObject({
       intent: "broadcast",
       audience: { kind: "organization", organizationId: project.id },
       text: "Fix the onboarding flow",
     });
-    expect(store.readRunTriggers(project.id, responsible.id)).toEqual([
-      expect.objectContaining({ communicationEventId: eventId, agentId: responsible.id, source: "project_request" }),
-    ]);
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id).find((item) =>
+      (item.payload as { communication?: { eventId?: string } }).communication?.eventId === eventId,
+    )).toBeTruthy();
     const responsibleDetail = await app.inject({ method: "GET", url: `/api/agents/${responsible.id}` });
-    expect(responsibleDetail.json<{ runTriggers: Array<{ communicationEventId: string }> }>().runTriggers)
-      .toEqual([expect.objectContaining({ communicationEventId: eventId })]);
     expect(responsibleDetail.json<{ runs: Array<{ id: string; communicationEventId?: string; status: string }> }>().runs)
-      .toEqual([expect.objectContaining({ id: runId, communicationEventId: eventId, status: "completed" })]);
+      .toEqual([expect.objectContaining({ id: runId, status: "completed" })]);
     expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/runs` }))
       .json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: runId })]);
     store.appendEvent(responsible.id, { type: "work_item_update", workItemId: "follow-up", executionId: runId, title: "Verify onboarding", status: "done" });
@@ -1355,9 +1275,7 @@ describe("server chunk F", () => {
     expect(store.readCommunicationEvents(project.id).some((event) =>
       event.sender.kind === "agent" && event.text === "done")).toBe(false);
     expect(store.getMessages(observer.id)).toHaveLength(0);
-    expect(store.getMessages(responsible.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text: "Fix the onboarding flow", communicationEventId: eventId }),
-    ]));
+    expect(store.getMessages(responsible.id)).toHaveLength(0);
     expect(adapter.seeds.filter((turn) => turn.agentId === observer.id)).toHaveLength(0);
     const responsiblePrompt = adapter.seeds.find((turn) => turn.agentId === responsible.id)?.prompt ?? "";
     expect(responsiblePrompt.match(/Fix the onboarding flow/g)).toHaveLength(1);
@@ -1419,7 +1337,7 @@ describe("server chunk F", () => {
         sourceConversationId: freshMaster.id, shareWithOrganization: true,
       },
     });
-    expect(turn.statusCode, turn.body).toBe(200);
+    expect(turn.statusCode, turn.body).toBe(202);
     await waitForRun(freshAgent.id);
     const prompt = adapter.seeds.find((seed) => seed.agentId === freshAgent.id)?.prompt ?? "";
     expect(prompt).toContain("Start completely fresh");
@@ -1463,8 +1381,11 @@ describe("server chunk F", () => {
       text,
     });
     for (const agent of [kings, cabrillo, olympic]) {
-      expect(store.getMessages(agent.id)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ role: "user", text, communicationEventId: communication?.eventId }),
+      expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          eventId: communication?.eventId, surface: "direct_agent_audit", projectionKey: agent.id,
+          message: expect.objectContaining({ role: "user", renderedText: text }),
+        }),
       ]));
       const prompt = adapter.seeds.find((seed) => seed.agentId === agent.id)?.prompt ?? "";
       expect(prompt.match(/guess what! I just got married!!!!/g)).toHaveLength(1);
@@ -1541,7 +1462,8 @@ describe("server chunk F", () => {
     expect(store.getMessages(observer.id).some((message) => message.text === text)).toBe(false);
     expect(adapter.seeds.filter((seed) => seed.agentId === author.id)).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain(text);
-    expect(adapter.seeds[0]?.prompt).toContain("Replying specifically to this earlier message:\n> Original agent result");
+    expect(adapter.seeds[0]?.prompt).toContain("Original agent result");
+    expect(adapter.seeds[0]?.prompt).toContain("user_reaction");
     expect(adapter.seeds.filter((seed) => seed.agentId === observer.id)).toHaveLength(0);
     expect(store.readCommunicationEvents(project.id).filter((event) => event.text === text)).toHaveLength(0);
     await app.close();
@@ -1577,7 +1499,7 @@ describe("server chunk F", () => {
         shareWithOrganization: true,
       },
     });
-    expect(task.statusCode, task.body).toBe(200);
+    expect(task.statusCode, task.body).toBe(202);
     await waitForRun(agent.id);
 
     expect(dmStatus).toBe(200);
@@ -1660,7 +1582,7 @@ describe("server chunk F", () => {
     expect(membership.statusCode).toBe(200);
     expect(membership.json()).toMatchObject({ conversationIds: [first.id, second.id] });
     const turn = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Review this", sourceChannel: "main", sourceConversationId: second.id } });
-    expect(turn.statusCode).toBe(200);
+    expect(turn.statusCode).toBe(202);
     await waitForRun(agent.id);
     expect(store.getConversationMessages(second.id).some((message) => message.authorAgentId === agent.id)).toBe(false);
     expect(store.getConversationMessages(first.id).some((message) => message.authorAgentId === agent.id)).toBe(false);
@@ -1677,8 +1599,8 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "first", model: "mock-model", effort: "high" },
     });
-    expect(first.statusCode).toBe(200);
-    expect(first.json()).toMatchObject({ mode: "seed" });
+    expect(first.statusCode).toBe(202);
+    expect(first.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
     await waitForRun(agent.id);
     const firstEventId = first.json<{ communicationEventId: string }>().communicationEventId;
     expect(firstEventId).toBeTruthy();
@@ -1698,8 +1620,8 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "second" },
     });
-    expect(second.statusCode).toBe(200);
-    expect(second.json()).toMatchObject({ mode: "continue" });
+    expect(second.statusCode).toBe(202);
+    expect(second.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
     await waitForRun(agent.id, 2);
 
     expect(adapter.seeds).toHaveLength(1);
@@ -1736,7 +1658,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rolls a failed Codex compaction resume into one fresh seeded session", async () => {
+  it("fails closed when a submitted resume cannot prove a safe replay", async () => {
     const { app, agent } = await createProjectAndAgent();
     await app.inject({
       method: "POST",
@@ -1751,19 +1673,15 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "second" },
     });
-    expect(second.json()).toMatchObject({ mode: "continue" });
-    await waitForRun(agent.id, 2);
+    expect(second.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
+    await expect.poll(() => new CoordinationV3Store(store.sqlite).schedulerMetrics().outcomeUnknownRuns).toBe(1);
 
     expect(adapter.continues).toHaveLength(1);
-    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.seeds).toHaveLength(1);
     expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
-    expect(adapter.seeds[1]?.prompt).toContain("Current Team Directory");
-    expect(adapter.seeds[1]?.history.map((message) => message.text)).toContain("first");
-    expect(store.readEvents(agent.id).filter((item) => item.event.type === "session_reset"))
-      .toHaveLength(1);
     expect(store.readEvents(agent.id).some((item) =>
       item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
-    )).toBe(false);
+    )).toBe(true);
     expect(store.resumeSessionId(agent.id)).toBe("sess-1");
     await app.close();
   });
@@ -1850,16 +1768,12 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
 
     expect(adapter.seeds[0]?.prompt).toContain("The latest request is a Direct Message");
-    expect(adapter.seeds[0]?.prompt).toContain("Never Broadcast acknowledgments, questions, thanks, routine progress");
-    expect(adapter.seeds[0]?.prompt).toContain("never use a canned acknowledgment");
+    expect(adapter.seeds[0]?.prompt).toContain("Do not poll, sleep, send acknowledgments, or create progress-only wakeups.");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("- channel: main");
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
-    expect(adapter.seeds[0]?.prompt).toContain(
-      "never write routing tags into message text",
-    );
 
     appendBroadcast(store, project.id, master.id, "#Aspen Is it tested?");
     await app.inject({
@@ -1968,7 +1882,7 @@ describe("server chunk F", () => {
     await waitForRun(agent.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
     expect(adapter.continues[2]?.prompt).toContain("original context");
-    expect(adapter.continues[2]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Work log tab");
+    expect(adapter.continues[2]?.prompt).toContain("original context");
     await app.close();
   });
 
@@ -1987,7 +1901,7 @@ describe("server chunk F", () => {
     await waitForRun(agent.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     expect(adapter.continues[0]?.prompt).not.toContain("first-room secret");
-    expect(adapter.continues[0]?.prompt).toContain("Your ordinary runtime response is execution-scoped output saved in your Work log tab");
+    expect(adapter.continues[0]?.prompt).toContain("second-room secret");
     await app.close();
   });
 
@@ -2073,13 +1987,11 @@ describe("server chunk F", () => {
     expect(response.statusCode).toBe(200);
     await waitForRun(yosemite.id);
     expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
-    expect(adapter.seeds[0]?.prompt).toContain("This is the only chat for agent-to-agent coordination.");
-    expect(adapter.seeds[0]?.prompt).toContain("Do not move agent-to-agent coordination into the shared user Conversation");
-    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\n#Yosemite can you review this?");
-    expect(store.getMessages(yosemite.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Yosemite can you review this?" })]),
-    );
+    expect(adapter.seeds[0]?.prompt).toContain("Communication V3 separates messages, correlated requests, joins, activations, and runs.");
+    expect(adapter.seeds[0]?.prompt).toContain("#Yosemite can you review this?");
+    expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ surface: "direct_agent_audit", projectionKey: yosemite.id }),
+    ]));
     expect(store.getConversationMessages(master.id)).toEqual([]);
     expect(store.getAgentDetail(yosemite.id)?.runOutput).toEqual([
       expect.objectContaining({ executionId: expect.any(String), text: "done", completed: true }),
@@ -2087,59 +1999,6 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id, "collaboration")).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "#Yosemite can you review this?" })]),
     );
-    await app.close();
-  });
-
-  it("acknowledges a collaboration delivery only after a successful recipient turn", async () => {
-    adapter.failuresRemaining = 1;
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Retry recipient failure" });
-    const recipient = store.createAgent(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
-
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "retry this failed turn", recipientAgentIds: [recipient.id] },
-    });
-    const messageId = response.json<{ message: { id: string } }>().message.id;
-    await waitForRun(recipient.id);
-
-    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
-    expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.continues).toHaveLength(1);
-    expect(delivery).toMatchObject({ status: "acknowledged", attempts: 2 });
-    await app.close();
-  });
-
-  it("fails a collaboration delivery after its bounded recipient-turn retry", async () => {
-    adapter.failuresRemaining = 2;
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Bounded recipient failure" });
-    const recipient = store.createAgent(project.id, { title: "Yosemite", engine: "codex", conversationId: master.id });
-
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "fail this turn twice", recipientAgentIds: [recipient.id] },
-    });
-    const messageId = response.json<{ message: { id: string } }>().message.id;
-    for (let i = 0; i < 80 && adapter.continues.length < 1; i += 1) await sleep(10);
-    for (let i = 0; i < 80; i += 1) {
-      const state = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
-      if (state?.status === "failed") break;
-      await sleep(10);
-    }
-
-    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, recipient.id);
-    expect(delivery).toMatchObject({
-      status: "failed",
-      attempts: 2,
-      failure: "simulated runtime failure",
-    });
-    expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.continues).toHaveLength(1);
     await app.close();
   });
 
@@ -2161,10 +2020,11 @@ describe("server chunk F", () => {
 
     expect(response.statusCode).toBe(200);
     await waitForRun(wrangell.id);
-    expect(adapter.seeds[0]?.prompt).toContain("You received this context because you were an explicit collaboration recipient.");
-    expect(store.getMessages(wrangell.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "user", text: "#Wrangell-St-Elias can you review this?" })]),
-    );
+    expect(adapter.seeds[0]?.prompt).toContain("Communication V3 separates messages, correlated requests, joins, activations, and runs.");
+    expect(adapter.seeds[0]?.prompt).toContain("#Wrangell-St-Elias can you review this?");
+    expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ surface: "direct_agent_audit", projectionKey: wrangell.id }),
+    ]));
     await app.close();
   });
 
@@ -2187,9 +2047,11 @@ describe("server chunk F", () => {
     expect(response.json<{ notifiedAgentIds: string[] }>().notifiedAgentIds).toEqual([first.id, second.id]);
     await waitForSeedCount(2);
     expect(adapter.seeds).toHaveLength(2);
-    expect(store.getMessages(first.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
-    expect(store.getMessages(second.id).filter((message) => message.text.includes("please report status"))).toHaveLength(1);
-    expect(store.getMessages(archived.id)).toHaveLength(0);
+    const auditRecipients = store.readCommunicationProjections(project.id)
+      .filter((projection) => projection.surface === "direct_agent_audit" && projection.message?.renderedText?.includes("please report status"))
+      .map((projection) => projection.projectionKey);
+    expect(new Set(auditRecipients)).toEqual(new Set([first.id, second.id]));
+    expect(auditRecipients).not.toContain(archived.id);
     const intents = store.getConversationDeliveryIntents(master.id);
     expect(intents.map(({ intent }) => ({ id: intent.targetAgentId, audience: intent.audience }))).toEqual([
       { id: first.id, audience: "mention" },
@@ -2238,130 +2100,6 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Private review notes that should not reach an agent yet." })]),
     );
-    await app.close();
-  });
-
-  it("isolates three-agent collaboration context by canonical recipient audience", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Audience isolation", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Three-agent room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const verifier = store.createAgent(project.id, { title: "Verifier", engine: "codex", conversationId: master.id });
-
-    // Organization-audience system guidance is explicitly shared with every
-    // project agent through the Main projection.
-    const sharedAt = "2026-07-12T00:00:00.000Z";
-    store.appendCommunicationEvent({
-      eventId: "shared-collaboration-guidance", schemaVersion: 1, projectId: project.id, conversationId: master.id,
-      sender: { kind: "system", component: "collaboration-policy" }, intent: "broadcast",
-      audience: { kind: "organization", organizationId: project.id },
-      text: "Shared system guidance for all project agents.", createdAt: sharedAt,
-    });
-    store.appendCommunicationProjection(project.id, {
-      eventId: "shared-collaboration-guidance", surface: "conversation", projectionKey: master.id,
-      projectedAt: sharedAt,
-      message: { messageId: "shared-guidance-message", role: "system", createdAt: sharedAt },
-    });
-
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Coordinate reviews." } });
-    await waitForSeedCount(1);
-    const authorToken = adapter.seeds.find((turn) => turn.agentId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(authorToken).toBeTruthy();
-
-    const toReviewer = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
-      payload: {
-        intent: "collaboration", recipientAgentIds: [reviewer.id], waitBehavior: "queue",
-        text: "Reviewer-only launch credential: ALPHA.", idempotencyKey: "author-to-reviewer",
-      },
-    });
-    expect(toReviewer.statusCode).toBe(200);
-    await waitForSeedCount(2);
-
-    const crossAudienceReply = await app.inject({
-      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: {
-        text: "Do not disclose the quoted credential.", recipientAgentIds: [verifier.id],
-        replyToMessageId: toReviewer.json<{ messageId: string }>().messageId,
-      },
-    });
-    expect(crossAudienceReply.statusCode).toBe(400);
-    expect(crossAudienceReply.json()).toMatchObject({
-      error: "reply target is not visible to every collaboration recipient",
-    });
-
-    const toVerifier = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
-      payload: {
-        intent: "collaboration", recipientAgentIds: [verifier.id], waitBehavior: "queue",
-        text: "Verifier-only release checklist.", idempotencyKey: "author-to-verifier",
-      },
-    });
-    expect(toVerifier.statusCode).toBe(200);
-    await waitForSeedCount(3);
-
-    const reviewerPrompt = adapter.seeds.find((turn) => turn.agentId === reviewer.id)?.prompt ?? "";
-    const verifierPrompt = adapter.seeds.find((turn) => turn.agentId === verifier.id)?.prompt ?? "";
-    expect(reviewerPrompt).toContain("Reviewer-only launch credential: ALPHA.");
-    expect(verifierPrompt).toContain("Verifier-only release checklist.");
-    expect(verifierPrompt).not.toContain("Reviewer-only launch credential: ALPHA.");
-
-    await Promise.all([
-      cancelAndWait(app, author.id),
-      cancelAndWait(app, reviewer.id),
-      cancelAndWait(app, verifier.id),
-    ]);
-    await app.close();
-  });
-
-  it("inherits broadcasts but not direct messages or collaboration in a newly spawned agent", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Immutable scope", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Scope room" });
-    const participant = store.createAgent(project.id, { title: "Participant", engine: "codex", conversationId: master.id });
-    const collaborator = store.createAgent(project.id, { title: "Collaborator", engine: "codex", conversationId: master.id });
-
-    appendBroadcast(store, project.id, master.id, "shared project finding");
-    adapter.mode = "hang";
-    const direct = await app.inject({
-      method: "POST", url: `/api/agents/${participant.id}/messages`,
-      payload: { text: "private manager note", sourceChannel: "main" },
-    });
-    expect(direct.statusCode).toBe(200);
-    await waitForSeedCount(1);
-    const token = adapter.seeds.find((turn) => turn.agentId === participant.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const collaboration = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: {
-        intent: "collaboration", recipientAgentIds: [collaborator.id], waitBehavior: "queue",
-        text: "participant-only review", idempotencyKey: "local-review",
-      },
-    });
-    expect(collaboration.statusCode).toBe(200);
-    await waitForSeedCount(2);
-    const directEvent = store.getCommunicationEvent(project.id, direct.json<{ communicationEventId: string }>().communicationEventId);
-    const collaborationEvent = store.getCommunicationEvent(project.id, collaboration.json<{ eventId: string }>().eventId);
-    expect(directEvent).toMatchObject({ schemaVersion: 2, intent: "user_dm" });
-    expect(collaborationEvent).toMatchObject({ schemaVersion: 2, intent: "collaboration" });
-
-    expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === directEvent?.eventId)).toEqual([
-      expect.objectContaining({ text: "#Participant private manager note" }),
-    ]);
-    await cancelAndWait(app, participant.id);
-    await cancelAndWait(app, collaborator.id);
-    adapter.mode = "normal";
-    const future = store.createAgent(project.id, { title: "Future", engine: "codex", conversationId: master.id });
-    await app.inject({
-      method: "POST", url: `/api/agents/${future.id}/messages`,
-      payload: { text: "Start", sourceChannel: "main" },
-    });
-    await waitForRun(future.id);
-    const prompt = adapter.seeds.find((turn) => turn.agentId === future.id)?.prompt ?? "";
-    expect(prompt).toContain("shared project finding");
-    expect(prompt).not.toContain("Manager: #Participant private manager note");
-    expect(prompt).not.toContain("participant-only review");
     await app.close();
   });
 
@@ -2422,14 +2160,14 @@ describe("server chunk F", () => {
         shareWithOrganization: true,
       },
     });
-    expect(opening.statusCode, opening.body).toBe(200);
+    expect(opening.statusCode, opening.body).toBe(202);
     await waitForRun(first.id);
 
     const openingPrompt = adapter.seeds.find((turn) => turn.agentId === first.id)?.prompt ?? "";
     expect(openingPrompt).toContain("Send its actual completed answer with intent broadcast, never direct_to_user");
     expect(openingPrompt).toContain("Required completion contract for this Project-chat request:");
     expect(openingPrompt).toContain("The user cannot see your ordinary runtime response");
-    expect(openingPrompt).toContain("Ponderosa send-message tool");
+    expect(openingPrompt).toContain("ponderosa_message");
     expect(openingPrompt).toContain('"intent":"broadcast"');
     expect(store.getConversationMessages(master.id)).toContainEqual(
       expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorAgentId: first.id }),
@@ -2442,7 +2180,7 @@ describe("server chunk F", () => {
       method: "POST", url: `/api/agents/${privateAgent.id}/messages`,
       payload: { text: "Inspect a private issue", sourceChannel: "main", sourceConversationId: master.id },
     });
-    expect(privateTurn.statusCode, privateTurn.body).toBe(200);
+    expect(privateTurn.statusCode, privateTurn.body).toBe(202);
     await waitForRun(privateAgent.id);
     const privatePrompt = adapter.seeds.find((turn) => turn.agentId === privateAgent.id)?.prompt ?? "";
     expect(privatePrompt).toContain("Required completion contract for this private user-to-agent request:");
@@ -2460,7 +2198,7 @@ describe("server chunk F", () => {
         shareWithOrganization: true,
       },
     });
-    expect(followUp.statusCode, followUp.body).toBe(200);
+    expect(followUp.statusCode, followUp.body).toBe(202);
     await waitForRun(next.id);
 
     const prompt = adapter.seeds.find((turn) => turn.agentId === next.id)?.prompt ?? "";
@@ -2475,81 +2213,12 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("routes a persistent engine's managed send-message tool through the canonical communication endpoint", async () => {
-    const persistent = new SteerableMockAdapter();
-    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Managed messaging", hostPath: repoDir });
-    const conversation = store.createConversation(project.id, { title: "General" });
-    const agent = store.createAgent(project.id, { title: "Sender", engine: "codex", conversationId: conversation.id });
-
-    const started = await app.inject({
-      method: "POST",
-      url: `/api/agents/${agent.id}/messages`,
-      payload: {
-        text: "Answer the shared request",
-        sourceChannel: "main",
-        sourceConversationId: conversation.id,
-        shareWithOrganization: true,
-      },
-    });
-    expect(started.statusCode, started.body).toBe(200);
-    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
-    const opened = persistent.openedOptions[0]!;
-    expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_send_message" }));
-    expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_spawn_agent" }));
-    expect(opened.dynamicTools).toContainEqual(expect.objectContaining({ name: "ponderosa_wait_for_reports" }));
-
-    const result = await opened.handleDynamicToolCall!({
-      name: "ponderosa_send_message",
-      arguments: { intent: "broadcast", text: "#broadcast The managed answer" },
-    });
-    expect(result.success, result.text).toBe(true);
-    expect(store.getConversationMessages(conversation.id)).toContainEqual(expect.objectContaining({
-      role: "assistant",
-      text: "The managed answer",
-      authorAgentId: agent.id,
-    }));
-    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
-      intent: "broadcast",
-      text: "The managed answer",
-      sender: expect.objectContaining({ kind: "agent", agentId: agent.id }),
-    }));
-
-    const spawned = await opened.handleDynamicToolCall!({
-      name: "ponderosa_spawn_agent",
-      arguments: {
-        displayName: "Research",
-        initialMessage: "Investigate and report back privately.",
-        idempotencyKey: "managed-research",
-      },
-    });
-    expect(spawned.success, spawned.text).toBe(true);
-    const spawnedBody = JSON.parse(spawned.text);
-    expect(spawnedBody).toMatchObject({
-      accepted: true,
-      replayed: false,
-      agent: {
-        title: "Research",
-        managerAgentId: agent.id,
-        spawnedByAgentId: agent.id,
-      },
-    });
-    const wait = await opened.handleDynamicToolCall!({
-      name: "ponderosa_wait_for_reports",
-      arguments: { mode: "all", expectedAgentIds: [spawnedBody.agent.id] },
-    });
-    expect(wait.success, wait.text).toBe(true);
-    expect(JSON.parse(wait.text)).toMatchObject({ mode: "all", quorum: 1, replayed: false });
-    await app.close();
-  });
-
   it("runs correlated V3 work through exactly three tools and a fenced activation cycle", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({
       dataDir, store, engines, logger: false,
-      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
       executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
     });
     const project = store.createProject({ label: "V3", hostPath: repoDir });
@@ -2628,6 +2297,27 @@ describe("server chunk F", () => {
     });
     expect(completed.success, completed.text).toBe(true);
     expect(JSON.parse(completed.text)).toMatchObject({ requestId: "review-request", state: "completed" });
+    const duplicateOutcomeMessage = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_message",
+      arguments: {
+        intent: "collaboration",
+        recipientAgentIds: [requester.id],
+        text: "Duplicate audit copy: review passed.",
+        idempotencyKey: "duplicate-review-outcome",
+      },
+    });
+    expect(duplicateOutcomeMessage.success, duplicateOutcomeMessage.text).toBe(true);
+    expect(JSON.parse(duplicateOutcomeMessage.text)).toMatchObject({
+      passiveRecipientAgentIds: [requester.id],
+    });
+    expect(store.sqlite.prepare(`
+      SELECT actionable FROM runtime_communications
+      WHERE json_extract(payload_json, '$.idempotencyKey') = 'duplicate-review-outcome'
+    `).get()).toEqual({ actionable: 0 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'ordinary_message' AND agent_id = ?
+    `).get(requester.id)).toEqual({ count: 0 });
     persistent.completeTurn(1);
 
     await vi.waitFor(() => expect(persistent.starts.some((turn) =>
@@ -2652,7 +2342,174 @@ describe("server chunk F", () => {
       ok: true,
       missingProjectionMetadataEventIds: [],
     });
+
+    const openedBeforeSecond = persistent.openedOptions.length;
+    const requesterSessionIndex = persistent.openedOptions.map((option) => option.agentId).lastIndexOf(requester.id);
+    const second = new CoordinationV3Store(store.sqlite).coordinate({
+      projectId: project.id,
+      requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`,
+      idempotencyKey: "second-review-cycle",
+      requests: [{
+        requestId: "second-review-request",
+        recipientAgentId: recipient.id,
+        payload: { text: "Review README.md independently and report a terminal outcome." },
+        lifetime: { kind: "indefinite" },
+      }],
+    });
+    expect(second).toMatchObject({ requestIds: ["second-review-request"], replayed: false });
+    persistent.completeTurn(requesterSessionIndex);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(openedBeforeSecond + 1));
+    expect(store.readEvents(recipient.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "session_reset", reason: "request_context_rollover",
+      }) }),
+    ]));
+    const secondRecipientSessionIndex = persistent.openedOptions.length - 1;
+    expect(persistent.openedOptions[secondRecipientSessionIndex]).toMatchObject({
+      agentId: recipient.id, resumeSessionId: undefined,
+    });
+    expect(persistent.closed).toBeGreaterThanOrEqual(1);
+    const secondRecipientRuntime = persistent.openedOptions[secondRecipientSessionIndex]!;
+    const secondCompleted = await secondRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "second-review-complete", kind: "completed", text: "README review passed." },
+    });
+    expect(secondCompleted.success, secondCompleted.text).toBe(true);
+    persistent.completeTurn(secondRecipientSessionIndex);
+    await vi.waitFor(() => expect(store.sqlite.prepare(
+      "SELECT state FROM coordination_requests WHERE id = 'second-review-request'",
+    ).get()).toEqual({ state: "completed" }));
+    await app.close();
+  });
+
+  it("derives and resumes a nested join continuation from authoritative run state", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
+      executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
+    });
+    const project = store.createProject({ label: "V3 nested", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const requester = store.createAgent(project.id, {
+      title: "Requester", engine: "codex", conversationId: conversation.id,
+    });
+    const delivery = store.createAgent(project.id, {
+      title: "Delivery", engine: "codex", conversationId: conversation.id,
+    });
+    const specialist = store.createAgent(project.id, {
+      title: "Specialist", engine: "codex", conversationId: conversation.id,
+    });
+
+    const started = await app.inject({
+      method: "POST", url: `/api/agents/${requester.id}/messages`,
+      payload: { text: "Coordinate nested delivery", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(started.statusCode, started.body).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const outer = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "outer-work",
+        requests: [{
+          requestId: "delivery-work", recipientAgentId: delivery.id,
+          text: "Coordinate a specialist, integrate the result, and complete this request.",
+          lifetime: { kind: "indefinite" },
+        }],
+        join: { id: "outer-join", mode: "all" },
+      },
+    });
+    expect(outer.success, outer.text).toBe(true);
+    expect(JSON.parse(outer.text)).toMatchObject({
+      joinId: "outer-join", executionDirective: expect.stringContaining("End this turn"),
+    });
     persistent.completeTurn(0);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const inner = await persistent.openedOptions[1]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "inner-work",
+        requests: [{
+          requestId: "specialist-work", recipientAgentId: specialist.id,
+          text: "Return the bounded specialist result.", lifetime: { kind: "indefinite" },
+        }],
+        join: { id: "inner-join", mode: "all" },
+      },
+    });
+    expect(inner.success, inner.text).toBe(true);
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'delivery-work'").get())
+      .toEqual({ state: "waiting_dependency" });
+    expect(store.sqlite.prepare(`
+      SELECT continuation_request_ids_json AS continuations FROM coordination_joins WHERE id = 'inner-join'
+    `).get()).toEqual({ continuations: '["delivery-work"]' });
+    persistent.completeTurn(1);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'delivery-work' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    const childCompleted = await persistent.openedOptions[2]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "specialist-complete", kind: "completed", text: "Specialist result ready." },
+    });
+    expect(childCompleted.success, childCompleted.text).toBe(true);
+    persistent.completeTurn(2);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(4));
+    const parentCompleted = await persistent.openedOptions[3]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "delivery-complete", kind: "completed", text: "Integrated result ready." },
+    });
+    expect(parentCompleted.success, parentCompleted.text).toBe(true);
+    expect(JSON.parse(parentCompleted.text)).toMatchObject({ requestId: "delivery-work", state: "completed" });
+    persistent.completeTurn(3);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(5));
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'delivery-work'").get())
+      .toEqual({ state: "completed" });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_joins WHERE id = 'outer-join'").get())
+      .toEqual({ state: "satisfied" });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+    persistent.completeTurn(4);
+    await app.close();
+  });
+
+  it("accepts an actionable shared V3 request without an invalid audit projection", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    const project = store.createProject({ label: "V3 shared", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Lead", engine: "codex", conversationId: conversation.id,
+    });
+
+    const response = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: "Deliver the shared project result.",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+        shareWithOrganization: true,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(202);
+    expect(response.json()).toMatchObject({ queued: true, activationId: expect.any(String) });
+    const communicationEventId = response.json<{ communicationEventId: string }>().communicationEventId;
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id).some((item) =>
+      (item.payload as { communication?: { eventId?: string } }).communication?.eventId === communicationEventId,
+    )).toBe(true);
+    expect(store.getConversationMessages(conversation.id, "main")).toEqual(expect.arrayContaining([
+      expect.objectContaining({ communicationEventId, text: "Deliver the shared project result." }),
+    ]));
     await app.close();
   });
 
@@ -2685,7 +2542,7 @@ describe("server chunk F", () => {
 
     const app = createServer({
       dataDir, store, engines, logger: false,
-      communicationV3: { enabled: true, pollMs: 5, maxConcurrentRuns: 0 },
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
     });
     await app.ready();
     expect(store.getCommunicationEvent(project.id, event.eventId)).toEqual(event);
@@ -2727,249 +2584,6 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("routes authenticated agent communication intents and renders collaboration recipients", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Routing room" });
-    const author = store.createAgent(project.id, {
-      title: "Author Agent",
-      engine: "codex",
-      conversationId: master.id,
-    });
-    const reviewer = store.createAgent(project.id, {
-      title: "Review Agent",
-      engine: "codex",
-      conversationId: master.id,
-    });
-    const verifier = store.createAgent(project.id, {
-      title: "Verify Agent",
-      engine: "codex",
-      conversationId: master.id,
-    });
-
-    adapter.mode = "hang";
-    await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/messages`,
-      payload: { text: "#Review-Agent is tagged, but this is in my individual chat." },
-    });
-    await waitForSeedCount(1);
-    expect(adapter.seeds[0]?.prompt).toContain("- channel: individual");
-    expect(adapter.seeds[0]?.prompt).toContain("- tagged agents: #Review-Agent");
-    expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
-    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(token).toBeTruthy();
-    const send = (payload: Record<string, unknown>) =>
-      app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${token}` },
-        payload,
-      });
-
-    const direct = await send({ intent: "direct_to_user", text: "Private implementation note.", idempotencyKey: "private-note" });
-    const directRetry = await send({ intent: "direct_to_user", text: "Private implementation note.", idempotencyKey: "private-note" });
-    const broadcast = await send({ intent: "broadcast", text: "Manager-facing checkpoint." });
-    const collaboration = await send({
-      intent: "collaboration", recipientAgentIds: [reviewer.id, verifier.id, reviewer.id], waitBehavior: "queue",
-      text: "Please review the API contract.",
-    });
-    expect(direct.statusCode).toBe(200);
-    expect(directRetry.json()).toMatchObject({ intent: "direct_to_user", replayed: true });
-    expect(broadcast.statusCode).toBe(200);
-    expect(collaboration.statusCode).toBe(200);
-    await waitForSeedCount(3);
-
-    expect(store.getMessages(author.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ role: "assistant", text: "Private implementation note." })]),
-    );
-    expect(store.getConversationMessages(master.id)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ authorAgentId: author.id, text: "#user Private implementation note." }),
-        expect.objectContaining({ authorAgentId: author.id, text: "Manager-facing checkpoint." }),
-      ]),
-    );
-    expect(store.getConversationMessages(master.id, "collaboration")).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          authorAgentId: author.id,
-          text: "#Review-Agent #Verify-Agent Please review the API contract.",
-        }),
-      ]),
-    );
-    const reviewerPrompt = adapter.seeds.find((turn) => turn.agentId === reviewer.id)?.prompt ?? "";
-    expect(reviewerPrompt).toContain("- channel: collaboration");
-    expect(reviewerPrompt).toContain("- author: Author Agent");
-    expect(reviewerPrompt).toContain("- tagged agents: #Review-Agent, #Verify-Agent");
-    expect(reviewerPrompt).toContain("- you were tagged: yes");
-    const communicationEvents = store.readCommunicationEvents(project.id);
-    expect(communicationEvents).toHaveLength(4);
-    expect(communicationEvents.map((event) => event.eventId)).toEqual(expect.arrayContaining([
-      direct.json<{ eventId: string }>().eventId,
-      broadcast.json<{ eventId: string }>().eventId,
-      collaboration.json<{ eventId: string }>().eventId,
-    ]));
-    expect(communicationEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        schemaVersion: 2, intent: "user_dm",
-        sender: expect.objectContaining({ kind: "agent", agentId: author.id }),
-        audience: { kind: "user_agent", userId: "local-operator", agentId: author.id },
-      }),
-      expect.objectContaining({ intent: "broadcast", audience: { kind: "organization", organizationId: project.id } }),
-      expect.objectContaining({
-        intent: "collaboration",
-        audience: { kind: "agents", agentIds: [reviewer.id, verifier.id].sort() },
-      }),
-    ]));
-    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        communicationEventId: direct.json<{ eventId: string }>().eventId,
-        text: "Private implementation note.",
-      }),
-    ]));
-    const directEventId = direct.json<{ eventId: string }>().eventId;
-    expect(communicationEvents.filter((event) => event.eventId === directEventId)).toHaveLength(1);
-    expect(store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === directEventId)
-      .map((projection) => [projection.surface, projection.projectionKey])).toEqual(expect.arrayContaining([
-        ["conversation", master.id],
-        ["direct_agent_audit", author.id],
-        ["user_inbox", "local-operator"],
-      ]));
-    expect(store.getConversationMessages(master.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ communicationEventId: broadcast.json<{ eventId: string }>().eventId }),
-    ]));
-    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ text: "#broadcast Manager-facing checkpoint." }),
-    ]));
-    for (const agent of [reviewer, verifier]) {
-      expect(store.getMessages(agent.id).some((message) =>
-        message.text === "#broadcast Manager-facing checkpoint.")).toBe(false);
-    }
-    expect(store.getConversationMessages(master.id, "collaboration")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ communicationEventId: collaboration.json<{ eventId: string }>().eventId }),
-    ]));
-    const collaborationEventId = collaboration.json<{ eventId: string }>().eventId;
-    expect(communicationEvents.filter((event) => event.eventId === collaborationEventId)).toHaveLength(1);
-    expect(store.readCommunicationProjections(project.id).filter((projection) =>
-      projection.eventId === collaborationEventId && projection.surface === "collaboration_view")).toHaveLength(1);
-    const deliveryStore = new CollaborationDeliveryStore(dataDir);
-    expect([reviewer.id, verifier.id].map((agentId) =>
-      deliveryStore.getForMessageTarget(collaboration.json<{ messageId: string }>().messageId, agentId)?.communicationEventId))
-      .toEqual([collaborationEventId, collaborationEventId]);
-    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
-      canonicalEvents: 4,
-      linkedProjections: 15,
-      missingProjectionEventIds: [],
-      duplicateProjectionEventIds: [],
-      orphanProjectionEventIds: [],
-      missingClassificationEventIds: [],
-      missingProjectionMetadataEventIds: [],
-      ok: true,
-    });
-    const reconciliation = await app.inject({
-      method: "GET",
-      url: `/api/projects/${project.id}/communication-reconciliation`,
-    });
-    expect(reconciliation.statusCode).toBe(200);
-    expect(reconciliation.json()).toMatchObject({ ok: true, canonicalEvents: 4, linkedProjections: 15 });
-    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
-    await app.close();
-  });
-
-  it("rejects ambiguous routing payloads and preserves explicit intents", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Retirement", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Explicit room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-
-    const manualMention = await app.inject({
-      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`, payload: { text: "#Reviewer inspect this" },
-    });
-    expect(manualMention.statusCode).toBe(400);
-    expect(manualMention.json()).toMatchObject({ error: expect.stringContaining("explicit recipientAgentIds") });
-
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Begin" } });
-    await waitForSeedCount(1);
-    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const legacy = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: { channel: "collaboration", text: "#Reviewer legacy route" },
-    });
-    expect(legacy.statusCode).toBe(400);
-    const explicit = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Explicit route", waitBehavior: "queue" },
-    });
-    expect(explicit.statusCode).toBe(200);
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
-    for (let index = 0; index < 80 && adapter.abortedSeeds < 1; index += 1) await sleep(10);
-    expect(adapter.abortedSeeds).toBeGreaterThanOrEqual(1);
-    await app.close();
-  });
-
-  it("delivers scoped Markdown documents as concise summaries with on-demand content", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Documents", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Private room" });
-    const outsiderRoom = store.createConversation(project.id, { title: "Unrelated room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: outsiderRoom.id });
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Begin" } });
-    await waitForSeedCount(1);
-    const authorToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
-    const full = `# Detailed review\n\n${"private analysis ".repeat(400)}`;
-    const sent = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Review complete; see the attached document.", waitBehavior: "report", document: { title: "Detailed Review", content: full, mediaType: "text/markdown" } },
-    });
-    expect(sent.statusCode).toBe(200);
-    await waitForSeedCount(2);
-    const event = store.getCommunicationEvent(project.id, sent.json<{ eventId: string }>().eventId)!;
-    expect(event.document).toMatchObject({ title: "Detailed Review", authorAgentId: author.id, executionId: expect.any(String) });
-    expect(store.getProjectedConversationMessages(master.id, "main")).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ document: expect.anything() })]),
-    );
-    const projected = store.getProjectedConversationMessages(master.id, "collaboration")[0]!;
-    expect(projected.text).toContain("Review complete");
-    expect(projected.text).not.toContain("private analysis");
-    expect(projected.document).toMatchObject({ title: "Detailed Review", previewUrl: expect.any(String), downloadUrl: expect.any(String) });
-    expect(adapter.seeds[1]!.prompt).toContain(`id: ${event.document!.id}`);
-    expect(adapter.seeds[1]!.prompt).not.toContain("private analysis");
-
-    const uiPreview = await app.inject({ method: "GET", url: projected.document!.previewUrl });
-    expect(uiPreview.statusCode).toBe(200);
-    expect(uiPreview.json()).toMatchObject({ content: full, title: "Detailed Review" });
-    const reviewerToken = adapter.seeds[1]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
-    const agentPreview = await app.inject({ method: "GET", url: `/api/agent-documents/${event.document!.id}`, headers: { authorization: `Bearer ${reviewerToken}` } });
-    expect(agentPreview.statusCode).toBe(200);
-    expect(agentPreview.json()).toMatchObject({ content: full });
-    expect(adapter.seeds[1]!.environment!.PONDEROSA_DOCUMENT_URL).toContain("/api/agent-documents");
-
-    await app.inject({ method: "POST", url: `/api/agents/${outsider.id}/messages`, payload: { text: "Unrelated work" } });
-    await waitForSeedCount(3);
-    const outsiderToken = adapter.seeds[2]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
-    const forbiddenCollaboration = await app.inject({ method: "GET", url: `/api/agent-documents/${event.document!.id}`, headers: { authorization: `Bearer ${outsiderToken}` } });
-    expect(forbiddenCollaboration.statusCode).toBe(404);
-    expect(forbiddenCollaboration.json()).toEqual({ error: "document not found" });
-
-    const direct = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${authorToken}` },
-      payload: { intent: "direct_to_user", text: "Private manager summary", document: { title: "Manager Detail", content: "# Manager only\n\nSensitive." } },
-    });
-    expect(direct.statusCode).toBe(200);
-    const directEvent = store.getCommunicationEvent(project.id, direct.json<{ eventId: string }>().eventId)!;
-    const forbiddenDirect = await app.inject({ method: "GET", url: `/api/agent-documents/${directEvent.document!.id}`, headers: { authorization: `Bearer ${outsiderToken}` } });
-    expect(forbiddenDirect.statusCode).toBe(404);
-    expect(forbiddenDirect.json()).toEqual({ error: "document not found" });
-
-    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id), cancelAndWait(app, outsider.id)]);
-    await app.close();
-  });
-
   it("lets eligible room agents retrieve broadcast documents without seeding full content", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Broadcast documents", hostPath: repoDir });
@@ -2992,7 +2606,7 @@ describe("server chunk F", () => {
       method: "POST", url: `/api/agents/${reader.id}/messages`,
       payload: { text: "Use the shared guidance", sourceChannel: "main", sourceConversationId: master.id, shareWithOrganization: true },
     });
-    expect(turn.statusCode).toBe(200);
+    expect(turn.statusCode).toBe(202);
     await waitForSeedCount(2);
     const seeded = adapter.seeds[1]!.prompt;
     expect(seeded).toContain("The organization runbook is ready.");
@@ -3004,104 +2618,6 @@ describe("server chunk F", () => {
     expect(retrieved.statusCode).toBe(200);
     expect(retrieved.json()).toMatchObject({ title: "Organization Runbook", content: full });
     await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reader.id)]);
-    await app.close();
-  });
-
-  it("rejects recipient-free and out-of-room collaboration intents before persistence", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Routing room" });
-    const otherMaster = store.createConversation(project.id, { title: "Other room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: otherMaster.id });
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
-    await waitForSeedCount(1);
-    const headers = { authorization: `Bearer ${adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` };
-
-    const recipientFree = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers,
-      payload: { intent: "collaboration", recipientAgentIds: [], text: "Unroutable." },
-    });
-    const unauthorized = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers,
-      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Cross-room.", waitBehavior: "queue" },
-    });
-    const missingWaitBehavior = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers,
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Ambiguous." },
-    });
-    const invalidWaitBehavior = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers,
-      payload: { intent: "collaboration", recipientAgentIds: [outsider.id], text: "Invalid.", waitBehavior: "eventually" },
-    });
-    const misplacedWaitBehavior = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers,
-      payload: { intent: "broadcast", text: "Wrong scope.", waitBehavior: "queue" },
-    });
-
-    expect(recipientFree.statusCode).toBe(400);
-    expect(unauthorized.statusCode).toBe(400);
-    expect(missingWaitBehavior).toMatchObject({ statusCode: 400, body: expect.stringContaining("requires explicit waitBehavior") });
-    expect(invalidWaitBehavior.statusCode).toBe(400);
-    expect(misplacedWaitBehavior.statusCode).toBe(400);
-    expect(store.getConversationMessages(master.id, "collaboration")).toHaveLength(0);
-    expect(store.getConversationDeliveryIntents(master.id)).toHaveLength(0);
-    await cancelAndWait(app, author.id);
-    await app.close();
-  });
-
-  it("lets a room member broadcast idempotently without delivering to itself", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Agent broadcast" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
-    await waitForSeedCount(1);
-    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const payload = { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "review this.", waitBehavior: "queue", idempotencyKey: "broadcast-review" };
-    const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
-    const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` }, payload });
-
-    expect(first.statusCode).toBe(200);
-    expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
-    await waitForSeedCount(2);
-    expect(adapter.seeds).toHaveLength(2);
-    expect(store.getMessages(author.id).filter((message) => message.text.includes("review this"))).toHaveLength(1);
-    expect(store.getMessages(reviewer.id).filter((message) => message.text.includes("review this"))).toHaveLength(1);
-    expect(store.getConversationDeliveryIntents(master.id).filter(({ message }) => message.id === first.json<{ messageId: string }>().messageId))
-      .toHaveLength(1);
-    await Promise.all([cancelAndWait(app, author.id), cancelAndWait(app, reviewer.id)]);
-    await app.close();
-  });
-
-  it("rejects a broadcast when the authenticated agent is no longer a current room member", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Membership room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Start." } });
-    await waitForSeedCount(1);
-    const token = adapter.seeds[0]?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    store.updateAgentConversationMemberships(author.id, { conversationIds: [] });
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/agent-messages",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "should not receive this.", waitBehavior: "queue", idempotencyKey: "removed-author" },
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(store.getConversationMessages(master.id, "collaboration")).toHaveLength(0);
-    expect(store.getMessages(reviewer.id)).toHaveLength(0);
-    expect(store.getConversationDeliveryIntents(master.id)).toHaveLength(0);
-    await cancelAndWait(app, author.id);
     await app.close();
   });
 
@@ -3150,117 +2666,6 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("queues a handoff sent through an active agent's messaging capability", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Collaboration room" });
-    const reviewer = store.createAgent(project.id, { title: "Pinnacles", engine: "codex", conversationId: master.id });
-    const author = store.createAgent(project.id, { title: "Badlands", engine: "codex", conversationId: master.id });
-
-    adapter.mode = "hang";
-    await app.inject({
-      method: "POST",
-      url: `/api/agents/${reviewer.id}/messages`,
-      payload: { text: "Review the current change." },
-    });
-    await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/messages`,
-      payload: { text: "Prepare the handoff." },
-    });
-    await waitForSeedCount(2);
-    const token = adapter.seeds.find((seed) => seed.agentId === author.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(token).toBeTruthy();
-
-    const handoff = await app.inject({
-      method: "POST",
-      url: "/api/agent-messages",
-      headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "Please review this once you finish.", waitBehavior: "queue" },
-    });
-    expect(handoff.statusCode).toBe(200);
-
-    await app.inject({ method: "POST", url: `/api/agents/${reviewer.id}/cancel` });
-    await waitForRun(reviewer.id);
-    expect(adapter.continues.at(-1)?.prompt).toContain(
-      "Latest message for you:\n#Pinnacles Please review this once you finish.",
-    );
-
-    await cancelAndWait(app, author.id);
-    await app.close();
-  });
-
-  it("preserves queued tags when an unrelated active turn is cancelled and de-duplicates an agent retry", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Async handoffs" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: master.id });
-
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Stay busy." } });
-    await app.inject({ method: "POST", url: `/api/agents/${child.id}/messages`, payload: { text: "Wait for a retry." } });
-    await waitForSeedCount(2);
-    const childToken = adapter.seeds.find((seed) => seed.agentId === child.id)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(childToken).toBeTruthy();
-
-    const tag = { intent: "collaboration" as const, recipientAgentIds: [parent.id], text: "first completed result", waitBehavior: "report" as const, idempotencyKey: "result-1" };
-    const first = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
-    const retry = await app.inject({ method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${childToken}` }, payload: tag });
-    expect(first.json()).toMatchObject({ replayed: false });
-    expect(retry.json()).toMatchObject({ replayed: true, messageId: first.json<{ messageId: string }>().messageId });
-    await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "second completed result", recipientAgentIds: [parent.id] },
-    });
-    await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "third completed result", recipientAgentIds: [parent.id] },
-    });
-
-    // The recipient is still in a tool-like wait. Cancellation must not consume
-    // its queued tags; all three enter one lossless FIFO continuation turn.
-    adapter.mode = "normal";
-    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/cancel` });
-    await waitForRun(parent.id);
-    const batchPrompt = adapter.continues.find((turn) => turn.agentId === parent.id)?.prompt ?? "";
-    expect(batchPrompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
-    expect(batchPrompt.indexOf("#Parent first completed result")).toBeLessThan(batchPrompt.indexOf("#Parent second completed result"));
-    expect(batchPrompt.indexOf("#Parent second completed result")).toBeLessThan(batchPrompt.indexOf("#Parent third completed result"));
-    expect(store.getCollaborationViewDetail(master.id)?.messages.filter((message) => message.text === "#Parent first completed result")).toHaveLength(1);
-    await cancelAndWait(app, child.id);
-    await app.close();
-  });
-
-  it("does not resurrect an active collaboration delivery after explicit user cancellation", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Cancel delivery", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Cancellation" });
-    const agent = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: master.id });
-    adapter.mode = "hang";
-
-    const sent = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "Stop this delivery", recipientAgentIds: [agent.id] },
-    });
-    expect(sent.statusCode).toBe(200);
-    await waitForSeedCount(1);
-
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
-      .toEqual({ cancelled: true });
-    await vi.waitFor(() => expect(adapter.abortedSeeds).toBe(1));
-    await sleep(20);
-    expect(adapter.seeds).toHaveLength(1);
-
-    const messageId = sent.json<{ message: { id: string } }>().message.id;
-    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(messageId, agent.id);
-    expect(delivery).toMatchObject({ status: "cancelled", failure: "cancelled by user", attempts: 1 });
-    await app.close();
-  });
-
   it("starts queued tags after a normal tool-boundary turn completes", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -3276,230 +2681,8 @@ describe("server chunk F", () => {
     ]);
     await waitForRun(parent.id, 2);
     const prompt = adapter.continues.find((turn) => turn.agentId === parent.id)?.prompt ?? "";
-    expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
+    expect(prompt).toContain("Additional coalesced Activations for this scheduler-owned Run:");
     expect(prompt.indexOf("#Parent result one")).toBeLessThan(prompt.indexOf("#Parent result two"));
-    await app.close();
-  });
-
-  it("parks a manager until all expected reports arrive, then resumes once with the batch", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Durable wait" });
-    const parent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
-    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id, managerAgentId: parent.id });
-    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: master.id, managerAgentId: parent.id });
-    adapter.mode = "hang";
-
-    await Promise.all([parent, first, second].map((agent) => app.inject({
-      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Begin." },
-    })));
-    await waitForSeedCount(3);
-    const tokenFor = (agentId: string) => adapter.seeds.find((turn) => turn.agentId === agentId)?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const parentToken = tokenFor(parent.id)!;
-    const firstToken = tokenFor(first.id)!;
-    const secondToken = tokenFor(second.id)!;
-    const registered = await app.inject({
-      method: "POST", url: "/api/agent-waits", headers: { authorization: `Bearer ${parentToken}` },
-      payload: { mode: "all", expectedAgentIds: [first.id, second.id] },
-    });
-    expect(registered.statusCode).toBe(200);
-    expect(registered.json()).toMatchObject({ mode: "all", quorum: 2, replayed: false });
-    await cancelAndWait(app, parent.id);
-
-    const sendCollaboration = (token: string, text: string, waitBehavior: "queue" | "report" | "interrupt") => app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${token}` },
-      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text, waitBehavior },
-    });
-    const progress = await sendCollaboration(firstToken, "First progress update.", "queue");
-    expect(progress.statusCode).toBe(200);
-    await sleep(40);
-    const parentTurns = () => [...adapter.seeds, ...adapter.continues].filter((turn) => turn.agentId === parent.id);
-    expect(parentTurns()).toHaveLength(1);
-    const queuedDetail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
-    expect(queuedDetail.json<{ activeWait: { receivedAgentIds: string[] } }>().activeWait.receivedAgentIds).toEqual([]);
-
-    const firstReport = await sendCollaboration(firstToken, "First report.", "report");
-    expect(firstReport.statusCode).toBe(200);
-    await sleep(40);
-    expect(parentTurns()).toHaveLength(1);
-    const partialDetail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
-    expect(partialDetail.json<{ activeWait: { receivedAgentIds: string[] } }>().activeWait.receivedAgentIds).toEqual([first.id]);
-
-    const secondReport = await sendCollaboration(secondToken, "Second report.", "report");
-    expect(secondReport.statusCode).toBe(200);
-    await vi.waitFor(() => expect(parentTurns()).toHaveLength(2));
-    expect(parentTurns()[1]?.prompt).toContain("CollaborationDeliveryBatch (3 deliveries; canonical server order)");
-    expect(parentTurns()[1]?.prompt).toContain("First progress update.");
-    expect(parentTurns()[1]?.prompt).toContain("First report.");
-    expect(parentTurns()[1]?.prompt).toContain("Second report.");
-    const reportEventIds = [progress, firstReport, secondReport]
-      .map((response) => response.json<{ messageId: string }>().messageId);
-    expect(store.readRunTriggers(project.id, parent.id)
-      .filter((trigger) => trigger.source === "collaboration")
-      .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
-    const detail = await app.inject({ method: "GET", url: `/api/agents/${parent.id}` });
-    const parentDetail = detail.json<{
-      activeWait?: unknown;
-      runs: Array<{ wakeCause?: string }>;
-      runTriggers: Array<{ communicationEventId: string; source: string }>;
-    }>();
-    expect(parentDetail.runTriggers
-      .filter((trigger) => trigger.source === "collaboration")
-      .map((trigger) => trigger.communicationEventId)).toEqual(reportEventIds);
-    expect(parentDetail.activeWait).toBeUndefined();
-    expect(parentDetail.runs.at(-1)?.wakeCause).toBe("wait_satisfied");
-    expect(store.readEvents(parent.id)
-      .filter((item) => item.event.type === "agent_wait_changed")
-      .map((item) => item.event.type === "agent_wait_changed"
-        ? item.event.activeWait?.receivedAgentIds ?? null
-        : null)).toEqual([[], [], [first.id], [first.id, second.id].sort(), null]);
-
-    await Promise.all([parent, first, second].map((agent) => cancelAndWait(app, agent.id)));
-    await app.close();
-  });
-
-  it("wakes a parked agent immediately for a human Team Chat message", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Human override" });
-    const parent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
-    const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: master.id, managerAgentId: parent.id });
-    adapter.mode = "hang";
-
-    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Delegate and wait." } });
-    await waitForSeedCount(1);
-    const parentToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    const registered = await app.inject({
-      method: "POST", url: "/api/agent-waits", headers: { authorization: `Bearer ${parentToken}` },
-      payload: { mode: "all", expectedAgentIds: [child.id] },
-    });
-    expect(registered.statusCode).toBe(200);
-    await cancelAndWait(app, parent.id);
-
-    const humanMessage = await app.inject({
-      method: "POST", url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "Please change direction now.", recipientAgentIds: [parent.id] },
-    });
-    expect(humanMessage.statusCode).toBe(200);
-    await vi.waitFor(() => expect([...adapter.seeds, ...adapter.continues]
-      .filter((turn) => turn.agentId === parent.id)).toHaveLength(2));
-
-    expect(adapter.continues.at(-1)?.prompt).toContain("Please change direction now.");
-    const detail = (await app.inject({ method: "GET", url: `/api/agents/${parent.id}` })).json<{
-      activeWait?: unknown;
-      runs: Array<{ wakeCause?: string }>;
-    }>();
-    expect(detail.activeWait).toBeUndefined();
-    expect(detail.runs.at(-1)?.wakeCause).toBe("direct_message");
-
-    await cancelAndWait(app, parent.id);
-    await app.close();
-  });
-
-  it("creates a normal managed agent, injects shared Broadcasts, and permits direct need-to-know collaboration", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Child result delivery" });
-    const parent = store.createAgent(project.id, {
-      title: "Cedar Breaks", engine: "codex", conversationId: master.id, model: "mock-model", effort: "high",
-    });
-
-    adapter.mode = "hang";
-    await app.inject({
-      method: "POST", url: `/api/conversations/${master.id}/messages`,
-      payload: { text: "#broadcast Shared policy: verify claims before reporting." },
-    });
-    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/messages`, payload: { text: "Create a research report." } });
-    await waitForSeedCount(1);
-    const parentToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_SPAWN_URL).toBe("http://127.0.0.1:8787/api/agent-spawns");
-    const spawned = await app.inject({
-      method: "POST",
-      url: "/api/agent-spawns",
-      headers: { authorization: `Bearer ${parentToken}` },
-      payload: { displayName: "Research", initialMessage: "Research and report back.", runtime: "codex", idempotencyKey: "child-result" },
-    });
-    expect(spawned.statusCode).toBe(201);
-    const child = spawned.json<{ agent: AgentDto }>().agent;
-    expect(child).toMatchObject({
-      managerAgentId: parent.id,
-      spawnedByAgentId: parent.id,
-      spawnedByExecutionId: expect.any(String),
-      spawnPrompt: "Research and report back.",
-      model: "mock-model",
-      effort: "high",
-    });
-    const replay = await app.inject({
-      method: "POST", url: "/api/agent-spawns", headers: { authorization: `Bearer ${parentToken}` },
-      payload: { displayName: "Research", initialMessage: "Research and report back.", runtime: "codex", idempotencyKey: "child-result" },
-    });
-    expect(replay.json()).toMatchObject({ replayed: true, agent: { id: child.id } });
-    await waitForSeedCount(2);
-    const childSeed = adapter.seeds.find((seed) => seed.agentId === child.id);
-    const childToken = childSeed?.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(childToken).toBeTruthy();
-    expect(childSeed).toMatchObject({ model: "mock-model", effort: "high" });
-    expect(childSeed?.environment?.PONDEROSA_AGENT_WAIT_URL).toBe("http://127.0.0.1:8787/api/agent-waits");
-    expect(childSeed?.prompt).toContain(`Your direct manager is the stable agent id ${parent.id}`);
-    expect(childSeed?.prompt).toContain("That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.");
-    expect(childSeed?.prompt).toContain("Contact your manager when the manager owns the outcome");
-    expect(childSeed?.prompt).toContain("You may collaborate directly with any relevant agent in the project");
-    expect(childSeed?.prompt).toContain("Do not Broadcast");
-    expect(childSeed?.prompt).toContain("Do not send routine acknowledgments or duplicate summaries");
-    expect(childSeed?.prompt).toContain("Registering a wait is execution control, not a communication event");
-    expect(childSeed?.prompt).toContain("Never include your own stable agent ID in Collaboration recipients");
-    expect(childSeed?.prompt).toContain("Shared policy: verify claims before reporting.");
-    expect(childSeed?.prompt).toContain("Research and report back.");
-
-    const eventsBeforeRejectedBroadcast = store.readCommunicationEvents(project.id);
-    const rejectedBroadcast = await app.inject({
-      method: "POST",
-      url: "/api/agent-messages",
-      headers: { authorization: `Bearer ${childToken}` },
-      payload: {
-        intent: "broadcast",
-        text: "This delegated result must not reach the organization.",
-        document: { title: "Private delegated result", content: "# Must remain private" },
-      },
-    });
-    expect(rejectedBroadcast.statusCode).toBe(409);
-    expect(rejectedBroadcast.json()).toEqual({
-      error: "managed agents cannot broadcast; use collaboration with the agents who need the information",
-      managerAgentId: parent.id,
-    });
-    expect(store.readCommunicationEvents(project.id)).toEqual(eventsBeforeRejectedBroadcast);
-    expect(store.getConversationDetail(master.id)?.messages).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("must not reach the organization") })]),
-    );
-
-    const result = await app.inject({
-      method: "POST",
-      url: "/api/agent-messages",
-      headers: { authorization: `Bearer ${childToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [parent.id], text: "Huntsville result is ready.", waitBehavior: "report", idempotencyKey: "huntsville-result" },
-    });
-    expect(result.statusCode).toBe(200);
-    const resultEventId = result.json<{ eventId: string }>().eventId;
-    expect(store.getCommunicationEvent(project.id, resultEventId)).toMatchObject({
-      intent: "collaboration",
-      audience: { kind: "agents", agentIds: [parent.id] },
-    });
-
-    await app.inject({ method: "POST", url: `/api/agents/${parent.id}/cancel` });
-    await waitForRun(parent.id);
-    expect(adapter.continues.find((turn) => turn.agentId === parent.id)?.prompt).toContain(
-      "Latest message for you:\n#Cedar-Breaks Huntsville result is ready.",
-    );
-    expect(store.getProjectedAgentMessages(parent.id).find((message) => message.communicationEventId === resultEventId)).toMatchObject({
-      role: "assistant",
-      authorAgentId: child.id,
-      text: "#Cedar-Breaks Huntsville result is ready.",
-    });
-    expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("delivery dispatch rejected (400)") })]),
-    );
-
-    await cancelAndWait(app, child.id);
     await app.close();
   });
 
@@ -3509,21 +2692,19 @@ describe("server chunk F", () => {
     const master = store.createConversation(project.id, { title: "Failure supervision" });
     const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
 
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/messages`, payload: { text: "Supervise your reports." } });
-    await waitForSeedCount(1);
-    const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    adapter.mode = "normal";
     adapter.failuresRemaining = 1;
-    const spawned = await app.inject({
-      method: "POST", url: "/api/agent-spawns", headers: { authorization: `Bearer ${token}` },
-      payload: { displayName: "Fragile worker", initialMessage: "Try the risky work.", idempotencyKey: "fragile-1" },
+    const created = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: {
+        title: "Fragile worker", engine: "codex", conversationId: master.id,
+        managerAgentId: manager.id, initialMessage: "Try the risky work.",
+      },
     });
-    const child = spawned.json<{ agent: AgentDto }>().agent;
+    expect(created.statusCode).toBe(200);
+    const child = created.json<AgentDto>();
     await waitForSeedCount(2);
     for (let index = 0; index < 80 && !store.readEvents(child.id).some((event) => event.event.type === "agent_lifecycle" && event.event.status === "failed"); index += 1) await sleep(10);
 
-    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/cancel` });
     await waitForRun(manager.id);
     const managerFollowUp = [...adapter.seeds, ...adapter.continues].find((turn) =>
       turn.agentId === manager.id && turn.prompt.includes("Internal managed-agent update"));
@@ -3532,663 +2713,6 @@ describe("server chunk F", () => {
     expect(store.getCollaborationViewDetail(master.id)?.messages).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("simulated runtime failure") })]),
     );
-    await app.close();
-  });
-
-  it("completes managed collaboration work without forcing a duplicate parent handoff", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Managed completion", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Completion supervision" });
-    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
-    const child = store.createAgent(project.id, {
-      title: "Quiet worker", engine: "codex", conversationId: master.id, managerAgentId: manager.id,
-    });
-
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/messages`, payload: { text: "Supervise this work." } });
-    await waitForSeedCount(1);
-    const managerToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    adapter.mode = "normal";
-    const assigned = await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Complete the audit. No other agent needs a delivery from this synthetic adapter.", waitBehavior: "queue" },
-    });
-    expect(assigned.statusCode).toBe(200);
-    await waitForSeedCount(2);
-    await waitForRun(child.id);
-    await vi.waitFor(() => expect(store.readEvents(child.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: expect.objectContaining({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" }) }),
-    ])));
-
-    const childPrompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
-    expect(childPrompt).toContain("The organization graph describes accountability and lifecycle ownership, not permitted communication paths.");
-    expect(childPrompt).toContain("If this collaboration-triggered turn produces a result, question, or material blocker another agent needs");
-    expect(childPrompt).not.toContain("Required managed-agent completion contract");
-    const childRun = (await app.inject({ method: "GET", url: `/api/agents/${child.id}` }))
-      .json<{ runs: Array<{ status: string; reason: string }> }>().runs.at(-1);
-    expect(childRun).toMatchObject({ status: "completed", reason: "turn_completed" });
-    expect(store.readCommunicationEvents(project.id).some((event) =>
-      event.intent === "collaboration" && event.sender.kind === "agent" && event.sender.agentId === child.id)).toBe(false);
-
-    await app.inject({ method: "POST", url: `/api/agents/${manager.id}/cancel` });
-    expect([...adapter.seeds, ...adapter.continues].some((turn) =>
-      turn.agentId === manager.id && turn.prompt.includes("without the required explicit Collaboration handoff"))).toBe(false);
-    await app.close();
-  });
-
-  it("lets a managed agent deliver directly to a needed agent in another reporting branch", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Direct collaboration", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Cross-branch work" });
-    const director = store.createAgent(project.id, { title: "Director", engine: "codex", conversationId: master.id });
-    const firstManager = store.createAgent(project.id, {
-      title: "First manager", engine: "codex", conversationId: master.id, managerAgentId: director.id,
-    });
-    const secondManager = store.createAgent(project.id, {
-      title: "Second manager", engine: "codex", conversationId: master.id, managerAgentId: director.id,
-    });
-    const child = store.createAgent(project.id, {
-      title: "Reporting worker", engine: "codex", conversationId: master.id, managerAgentId: firstManager.id,
-    });
-    const consumer = store.createAgent(project.id, {
-      title: "Result consumer", engine: "codex", conversationId: master.id, managerAgentId: secondManager.id,
-    });
-
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${firstManager.id}/messages`, payload: { text: "Coordinate the first branch." } });
-    await waitForSeedCount(1);
-    const managerToken = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    adapter.mode = "normal";
-    adapter.beforeResponse = async (opts) => {
-      if (opts.agentId !== child.id) return;
-      const report = await app.inject({
-        method: "POST", url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [consumer.id], text: "Schema contract ready for your integration.", waitBehavior: "report" },
-      });
-      expect(report.statusCode).toBe(200);
-    };
-    await app.inject({
-      method: "POST", url: "/api/agent-messages", headers: { authorization: `Bearer ${managerToken}` },
-      payload: { intent: "collaboration", recipientAgentIds: [child.id], text: "Prepare the schema contract for the other branch's consumer.", waitBehavior: "queue" },
-    });
-    await waitForSeedCount(2);
-    await waitForRun(child.id);
-    await vi.waitFor(() => expect(store.readEvents(child.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: expect.objectContaining({ type: "agent_lifecycle", status: "completed", reason: "turn_completed" }) }),
-    ])));
-
-    const childRun = (await app.inject({ method: "GET", url: `/api/agents/${child.id}` }))
-      .json<{ runs: Array<{ id: string; status: string; reason: string }> }>().runs.at(-1)!;
-    expect(childRun).toMatchObject({ status: "completed", reason: "turn_completed" });
-    expect(store.readCommunicationEvents(project.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        intent: "collaboration",
-        sender: { kind: "agent", agentId: child.id, executionId: childRun.id },
-        audience: { kind: "agents", agentIds: [consumer.id] },
-        text: "Schema contract ready for your integration.",
-      }),
-    ]));
-    expect(store.readCommunicationEvents(project.id).some((event) =>
-      event.intent === "collaboration" &&
-      event.sender.kind === "agent" &&
-      event.sender.agentId === child.id &&
-      event.audience.agentIds.includes(firstManager.id))).toBe(false);
-    const childPrompt = adapter.seeds.find((turn) => turn.agentId === child.id)?.prompt ?? "";
-    expect(childPrompt).toContain("You may collaborate directly with any relevant agent in the project, including agents in other reporting branches.");
-    await app.inject({ method: "POST", url: `/api/agents/${firstManager.id}/cancel` });
-    await app.close();
-  });
-
-  it("recovers queued and interrupted collaboration deliveries after restart in FIFO order", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Restart recovery" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const firstMessage = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#Parent interrupted first result" },
-      undefined,
-      "collaboration",
-      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
-    )!;
-    const secondMessage = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#Parent queued second result" },
-      undefined,
-      "collaboration",
-      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
-    )!;
-    const deliveries = new CollaborationDeliveryStore(dataDir);
-    const first = deliveries.queue({
-      conversationId: master.id,
-      messageId: firstMessage.id,
-      targetAgentId: parent.id,
-      text: firstMessage.text,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "tag",
-    }).delivery;
-    deliveries.markDelivered(first.id);
-    deliveries.queue({
-      conversationId: master.id,
-      messageId: secondMessage.id,
-      targetAgentId: parent.id,
-      text: secondMessage.text,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "tag",
-    });
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForRun(parent.id);
-
-    const prompt = adapter.seeds.find((turn) => turn.agentId === parent.id)?.prompt ?? "";
-    expect(prompt).toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(prompt.lastIndexOf("#Parent interrupted first result")).toBeLessThan(prompt.lastIndexOf("#Parent queued second result"));
-    await app.close();
-  });
-
-  it("dispatches a fixed, exact collaboration batch and leaves in-flight arrivals for the next turn", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Batch room" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
-    const author = store.createAgent(project.id, { title: "Mesa Author", engine: "codex", conversationId: master.id });
-    const deliveries = new CollaborationDeliveryStore(dataDir);
-    const firstAt = "2026-07-11T10:00:00.000Z";
-    const secondAt = "2026-07-11T10:00:01.000Z";
-    const queue = (messageId: string, targetAgentId: string, text: string, createdAt: string) => deliveries.queue({
-      conversationId: master.id,
-      messageId,
-      targetAgentId,
-      authorAgentId: author.id,
-      text,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "tag",
-      createdAt,
-      orderKey: createdAt,
-    }).delivery;
-    const first = queue("batch-first", parent.id, "first exact\nline two", firstAt);
-    const second = queue("batch-second", parent.id, "second exact", secondAt);
-    const isolated = queue("batch-other", other.id, "other recipient only", firstAt);
-
-    adapter.mode = "boundary";
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForSeedCount(2);
-    await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/collaboration/messages`,
-      payload: { text: "arrived during active batch", recipientAgentIds: [parent.id] },
-    });
-    await waitForRun(parent.id, 2);
-    await waitForRun(other.id);
-
-    const parentTurns = [
-      ...adapter.seeds.filter((turn) => turn.agentId === parent.id),
-      ...adapter.continues.filter((turn) => turn.agentId === parent.id),
-    ];
-    expect(parentTurns).toHaveLength(2);
-    expect(parentTurns[0]?.prompt).toContain(
-      `Author: Mesa Author (#Mesa-Author, agent ${author.id})\nUTC timestamp: ${firstAt}\nOriginal message (exact):\nfirst exact\nline two`,
-    );
-    expect(parentTurns[0]?.prompt).toContain(`UTC timestamp: ${secondAt}\nOriginal message (exact):\nsecond exact`);
-    expect(parentTurns[0]?.prompt).not.toContain("arrived during active batch");
-    expect(parentTurns[1]?.prompt).toContain("#Parent arrived during active batch");
-    expect(adapter.seeds.find((turn) => turn.agentId === other.id)?.prompt).toContain("other recipient only");
-    expect(parentTurns.every((turn) => !turn.prompt.includes("other recipient only"))).toBe(true);
-
-    const persisted = new CollaborationDeliveryStore(dataDir);
-    expect([first.id, second.id, isolated.id].map((id) => persisted.get(id)?.status)).toEqual([
-      "acknowledged",
-      "acknowledged",
-      "acknowledged",
-    ]);
-    await app.close();
-  });
-
-  it("retries every unacknowledged batch member after a shared runtime failure", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Batch retry" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const deliveries = new CollaborationDeliveryStore(dataDir);
-    const ids = ["one", "two"].map((text, index) => deliveries.queue({
-      conversationId: master.id,
-      messageId: `retry-${text}`,
-      targetAgentId: parent.id,
-      text,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "tag",
-      createdAt: `2026-07-11T10:00:0${index}.000Z`,
-    }).delivery.id);
-    adapter.failNextTurn = true;
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForRun(parent.id, 2);
-    const turns = [...adapter.seeds, ...adapter.continues].filter((turn) => turn.agentId === parent.id);
-    expect(turns).toHaveLength(2);
-    expect(turns.every((turn) => turn.prompt.includes("Original message (exact):\none") && turn.prompt.includes("Original message (exact):\ntwo"))).toBe(true);
-    const persisted = new CollaborationDeliveryStore(dataDir);
-    expect(ids.map((id) => persisted.get(id)?.status)).toEqual(["acknowledged", "acknowledged"]);
-    await app.close();
-  });
-
-  it("rebuilds a missing inbox record from a canonical tagged message", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Crash window" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    new CollaborationDeliveryStore(dataDir);
-    appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#Parent result persisted before the inbox write" },
-      undefined,
-      "collaboration",
-      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
-    );
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForRun(parent.id);
-    expect(adapter.seeds.find((turn) => turn.agentId === parent.id)?.prompt).toContain(
-      "Latest message for you:\n#Parent result persisted before the inbox write",
-    );
-    await app.close();
-  });
-
-  it("reconciles an #everyone crash window once per still-eligible recipient with audit provenance", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Broadcast crash window" });
-    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: master.id });
-    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: master.id });
-    const archived = store.createAgent(project.id, { title: "Archived", engine: "codex", conversationId: master.id });
-    const deleted = store.createAgent(project.id, { title: "Deleted", engine: "codex", conversationId: master.id });
-    new CollaborationDeliveryStore(dataDir);
-    const intent = (targetAgentId: string) => ({
-      targetAgentId,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "tag" as const,
-      audience: "everyone" as const,
-    });
-    const message = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#everyone recover this broadcast" },
-      undefined,
-      "collaboration",
-      [intent(first.id), intent(second.id), intent(archived.id), intent(deleted.id)],
-    )!;
-    store.updateAgent(archived.id, { archived: true });
-    store.deleteAgent(deleted.id);
-
-    adapter.mode = "hang";
-    const firstStart = createServer({ dataDir, store, engines, logger: false });
-    await firstStart.ready();
-    await waitForSeedCount(2);
-    await firstStart.close();
-
-    const restartedStore = new AgentStore(dataDir);
-    const secondStart = createServer({ dataDir, store: restartedStore, engines, logger: false });
-    await secondStart.ready();
-    await secondStart.close();
-
-    const records = readFileSync(path.join(dataDir, "collaboration-deliveries.jsonl"), "utf8")
-      .trim().split("\n").map((line) => JSON.parse(line) as {
-        type: string;
-        delivery?: { id: string; messageId: string; targetAgentId: string; audience?: string };
-      });
-    const deliveries = records
-      .flatMap((record) => record.delivery ? [record.delivery] : [])
-      .filter((delivery) => delivery.messageId === message.id);
-    const uniqueByTarget = new Map(deliveries.map((delivery) => [delivery.targetAgentId, delivery]));
-    expect([...uniqueByTarget.keys()].sort()).toEqual([first.id, second.id].sort());
-    expect(new Set(deliveries.map((delivery) => delivery.id)).size).toBe(2);
-    expect(deliveries.every((delivery) => delivery.audience === "everyone")).toBe(true);
-  });
-
-  it("preserves canonical FIFO when an older message is reconstructed", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "FIFO crash window" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const deliveries = new CollaborationDeliveryStore(dataDir);
-    const intent = { targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" as const };
-    const afterReconciliationBoundary = new Date(Date.now() + 1_000);
-    vi.useFakeTimers();
-    vi.setSystemTime(afterReconciliationBoundary);
-    const older = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#Parent older message missing its inbox write" },
-      undefined,
-      "collaboration",
-      [intent],
-    )!;
-    const newer = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#Parent newer message already queued" },
-      undefined,
-      "collaboration",
-      [intent],
-    )!;
-    vi.useRealTimers();
-    expect(older.createdAt).toBe(newer.createdAt);
-    deliveries.queue({
-      conversationId: master.id,
-      messageId: newer.id,
-      targetAgentId: parent.id,
-      text: newer.text,
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "tag",
-      createdAt: newer.createdAt,
-      orderKey: store.getConversationMessageDeliveryOrderKey(master.id, newer.id),
-    });
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForRun(parent.id);
-    const turns = [
-      ...adapter.seeds.filter((turn) => turn.agentId === parent.id),
-      ...adapter.continues.filter((turn) => turn.agentId === parent.id),
-    ];
-    expect(turns).toHaveLength(1);
-    expect(turns[0]?.prompt.indexOf("#Parent older message missing its inbox write")).toBeLessThan(
-      turns[0]?.prompt.indexOf("#Parent newer message already queued") ?? -1,
-    );
-    await app.close();
-  });
-
-  it("preserves mixed collaboration and direct FIFO when timestamps tie", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Mixed FIFO crash window" });
-    const parent = store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    const deliveries = new CollaborationDeliveryStore(dataDir);
-    const afterReconciliationBoundary = new Date(Date.now() + 1_000);
-    vi.useFakeTimers();
-    vi.setSystemTime(afterReconciliationBoundary);
-    const older = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { role: "user", text: "#Parent older collaboration message missing its inbox write" },
-      undefined,
-      "collaboration",
-      [{ targetAgentId: parent.id, relayDepth: 0, mentionTrail: [], kind: "tag" }],
-    )!;
-    const directCreatedAt = new Date().toISOString();
-    deliveries.queue({
-      messageId: "newer-direct-manager-message",
-      targetAgentId: parent.id,
-      text: "Newer direct manager message already queued",
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "direct",
-      createdAt: directCreatedAt,
-      orderKey: store.nextDeliveryOrderKey(directCreatedAt),
-    });
-    vi.useRealTimers();
-    expect(older.createdAt).toBe(directCreatedAt);
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForRun(parent.id, 2);
-    const turns = [
-      ...adapter.seeds.filter((turn) => turn.agentId === parent.id),
-      ...adapter.continues.filter((turn) => turn.agentId === parent.id),
-    ];
-    expect(turns[0]?.prompt).toContain(
-      "Latest message for you:\n#Parent older collaboration message missing its inbox write",
-    );
-    expect(turns[1]?.prompt).toContain("Latest message for you:\nNewer direct manager message already queued");
-    await app.close();
-  });
-
-  it("does not infer delivery for canonical messages without an authorized intent", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Blocked recovery" });
-    store.createAgent(project.id, { title: "Parent", engine: "codex", conversationId: master.id });
-    new CollaborationDeliveryStore(dataDir);
-    expect(() => store.appendConversationMessage(
-      master.id,
-      { role: "assistant", text: "#Parent blocked or historical mention" },
-      undefined,
-      "collaboration",
-    )).toThrow(/canonical communication event/);
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await sleep(20);
-    expect(adapter.seeds).toHaveLength(0);
-    await app.close();
-  });
-
-  it("recovers a durable direct manager follow-up after restart", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex" });
-    new CollaborationDeliveryStore(dataDir).queue({
-      messageId: "direct-restart",
-      targetAgentId: agent.id,
-      text: "Continue after restart",
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "direct",
-    });
-
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForRun(agent.id);
-    expect(adapter.seeds.find((turn) => turn.agentId === agent.id)?.prompt).toContain(
-      "Latest message for you:\nContinue after restart",
-    );
-    await app.close();
-  });
-
-  it("does not mutate a delivery ledger after shutdown begins", async () => {
-    const project = store.createProject({ label: "Demo", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex" });
-    new CollaborationDeliveryStore(dataDir).queue({
-      messageId: "active-during-close",
-      targetAgentId: agent.id,
-      text: "Handle this after restart",
-      relayDepth: 0,
-      mentionTrail: [],
-      kind: "direct",
-    });
-    adapter.mode = "hang";
-    const app = createServer({ dataDir, store, engines, logger: false });
-    await app.ready();
-    await waitForSeedCount(1);
-
-    await app.close();
-    rmSync(dataDir, { recursive: true, force: true });
-    await sleep(20);
-    expect(() => statSync(dataDir)).toThrow();
-  });
-
-  it("allows collaboration beyond the legacy 12-handoff cap", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Long collaboration", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Long chain" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const priorTrail = Array.from({ length: 12 }, (_, index) =>
-      createHash("sha256").update(`prior-handoff-${index}`).digest("hex"));
-    let handoffStatus: number | undefined;
-    adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "thirteenth useful handoff", waitBehavior: "queue" },
-      });
-      handoffStatus = response.statusCode;
-    };
-
-    const started = await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/messages`,
-      payload: { text: "continue the coordination", agentMentionDepth: 12, agentMentionTrail: priorTrail },
-    });
-    expect(started.statusCode).toBe(200);
-    await waitForRun(author.id);
-    expect(handoffStatus).toBe(200);
-
-    const message = store.getCollaborationViewDetail(master.id)?.messages
-      .find((item) => item.text === "#Reviewer thirteenth useful handoff");
-    expect(message).toBeDefined();
-    const delivery = new CollaborationDeliveryStore(dataDir).getForMessageTarget(message!.id, reviewer.id);
-    expect(delivery).toMatchObject({ relayDepth: 13 });
-    expect(delivery?.mentionTrail).toHaveLength(13);
-    await app.close();
-  });
-
-  it("still blocks an exact repeated handoff inside the bounded replay window", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "Replay protection", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Replay chain" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const renderedText = "#Reviewer repeat this handoff";
-    const fingerprint = createHash("sha256")
-      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
-      .digest("hex");
-    let replayResponse: { statusCode: number; body: string } | undefined;
-    adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "repeat this handoff", waitBehavior: "queue" },
-      });
-      replayResponse = { statusCode: response.statusCode, body: response.body };
-    };
-
-    await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/messages`,
-      payload: { text: "try the replay", agentMentionDepth: 1, agentMentionTrail: [fingerprint] },
-    });
-    await waitForRun(author.id);
-    expect(replayResponse?.statusCode).toBe(400);
-    expect(JSON.parse(replayResponse!.body)).toEqual({
-      error: "the same collaboration handoff already occurred in this delivery chain",
-    });
-    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
-    await app.close();
-  });
-
-  it("merges replay lineage from every delivery in a collaboration batch", async () => {
-    const project = store.createProject({ label: "Batch lineage", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Batch chain" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const renderedText = "#Reviewer replay from second lineage";
-    const repeatedFingerprint = createHash("sha256")
-      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
-      .digest("hex");
-    const ledger = new CollaborationDeliveryStore(dataDir);
-    ledger.queue({
-      conversationId: master.id, messageId: "batch-first", targetAgentId: author.id,
-      text: "first delivery", relayDepth: 1,
-      mentionTrail: [createHash("sha256").update("first-lineage").digest("hex")], kind: "tag",
-    });
-    ledger.queue({
-      conversationId: master.id, messageId: "batch-second", targetAgentId: author.id,
-      text: "second delivery", relayDepth: 1,
-      mentionTrail: [repeatedFingerprint], kind: "tag",
-    });
-    let replayResponse: { statusCode: number; body: string } | undefined;
-    const app = createServer({ dataDir, store, engines, logger: false });
-    adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "collaboration", recipientAgentIds: [reviewer.id], text: "replay from second lineage", waitBehavior: "queue" },
-      });
-      replayResponse = { statusCode: response.statusCode, body: response.body };
-    };
-
-    await app.ready();
-    await waitForRun(author.id);
-    expect(adapter.seeds.find((turn) => turn.agentId === author.id)?.prompt)
-      .toContain("CollaborationDeliveryBatch (2 deliveries; canonical server order)");
-    expect(replayResponse?.statusCode).toBe(400);
-    expect(JSON.parse(replayResponse!.body)).toEqual({
-      error: "the same collaboration handoff already occurred in this delivery chain",
-    });
-    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
-    await app.close();
-  });
-
-  it("splits a batch before disjoint replay lineages would exceed the bounded window", async () => {
-    const project = store.createProject({ label: "Bounded batch lineage", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Bounded batch chain" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const reviewer = store.createAgent(project.id, { title: "Reviewer", engine: "codex", conversationId: master.id });
-    const renderedText = "#Reviewer replay from the first full lineage";
-    const repeatedFingerprint = createHash("sha256")
-      .update(author.id).update("\0").update(reviewer.id).update("\0").update(renderedText.toLocaleLowerCase())
-      .digest("hex");
-    const firstTrail = [
-      repeatedFingerprint,
-      ...Array.from({ length: 63 }, (_, index) =>
-        createHash("sha256").update(`first-full-lineage-${index}`).digest("hex")),
-    ];
-    const secondTrail = Array.from({ length: 64 }, (_, index) =>
-      createHash("sha256").update(`second-full-lineage-${index}`).digest("hex"));
-    const ledger = new CollaborationDeliveryStore(dataDir);
-    const first = ledger.queue({
-      conversationId: master.id, messageId: "full-batch-first", targetAgentId: author.id,
-      text: "first full delivery", relayDepth: 64, mentionTrail: firstTrail, kind: "tag", orderKey: "0001",
-    }).delivery;
-    const second = ledger.queue({
-      conversationId: master.id, messageId: "full-batch-second", targetAgentId: author.id,
-      text: "second full delivery", relayDepth: 64, mentionTrail: secondTrail, kind: "tag", orderKey: "0002",
-    }).delivery;
-    let replayResponse: { statusCode: number; body: string } | undefined;
-    const app = createServer({ dataDir, store, engines, logger: false });
-    adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: {
-          intent: "collaboration",
-          recipientAgentIds: [reviewer.id],
-          text: "replay from the first full lineage",
-          waitBehavior: "queue",
-        },
-      });
-      replayResponse = { statusCode: response.statusCode, body: response.body };
-    };
-
-    await app.ready();
-    await waitForRun(author.id, 2);
-    expect(replayResponse?.statusCode).toBe(400);
-    expect(JSON.parse(replayResponse!.body)).toEqual({
-      error: "the same collaboration handoff already occurred in this delivery chain",
-    });
-    expect(adapter.seeds[0]?.prompt).not.toContain("CollaborationDeliveryBatch");
-    expect(adapter.seeds.length + adapter.continues.length).toBe(2);
-    const completed = new CollaborationDeliveryStore(dataDir);
-    expect(completed.get(first.id)?.status).toBe("acknowledged");
-    expect(completed.get(second.id)?.status).toBe("acknowledged");
-    expect(adapter.seeds.filter((turn) => turn.agentId === reviewer.id)).toHaveLength(0);
     await app.close();
   });
 
@@ -4245,8 +2769,8 @@ describe("server chunk F", () => {
         collaborationConversationId: master.id,
       },
     });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: "collaboration context must be delivered by an explicit recipient event" });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "unknown message field" });
     expect(adapter.seeds).toHaveLength(0);
     await app.close();
   });
@@ -4259,7 +2783,8 @@ describe("server chunk F", () => {
       url: `/api/agents/${agent.id}/messages`,
       payload: { text: "long" },
     });
-    expect(first.statusCode).toBe(200);
+    expect(first.statusCode).toBe(202);
+    await waitForSeedCount(1);
 
     const concurrent = await app.inject({
       method: "POST",
@@ -4501,84 +3026,8 @@ describe("server chunk F", () => {
     const sent = await app.inject({
       method: "POST", url: `/api/agents/${recipient.id}/messages`, payload: { text: "Continue from that answer." },
     });
-    expect(sent.statusCode).toBe(200);
+    expect(sent.statusCode).toBe(202);
     await waitForRun(recipient.id);
-    await app.close();
-  });
-
-  it("does not recreate a run claim when deletion finishes before claim creation", async () => {
-    let beforeClaimReached = false;
-    let releaseClaim!: () => void;
-    const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
-    const app = createServer({
-      dataDir,
-      store,
-      engines,
-      logger: false,
-      messageLifecycleFaults: {
-        beforeRunClaim: async () => {
-          beforeClaimReached = true;
-          await claimGate;
-        },
-      },
-    });
-    const project = store.createProject({ label: "Pre-claim deletion race", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Pre-claim Racing", engine: "codex" });
-
-    const pendingMessage = app.inject({
-      method: "POST",
-      url: `/api/agents/${agent.id}/messages`,
-      payload: { text: "must never claim after deletion" },
-    });
-    await vi.waitFor(() => expect(beforeClaimReached).toBe(true));
-    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
-    expect(deleted.statusCode).toBe(200);
-    releaseClaim();
-
-    const messageResponse = await pendingMessage;
-    expect(messageResponse.statusCode).toBe(404);
-    expect(adapter.seeds).toHaveLength(0);
-    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
-      .toEqual({ cancelled: false });
-    await app.close();
-  });
-
-  it("fences a message handler whose durable claim races agent deletion", async () => {
-    let claimReached = false;
-    let releaseClaim!: () => void;
-    const claimGate = new Promise<void>((resolve) => { releaseClaim = resolve; });
-    const app = createServer({
-      dataDir,
-      store,
-      engines,
-      logger: false,
-      messageLifecycleFaults: {
-        afterRunClaim: async () => {
-          claimReached = true;
-          await claimGate;
-        },
-      },
-    });
-    const project = store.createProject({ label: "Deletion race", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Racing", engine: "codex" });
-
-    const pendingMessage = app.inject({
-      method: "POST",
-      url: `/api/agents/${agent.id}/messages`,
-      payload: { text: "must never start after deletion" },
-    });
-    await vi.waitFor(() => expect(claimReached).toBe(true));
-    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
-    expect(deleted.statusCode).toBe(200);
-    releaseClaim();
-
-    const messageResponse = await pendingMessage;
-    expect(messageResponse.statusCode).toBe(404);
-    expect(adapter.seeds).toHaveLength(0);
-    expect(readFileSync(path.join(dataDir, "runtime-runs.jsonl"), "utf8")).not.toContain(agent.id);
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json())
-      .toEqual({ cancelled: false });
     await app.close();
   });
 
@@ -4656,7 +3105,7 @@ describe("server chunk F", () => {
     expect(attachment.name).toBe("screen.png");
     expect(attachment.url).not.toContain(dataDir);
     const send = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect this", attachmentIds: [attachment.id] } });
-    expect(send.statusCode).toBe(200);
+    expect(send.statusCode).toBe(202);
     await waitForRun(agent.id);
     expect(store.getMessages(agent.id)[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, agentId: agent.id });
     store.rebuildProjections();
@@ -4739,7 +3188,7 @@ describe("server chunk F", () => {
     replayAbort.abort();
     const replayChunk = new TextDecoder().decode(replayRead.value);
     expect(replayChunk).toContain("id: 2");
-    expect(replayChunk).not.toContain("id: 1");
+    expect(replayChunk).not.toMatch(/(?:^|\n)id: 1\n/);
     expect(replayChunk).toContain('"replayed":true');
 
     expect(project.id).toBeTruthy();
@@ -4776,11 +3225,12 @@ describe("server chunk F", () => {
     const rejected = await app.inject({ method: "POST", url: `/api/agents/${other.id}/messages`, payload: { text: "Cross-boundary", replyToMessageId: original.id } });
     expect(rejected.statusCode).toBe(400);
     const accepted = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Specific answer", replyToMessageId: original.id } });
-    expect(accepted.statusCode).toBe(200);
-    expect(adapter.continues.at(-1)?.prompt).toContain("Replying specifically to this earlier message");
-    expect(adapter.continues.at(-1)?.prompt).toContain("Original question");
+    expect(accepted.statusCode).toBe(202);
+    await waitForRun(agent.id, 2);
+    const replyTurn = [...adapter.seeds, ...adapter.continues].find((turn) => turn.prompt.includes("Specific answer"));
+    expect(replyTurn?.prompt).toContain("Replying specifically to this earlier message");
+    expect(replyTurn?.prompt).toContain("Original question");
     expect(store.getMessages(agent.id).find((message) => message.text === "Specific answer")?.replyTo?.messageId).toBe(original.id);
-    await waitForRun(agent.id);
     await app.close();
   });
 
@@ -4819,9 +3269,11 @@ describe("server chunk F", () => {
     expect(replayed.statusCode).toBe(200);
     expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Follow up")).toHaveLength(1);
-    expect(store.getMessages(author.id).filter((message) => message.text === "Follow up")).toHaveLength(1);
     expect(store.getConversationMessages(master.id).find((message) => message.text === "#Author Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
-    expect(store.getMessages(author.id).find((message) => message.text === "Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    const directAudit = store.readCommunicationProjections(project.id).find((projection) =>
+      projection.surface === "direct_agent_audit" && projection.projectionKey === author.id &&
+      projection.message?.renderedText === "Follow up");
+    expect(directAudit?.message?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     const conflict = await app.inject({
       method: "POST",
       url: `/api/conversations/${master.id}/direct-replies`,
@@ -4850,7 +3302,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("repairs a same-process direct-reply crash window and double replay without duplicates or spawning", async () => {
+  it("creates missing V3 runtime state from an authored direct-reply projection without duplicates", async () => {
     const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Recovery room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
@@ -4882,18 +3334,20 @@ describe("server chunk F", () => {
       payload,
     });
     expect(replay.statusCode).toBe(200);
-    expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
+    expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: false });
     const secondReplay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
     await waitForRun(author.id);
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Recovered follow up")).toHaveLength(1);
-    expect(store.getMessages(author.id).filter((message) => message.text === "Recovered follow up")).toHaveLength(1);
-    expect(store.getMessages(author.id).find((message) => message.text === "Recovered follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
+    const audit = store.readCommunicationProjections(project.id).find((projection) =>
+      projection.surface === "direct_agent_audit" && projection.projectionKey === author.id &&
+      projection.message?.renderedText === "Recovered follow up");
+    expect(audit?.message?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
     expect(store.listAgents(project.id)).toHaveLength(agentCount);
     await app.close();
   });
 
-  it("returns a truthful retryable failure when a canonical direct reply has no persisted delivery intent", async () => {
+  it("creates V3 activation state when an authored direct reply has no runtime record", async () => {
     const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Incomplete recovery room" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
@@ -4915,10 +3369,12 @@ describe("server chunk F", () => {
       url: `/api/conversations/${master.id}/direct-replies`,
       payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "missing-intent" },
     });
-    expect(replay.statusCode).toBe(503);
-    expect(replay.json()).toMatchObject({ retryable: true, error: expect.stringMatching(/intent is unavailable/) });
-    expect(replay.json()).not.toHaveProperty("replayed");
-    expect(store.getMessages(author.id).filter((message) => message.text === "Incomplete follow up")).toHaveLength(0);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ replayed: false, queued: true });
+    await waitForRun(author.id);
+    expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ surface: "direct_agent_audit", projectionKey: author.id }),
+    ]));
     await app.close();
   });
 
@@ -4931,7 +3387,10 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
     await waitForSeedCount(1);
 
-    const payload = { text: "Queued follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "busy-reply" };
+    const payload = {
+      text: "Queued follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id,
+      idempotencyKey: "busy-reply", activeRunDelivery: "queue" as const,
+    };
     const first = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     const retry = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
     expect(first.json()).toMatchObject({ replayed: false, queued: true });
@@ -4940,40 +3399,9 @@ describe("server chunk F", () => {
 
     adapter.mode = "normal";
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
-    for (let i = 0; i < 80 && !store.getMessages(author.id).some((message) => message.text === payload.text); i += 1) await sleep(10);
-    expect(store.getMessages(author.id).filter((message) => message.text === payload.text)).toHaveLength(1);
-    await app.close();
-  });
-
-  it("cancels an operator-owned queued Project message idempotently and never dispatches it", async () => {
-    const { app, project } = await createProjectAndAgent();
-    const master = store.createConversation(project.id, { title: "Cancellation room" });
-    const author = store.createAgent(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Working" }, author.id)!;
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
-    await waitForSeedCount(1);
-
-    const sent = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Cancel me", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "cancel-send", activeRunDelivery: "queue" },
-    });
-    const deliveryId = sent.json<{ deliveryId: string }>().deliveryId;
-    expect((await app.inject({ method: "GET", url: `/api/conversations/${master.id}/queued-messages` })).json())
-      .toEqual([expect.objectContaining({ deliveryId, status: "queued", position: 1 })]);
-
-    const cancelled = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/queued-messages/${deliveryId}/cancel`, payload: { idempotencyKey: "cancel-action" } });
-    const replay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/queued-messages/${deliveryId}/cancel`, payload: { idempotencyKey: "cancel-action" } });
-    expect(cancelled.json()).toMatchObject({ cancelled: true, replayed: false, status: "cancelled" });
-    expect(replay.json()).toMatchObject({ cancelled: true, replayed: true, status: "cancelled" });
-    expect((await app.inject({ method: "GET", url: `/api/conversations/${master.id}/queued-messages` })).json()).toEqual([]);
-    expect(new CollaborationDeliveryStore(dataDir).get(deliveryId)?.status).toBe("cancelled");
-
-    adapter.mode = "normal";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
-    await sleep(30);
-    expect(store.getMessages(author.id).some((message) => message.text === "Cancel me")).toBe(false);
+    await expect.poll(() => adapter.seeds.length + adapter.continues.length).toBe(2);
+    expect([...adapter.seeds, ...adapter.continues]
+      .filter((turn) => turn.agentId === author.id && turn.prompt.includes(payload.text))).toHaveLength(1);
     await app.close();
   });
 
@@ -4984,7 +3412,7 @@ describe("server chunk F", () => {
     const { app, project, agent } = await createProjectAndAgent();
     const masterId = store.getProject(project.id)!.lastConversationId!;
     await app.inject({ method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`, payload: { conversationIds: [masterId], primaryConversationId: masterId } });
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Active turn" } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Active turn" } })).statusCode).toBe(202);
     await expect.poll(() => persistent.starts.length).toBe(1);
 
     const response = await app.inject({
@@ -4993,8 +3421,8 @@ describe("server chunk F", () => {
       payload: { text: "Steer from Project chat", recipients: [{ agentId: agent.id }], idempotencyKey: "project-steer", activeRunDelivery: "steer" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ recipients: [{ agentId: agent.id, queued: false, state: "steered" }] });
-    expect(persistent.steers).toHaveLength(1);
+    expect(response.json()).toMatchObject({ recipients: [{ agentId: agent.id, queued: true, state: "queued" }] });
+    await expect.poll(() => persistent.steers.length).toBe(1);
     expect((await app.inject({ method: "GET", url: `/api/conversations/${masterId}/queued-messages` })).json()).toEqual([]);
     await app.close();
   });
@@ -5028,7 +3456,9 @@ describe("server chunk F", () => {
     expect(timeline.find((message) => message.id === originalMessageId)?.text).toBe("Original request");
     expect(timeline.find((message) => message.id === originalMessageId)?.correctedByMessageId).toBe(corrected.json<{ correctionMessageId: string }>().correctionMessageId);
     expect(timeline.filter((message) => message.correctionOfMessageId === originalMessageId)).toHaveLength(1);
-    expect(store.readRunTriggers(project.id).filter((trigger) => trigger.communicationEventId === corrected.json<{ correctionMessageId: string }>().correctionMessageId)).toHaveLength(1);
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunication(
+      corrected.json<{ correctionMessageId: string }>().correctionMessageId,
+    )).toBeTruthy();
     await app.close();
   });
 

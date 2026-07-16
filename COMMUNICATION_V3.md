@@ -7,6 +7,10 @@ This contract is the scheduler and coordination source of truth. The executable
 request reducer lives in `packages/core/src/coordination-v3.ts`. Authorization,
 idempotency, and persistence surround that pure reducer.
 
+Communication V3.1 is unconditional. There is no executable V2 scheduler,
+feature flag, migration reader, or compatibility delivery ledger. Deployments
+reset pre-cutover test data instead of replaying ambiguous scheduler state.
+
 ## Objects and ownership
 
 - **Agent:** durable identity.
@@ -23,6 +27,19 @@ status, activation attachment and consumption, leases and fencing tokens,
 prompt-injection state, terminal outcomes, idempotency, and the activation outbox.
 JSONL may retain rich runtime telemetry, but it is not a competing scheduler
 authority.
+
+Provider-session continuity follows durable causal scope. A newly created
+inbound coordination request starts a fresh task session for its recipient.
+Updates within that request, human steering, and join resumptions retain their
+current session. Rolling the provider cache never changes agent identity,
+messages, files, request state, or join ownership. Request text is therefore
+self-contained: recipients do not inherit the requester's hidden prompt or
+provider-session context.
+
+Fresh-task request Activations and continuity Activations are incompatible for
+Run coalescing. If both are pending, scheduler priority chooses the first Run
+and leaves the other class pending for the next authoritative Run, so a human
+message or join resumption can never receive an ambiguous cache disposition.
 
 ## Request state machine
 
@@ -76,6 +93,19 @@ It moves from `open` to exactly one of `satisfied`, `impossible`, `expired`, or
 owner. A join cancelled by its owner closes without creating a redundant
 activation.
 
+When a request recipient creates a join while handling that request, the join
+durably records the inbound request as its continuation. Creating the join
+moves that request to `waiting_dependency`; completing the current Run does not
+make its outcome unknown. The terminal join Activation reattaches the
+continuation request to the resumed Run so `ponderosa_update_request` resolves
+it authoritatively. The join Activation includes the continuation's durable
+payload and an explicit terminal-update obligation. If the resumed Run ends
+without fulfilling a still-suspended continuation, the supervisor transitions
+it to `outcome_unknown`; it must never remain parked without a Run or actionable
+Activation. An exact equivalent join—including its continuations—is reused even
+after satisfaction or impossibility; immutable outcomes cannot justify a
+duplicate wake.
+
 Superseding terminates the original request. A replacement request uses a new
 join; V3 has no mutable logical slots. Deleting a join owner cancels its open
 joins and invalidates their pending activations transactionally. Deleting a
@@ -95,6 +125,13 @@ and steering. Informational broadcasts are passive: their communication event
 is durable, but they create no Activation and wake no agent. Communication
 creation and the decision to create its deduplicated Activation are one SQLite
 transaction.
+
+An ordinary agent message sent to the requester after that same provider
+execution has terminally updated its attached correlated Request is also
+passive. The complete message remains durable and auditable, while the Request
+or Join remains the sole wake authority. This rule is recipient-specific:
+unrelated recipients remain actionable, and explicit urgent messages always
+override it.
 
 An Activation is an actionable cause, not an instruction to create a new Run.
 The scheduler alone decides whether to attach urgent steering to the current
@@ -156,7 +193,7 @@ The cutover gate must prove:
 - cancellation fences every late output;
 - terminal joins cause at most one actionable wake;
 - provider failure at each transaction boundary recovers deterministically; and
-- V2 communication tables and handlers have no readers or writers.
+- V2 scheduler files, tables, routes, and handlers have no readers or writers.
 
 ## Provider-visible tools
 

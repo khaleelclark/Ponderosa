@@ -164,6 +164,25 @@ describe("CoordinationV3Store transactions", () => {
     expect(duplicate).toEqual({ requestIds: [], joinId: "canonical-join", replayed: false });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_joins").get()).toEqual({ count: 1 });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_join_members").get()).toEqual({ count: 2 });
+
+    store.updateRequest({
+      requestId: "coalesced-a", updateId: "coalesced-a-done", kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+    });
+    store.updateRequest({
+      requestId: "coalesced-b", updateId: "coalesced-b-done", kind: "completed",
+      actor: { kind: "agent", id: recipientB },
+    });
+    const terminalDuplicate = store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "redundant-after-satisfaction", requests: [],
+      join: { id: "redundant-terminal-join", mode: "all", requestIds: created.requestIds },
+    });
+    expect(terminalDuplicate).toEqual({ requestIds: [], joinId: "canonical-join", replayed: false });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_joins").get()).toEqual({ count: 1 });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations WHERE kind = 'coordination_join_satisfied'
+    `).get()).toEqual({ count: 1 });
   });
 
   it("normalizes new recipient IDs repeated as same-call join request IDs", () => {
@@ -358,6 +377,100 @@ describe("CoordinationV3Store transactions", () => {
 });
 
 describe("CoordinationV3Store scheduler", () => {
+  it("suspends and reattaches an inbound request across a nested join", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "parent-work", requests: [
+        { requestId: "parent-work", recipientAgentId: recipientA, lifetime: indefinite },
+      ],
+    });
+    const parentRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(parentRun);
+    store.coordinate({
+      projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}:run:${parentRun.runId}`,
+      idempotencyKey: "nested-work", requests: [
+        { requestId: "nested-work", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+      join: {
+        id: "nested-join", mode: "all", continuationRequestIds: ["parent-work"],
+      },
+    });
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'parent-work'").get())
+      .toEqual({ state: "waiting_dependency" });
+    store.completeRun(parentRun.runId, parentRun.fencingToken);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'parent-work' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+
+    const childRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(childRun);
+    store.updateRequest({
+      requestId: "nested-work", updateId: "nested-work-done", kind: "completed",
+      actor: { kind: "agent", id: recipientB }, payload: { result: "ready" },
+    });
+    store.completeRun(childRun.runId, childRun.fencingToken);
+
+    const resumed = store.leaseNextRun({ workerId: "worker-1" })!;
+    expect(resumed.agentId).toBe(recipientA);
+    expect(resumed.activations.map((activation) => activation.kind)).toContain("coordination_join_satisfied");
+    expect(resumed.activations.find((activation) => activation.kind === "coordination_join_satisfied")?.payload)
+      .toMatchObject({
+        continuations: [{ requestId: "parent-work", state: "waiting_dependency" }],
+        continuationInstruction: expect.stringContaining("terminally update"),
+      });
+    expect(store.requestIdsAttachedToRun(resumed.runId, recipientA)).toEqual(["parent-work"]);
+    acknowledgeLease(resumed);
+    store.updateRequest({
+      requestId: "parent-work", updateId: "parent-work-done", kind: "completed",
+      actor: { kind: "agent", id: recipientA }, payload: { result: "integrated" },
+    });
+    store.completeRun(resumed.runId, resumed.fencingToken);
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'parent-work'").get())
+      .toEqual({ state: "completed" });
+  });
+
+  it("fails a resumed continuation closed instead of parking it without work", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "unreported-parent", requests: [
+        { requestId: "unreported-parent", recipientAgentId: recipientA, lifetime: indefinite },
+      ],
+      join: { id: "unreported-outer-join", mode: "all" },
+    });
+    const parentRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(parentRun);
+    store.coordinate({
+      projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}:run:${parentRun.runId}`,
+      idempotencyKey: "unreported-child", requests: [
+        { requestId: "unreported-child", recipientAgentId: recipientB, lifetime: indefinite },
+      ],
+      join: {
+        id: "unreported-inner-join", mode: "all", continuationRequestIds: ["unreported-parent"],
+      },
+    });
+    store.completeRun(parentRun.runId, parentRun.fencingToken);
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'unreported-parent'").get())
+      .toEqual({ state: "waiting_dependency" });
+
+    const childRun = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(childRun);
+    store.updateRequest({
+      requestId: "unreported-child", updateId: "unreported-child-done", kind: "completed",
+      actor: { kind: "agent", id: recipientB }, payload: { result: "ready" },
+    });
+    store.completeRun(childRun.runId, childRun.fencingToken);
+
+    const resumed = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(resumed);
+    store.completeRun(resumed.runId, resumed.fencingToken);
+    expect(opened.client.prepare("SELECT state FROM coordination_requests WHERE id = 'unreported-parent'").get())
+      .toEqual({ state: "outcome_unknown" });
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'unreported-outer-join'").get())
+      .toEqual({ state: "impossible" });
+    expect(store.leaseNextRun({ workerId: "worker-1" })?.agentId).toBe(requesterId);
+  });
+
   it("resolves only the correlated requests authoritatively attached to a run", () => {
     store.coordinate({
       projectId,
@@ -370,6 +483,8 @@ describe("CoordinationV3Store scheduler", () => {
     acknowledgeLease(single);
     expect(store.requestIdsAttachedToRun(single.runId, recipientA)).toEqual(["single-current"]);
     expect(store.requestIdsAttachedToRun(single.runId, recipientB)).toEqual([]);
+    expect(store.runStartsNewRecipientRequest(single.runId, recipientA)).toBe(true);
+    expect(store.runStartsNewRecipientRequest(single.runId, recipientB)).toBe(false);
 
     store.coordinate({
       projectId,
@@ -383,9 +498,40 @@ describe("CoordinationV3Store scheduler", () => {
     });
     const multiple = store.leaseNextRun({ workerId: "worker-1" })!;
     expect(store.requestIdsAttachedToRun(multiple.runId, recipientB)).toEqual(["multiple-a", "multiple-b"]);
+    expect(store.runStartsNewRecipientRequest(multiple.runId, recipientB)).toBe(true);
   });
 
-  it("prioritizes human work and coalesces compatible activations once", () => {
+  it("identifies only same-execution terminal replies as passive requester messages", () => {
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "terminal-reply",
+      requests: [{ requestId: "terminal-reply-request", recipientAgentId: recipientA, lifetime: indefinite }],
+      join: { id: "terminal-reply-join", mode: "all" },
+    });
+    const run = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(run);
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientA, "provider-execution"))
+      .toEqual([]);
+
+    store.updateRequest({
+      requestId: "terminal-reply-request",
+      updateId: "terminal-reply-complete",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "Authoritative result", executionId: "provider-execution" },
+    });
+
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientA, "provider-execution"))
+      .toEqual([requesterId]);
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientA, "different-execution"))
+      .toEqual([]);
+    expect(store.terminalOutcomeRequesterIdsForRun(run.runId, recipientB, "provider-execution"))
+      .toEqual([]);
+  });
+
+  it("prioritizes human work without crossing a provider-session boundary", () => {
     store.coordinate({
       projectId,
       requesterAgentId: requesterId,
@@ -398,9 +544,15 @@ describe("CoordinationV3Store scheduler", () => {
     });
     const lease = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
     expect(lease.agentId).toBe(recipientA);
-    expect(lease.activations.map((item) => item.kind)).toEqual(["human_message", "coordination_request"]);
-    expect(new Set(lease.activationIds).size).toBe(2);
+    expect(lease.activations.map((item) => item.kind)).toEqual(["human_message"]);
+    expect(store.runStartsNewRecipientRequest(lease.runId, recipientA)).toBe(false);
     expect(store.getAgentAvailability(recipientA)).toBe("running");
+    acknowledgeLease(lease);
+    store.completeRun(lease.runId, lease.fencingToken);
+
+    const requestLease = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
+    expect(requestLease.activations.map((item) => item.kind)).toEqual(["coordination_request"]);
+    expect(store.runStartsNewRecipientRequest(requestLease.runId, recipientA)).toBe(true);
   });
 
   it("retries only before injection and rejects stale fencing tokens", () => {

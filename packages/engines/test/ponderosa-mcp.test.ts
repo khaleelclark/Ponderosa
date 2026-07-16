@@ -25,10 +25,8 @@ describe("Ponderosa stdio MCP bridge", () => {
           url: request.url ?? "",
           body: JSON.parse(body),
         });
-        response.writeHead(request.url === "/api/agent-spawns" ? 201 : 200, { "content-type": "application/json" });
-        response.end(JSON.stringify(request.url === "/api/agent-spawns"
-          ? { accepted: true, agent: { id: "child-1" } }
-          : { messageId: "message-1" }));
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ messageId: "message-1" }));
       });
     });
     await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
@@ -39,8 +37,8 @@ describe("Ponderosa stdio MCP bridge", () => {
       env: {
         ...process.env,
         PONDEROSA_AGENT_MESSAGE_URL: `http://127.0.0.1:${address.port}/api/agent-messages`,
-        PONDEROSA_AGENT_SPAWN_URL: `http://127.0.0.1:${address.port}/api/agent-spawns`,
-        PONDEROSA_AGENT_WAIT_URL: `http://127.0.0.1:${address.port}/api/agent-waits`,
+        PONDEROSA_AGENT_COORDINATE_URL: `http://127.0.0.1:${address.port}/api/agent-coordinate`,
+        PONDEROSA_AGENT_UPDATE_REQUEST_URL: `http://127.0.0.1:${address.port}/api/agent-request-updates`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -57,41 +55,17 @@ describe("Ponderosa stdio MCP bridge", () => {
       jsonrpc: "2.0",
       id: 3,
       method: "tools/call",
-      params: { name: "send_message", arguments: { intent: "broadcast", text: "Managed result" } },
-    })}\n`);
-    child.stdin!.write(`${JSON.stringify({
-      jsonrpc: "2.0",
-      id: 4,
-      method: "tools/call",
-      params: { name: "spawn_agent", arguments: { displayName: "Research", initialMessage: "Investigate.", idempotencyKey: "research-1" } },
-    })}\n`);
-    child.stdin!.write(`${JSON.stringify({
-      jsonrpc: "2.0",
-      id: 5,
-      method: "tools/call",
-      params: { name: "wait_for_reports", arguments: { mode: "all", expectedAgentIds: ["child-1"] } },
+      params: { name: "message", arguments: { intent: "broadcast", text: "Managed result", idempotencyKey: "result-1" } },
     })}\n`);
 
-    await expect.poll(() => responses.length).toBe(5);
-    expect(responses[1]).toMatchObject({ result: { tools: [{ name: "send_message" }, { name: "spawn_agent" }, { name: "wait_for_reports" }] } });
+    await expect.poll(() => responses.length).toBe(3);
+    expect(responses[1]).toMatchObject({ result: { tools: [{ name: "coordinate" }, { name: "update_request" }, { name: "message" }] } });
     expect(responses[2]).toMatchObject({ result: { isError: false } });
-    expect(responses[3]).toMatchObject({ result: { isError: false } });
-    expect(responses[4]).toMatchObject({ result: { isError: false } });
     expect(received).toEqual([
       {
         authorization: "Bearer secret-run-token",
         url: "/api/agent-messages",
-        body: { intent: "broadcast", text: "Managed result" },
-      },
-      {
-        authorization: "Bearer secret-run-token",
-        url: "/api/agent-spawns",
-        body: { displayName: "Research", initialMessage: "Investigate.", idempotencyKey: "research-1" },
-      },
-      {
-        authorization: "Bearer secret-run-token",
-        url: "/api/agent-waits",
-        body: { mode: "all", expectedAgentIds: ["child-1"] },
+        body: { intent: "broadcast", text: "Managed result", idempotencyKey: "result-1" },
       },
     ]);
     await new Promise<void>((resolve) => http.close(() => resolve()));
@@ -114,7 +88,6 @@ describe("Ponderosa stdio MCP bridge", () => {
     const child = spawn(process.execPath, [join(here, "../dist/ponderosa-mcp.js")], {
       env: {
         ...process.env,
-        PONDEROSA_COMMUNICATION_VERSION: "3",
         PONDEROSA_AGENT_MESSAGE_URL: `${origin}/api/agent-messages`,
         PONDEROSA_AGENT_COORDINATE_URL: `${origin}/api/agent-coordinate`,
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${origin}/api/agent-request-updates`,
@@ -136,7 +109,6 @@ describe("Ponderosa stdio MCP bridge", () => {
     expect(responses[0]).toMatchObject({ result: { tools: [
       { name: "coordinate" }, { name: "update_request" }, { name: "message" },
     ] } });
-    expect(JSON.stringify(responses[0])).not.toMatch(/spawn_agent|wait_for_reports|send_message/);
     expect(received).toEqual(["/api/agent-coordinate"]);
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });
