@@ -46,6 +46,8 @@ import type {
   CreateUserReactionResponse,
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
+  LetCurrentRunFinishRequest,
+  LetCurrentRunFinishResponse,
   QueuedConversationMessageDto,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
@@ -211,6 +213,8 @@ export interface CreateServerOptions {
     leaseMs?: number;
     /** Terminalize a repeatedly rejected Activation after this many dispatch attempts. */
     maxDeliveryFailures?: number;
+    /** Provider steer acknowledgement grace before exact-Run interruption. */
+    steeringRecoveryGraceMs?: number;
   };
   /** Deterministic message-claim race seam; never enabled in production configuration. */
   messageLifecycleFaults?: {
@@ -1748,6 +1752,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       type: "agent_lifecycle", status: "failed", reason: "execution_lease_expired", executionId: run.executionId,
     });
     publish(agentId, lifecycle);
+    publishMessageDeliveryChanged(agentId);
     notifyManagerOfChildFailure(agentId, run.executionId, "execution lease expired");
     const persistentRuntime = runtimeSessions.get(agentId);
     if (persistentRuntime) {
@@ -1969,10 +1974,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   };
   function withUserReactions<T extends { communicationEventId?: string }>(messages: T[]): T[] {
-    return messages.map((message) => message.communicationEventId ? {
-      ...message,
-      reactions: userReactions.forCommunication(message.communicationEventId),
-    } : message);
+    return messages.map((message) => {
+      if (!message.communicationEventId) return message;
+      const deliveryReceipts = coordinationV3.deliveryReceiptsForCommunication(message.communicationEventId);
+      return {
+        ...message,
+        reactions: userReactions.forCommunication(message.communicationEventId),
+        ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
+      };
+    });
   }
 
   function conversationDetail(conversationId: string): ConversationDetailDto | undefined {
@@ -2004,6 +2014,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       coordination: coordinationV3.agentSnapshot(agentId),
     });
     publish(agentId, stored);
+  }
+
+  function publishMessageDeliveryChanged(agentId: string): void {
+    if (closed || !store.getAgent(agentId)) return;
+    publishCoordinationV3Changed(agentId);
+    appendWorkspace({ type: "message_delivery_changed", agentId });
   }
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
@@ -2074,6 +2090,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const dispatch = activationPayloads
         .map((payload) => payload.dispatch)
         .find((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
+      const steeringRecovery = activationPayloads
+        .map((payload) => payload.steeringRecovery)
+        .find((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
       const recipientDispatch = Array.isArray(dispatch?.recipients)
         ? dispatch.recipients.find((value): value is Record<string, unknown> =>
             Boolean(value) && typeof value === "object" && value.agentId === lease.agentId)
@@ -2084,7 +2103,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const attachmentIds = dispatchAttachments
         .map((value) => value && typeof value === "object" && "id" in value ? value.id : undefined)
         .filter((value): value is string => typeof value === "string");
-      const dispatchText = typeof dispatch?.text === "string" ? dispatch.text : prompt;
+      const originalDispatchText = typeof dispatch?.text === "string" ? dispatch.text : prompt;
+      const dispatchText = typeof steeringRecovery?.instruction === "string"
+        ? `${steeringRecovery.instruction}\n\nOriginal user message:\n${originalDispatchText}`
+        : originalDispatchText;
       const leaseConversationId = lease.scopeKey.startsWith("conversation:")
         ? lease.scopeKey.slice("conversation:".length)
         : undefined;
@@ -2136,6 +2158,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       pollMs: opts.communicationV3?.pollMs,
       leaseMs: coordinationV3LeaseMs,
       maxDeliveryFailures: opts.communicationV3?.maxDeliveryFailures,
+      steeringRecoveryGraceMs: opts.communicationV3?.steeringRecoveryGraceMs,
       dispatchSteering: async (lease, prompt) => {
         const run = activeRuns.get(lease.agentId);
         if (!run || run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken || !run.runtimeSession) {
@@ -2164,7 +2187,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             providerSessionId: run.runtimeSession.engineAgentId,
           });
           renewExecutionLease(lease.agentId, run);
-          publishCoordinationV3Changed(lease.agentId);
           return { accepted: true };
         } catch (error) {
           return {
@@ -2194,6 +2216,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
         return { accepted: true };
       },
+      onMessageDeliveryChanged: publishMessageDeliveryChanged,
     },
   );
   for (const mediaType of ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/zip", "application/octet-stream"]) {
@@ -4336,6 +4359,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return result satisfies CancelQueuedMessageResponse;
   });
 
+  app.post<{
+    Params: { injectionId: string };
+    Body: LetCurrentRunFinishRequest;
+  }>("/api/message-deliveries/:injectionId/let-current-run-finish", async (request, reply) => {
+    const injectionId = request.params.injectionId?.trim() ?? "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!injectionId) return reply.code(400).send({ error: "injectionId is required" });
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    }
+    const result = coordinationV3.letCurrentRunFinish({ injectionId, idempotencyKey });
+    if (!result.accepted || !result.agentId) {
+      return reply.code(409).send({
+        accepted: false, replayed: result.replayed, state: "not_recoverable",
+      } satisfies LetCurrentRunFinishResponse);
+    }
+    coordinationV3Scheduler.notify();
+    publishMessageDeliveryChanged(result.agentId);
+    return reply.code(202).send({
+      accepted: true,
+      replayed: result.replayed,
+      state: result.state,
+    } satisfies LetCurrentRunFinishResponse);
+  });
+
 
   app.post<{
     Params: { id: string; messageId: string };
@@ -4786,7 +4834,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           type: "user_message", text: initialMessage, communicationEventId: eventId,
         });
         publish(agent.id, audit);
-        publishCoordinationV3Changed(agent.id);
+        publishMessageDeliveryChanged(agent.id);
         coordinationV3Scheduler.notify();
       }
 
@@ -5276,7 +5324,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
         const position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
         coordinationV3Scheduler.notify();
-        publishCoordinationV3Changed(agent.id);
+        publishMessageDeliveryChanged(agent.id);
         return reply.code(202).send({
           queued: true,
           position,
@@ -5806,7 +5854,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               app.log.error({ err: error, runId }, "Communication V3 terminal transition failed");
             }
             coordinationV3Scheduler?.notify();
-            publishCoordinationV3Changed(agent.id);
+            publishMessageDeliveryChanged(agent.id);
           }
           if (released) {
             agentMessageCapabilities.delete(messageCapability);
@@ -6194,7 +6242,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       publish(request.params.id, lifecycle);
     }
     coordinationV3Scheduler.notify();
-    publishCoordinationV3Changed(request.params.id);
+    publishMessageDeliveryChanged(request.params.id);
     return stopResponse(result.cancelled, result.replayed);
   });
 

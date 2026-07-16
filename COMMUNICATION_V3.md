@@ -160,6 +160,17 @@ An activation is retryable on another Run only before prompt injection. Once the
 prompt was injected, the scheduler resumes that same Run when possible; otherwise
 it records `outcome_unknown`. It never blindly replays an injected prompt.
 
+Human steering is the bounded exception for deterministic operator recovery, not
+a reinterpretation of the uncertain delivery. A newly uncertain steer gets a
+durable ten-second grace record. At its deadline, the scheduler fences and
+interrupts only the originating Run and creates a new linked Activation whose
+prompt first audits current state, preserves completed results, and then handles
+the original user message exactly once. The operator may choose to let the
+originating Run finish, which creates the same recovery Activation without
+interrupting it. The original injection remains `outcome_unknown`; the recovery
+is separate evidence. Historical uncertain injections have no grace record and
+remain inert.
+
 Every provider prompt or steering injection has a durable identity and lifecycle:
 `pending -> submitted -> acknowledged`, with `outcome_unknown` as the fail-closed
 terminal state. A provider session reference alone never proves whether a prompt

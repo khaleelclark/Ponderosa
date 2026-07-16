@@ -546,6 +546,7 @@ export const mockApi: PonderosaApi = {
   },
   listQueuedConversationMessages() { return delay([]); },
   cancelQueuedConversationMessage() { return delay({ cancelled: true, replayed: false, status: "cancelled" }); },
+  letCurrentRunFinish() { return delay({ accepted: true, replayed: false, state: "waiting_for_run" }); },
   correctConversationMessage(conversationId, messageId, request) {
     const correctionMessageId = request.idempotencyKey;
     masterMessages[conversationId] = [...(masterMessages[conversationId] ?? []), {

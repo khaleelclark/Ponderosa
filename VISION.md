@@ -43,6 +43,13 @@ by default. Queue is an explicit alternative shown only while the manager is
 drafting to that running agent. This keeps conversation fluid without removing
 the ability to schedule a follow-up at a safe turn boundary.
 
+A steer is shown as delivered only after provider acknowledgement. If transport
+fails after submission, the message is visibly unconfirmed for ten seconds and
+then Ponderosa interrupts only the originating Run and starts linked, audit-first
+recovery work. The manager may instead let that Run finish before recovery.
+Historical uncertain deliveries remain labeled and are never replayed
+automatically.
+
 Typing/responding indicators and elapsed-time stopwatches reflect canonical
 execution ownership. One revisioned, server-backed draft belongs to each Project
 chat and is never a sent communication event. Draft conflicts resolve by accepted

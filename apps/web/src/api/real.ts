@@ -223,6 +223,12 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request),
     });
   },
+  letCurrentRunFinish(injectionId, request) {
+    return requestJson(`/api/message-deliveries/${encodeURIComponent(injectionId)}/let-current-run-finish`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
   correctConversationMessage(conversationId, messageId, request) {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/corrections`, {
       method: "POST",

@@ -111,6 +111,10 @@ export function useWorkspaceStream(): void {
         void queryClient.invalidateQueries({ queryKey: ["queued-messages", event.conversationId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation", event.conversationId] });
       }
+      else if (event.type === "message_delivery_changed") {
+        void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+      }
       else if (event.type === "agent_event") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
         for (const queryKey of fileActivityConversationQueryKeys(event)) {

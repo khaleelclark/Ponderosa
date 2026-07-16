@@ -58,6 +58,41 @@ function acknowledgeLease(lease: NonNullable<ReturnType<CoordinationV3Store["lea
   });
 }
 
+function createUncertainHumanSteer(eventId: string, now: string) {
+  store.enqueueMessageActivation({
+    projectId, agentId: recipientA, messageId: `base:${eventId}`, kind: "ordinary", payload: { text: "Base work" }, now,
+  });
+  const run = store.leaseNextRun({ workerId: "worker-1", now })!;
+  acknowledgeLease(run);
+  const intake = store.recordRuntimeCommunication({
+    id: `dispatch:${eventId}:${recipientA}`,
+    projectId,
+    sender: { kind: "user", userId: "local-operator" },
+    intent: "user_dm",
+    audience: { agentId: recipientA },
+    payload: { communication: { eventId }, dispatch: { text: "Change direction" } },
+    activation: {
+      agentId: recipientA, kind: "human_message", priority: 100,
+      dispatchPolicy: "steer_or_run", promptClass: "human",
+    },
+    now,
+  });
+  const steering = store.leaseNextSteering({ workerId: "worker-1", now })!;
+  store.preparePromptInjection({
+    injectionId: steering.injectionId, runId: steering.runId,
+    fencingToken: steering.fencingToken, prompt: "uncertain steer",
+  });
+  store.markPromptSubmitted({
+    injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken, now,
+  });
+  store.markSteeringOutcomeUnknown({
+    injectionId: steering.injectionId, runId: steering.runId,
+    fencingToken: steering.fencingToken, now, recoveryGraceMs: 10_000,
+    error: "transport closed after submission",
+  });
+  return { run, steering, activationId: intake.activationId! };
+}
+
 describe("CoordinationV3Store transactions", () => {
   it("records passive communication without waking and routes actionable communication only through the scheduler", () => {
     const now = "2026-07-15T00:00:00.000Z";
@@ -865,6 +900,112 @@ describe("CoordinationV3Store scheduler", () => {
     expect(opened.client.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations WHERE state = 'consumed'
     `).get()).toEqual({ count: 2 });
+  });
+
+  it("records an honest unconfirmed receipt, then recovers by fencing only the originating Run", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const eventId = "uncertain-human-steer";
+    const { run, steering, activationId } = createUncertainHumanSteer(eventId, now);
+    expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+      activationId,
+      targetAgentId: recipientA,
+      state: "unconfirmed",
+      injectionId: steering.injectionId,
+      recoveryAt: "2026-07-15T00:00:10.000Z",
+      canLetCurrentRunFinish: true,
+    })]);
+
+    expect(store.processDueSteeringRecoveries("2026-07-15T00:00:09.999Z")).toEqual([]);
+    expect(store.processDueSteeringRecoveries("2026-07-15T00:00:10.000Z")).toEqual([recipientA]);
+    expect(opened.client.prepare("SELECT status FROM scheduler_runs WHERE id = ?").get(run.runId))
+      .toEqual({ status: "cancelled" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM provider_operation_outbox
+      WHERE run_id = ? AND operation = 'interrupt' AND state = 'pending'
+    `).get(run.runId)).toEqual({ count: 1 });
+    const recoveryReceipt = store.deliveryReceiptsForCommunication(eventId)[0]!;
+    expect(recoveryReceipt).toMatchObject({
+      activationId,
+      state: "recovery_queued",
+      recoveryActivationId: expect.any(String),
+    });
+    expect(recoveryReceipt).not.toHaveProperty("canLetCurrentRunFinish");
+    const recovery = store.leaseNextRun({ workerId: "worker-1", now: "2026-07-15T00:00:10.000Z" })!;
+    expect(recovery.runId).not.toBe(run.runId);
+    expect(recovery.activations).toEqual([expect.objectContaining({
+      kind: "steering_recovery",
+      dispatchPolicy: "next_run",
+      payload: expect.objectContaining({
+        dispatch: { text: "Change direction" },
+        steeringRecovery: expect.objectContaining({
+          sourceRunId: run.runId,
+          sourceInjectionId: steering.injectionId,
+          sourceActivationId: activationId,
+        }),
+      }),
+    })]);
+  });
+
+  it("lets the exact current Run finish before executing linked recovery", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const eventId = "wait-for-current-run";
+    const { run, steering } = createUncertainHumanSteer(eventId, now);
+    expect(store.letCurrentRunFinish({
+      injectionId: steering.injectionId,
+      idempotencyKey: "wait-choice",
+      now: "2026-07-15T00:00:01.000Z",
+    })).toMatchObject({ accepted: true, replayed: false, state: "waiting_for_run", agentId: recipientA });
+    expect(store.letCurrentRunFinish({
+      injectionId: steering.injectionId,
+      idempotencyKey: "wait-choice-retry",
+      now: "2026-07-15T00:00:02.000Z",
+    })).toMatchObject({ accepted: true, replayed: true, state: "waiting_for_run" });
+    expect(opened.client.prepare("SELECT status FROM scheduler_runs WHERE id = ?").get(run.runId))
+      .toEqual({ status: "running" });
+    expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:02.000Z" })).toBeUndefined();
+    const waitingReceipt = store.deliveryReceiptsForCommunication(eventId)[0]!;
+    expect(waitingReceipt).toMatchObject({
+      state: "waiting_for_run",
+    });
+    expect(waitingReceipt).not.toHaveProperty("canLetCurrentRunFinish");
+    store.completeRun(run.runId, run.fencingToken, "2026-07-15T00:00:03.000Z");
+    expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:03.000Z" })?.activations[0]?.kind)
+      .toBe("steering_recovery");
+  });
+
+  it("labels historical uncertain steering as undelivered without replaying it", () => {
+    const eventId = "historical-uncertain-steer";
+    const { steering } = createUncertainHumanSteer(eventId, "2026-07-15T00:00:00.000Z");
+    opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?").run(steering.injectionId);
+    const historicalReceipt = store.deliveryReceiptsForCommunication(eventId)[0]!;
+    expect(historicalReceipt).toMatchObject({
+      state: "undelivered",
+      injectionId: steering.injectionId,
+    });
+    expect(historicalReceipt).not.toHaveProperty("recoveryAt");
+    expect(store.processDueSteeringRecoveries("2026-07-16T00:00:00.000Z")).toEqual([]);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations WHERE kind = 'steering_recovery'
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it("never interrupts a later unrelated Run when the recovery deadline races forward", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const { run } = createUncertainHumanSteer("do-not-interrupt-later-run", now);
+    store.completeRun(run.runId, run.fencingToken, "2026-07-15T00:00:05.000Z");
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "later-unrelated", kind: "ordinary",
+      payload: { text: "Later unrelated work" }, now: "2026-07-15T00:00:06.000Z",
+    });
+    const later = store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:06.000Z" })!;
+    acknowledgeLease(later);
+
+    expect(store.processDueSteeringRecoveries("2026-07-15T00:00:10.000Z")).toEqual([recipientA]);
+    expect(opened.client.prepare("SELECT status FROM scheduler_runs WHERE id = ?").get(later.runId))
+      .toEqual({ status: "running" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM provider_operation_outbox WHERE run_id = ?
+    `).get(later.runId)).toEqual({ count: 0 });
   });
 
   it("fails closed when a submitted injection cannot be reconciled", () => {

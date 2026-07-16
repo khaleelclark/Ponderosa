@@ -53,6 +53,7 @@ import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 
 export function conversationComposerRuntime(
@@ -201,6 +202,7 @@ export function ConversationMessage({
           </Box>)}
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
+        {message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus receipts={message.deliveryReceipts} recipientName={(agentId) => agentTitle(agentId)} /> : null}
       </Box>
       <MessageActionsAndTimestamp value={message.createdAt} actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
@@ -495,7 +497,9 @@ export function ConversationView({
         .map((recipient) => detailQuery.data?.agents.find((agent) => agent.id === recipient.agentId)?.title ?? "Agent");
       setQueuedReplyNotice(
         queuedTitles.length > 0
-          ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
+          ? variables.activeRunDelivery === "steer"
+            ? `Delivery to ${queuedTitles.join(", ")} is pending provider confirmation.`
+            : `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
           : undefined,
       );
       const activeIds = response.recipients.filter((recipient) => !recipient.queued).map((recipient) => recipient.agentId);
@@ -551,7 +555,11 @@ export function ConversationView({
       directReplyUploads.current.delete(variables.requestId);
       clearReply();
       invalidate();
-      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.` : undefined);
+      setQueuedReplyNotice(response.queued
+        ? variables.activeRunDelivery === "steer"
+          ? `Delivery to ${agentTitle(response.targetAuthorAgentId)} is pending provider confirmation.`
+          : `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.`
+        : undefined);
       if (response.queued) setActiveOperation(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
@@ -562,7 +570,7 @@ export function ConversationView({
       api.sendUserReaction({ projectId: conversation!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
     onSuccess: (response) => {
       invalidate();
-      setQueuedReplyNotice(response.queued ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.` : undefined);
+      setQueuedReplyNotice(response.queued ? `Reaction delivery to ${agentTitle(response.targetAuthorAgentId)} is pending provider confirmation.` : undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
