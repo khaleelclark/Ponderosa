@@ -4,6 +4,8 @@
 //   /projects/:projectId/chats/:conversationId
 //   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId
+//   /projects
+//   /agents
 //
 // Only a lightweight UI preference (last selected project) is persisted locally;
 // all real data still comes from the server.
@@ -12,6 +14,8 @@ import { useCallback, useEffect, useState } from "react";
 
 export type Route =
   | { kind: "home" }
+  | { kind: "projects" }
+  | { kind: "allAgents" }
   | { kind: "project"; projectId: string }
   | { kind: "conversation"; projectId: string; conversationId: string }
   | { kind: "agents"; projectId: string }
@@ -21,6 +25,8 @@ const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
 
 export function parseRoute(pathname: string): Route {
   const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
+  if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
   }
@@ -39,6 +45,10 @@ export function parseRoute(pathname: string): Route {
 
 export function routeToPath(route: Route): string {
   switch (route.kind) {
+    case "projects":
+      return "/projects";
+    case "allAgents":
+      return "/agents";
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
     case "conversation":
@@ -53,7 +63,7 @@ export function routeToPath(route: Route): string {
 }
 
 export function routeProjectId(route: Route): string | undefined {
-  return route.kind === "home" ? undefined : route.projectId;
+  return "projectId" in route ? route.projectId : undefined;
 }
 
 export function loadLastProjectId(): string | undefined {

@@ -38,6 +38,7 @@ import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
 import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { AllAgentsView, AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
@@ -122,6 +123,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
+    if (route.kind === "projects" || route.kind === "allAgents") return;
     if (["conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
@@ -238,12 +240,10 @@ export default function App({
           <WorkspaceSidebar
             projects={projects}
             route={route}
-            preferences={preferences}
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
-            onPreferences={savePreferences}
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
@@ -271,6 +271,17 @@ export default function App({
           <Box sx={{ p: 2 }}>
             <Alert severity="info">Create a project to get started.</Alert>
           </Box>
+        ) : route.kind === "projects" ? (
+          <AllProjectsView
+            projects={projects}
+            preferences={preferences}
+            onNavigate={goHome}
+            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
+            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+            onPreferences={savePreferences}
+          />
+        ) : route.kind === "allAgents" ? (
+          <AllAgentsView projects={projects} onNavigate={goHome} />
         ) : selectedProjectId ? (
           <ProjectShell
             projectId={selectedProjectId}
@@ -286,14 +297,13 @@ export default function App({
 
       <Drawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} PaperProps={{ sx: { width: "min(88vw, 360px)" } }}>
         <WorkspaceSidebar
+          drawer
           projects={projects}
           route={route}
-          preferences={{ ...preferences, sidebarCollapsed: false, sidebarWidth: Math.min(360, preferences.sidebarWidth) }}
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }}
           onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
-          onPreferences={savePreferences}
         />
       </Drawer>
 

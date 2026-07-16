@@ -84,7 +84,13 @@ Projects and their Project chats live in a collapsible, resizable explorer-style
 sidebar rather than top-level tabs. Project sorting is either Last used or
 Alphabetical and is a synced server preference. Selecting a project opens its
 most recently used active Project chat, with deterministic first-chat fallback.
-Sidebar collapse and width are synced preferences as well.
+Semantic navigation preferences—including project sorting, custom project order,
+and the last-used Project chat—remain server-synced so navigation is coherent
+across devices. Presentation state is deliberately device-local: sidebar width,
+sidebar collapse, and Agents-section expansion are stored only in that browser
+and are not written through the workspace-preferences API. The phone drawer
+always opens as a full list navigator regardless of the desktop sidebar state on
+that device.
 
 Creating a project requires a label, a validated host working folder, and a
 default subscription-backed engine, and atomically creates an initial “New chat.”

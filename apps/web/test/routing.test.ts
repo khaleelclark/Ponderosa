@@ -3,6 +3,8 @@ import { parseRoute, routeToPath, type Route } from "../src/routing";
 
 describe("mobile-critical durable navigation", () => {
   it.each<Route>([
+    { kind: "projects" },
+    { kind: "allAgents" },
     { kind: "project", projectId: "project / one" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },
     { kind: "agents", projectId: "project / one" },
@@ -12,8 +14,14 @@ describe("mobile-critical durable navigation", () => {
   });
 
   it("falls back safely for partial or unrelated paths", () => {
-    expect(parseRoute("/projects")).toEqual({ kind: "home" });
+    expect(parseRoute("/projects/")).toEqual({ kind: "projects" });
     expect(parseRoute("/unrelated/path")).toEqual({ kind: "home" });
+  });
+
+  it("keeps global list routes distinct from project-scoped detail routes", () => {
+    expect(routeToPath({ kind: "projects" })).toBe("/projects");
+    expect(routeToPath({ kind: "allAgents" })).toBe("/agents");
+    expect(parseRoute("/agents")).toEqual({ kind: "allAgents" });
   });
 
   it("uses the Project-chat URL vocabulary and rejects the retired route", () => {
