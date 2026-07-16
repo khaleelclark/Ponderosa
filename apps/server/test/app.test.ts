@@ -101,6 +101,24 @@ describe("workspace synchronization policy", () => {
   });
 });
 
+describe("localhost link preview registration", () => {
+  it("requires browser authentication and accepts only explicit loopback HTTP ports", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false, authToken: "preview-secret" });
+    const unauthorized = await app.inject({ method: "POST", url: "/api/link-previews", payload: { url: "http://localhost:5173/app" } });
+    expect(unauthorized.statusCode).toBe(401);
+
+    const headers = { authorization: "Bearer preview-secret" };
+    const accepted = await app.inject({ method: "POST", url: "/api/link-previews", headers, payload: { url: "http://localhost:5173/app" } });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ targetOrigin: "http://127.0.0.1:5173", openUrl: expect.stringMatching(/^\/api\/link-previews\/.+\/app$/) });
+
+    for (const url of ["http://localhost/no-port", "https://localhost:5173/", "http://192.168.1.5:5173/", "file:///etc/passwd", "http://user:pass@localhost:5173/"]) {
+      expect((await app.inject({ method: "POST", url: "/api/link-previews", headers, payload: { url } })).statusCode).toBe(400);
+    }
+    await app.close();
+  });
+});
+
 class MockAdapter implements Adapter {
   id = "codex";
   displayName = "Mock Codex";

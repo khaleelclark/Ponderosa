@@ -1,6 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
+import { Readable } from "node:stream";
 import { constants as fsConstants, existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -68,6 +69,8 @@ import type {
   WebPushSubscriptionDto,
   CancelAgentRunRequest,
   CancelAgentRunResponse,
+  CreateLinkPreviewRequest,
+  LinkPreviewDto,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -1195,6 +1198,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   };
   const activeRuns = new Map<string, ActiveRun>();
+  const linkPreviews = new Map<string, { origin: string; expiresAt: number }>();
+  const LINK_PREVIEW_TTL_MS = 4 * 60 * 60 * 1000;
   const runtimeSessions = new Map<string, PersistentRuntime>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
@@ -1826,11 +1831,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   });
 
-  app.addHook("onSend", async (_request, reply, payload) => {
+  app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    if (request.url.startsWith("/api/link-previews/")) {
+      // Local dev apps are untrusted content. A unique sandbox origin prevents
+      // their scripts from inheriting the operator's authenticated API origin.
+      reply.header("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals allow-downloads; default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'");
+    }
     return payload;
   });
 
@@ -2713,6 +2723,78 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/projects", async () => store.listProjects());
+
+  const loopbackPreviewTarget = (raw: string): URL | undefined => {
+    let target: URL;
+    try { target = new URL(raw); } catch { return undefined; }
+    const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (target.protocol !== "http:" || target.username || target.password || !target.port) return undefined;
+    if (!(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) return undefined;
+    const port = Number(target.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    target.hostname = "127.0.0.1";
+    target.hash = "";
+    return target;
+  };
+
+  app.post<{ Body: CreateLinkPreviewRequest }>("/api/link-previews", async (request, reply) => {
+    const target = loopbackPreviewTarget(request.body?.url);
+    if (!target) return reply.code(400).send({ error: "preview URL must be HTTP on an explicit localhost port" });
+    for (const [key, registration] of linkPreviews) if (registration.expiresAt <= Date.now()) linkPreviews.delete(key);
+    const id = randomUUID();
+    const expiresAt = Date.now() + LINK_PREVIEW_TTL_MS;
+    linkPreviews.set(id, { origin: target.origin, expiresAt });
+    const suffix = `${target.pathname}${target.search}`.replace(/^\//, "");
+    return {
+      id,
+      openUrl: `/api/link-previews/${id}/${suffix}`,
+      targetOrigin: target.origin,
+      expiresAt: new Date(expiresAt).toISOString(),
+    } satisfies LinkPreviewDto;
+  });
+
+  app.get<{ Params: { id: string; "*": string }; Querystring: Record<string, string> }>("/api/link-previews/:id/*", async (request, reply) => {
+    const registration = linkPreviews.get(request.params.id);
+    if (!registration || registration.expiresAt <= Date.now()) {
+      linkPreviews.delete(request.params.id);
+      return reply.code(404).send({ error: "preview expired or was not found" });
+    }
+    const relativePath = `/${request.params["*"] ?? ""}`;
+    const target = new URL(relativePath, registration.origin);
+    target.search = new URL(request.raw.url ?? "", "http://ponderosa.invalid").search;
+    if (target.origin !== registration.origin) return reply.code(403).send({ error: "preview target is outside its registered origin" });
+    let upstream: Response;
+    try {
+      upstream = await fetch(target, {
+        redirect: "manual",
+        headers: { accept: request.headers.accept ?? "*/*", "user-agent": "Ponderosa localhost preview" },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch {
+      return reply.code(502).send({ error: "localhost app is unavailable" });
+    }
+    const location = upstream.headers.get("location");
+    if (location) {
+      const redirected = new URL(location, target);
+      if (redirected.origin !== registration.origin) return reply.code(502).send({ error: "localhost app redirected outside its registered origin" });
+      reply.header("location", `/api/link-previews/${request.params.id}${redirected.pathname}${redirected.search}`);
+    }
+    reply.code(upstream.status);
+    const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+    reply.type(contentType);
+    reply.header("cache-control", "no-store");
+    if (!upstream.body) return reply.send();
+    if (contentType.includes("text/html")) {
+      const html = await upstream.text();
+      if (html.length > 5_000_000) return reply.code(413).send({ error: "preview document is too large" });
+      const prefix = `/api/link-previews/${request.params.id}`;
+      const base = `<base href="${prefix}/">`;
+      // Root-relative asset references otherwise escape the opaque proxy scope.
+      const scopedHtml = html.replace(/\b(src|href|action)=(['"])\/(?!\/)/gi, `$1=$2${prefix}/`);
+      return reply.send(/<head(?:\s[^>]*)?>/i.test(scopedHtml) ? scopedHtml.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${base}`) : `${base}${scopedHtml}`);
+    }
+    return reply.send(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream));
+  });
   app.get("/api/project-folders", async (): Promise<ProjectFolderOptionsDto> => {
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
     const registered = store.listProjects().map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const }));

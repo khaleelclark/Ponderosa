@@ -298,6 +298,19 @@ export interface ConversationMessageDto {
 /** Engine-agnostic citation metadata emitted only after edge normalization/verification. */
 export type VerifiedCitationDto = VerifiedCitationRecord;
 
+/** Authenticated, short-lived browser registration for one loopback app origin. */
+export interface CreateLinkPreviewRequest {
+  url: string;
+}
+
+export interface LinkPreviewDto {
+  id: string;
+  /** Same-origin Ponderosa URL; never exposes proxy credentials to the target app. */
+  openUrl: string;
+  targetOrigin: string;
+  expiresAt: string;
+}
+
 /** User-authored emoji state projected onto one canonical agent communication. */
 export interface MessageReactionDto {
   emoji: string;
