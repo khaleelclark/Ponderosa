@@ -14,6 +14,8 @@ objects with different identity, audience, or lifetime must not share a noun.
 | Correlated work or consultation | Request | `CoordinationRequest` | Ephemeral work from one requester to one recipient with its own lifetime and outcome. |
 | Durable waiting condition | Waiting for | `CoordinationJoin` | Immutable condition over request outcomes; independent from request deadlines. |
 | Actionable reason to wake | Ready | `Activation` | Prioritized, durable scheduler input that may be coalesced into one Run. |
+| User-authored automatic action | Trigger | `TriggerDefinition` | Durable schedule, signed webhook, or Project-folder watcher owned by one Agent in one Project chat. |
+| One normalized outside event | Trigger occurrence | `TriggerOccurrence` | Immutable, deduplicated payload and provenance that creates exactly one queued Activation. |
 | One runtime activation | Run | `AgentRun` / `Execution` | Bounded agent activation ending in completion, failure, cancellation, or suspension. |
 | Provider-side continuity | Model session (diagnostics only) | `ProviderSession` | Optional Codex/Claude context continued across runs for exactly one agent. |
 | Explicit authored communication | Message | `Communication` / `Message` | Immutable content, author, audience, provenance, and project-chat association. |
@@ -33,6 +35,9 @@ objects with different identity, audience, or lifetime must not share a noun.
   domain, and `ProviderSession` for engine continuity.
 - Use **Request** for correlated work, **Join** for waiting conditions, and
   **Activation** for reasons to run. None is a synonym for a message or Run.
+- Use **Trigger** for the durable automation definition and **Trigger
+  occurrence** for one source event. Neither is a Run, message, or provider
+  session.
 - Use **Message** for authored semantic content, **Dispatch** for routing,
   **Delivery** for recipient queue state, and **RunTrigger** for activation.
 - Use **Work log** for execution-local output. Do not imply that Ponderosa
@@ -66,6 +71,7 @@ objects with different identity, audience, or lifetime must not share a noun.
 Project
   ├─ Conversation ── Message ── MessageDispatch ── MessageDelivery
   ├─ Agent ── CoordinationRequest ── CoordinationJoin
+  │       ├─ TriggerDefinition ── TriggerOccurrence ── Activation
   │       └─ Activation ── AgentRun ── RunOutput / ActivityEvent
   │            └─ ProviderSession (optional continuity)
   ├─ WorkItem ── advanced by AgentRun

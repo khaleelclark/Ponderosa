@@ -12,16 +12,22 @@ let projectId: string;
 let requesterId: string;
 let recipientA: string;
 let recipientB: string;
+let conversationId: string;
 
 function seed(): void {
   projectId = randomUUID();
   requesterId = randomUUID();
   recipientA = randomUUID();
   recipientB = randomUUID();
+  conversationId = randomUUID();
   opened.client.prepare(`
     INSERT INTO projects (id, label, host_path, created_at, default_engine)
     VALUES (?, 'V3', '/repo', '2026-07-15T00:00:00.000Z', 'codex')
   `).run(projectId);
+  opened.client.prepare(`
+    INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+    VALUES (?, ?, 'Trigger chat', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+  `).run(conversationId, projectId);
   const insert = opened.client.prepare(`
     INSERT INTO agents (
       id, project_id, title, active_engine, created_at, updated_at, archived
@@ -30,6 +36,25 @@ function seed(): void {
   insert.run(requesterId, projectId, "Requester");
   insert.run(recipientA, projectId, "A");
   insert.run(recipientB, projectId, "B");
+  const membership = opened.client.prepare(`
+    INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position) VALUES (?, ?, 0)
+  `);
+  membership.run(requesterId, conversationId);
+  membership.run(recipientA, conversationId);
+  membership.run(recipientB, conversationId);
+}
+
+function createTrigger(id: string, sourceKind: "webhook" | "filesystem" | "schedule" = "webhook"): void {
+  store.createTriggerDefinition({
+    id, projectId, conversationId, agentId: recipientA,
+    name: id, instructions: "Handle this occurrence safely.", sourceKind,
+    sourceConfig: sourceKind === "filesystem"
+      ? { include: ["**/*"], exclude: [], quietMs: 1_000, maxWindowMs: 10_000 }
+      : sourceKind === "schedule"
+        ? { scheduleKind: "interval", everyMs: 60_000, startsAt: "2026-07-15T00:01:00.000Z" }
+        : { replayWindowSeconds: 300 },
+    nextFireAt: sourceKind === "schedule" ? "2026-07-15T00:01:00.000Z" : undefined,
+  });
 }
 
 beforeEach(() => {
@@ -1280,11 +1305,10 @@ describe("CoordinationV3Store scheduler", () => {
   });
 
   it("persists and deduplicates trigger occurrences without creating Runs", () => {
+    createTrigger("github:push");
     const input = {
-      projectId,
       triggerId: "github:push",
       occurrenceKey: "delivery-1",
-      agentId: recipientA,
       payload: { ref: "refs/heads/main" },
       provenance: { source: "github", deliveryId: "delivery-1" },
       now: "2026-07-15T00:00:00.000Z",
@@ -1292,6 +1316,15 @@ describe("CoordinationV3Store scheduler", () => {
     const first = store.recordTriggerOccurrence(input);
     expect(first).toMatchObject({ state: "activated", replayed: false, activationId: expect.any(String) });
     expect(store.recordTriggerOccurrence(input)).toEqual({ ...first, replayed: true });
+    store.updateTriggerDefinition("github:push", { instructions: "Use the edited instructions" });
+    expect(store.recordTriggerOccurrence({
+      ...input,
+      provenance: { source: "github", deliveryId: "delivery-1", remoteAddress: "127.0.0.2" },
+      now: "2026-07-15T00:05:00.000Z",
+    })).toEqual({ ...first, replayed: true });
+    expect(store.getTriggerOccurrence(first.occurrenceId)?.triggerSnapshot).toMatchObject({
+      instructions: "Handle this occurrence safely.",
+    });
     expect(store.activeRunCount()).toBe(0);
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM trigger_occurrences").get()).toEqual({ count: 1 });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
@@ -1299,28 +1332,37 @@ describe("CoordinationV3Store scheduler", () => {
       .toThrow("idempotency conflict");
   });
 
-  it("durably debounces trigger bursts while retaining their provenance", () => {
+  it("retains burst occurrences and lets the scheduler batch only one Trigger", () => {
+    createTrigger("filesystem:changed", "filesystem");
+    createTrigger("filesystem:other", "filesystem");
     const base = {
-      projectId,
       triggerId: "filesystem:changed",
-      agentId: recipientA,
       payload: { path: "src/app.ts" },
       provenance: { source: "filesystem", watcher: "workspace" },
-      debounceMs: 1_000,
     };
     expect(store.recordTriggerOccurrence({
       ...base, occurrenceKey: "change-1", now: "2026-07-15T00:00:00.000Z",
     }).state).toBe("activated");
     expect(store.recordTriggerOccurrence({
       ...base, occurrenceKey: "change-2", now: "2026-07-15T00:00:00.500Z",
-    })).toMatchObject({ state: "debounced", replayed: false });
+    })).toMatchObject({ state: "activated", replayed: false });
     expect(opened.client.prepare(`
       SELECT state, provenance_json FROM trigger_occurrences ORDER BY occurred_at
     `).all()).toEqual([
       { state: "activated", provenance_json: '{"source":"filesystem","watcher":"workspace"}' },
-      { state: "debounced", provenance_json: '{"source":"filesystem","watcher":"workspace"}' },
+      { state: "activated", provenance_json: '{"source":"filesystem","watcher":"workspace"}' },
     ]);
-    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    store.recordTriggerOccurrence({
+      triggerId: "filesystem:other", occurrenceKey: "other-1", payload: { path: "README.md" },
+      provenance: { source: "filesystem", watcher: "workspace" }, now: "2026-07-15T00:00:00.750Z",
+    });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 3 });
+    const lease = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:01.000Z" })!;
+    expect(lease.activations).toHaveLength(2);
+    expect(lease.activations.every((activation) => activation.kind === "trigger_occurrence")).toBe(true);
+    expect(lease.activations.map((activation) => (activation.payload as { trigger: { id: string } }).trigger.id))
+      .toEqual(["filesystem:changed", "filesystem:changed"]);
+    expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 1 });
   });
 
   it("bounds trigger backpressure, retries, and pending intake", () => {
@@ -1333,10 +1375,9 @@ describe("CoordinationV3Store scheduler", () => {
       projectId, agentId: recipientA, messageId: "occupy-capacity", kind: "ordinary", payload: {},
       now: "2026-07-15T00:00:00.000Z",
     });
+    createTrigger("timer:tick", "schedule");
     const base = {
-      projectId,
       triggerId: "timer:tick",
-      agentId: recipientA,
       payload: { task: "refresh" },
       provenance: { source: "timer" },
       retryDelayMs: 1,
@@ -1354,6 +1395,42 @@ describe("CoordinationV3Store scheduler", () => {
       deadLetteredTriggerOccurrences: 2,
       activeRuns: 0,
     });
+  });
+
+  it("cancels unstarted Trigger work on disable without deleting occurrence history", () => {
+    createTrigger("webhook:disable");
+    const occurrence = store.recordTriggerOccurrence({
+      triggerId: "webhook:disable", occurrenceKey: "delivery", payload: { action: "sync" },
+      provenance: { source: "signed_webhook" },
+    });
+    expect(occurrence.state).toBe("activated");
+    expect(store.updateTriggerDefinition("webhook:disable", { enabled: false })).toMatchObject({ enabled: false });
+    expect(store.getTriggerOccurrence(occurrence.occurrenceId)).toMatchObject({ state: "cancelled", payload: { action: "sync" } });
+    expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 0 });
+    expect(() => store.recordTriggerOccurrence({
+      triggerId: "webhook:disable", occurrenceKey: "later", payload: {}, provenance: { source: "signed_webhook" },
+    })).toThrow("disabled");
+    expect(store.deleteTriggerDefinition("webhook:disable")).toBe(true);
+    expect(store.getTriggerOccurrence(occurrence.occurrenceId)).toMatchObject({ state: "cancelled" });
+  });
+
+  it("fences an attached Trigger Run if the definition is disabled before injection", () => {
+    createTrigger("webhook:fence");
+    store.recordTriggerOccurrence({
+      triggerId: "webhook:fence", occurrenceKey: "delivery", payload: {}, provenance: { source: "test" },
+    });
+    const lease = store.leaseNextRun({ workerId: "worker" })!;
+    store.updateTriggerDefinition("webhook:fence", { enabled: false });
+    expect(() => store.markPromptSubmitted({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+    })).toThrow("stale run fencing token");
+    expect(opened.client.prepare(`SELECT status, prompt_injection_state FROM scheduler_runs WHERE id = ?`).get(lease.runId))
+      .toEqual({ status: "cancelled", prompt_injection_state: "not_injected" });
+    expect(store.getTriggerOccurrence(
+      (lease.activations[0]!.payload as { occurrence: { id: string } }).occurrence.id,
+    )).toMatchObject({ state: "cancelled" });
+    expect(store.leaseNextRun({ workerId: "worker-2" })).toBeUndefined();
+    expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 0, activeRuns: 0 });
   });
 
   it("recovers a pre-injection lease after a process restart", () => {

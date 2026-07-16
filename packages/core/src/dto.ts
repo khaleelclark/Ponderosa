@@ -142,6 +142,7 @@ export type WorkspaceEvent =
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" | "cleared" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
   | { type: "message_delivery_changed"; agentId: string }
+  | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
   | { type: "runtime_capabilities_changed"; projectId: string; engineId: EngineId }
@@ -722,6 +723,92 @@ export interface UpdateAgentRequest {
   archived?: boolean;
 }
 
+// ─── Triggers (Communication V3.2) ─────────────────────────────────────────
+
+export type TriggerSourceKind = "schedule" | "webhook" | "filesystem";
+export type TriggerOccurrenceState = "pending" | "activated" | "cancelled" | "dead_lettered";
+
+export type TriggerScheduleConfig =
+  | { scheduleKind: "once"; at: string }
+  | { scheduleKind: "interval"; everyMs: number; startsAt: string }
+  | { scheduleKind: "cron"; expression: string; timezone: string };
+
+export interface TriggerWebhookConfig {
+  replayWindowSeconds: number;
+}
+
+export interface TriggerFilesystemConfig {
+  include: string[];
+  exclude: string[];
+  quietMs: number;
+  maxWindowMs: number;
+}
+
+export type TriggerSourceConfig = TriggerScheduleConfig | TriggerWebhookConfig | TriggerFilesystemConfig;
+
+export interface TriggerDefinitionDto {
+  id: string;
+  projectId: string;
+  conversationId: string;
+  agentId: string;
+  name: string;
+  /** Operator-authored trusted instructions, kept separate from occurrence payloads. */
+  instructions: string;
+  sourceKind: TriggerSourceKind;
+  sourceConfig: TriggerSourceConfig;
+  enabled: boolean;
+  /** V3.2 runs with the Agent's full local authority. */
+  fullAccess: true;
+  nextFireAt?: string;
+  lastFiredAt?: string;
+  webhookPath?: string;
+  secretFingerprint?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateTriggerRequest {
+  conversationId: string;
+  name: string;
+  instructions: string;
+  sourceKind: TriggerSourceKind;
+  sourceConfig: TriggerSourceConfig;
+  enabled?: boolean;
+}
+
+export interface UpdateTriggerRequest {
+  name?: string;
+  instructions?: string;
+  sourceConfig?: TriggerSourceConfig;
+  enabled?: boolean;
+}
+
+export interface CreateTriggerResponse {
+  trigger: TriggerDefinitionDto;
+  /** Returned once for webhook Triggers. It is never exposed by subsequent reads. */
+  webhookSecret?: string;
+}
+
+export interface TriggerOccurrenceDto {
+  id: string;
+  artifactId: string;
+  triggerId: string;
+  projectId: string;
+  agentId: string;
+  state: TriggerOccurrenceState;
+  payload: unknown;
+  provenance: Record<string, unknown>;
+  payloadMediaType: string;
+  inputHash: string;
+  /** Immutable definition snapshot captured when the occurrence was accepted. */
+  triggerSnapshot?: Pick<TriggerDefinitionDto, "id" | "name" | "instructions" | "sourceKind" | "sourceConfig" | "fullAccess">;
+  activationId?: string;
+  lastError?: string;
+  occurredAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** PUT /api/agents/:id/manager body. Null promotes to top level. */
 export interface UpdateAgentOrganizationRequest {
   managerAgentId: string | null;
@@ -867,12 +954,13 @@ export interface ProviderInputSourceManifestV2 {
   /** Sources known to remain only in the continued provider session. */
   retainedSessionSourceCount: number;
   activationIds: string[];
+  triggerOccurrenceIds?: string[];
   communicationEventIds: string[];
   artifactIds: string[];
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory";
+    kind: "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";

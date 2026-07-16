@@ -88,6 +88,13 @@ import type {
   ProjectBrowserSessionDto,
   ProjectBrowserControlRequest,
   ProjectBrowserNavigateRequest,
+  CreateTriggerRequest,
+  CreateTriggerResponse,
+  UpdateTriggerRequest,
+  TriggerDefinitionDto,
+  TriggerOccurrenceDto,
+  TriggerSourceConfig,
+  TriggerSourceKind,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -113,6 +120,7 @@ import { UserReactionStore } from "./user-reactions.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
+import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import {
   BrowserSessionError,
   BrowserSessionManager,
@@ -2429,6 +2437,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       onMessageDeliveryChanged: publishMessageDeliveryChanged,
     },
   );
+  const triggerSources = new TriggerSourceService({
+    store,
+    coordination: coordinationV3,
+    dataDir: opts.dataDir,
+    notify: (triggerId) => {
+      coordinationV3Scheduler.notify();
+      if (!triggerId) return;
+      const trigger = coordinationV3.getTriggerDefinition(triggerId);
+      if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId, action: "occurrence" });
+    },
+  });
+  const webhookRawBodies = new WeakMap<IncomingMessage, Buffer>();
+  app.addHook("preParsing", async (request, reply, payload) => {
+    if (!request.url.startsWith("/api/trigger-webhooks/")) return payload;
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of payload) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += bytes.length;
+      if (size > 256 * 1_024) {
+        void reply.code(413).send({ error: "webhook payload exceeds 256 KiB" });
+        return Readable.from(Buffer.alloc(0));
+      }
+      chunks.push(bytes);
+    }
+    const raw = Buffer.concat(chunks);
+    webhookRawBodies.set(request.raw, raw);
+    return Readable.from(raw);
+  });
   for (const mediaType of ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/zip", "application/octet-stream"]) {
     app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: ASSET_LIMITS.maxRequestBytes }, (_request, body, done) => done(null, body));
   }
@@ -2574,9 +2611,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
-    if (request.url === "/api/health" || request.url === "/api/ready") return;
+    if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
     if (!secretEqual(provided, opts.authToken)) {
       return reply.code(401).send({ error: "unauthorized" });
     }
@@ -2617,6 +2654,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
     coordinationV3Scheduler.start();
+    await triggerSources.start();
     webPushDelivery?.start();
     const reconcileAssets = async () => {
       for (const project of store.listProjects()) {
@@ -2683,6 +2721,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.addHook("onClose", async () => {
     closed = true;
     await webPushDelivery?.stop();
+    await triggerSources.stop();
     await coordinationV3Scheduler.stop();
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
@@ -4371,18 +4410,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (selectionError) return reply.code(400).send({ error: selectionError });
     }
     const conversation = store.updateConversation(request.params.id, request.body ?? {});
-    if (conversation) appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+    if (conversation) {
+      if (request.body?.archived !== undefined) await triggerSources.refresh();
+      appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+    }
     return conversation;
   });
 
   app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
     const current = store.getConversation(request.params.id);
     if (current) {
-      const active = store.listAgents(current.projectId).filter((agent) => agent.conversationIds.includes(current.id)).some((agent) => activeRuns.has(agent.id));
+      const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationIds.includes(current.id));
+      const active = linkedAgents.some((agent) => activeRuns.has(agent.id));
       if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
     }
-    const deleted = store.deleteConversation(request.params.id);
+    const deleted = store.deleteConversation(request.params.id, (agentId, conversationId) => {
+      coordinationV3.handleAgentConversationRemoval(agentId, conversationId);
+    });
     if (deleted && current) {
+      await triggerSources.refresh();
       const cursor = workspace.cursor();
       workspace.deleteDraft(current.id);
       workspace.deleteDraft(`collaboration:${current.id}`);
@@ -5430,6 +5476,203 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  const triggerObject = (value: unknown, label: string): Record<string, unknown> => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+    return value as Record<string, unknown>;
+  };
+  const exactTriggerFields = (value: Record<string, unknown>, allowed: string[], label: string): void => {
+    const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+    if (unknown.length) throw new Error(`unknown ${label} field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
+  };
+  const triggerSourceConfig = (kind: TriggerSourceKind, value: unknown): TriggerSourceConfig => {
+    const config = triggerObject(value, "sourceConfig");
+    if (kind === "schedule") {
+      const scheduleKind = config.scheduleKind;
+      if (scheduleKind === "once") {
+        exactTriggerFields(config, ["scheduleKind", "at"], "one-time schedule");
+        if (typeof config.at !== "string") throw new Error("one-time schedule at must be a string");
+      } else if (scheduleKind === "interval") {
+        exactTriggerFields(config, ["scheduleKind", "everyMs", "startsAt"], "interval schedule");
+        if (typeof config.everyMs !== "number" || typeof config.startsAt !== "string") throw new Error("interval everyMs must be a number and startsAt must be a string");
+      } else if (scheduleKind === "cron") {
+        exactTriggerFields(config, ["scheduleKind", "expression", "timezone"], "cron schedule");
+        if (typeof config.expression !== "string" || typeof config.timezone !== "string") throw new Error("cron expression and timezone must be strings");
+      } else throw new Error("invalid scheduleKind");
+    } else if (kind === "webhook") {
+      exactTriggerFields(config, ["replayWindowSeconds"], "webhook config");
+      if (config.replayWindowSeconds !== undefined && typeof config.replayWindowSeconds !== "number") throw new Error("replayWindowSeconds must be a number");
+    } else {
+      exactTriggerFields(config, ["include", "exclude", "quietMs", "maxWindowMs"], "filesystem config");
+      for (const field of ["include", "exclude"] as const) {
+        if (config[field] !== undefined && (!Array.isArray(config[field]) || !(config[field] as unknown[]).every((item) => typeof item === "string"))) {
+          throw new Error(`${field} must be an array of strings`);
+        }
+      }
+      for (const field of ["quietMs", "maxWindowMs"] as const) if (config[field] !== undefined && typeof config[field] !== "number") throw new Error(`${field} must be a number`);
+    }
+    return config as unknown as TriggerSourceConfig;
+  };
+  const parseCreateTrigger = (value: unknown): CreateTriggerRequest => {
+    const body = triggerObject(value, "Trigger body");
+    exactTriggerFields(body, ["conversationId", "name", "instructions", "sourceKind", "sourceConfig", "enabled"], "Trigger");
+    if (typeof body.conversationId !== "string" || typeof body.name !== "string" || typeof body.instructions !== "string") throw new Error("conversationId, name, and instructions must be strings");
+    if (body.sourceKind !== "schedule" && body.sourceKind !== "webhook" && body.sourceKind !== "filesystem") throw new Error("sourceKind must be schedule, webhook, or filesystem");
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
+    return { conversationId: body.conversationId, name: body.name, instructions: body.instructions, sourceKind: body.sourceKind, sourceConfig: triggerSourceConfig(body.sourceKind, body.sourceConfig), ...(body.enabled === undefined ? {} : { enabled: body.enabled }) };
+  };
+  const parseUpdateTrigger = (value: unknown, sourceKind: TriggerSourceKind): UpdateTriggerRequest => {
+    const body = triggerObject(value, "Trigger patch");
+    exactTriggerFields(body, ["name", "instructions", "sourceConfig", "enabled"], "Trigger patch");
+    if (body.name !== undefined && typeof body.name !== "string") throw new Error("name must be a string");
+    if (body.instructions !== undefined && typeof body.instructions !== "string") throw new Error("instructions must be a string");
+    if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
+    return {
+      ...(body.name === undefined ? {} : { name: body.name }),
+      ...(body.instructions === undefined ? {} : { instructions: body.instructions }),
+      ...(body.sourceConfig === undefined ? {} : { sourceConfig: triggerSourceConfig(sourceKind, body.sourceConfig) }),
+      ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+    };
+  };
+
+  app.get<{ Params: { id: string } }>("/api/agents/:id/triggers", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    return coordinationV3.listTriggerDefinitions(request.params.id);
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/agents/:id/triggers", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent) return reply.code(404).send({ error: "agent not found" });
+    try {
+      const body = parseCreateTrigger(request.body);
+      const normalized = normalizeTriggerSourceConfig(body.sourceKind, body.sourceConfig);
+      const webhookSecret = body.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
+      const trigger = coordinationV3.createTriggerDefinition({
+        projectId: agent.projectId,
+        conversationId: body.conversationId,
+        agentId: agent.id,
+        name: body.name,
+        instructions: body.instructions,
+        sourceKind: body.sourceKind,
+        sourceConfig: normalized.config,
+        enabled: body.enabled,
+        nextFireAt: normalized.nextFireAt,
+        secretCiphertext: webhookSecret?.ciphertext,
+        secretFingerprint: webhookSecret?.fingerprint,
+      });
+      await triggerSources.refresh();
+      appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "created" });
+      return reply.code(201).send({ trigger, ...(webhookSecret ? { webhookSecret: webhookSecret.secret } : {}) } satisfies CreateTriggerResponse);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid Trigger" });
+    }
+  });
+
+  app.patch<{ Params: { id: string }; Body: unknown }>("/api/triggers/:id", async (request, reply) => {
+    const current = coordinationV3.getTriggerDefinition(request.params.id);
+    if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    try {
+      const body = parseUpdateTrigger(request.body, current.sourceKind);
+      const needsReschedule = body.sourceConfig !== undefined || (body.enabled === true && !current.enabled);
+      const normalized = needsReschedule
+        ? normalizeTriggerSourceConfig(current.sourceKind, body.sourceConfig ?? current.sourceConfig)
+        : undefined;
+      const trigger = coordinationV3.updateTriggerDefinition(current.id, {
+        ...body,
+        ...(normalized ? { sourceConfig: normalized.config, nextFireAt: normalized.nextFireAt ?? null } : {}),
+      });
+      await triggerSources.refresh();
+      if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "updated" });
+      return trigger;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid Trigger" });
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/triggers/:id", async (request, reply) => {
+    const current = coordinationV3.getTriggerDefinition(request.params.id);
+    if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    coordinationV3.deleteTriggerDefinition(current.id);
+    await triggerSources.refresh();
+    appendWorkspace({ type: "trigger_changed", projectId: current.projectId, agentId: current.agentId, triggerId: current.id, action: "deleted" });
+    return { deleted: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/triggers/:id/rotate-secret", async (request, reply) => {
+    const current = coordinationV3.getTriggerDefinition(request.params.id);
+    if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    if (current.sourceKind !== "webhook") return reply.code(400).send({ error: "only webhook Triggers have signing secrets" });
+    const secret = triggerSources.createWebhookSecret();
+    const trigger = coordinationV3.updateTriggerDefinition(current.id, {
+      secretCiphertext: secret.ciphertext,
+      secretFingerprint: secret.fingerprint,
+    })!;
+    appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "updated" });
+    return { trigger, webhookSecret: secret.secret } satisfies CreateTriggerResponse;
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/triggers/:id/occurrences", async (request, reply) => {
+    const limit = Number(request.query.limit ?? "100");
+    return coordinationV3.listTriggerOccurrences(request.params.id, Number.isFinite(limit) ? limit : 100);
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/agents/:id/trigger-occurrences", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "Agent not found" });
+    const limit = Number(request.query.limit ?? "100");
+    return coordinationV3.listAgentTriggerOccurrences(request.params.id, Number.isFinite(limit) ? limit : 100);
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/projects/:id/trigger-occurrences", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "Project not found" });
+    const limit = Number(request.query.limit ?? "100");
+    return coordinationV3.listProjectTriggerOccurrences(request.params.id, Number.isFinite(limit) ? limit : 100);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/trigger-occurrences/:id", async (request, reply) => {
+    const occurrence = coordinationV3.getTriggerOccurrence(request.params.id);
+    return occurrence ?? reply.code(404).send({ error: "Trigger occurrence not found" });
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agent-trigger-occurrences/:id", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    if (!capability || !active || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "Trigger occurrence capability is not authorized for an active Run" });
+    }
+    const occurrence = coordinationV3.getTriggerOccurrence(request.params.id);
+    if (!occurrence || occurrence.agentId !== capability.agentId) return reply.code(404).send({ error: "Trigger occurrence not found" });
+    if (!occurrence.activationId || coordinationV3.activationPayloads(capability.agentId, [occurrence.activationId], capability.runId).length !== 1) {
+      return reply.code(404).send({ error: "Trigger occurrence is not attached to this Run" });
+    }
+    return occurrence;
+  });
+
+  app.post<{ Params: { id: string }; Body: unknown }>("/api/trigger-webhooks/:id", async (request, reply) => {
+    const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+    if (contentType !== "application/json" && !contentType?.endsWith("+json")) {
+      return reply.code(415).send({ error: "Trigger webhooks require a JSON Content-Type" });
+    }
+    const eventId = request.headers["x-ponderosa-event-id"];
+    const timestamp = request.headers["x-ponderosa-timestamp"];
+    const signature = request.headers["x-ponderosa-signature"];
+    try {
+      const result = triggerSources.verifyAndRecordWebhook({
+        triggerId: request.params.id,
+        eventId: Array.isArray(eventId) ? eventId[0] ?? "" : eventId ?? "",
+        timestamp: Array.isArray(timestamp) ? timestamp[0] ?? "" : timestamp ?? "",
+        signature: Array.isArray(signature) ? signature[0] ?? "" : signature ?? "",
+        rawBody: webhookRawBodies.get(request.raw) ?? Buffer.alloc(0),
+        payload: request.body,
+        remoteAddress: request.ip,
+      });
+      return reply.code(result.replayed ? 200 : 202).send(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "webhook rejected";
+      if (message.includes("idempotency conflict")) return reply.code(409).send({ error: message });
+      return reply.code(401).send({ error: message });
+    }
+  });
+
   app.get<{ Params: { id: string } }>("/api/agents/:id", async (request, reply) => {
     const detail = agentDetail(request.params.id);
     return detail ?? reply.code(404).send({ error: "agent not found" });
@@ -5445,6 +5688,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     "/api/agents/:id",
     async (request, reply) => {
       const agent = store.updateAgent(request.params.id, request.body ?? {});
+      if (agent && request.body?.archived !== undefined) await triggerSources.refresh();
       return agent ?? reply.code(404).send({ error: "agent not found" });
     },
   );
@@ -5478,7 +5722,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           coordinationV3.handleAgentConversationRemoval(agentId, conversationId);
         }
       });
-      if (agent) coordinationV3Scheduler.notify();
+      if (agent) {
+        await triggerSources.refresh();
+        coordinationV3Scheduler.notify();
+      }
       return agent ?? reply.code(404).send({ error: "agent not found" });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid membership" });
@@ -5529,6 +5776,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       await fs.rm(draftAttachmentDir(`agent:${agentId}`), { recursive: true, force: true });
     }
     contextCursors.deleteAgents(deletedAgentIds);
+    await triggerSources.refresh();
     publishWorkspaceSince(workspaceCursor);
     for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
     return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
@@ -6147,7 +6395,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // second time. A coalesced Run still receives its remaining sources as
       // one bounded bundle. Steering uses the Activation prompt directly.
       const additionalActivationIndex = v3ActivationPrompt?.indexOf("\nActivation 2:") ?? -1;
-      const coalescedActivationContext = internalV3Dispatch && additionalActivationIndex >= 0
+      const coalescedActivationContext = internalV3Dispatch && text !== v3ActivationPrompt && additionalActivationIndex >= 0
         ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
         : "";
       const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\nThe live team directory and current activity are available from PONDEROSA_AGENT_DIRECTORY_URL when routing or discovery requires them.${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
@@ -6162,6 +6410,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const exactProviderInput = resumeSessionId ? prompt : renderSeedPrompt(history, prompt);
       const manifestActivationIds = coordinationV3.activationIdsForInjection(v3InjectionId!, runId);
       const manifestActivationPayloads = coordinationV3.activationPayloads(agent.id, manifestActivationIds, runId);
+      const manifestTriggerOccurrences = manifestActivationPayloads.flatMap(({ payload }) => {
+        if (!payload || typeof payload !== "object") return [];
+        const occurrence = (payload as { occurrence?: { id?: unknown; artifactId?: unknown } }).occurrence;
+        if (!occurrence || typeof occurrence.id !== "string") return [];
+        const stored = coordinationV3.getTriggerOccurrence(occurrence.id);
+        return stored ? [stored] : [];
+      });
       const activationCommunicationEventIds = manifestActivationPayloads.flatMap(({ payload }) => {
         if (!payload || typeof payload !== "object") return [];
         const communication = (payload as { communication?: unknown }).communication;
@@ -6187,6 +6442,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         historyMessageCount: submittedHistory.length + contextMessages.length,
         retainedSessionSourceCount: teamDirectoryDelivery === "retained_session" ? 1 : 0,
         activationIds: manifestActivationIds,
+        triggerOccurrenceIds: manifestTriggerOccurrences.map((occurrence) => occurrence.id),
         communicationEventIds: manifestCommunicationEventIds,
         artifactIds: manifestArtifactIds,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
@@ -6213,6 +6469,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             createdAt: message.createdAt,
           }] : []),
           ...manifestActivationIds.map((id) => ({ kind: "activation" as const, ref: id, delivery: "submitted" as const })),
+          ...manifestTriggerOccurrences.map((occurrence) => ({
+            kind: "trigger_occurrence" as const,
+            ref: occurrence.artifactId,
+            delivery: "submitted" as const,
+            // Distinct from inputHash (source-delivery idempotency): this hash
+            // covers the immutable occurrence material submitted in the prompt.
+            hash: createHash("sha256").update(JSON.stringify({
+              triggerSnapshot: occurrence.triggerSnapshot,
+              payload: occurrence.payload,
+              provenance: occurrence.provenance,
+              payloadMediaType: occurrence.payloadMediaType,
+            })).digest("hex"),
+            createdAt: occurrence.createdAt,
+          })),
           ...manifestCommunicationEventIds
             .filter((id) => !contextCommunicationEventIds.includes(id))
             .map((id) => ({ kind: "communication" as const, ref: id, delivery: "submitted" as const })),
@@ -6319,6 +6589,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         let lastTextSeq: number | undefined;
         let v3PromptInjected = false;
         let providerWorkObserved = false;
+        let schedulerCancelled = false;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -6539,16 +6810,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
         } catch (err) {
           if (closed || controller.signal.aborted || !ownsActiveRun(agent.id, activeRun)) return;
+          schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
+          if (schedulerCancelled) return;
           const message = err instanceof Error ? err.message : String(err);
           persistRuntimeEvent(agent.id, activeRun, { type: "error", message });
           runError = message;
         } finally {
           const owned = ownsActiveRun(agent.id, activeRun);
+          schedulerCancelled ||= Boolean(!closed && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
+          if (schedulerCancelled && !owned && !closed && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {
+            const cancelled = store.appendEvent(agent.id, {
+              type: "agent_lifecycle",
+              status: "cancelled",
+              reason: "agent_cancelled",
+              executionId: runId,
+            });
+            publish(agent.id, cancelled);
+          }
           if (owned && scheduledSessionRollovers.delete(agent.id)) {
             store.clearResumeSession(agent.id, "explicit_compaction");
           }
           if (owned && !closed && !controller.signal.aborted) {
-            if (!runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
+            if (!schedulerCancelled && !runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
               const output = store.appendEvent(agent.id, {
                 type: "agent_output",
                 executionId: runId,
@@ -6560,8 +6843,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             }
             const terminal = store.appendEvent(agent.id, {
               type: "agent_lifecycle",
-              status: runError ? "failed" : "completed",
-              reason: runError ? "runtime_error" : "turn_completed",
+              status: schedulerCancelled ? "cancelled" : runError ? "failed" : "completed",
+              reason: schedulerCancelled ? "agent_cancelled" : runError ? "runtime_error" : "turn_completed",
               executionId: runId,
             });
             publish(agent.id, terminal);
@@ -6570,7 +6853,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               sessionId: acceptedSessionId,
               hash: organizationEnvelopeHash,
             });
-            if (runError) {
+            if (runError && !schedulerCancelled) {
               if (classifyProviderFailure(runError) === "authentication") {
                 engineAvailability.record({
                   engineId: agent.activeEngine,
@@ -6580,7 +6863,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 });
               }
               notifyManagerOfChildFailure(agent.id, runId, runError);
-            } else if (engineAvailability.denial(agent.activeEngine)) {
+            } else if (!schedulerCancelled && engineAvailability.denial(agent.activeEngine)) {
               engineAvailability.record({
                 engineId: agent.activeEngine,
                 available: true,
@@ -6589,10 +6872,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               });
             }
           }
-          const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted ? "cancelled" : runError ? "failed" : "completed");
+          const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
           if (released && activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined) {
             try {
-              if (controller.signal.aborted) coordinationV3!.cancelAgentRun({
+              if (schedulerCancelled) {
+                // Trigger disable/delete already terminalized and fenced this
+                // uninjected Run atomically. Do not reinterpret it as failure.
+              } else if (controller.signal.aborted) coordinationV3!.cancelAgentRun({
                 agentId: agent.id,
                 idempotencyKey: `runtime-abort:${activeRun.v3SchedulerRunId}`,
               });
@@ -6619,7 +6905,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (released) {
             agentMessageCapabilities.delete(messageCapability);
           }
-          if (released && !closed && !controller.signal.aborted && !runError) {
+          if (released && !closed && !controller.signal.aborted && !schedulerCancelled && !runError) {
             const acceptedSessionId = store.resumeSessionId(agent.id);
             if (acceptedSessionId && cursorConversationId && cursorChannel) {
               contextCursors.commit({

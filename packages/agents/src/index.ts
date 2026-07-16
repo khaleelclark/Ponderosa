@@ -27,6 +27,11 @@ export type {
   OutboxItem,
   EnqueueMessageActivationInput,
   CoordinationRequestV3View,
+  CreateTriggerDefinitionInput,
+  UpdateTriggerDefinitionInput,
+  RecordTriggerOccurrenceInput,
+  TriggerOccurrenceResult,
+  TriggerOccurrenceState,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
@@ -59,4 +64,6 @@ export type {
   CoordinationJoinRow,
   AgentActivationRow,
   SchedulerRunRow,
+  TriggerDefinitionRow,
+  TriggerOccurrenceRow,
 } from "./schema.js";

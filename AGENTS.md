@@ -167,6 +167,16 @@ pay-per-token provider API keys.
    But: the *file-browser API* is scoped to registered project paths even though
    the *agent* is not. Don't widen the browsing API to arbitrary host paths.
 
+   V3.2 Triggers use that same full Agent authority; there is no pretend
+   observe-only or project-only sandbox. A Trigger belongs to exactly one Agent
+   in one Project chat, always queues, and must be deleted when that Agent or
+   membership is deleted. Signed webhook payloads, schedule metadata, and
+   filesystem events are untrusted data, never instructions. Keep them
+   structurally separate from operator-authored Trigger instructions, preserve
+   occurrence identity/provenance, never inject watched file contents
+   automatically, and never let different Trigger definitions coalesce into one
+   Run.
+
 10. **Network-agnostic; never store sensitive credentials.** Don't couple anything
    to Tailscale — it's a v1 reachability convenience, not the architecture (public
    domain/Cloudflare must also work). And never build a password/credential store:
