@@ -3,7 +3,7 @@
 // directly so the SSE/REST contract is typechecked end to end (SPEC §6, §1).
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
-import type { AgentEvent, TokenUsage, WorkItemStatus } from "./events.js";
+import type { AgentEvent, BrowserControlOwner, BrowserSessionStatus, TokenUsage, WorkItemStatus } from "./events.js";
 import type { CommunicationDocumentReference, CommunicationIntent, VerifiedCitationRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -236,6 +236,36 @@ export interface WorkspaceFileReviewDto {
   unstagedDiff: string;
   truncated: boolean;
 }
+
+/** One ephemeral host browser bound to an exact active Run. */
+export interface BrowserSessionDto {
+  id: string;
+  projectId: string;
+  agentId: string;
+  runId: string;
+  conversationId?: string;
+  status: BrowserSessionStatus;
+  controlOwner: BrowserControlOwner;
+  /** Monotonic fence for operator input. Stale tabs cannot keep typing. */
+  controlEpoch: number;
+  url?: string;
+  title?: string;
+  frameRevision: number;
+  openedAt: string;
+  updatedAt: string;
+  failure?: string;
+}
+
+export interface BrowserControlRequest {
+  owner: BrowserControlOwner;
+  expectedControlEpoch: number;
+}
+
+export type BrowserOperatorInputRequest =
+  | { kind: "click"; x: number; y: number; expectedControlEpoch: number }
+  | { kind: "type"; text: string; expectedControlEpoch: number }
+  | { kind: "key"; key: string; expectedControlEpoch: number }
+  | { kind: "scroll"; deltaX: number; deltaY: number; expectedControlEpoch: number };
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
@@ -838,10 +868,11 @@ export interface WorkItemDto {
 }
 
 /** Kind of artifact (SPEC §2/§12): the "what changed". */
-export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document";
+export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document" | "screenshot";
 
 export type AgentActivityEvent = Extract<AgentEvent, {
-  type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error";
+  type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
+    "browser_session" | "browser_action" | "browser_console" | "browser_screenshot";
 }>;
 
 /** Canonical, refresh-safe execution activity projected from the agent event log. */
@@ -876,7 +907,7 @@ export interface ArtifactDto {
   summary?: string;
   createdAt: string;
   /** Generated files are served through opaque, project-scoped URLs. */
-  mediaType?: "application/pdf";
+  mediaType?: "application/pdf" | "image/png";
   previewUrl?: string;
   downloadUrl?: string;
 }

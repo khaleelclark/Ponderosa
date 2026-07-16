@@ -79,6 +79,8 @@ import type {
   CreateLinkPreviewRequest,
   LinkPreviewDto,
   GlobalChatSearchResponseDto,
+  BrowserControlRequest,
+  BrowserOperatorInputRequest,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -86,6 +88,7 @@ import {
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
+  PONDEROSA_BROWSER_TOOLS,
   TERMINAL_REQUEST_STATES,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
@@ -99,6 +102,13 @@ import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js
 import { UserReactionStore } from "./user-reactions.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
+import {
+  BrowserSessionError,
+  BrowserSessionManager,
+  chromeBrowserDriverFactory,
+  type BrowserDriverFactory,
+  type BrowserScope,
+} from "./browser-session-manager.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -218,6 +228,8 @@ export interface CreateServerOptions {
     setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimer?: (timer: NodeJS.Timeout) => void;
   };
+  /** Test seam or host override for the engine-agnostic browser driver. */
+  browserDriverFactory?: BrowserDriverFactory;
 }
 
 const nonPublicFaviconAddresses = new BlockList();
@@ -293,6 +305,7 @@ interface ActiveRun {
   runtimeSession?: RuntimeSession;
   v3SchedulerRunId?: string;
   v3FencingToken?: number;
+  conversationId?: string;
 }
 
 interface PersistentRuntime {
@@ -1033,7 +1046,11 @@ export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceE
     case "file_change": return "file";
     case "command":
     case "work_item_update":
-    case "test_result": return "task";
+    case "test_result":
+    case "browser_session":
+    case "browser_action":
+    case "browser_console": return "task";
+    case "browser_screenshot": return "artifact";
     case "session":
     case "session_reset": return "state";
     case "communication_projection": return "message";
@@ -1354,6 +1371,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineCapabilityFingerprints = new Map<string, string>();
   const contextCursors = new ContextCursorStore(opts.dataDir);
+  const browserSessions = new BrowserSessionManager(
+    opts.dataDir,
+    opts.browserDriverFactory ?? chromeBrowserDriverFactory(opts.dataDir),
+    (scope, event) => {
+      const run = activeRuns.get(scope.agentId);
+      if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) return;
+      // Cancellation advances the scheduler fence before provider/browser
+      // interruption. The server-owned close audit is still valid for the exact
+      // in-memory Run even though late runtime/browser activity must now fail.
+      if (event.type === "browser_session" && event.status === "closed") {
+        publish(scope.agentId, store.appendEvent(scope.agentId, event));
+        return;
+      }
+      persistRuntimeEvent(scope.agentId, run, event);
+    },
+  );
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const draftAttachmentsRoot = path.resolve(opts.dataDir, "draft-attachments");
   const draftAttachmentId = /^[a-f0-9-]{36}$/i;
@@ -1610,6 +1643,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   }
 
+  function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
+    const agent = store.getAgent(agentId);
+    if (!agent) return undefined;
+    return {
+      projectId: agent.projectId,
+      agentId,
+      runId: run.runId,
+      ...(run.conversationId ? { conversationId: run.conversationId } : {}),
+    };
+  }
+
+  function closeRunBrowser(agentId: string, run: ActiveRun, reason: string): void {
+    const scope = browserScopeForRun(agentId, run);
+    if (scope) void browserSessions.closeRun(scope, reason);
+  }
+
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
     if (!ownsV3Run(run)) return false;
     run.ownershipState = state;
@@ -1680,6 +1729,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
     // Delete the claim and revoke capabilities before aborting. Any synchronous
     // or late async continuation from this generation therefore fails its CAS.
+    closeRunBrowser(agentId, run, "run_lease_expired");
     activeRuns.delete(agentId);
     closeLinkPreviewsForAgent(agentId, "run lease expired");
     clearRunLeaseTimer(run);
@@ -1732,6 +1782,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   function releaseActiveRun(agentId: string, run: ActiveRun, state: "completed" | "failed" | "cancelled"): boolean {
     if (!ownsActiveRun(agentId, run)) return false;
+    closeRunBrowser(agentId, run, `run_${state}`);
     activeRuns.delete(agentId);
     closeLinkPreviewsForAgent(agentId, `run ${state}`);
     clearRunLeaseTimer(run);
@@ -2127,6 +2178,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const entry = [...activeRuns.entries()].find(([, run]) => run.runId === operation.runId);
         if (!entry) return { accepted: true };
         const [agentId, run] = entry;
+        closeRunBrowser(agentId, run, "run_cancelled");
         activeRuns.delete(agentId);
         closeLinkPreviewsForAgent(agentId, "run cancelled");
         clearRunLeaseTimer(run);
@@ -2289,7 +2341,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-browser" || request.url.startsWith("/api/agent-documents/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready") return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -2401,6 +2453,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     await coordinationV3Scheduler.stop();
     if (assetSweep) clearInterval(assetSweep);
     for (const [agentId, run] of activeRuns) {
+      closeRunBrowser(agentId, run, "server_shutdown");
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
       if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
@@ -2416,6 +2469,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       run.controller.abort();
     }
     activeRuns.clear();
+    await browserSessions.closeAll("server_shutdown");
     for (const runtime of runtimeSessions.values()) cancelRuntimeIdleClose(runtime);
     await Promise.allSettled([...runtimeSessions.values()].map(({ session }) => session.close()));
     runtimeSessions.clear();
@@ -2676,6 +2730,61 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     publishCoordinationV3Changed(manager.id);
     coordinationV3Scheduler.notify();
   }
+
+  app.post<{
+    Body: {
+      operation?: "open" | "navigate" | "inspect" | "act" | "screenshot" | "take_control" | "close";
+      url?: string;
+      action?: unknown;
+      selector?: unknown;
+      text?: unknown;
+      key?: unknown;
+    };
+  }>("/api/agent-browser", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const agent = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "browser capability is not authorized for an active run" });
+    }
+    const scope: BrowserScope = {
+      projectId: agent.projectId,
+      agentId: agent.id,
+      runId: active.runId,
+      ...(active.conversationId ? { conversationId: active.conversationId } : {}),
+    };
+    try {
+      switch (request.body?.operation) {
+        case "open": {
+          const session = await browserSessions.open(scope, request.body.url);
+          return { session, snapshot: await browserSessions.inspect(scope) };
+        }
+        case "navigate": {
+          if (typeof request.body.url !== "string") throw new BrowserSessionError("url is required");
+          const session = await browserSessions.navigate(scope, request.body.url, "agent");
+          return { session, snapshot: await browserSessions.inspect(scope) };
+        }
+        case "inspect":
+          return { session: browserSessions.get(agent.id), snapshot: await browserSessions.inspect(scope) };
+        case "act": {
+          const session = await browserSessions.act(scope, request.body);
+          return { session, snapshot: await browserSessions.inspect(scope) };
+        }
+        case "screenshot":
+          return { session: browserSessions.get(agent.id), artifact: await browserSessions.captureArtifact(scope) };
+        case "take_control":
+          return { session: await browserSessions.setControl(scope, "agent") };
+        case "close":
+          return { session: await browserSessions.close(scope, "agent_closed") };
+        default:
+          return reply.code(400).send({ error: "unknown browser operation" });
+      }
+    } catch (error) {
+      if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message });
+      throw error;
+    }
+  });
 
   app.get("/api/agent-directory", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -3622,6 +3731,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       closeLinkPreviewsForAgent(agentId, "project deleted");
       const active = activeRuns.get(agentId);
       if (active) {
+        closeRunBrowser(agentId, active, "project_deleted");
         clearRunLeaseTimer(active);
         clearRunLivenessTimer(active);
         active.controller.abort();
@@ -4754,6 +4864,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       closeLinkPreviewsForAgent(agent.id, "agent deleted");
       const run = activeRuns.get(agent.id);
       if (run) {
+        closeRunBrowser(agent.id, run, "agent_deleted");
         activeRuns.delete(agent.id);
         clearRunLeaseTimer(run);
         clearRunLivenessTimer(run);
@@ -5422,6 +5533,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       publish(agent.id, runningLifecycle);
       const activeRun: ActiveRun = {
         runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        ...(routingConversationId ? { conversationId: routingConversationId } : {}),
         ...(trackedV3FencingToken !== undefined
           ? { v3SchedulerRunId: runId, v3FencingToken: trackedV3FencingToken }
           : {}),
@@ -5455,6 +5567,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
             PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
             PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
+            PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -5469,14 +5582,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: [PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL],
+              dynamicTools: [PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL, ...PONDEROSA_BROWSER_TOOLS],
               handleDynamicToolCall: async (call) => {
+                const browserOperation = call.name.startsWith("ponderosa_browser_")
+                  ? call.name.slice("ponderosa_browser_".length)
+                  : undefined;
                 const url = call.name === PONDEROSA_COORDINATE_TOOL.name
                   ? "/api/agent-coordinate"
                   : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
                     ? "/api/agent-request-updates"
                     : call.name === PONDEROSA_MESSAGE_TOOL.name
                       ? "/api/agent-messages"
+                      : browserOperation
+                        ? "/api/agent-browser"
                       : undefined;
                 if (!url) {
                   return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
@@ -5488,7 +5606,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     authorization: `Bearer ${messageCapability}`,
                     "content-type": "application/json",
                   },
-                  payload: JSON.stringify(call.arguments ?? {}),
+                  payload: JSON.stringify(browserOperation
+                    ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }
+                    : call.arguments ?? {}),
                 });
                 return {
                   success: response.statusCode >= 200 && response.statusCode < 300,
@@ -5958,6 +6078,103 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     },
   );
 
+  type BrowserRouteParams = { projectId: string; id: string; runId: string };
+  const operatorBrowserScope = (params: BrowserRouteParams): BrowserScope => {
+    const agent = store.getAgent(params.id);
+    if (!agent || agent.projectId !== params.projectId) throw new BrowserSessionError("agent not found", 404);
+    const run = activeRuns.get(agent.id);
+    if (!run || run.runId !== params.runId || !ownsActiveRun(agent.id, run)) {
+      throw new BrowserSessionError("browser access requires the exact active run", 404);
+    }
+    return {
+      projectId: agent.projectId,
+      agentId: agent.id,
+      runId: run.runId,
+      ...(run.conversationId ? { conversationId: run.conversationId } : {}),
+    };
+  };
+  const browserRouteError = (reply: FastifyReply, error: unknown) => {
+    if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message });
+    throw error;
+  };
+  const browserRoute = "/api/projects/:projectId/agents/:id/runs/:runId/browser";
+
+  app.get<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
+    try {
+      const scope = operatorBrowserScope(request.params);
+      const session = browserSessions.get(scope.agentId);
+      if (!session || session.runId !== scope.runId || session.projectId !== scope.projectId || session.conversationId !== scope.conversationId) {
+        return reply.code(404).send({ error: "browser session has not been opened for this run" });
+      }
+      return session;
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
+    try {
+      return await browserSessions.open(operatorBrowserScope(request.params));
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{ Params: BrowserRouteParams }>(`${browserRoute}/reconnect`, async (request, reply) => {
+    try {
+      return await browserSessions.reconnect(operatorBrowserScope(request.params));
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.delete<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
+    try {
+      return await browserSessions.close(operatorBrowserScope(request.params), "operator_closed");
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.put<{ Params: BrowserRouteParams; Body: BrowserControlRequest }>(`${browserRoute}/control`, async (request, reply) => {
+    try {
+      if ((request.body?.owner !== "agent" && request.body?.owner !== "operator") || !Number.isSafeInteger(request.body?.expectedControlEpoch)) {
+        return reply.code(400).send({ error: "owner and expectedControlEpoch are required" });
+      }
+      return await browserSessions.setControl(
+        operatorBrowserScope(request.params),
+        request.body.owner,
+        request.body.expectedControlEpoch,
+      );
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.post<{ Params: BrowserRouteParams; Body: BrowserOperatorInputRequest }>(`${browserRoute}/input`, async (request, reply) => {
+    try {
+      if (!request.body || !["click", "type", "key", "scroll"].includes(request.body.kind) || !Number.isSafeInteger(request.body.expectedControlEpoch)) {
+        return reply.code(400).send({ error: "valid input and expectedControlEpoch are required" });
+      }
+      return await browserSessions.operatorInput(operatorBrowserScope(request.params), request.body);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
+  app.get<{ Params: BrowserRouteParams }>(`${browserRoute}/frame`, async (request, reply) => {
+    try {
+      const frame = await browserSessions.captureFrame(operatorBrowserScope(request.params));
+      return reply
+        .type("image/png")
+        .header("cache-control", "private, no-store")
+        .header("x-ponderosa-browser-revision", String(frame.revision))
+        .send(frame.body);
+    } catch (error) {
+      return browserRouteError(reply, error);
+    }
+  });
+
   app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     const stopResponse = (cancelled: boolean, replayed: boolean): CancelAgentRunResponse | { cancelled: boolean } =>
@@ -5968,6 +6185,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       agentId: request.params.id,
       idempotencyKey: idempotencyKey ?? `run:${current?.runId ?? "idle"}`,
     });
+    if (result.cancelled && !result.replayed && current) closeRunBrowser(request.params.id, current, "run_cancelled");
     if (result.cancelled && !result.replayed && store.getAgent(request.params.id)) {
       const lifecycle = store.appendEvent(request.params.id, {
         type: "agent_lifecycle", status: "cancelled", reason: "agent_cancelled",
@@ -6070,6 +6288,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const file = await generatedPdf(request.params.projectId, request.params.id, request.params.aid);
       if (!file) return reply.code(404).send({ error: "generated PDF not found" });
       return reply.type("application/pdf").header("Content-Disposition", contentDisposition(file.name)).send(file.body);
+    },
+  );
+
+  app.get<{ Params: { projectId: string; id: string; aid: string }; Querystring: { download?: string } }>(
+    "/api/projects/:projectId/agents/:id/browser-artifacts/:aid",
+    async (request, reply) => {
+      const agent = store.getAgent(request.params.id);
+      if (!agent || agent.projectId !== request.params.projectId) return reply.code(404).send({ error: "agent not found" });
+      const artifact = store.getArtifact(agent.id, request.params.aid);
+      if (!artifact || artifact.kind !== "screenshot") return reply.code(404).send({ error: "browser screenshot not found" });
+      const file = artifactContentPath(opts.dataDir, agent.projectId, agent.id, artifact.path);
+      try {
+        const info = await fs.stat(file);
+        if (!info.isFile() || info.size > 16 * 1024 * 1024) return reply.code(404).send({ error: "browser screenshot not found" });
+        const response = reply.type("image/png").header("cache-control", "private, no-store");
+        if (request.query.download === "1") response.header("Content-Disposition", contentDisposition(path.basename(artifact.path)));
+        return response.send(await fs.readFile(file));
+      } catch {
+        return reply.code(404).send({ error: "browser screenshot not found" });
+      }
     },
   );
 

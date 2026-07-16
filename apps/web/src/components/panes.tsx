@@ -770,6 +770,18 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   } else if (event.type === "error") {
     title = "Error";
     body = event.message;
+  } else if (event.type === "browser_session") {
+    title = `Browser ${event.status}`;
+    body = event.reason ?? event.url ?? `${event.controlOwner} control`;
+  } else if (event.type === "browser_action") {
+    title = `Browser · ${event.action}`;
+    body = event.summary;
+  } else if (event.type === "browser_console") {
+    title = `Browser console · ${event.level}`;
+    body = summarizeActivityText(event.text, 600);
+  } else if (event.type === "browser_screenshot") {
+    title = "Browser screenshot";
+    body = `${event.path} · ${event.width}×${event.height}`;
   }
 
   return (
@@ -1283,7 +1295,7 @@ function ArtifactViewer({
   const contentQuery = useQuery({
     queryKey: ["artifact", agentId, artifact?.id],
     queryFn: () => api.getArtifact(agentId, artifact?.id ?? ""),
-    enabled: Boolean(artifact && artifact.kind !== "document" && !artifact.id.startsWith("live-artifact-")),
+    enabled: Boolean(artifact && artifact.kind !== "document" && artifact.kind !== "screenshot" && !artifact.id.startsWith("live-artifact-")),
   });
 
   const content: ArtifactContentDto | undefined =
@@ -1309,6 +1321,17 @@ function ArtifactViewer({
         {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
       </Stack>
       {artifact.previewUrl ? <Box component="iframe" title={`Preview ${artifact.path}`} src={artifact.previewUrl} sx={{ width: "100%", height: { xs: "55vh", md: "66vh" }, border: 1, borderColor: "divider", borderRadius: 1, bgcolor: "background.paper" }} /> : <Alert severity="info">The PDF is still being indexed. Refresh to preview or download it.</Alert>}
+    </Box>;
+  }
+
+  if (artifact.kind === "screenshot" && artifact.previewUrl) {
+    return <Box sx={{ p: 1.5, minWidth: 0 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifact.summary ?? artifact.path}</Typography>
+        <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open</Button>
+        {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
+      </Stack>
+      <Box component="img" src={artifact.previewUrl} alt={artifact.summary ?? "Browser screenshot"} sx={{ display: "block", maxWidth: "100%", maxHeight: { xs: "55vh", md: "66vh" }, mx: "auto", border: 1, borderColor: "divider", borderRadius: 1 }} />
     </Box>;
   }
 

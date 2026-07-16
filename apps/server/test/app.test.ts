@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import type { BrowserDriver } from "../src/browser-session-manager.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -840,6 +841,83 @@ describe("human-facing chat projection boundary", () => {
     expect(detail.runOutput).toEqual([expect.objectContaining({ text: "Ordinary work-log output" })]);
     expect(detail.activity.length).toBeGreaterThan(0);
     expect(detail.changedFiles.length).toBeGreaterThan(0);
+    await app.close();
+  });
+});
+
+describe("interactive browser API", () => {
+  it("authenticates and scopes operator/agent control to the exact active run", async () => {
+    adapter.mode = "hang";
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    const driver: BrowserDriver = {
+      pageInfo: async () => ({ url: "about:blank", title: "Blank" }),
+      navigate: async (url) => ({ url, title: "Page" }),
+      inspect: async () => JSON.stringify({ url: "about:blank", controls: [] }),
+      click: async () => ({ url: "about:blank", title: "Blank" }),
+      fill: async () => ({ url: "about:blank", title: "Blank" }),
+      key: async () => ({ url: "about:blank", title: "Blank" }),
+      pointer: async () => ({ url: "about:blank", title: "Blank" }),
+      type: async () => ({ url: "about:blank", title: "Blank" }),
+      scroll: async () => ({ url: "about:blank", title: "Blank" }),
+      capture: async () => png,
+      close: async () => undefined,
+    };
+    const app = createServer({
+      dataDir, store, engines, logger: false, authToken: "operator-secret",
+      browserDriverFactory: async () => driver,
+    });
+    const operator = { authorization: "Bearer operator-secret" };
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", headers: operator,
+      payload: { label: "Browser", hostPath: repoDir, defaultEngine: "codex" },
+    })).json<{ id: string }>();
+    const agent = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`, headers: operator,
+      payload: { title: "Browser agent", engine: "codex" },
+    })).json<{ id: string }>();
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, headers: operator, payload: { text: "Open a browser" },
+    })).statusCode).toBe(202);
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("running");
+    await waitForSeedCount(1);
+    const runId = store.getRuns(agent.id)[0]!.id;
+    const root = `/api/projects/${project.id}/agents/${agent.id}/runs/${runId}/browser`;
+
+    expect((await app.inject({ method: "POST", url: root })).statusCode).toBe(401);
+    const opened = await app.inject({ method: "POST", url: root, headers: operator });
+    expect(opened.statusCode).toBe(200);
+    expect(opened.json()).toMatchObject({ projectId: project.id, agentId: agent.id, runId, status: "ready", controlOwner: "agent" });
+    expect((await app.inject({ method: "GET", url: root.replace(runId, "foreign-run"), headers: operator })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: root.replace(project.id, "foreign-project"), headers: operator })).statusCode).toBe(404);
+
+    const controlled = await app.inject({
+      method: "PUT", url: `${root}/control`, headers: operator,
+      payload: { owner: "operator", expectedControlEpoch: 1 },
+    });
+    expect(controlled.json()).toMatchObject({ controlOwner: "operator", controlEpoch: 2 });
+    expect((await app.inject({
+      method: "POST", url: `${root}/input`, headers: operator,
+      payload: { kind: "click", x: 15, y: 20, expectedControlEpoch: 1 },
+    })).statusCode).toBe(409);
+    expect((await app.inject({
+      method: "POST", url: `${root}/input`, headers: operator,
+      payload: { kind: "click", x: 15, y: 20, expectedControlEpoch: 2 },
+    })).statusCode).toBe(200);
+
+    const environment = adapter.seeds[0]!.environment!;
+    expect(environment.PONDEROSA_AGENT_BROWSER_URL).toMatch(/\/api\/agent-browser$/);
+    const capabilityHeaders = { authorization: `Bearer ${environment.PONDEROSA_AGENT_MESSAGE_TOKEN}` };
+    expect((await app.inject({ method: "POST", url: "/api/agent-browser", payload: { operation: "inspect" } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/agent-browser", headers: capabilityHeaders, payload: { operation: "inspect" } })).statusCode).toBe(200);
+    await app.inject({ method: "PUT", url: `${root}/control`, headers: operator, payload: { owner: "agent", expectedControlEpoch: 2 } });
+    expect((await app.inject({ method: "POST", url: "/api/agent-browser", headers: capabilityHeaders, payload: { operation: "screenshot" } })).statusCode).toBe(200);
+    const screenshot = store.getArtifacts(agent.id).find((artifact) => artifact.kind === "screenshot")!;
+    expect(screenshot).toMatchObject({ mediaType: "image/png", previewUrl: expect.any(String) });
+    expect((await app.inject({ method: "GET", url: screenshot.previewUrl!, headers: operator })).rawPayload).toEqual(png);
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers: operator, payload: { idempotencyKey: "browser-stop" } });
+    await expect.poll(async () => (await app.inject({ method: "GET", url: root, headers: operator })).statusCode).toBe(404);
+    expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "browser_session", status: "closed" }) }));
     await app.close();
   });
 });
@@ -2949,7 +3027,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("runs correlated V3 work through exactly three tools and a fenced activation cycle", async () => {
+  it("runs correlated V3 work through exactly three coordination tools and a fenced activation cycle", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({
@@ -2970,9 +3048,12 @@ describe("server chunk F", () => {
     expect(started.json()).toMatchObject({ queued: true, position: 1 });
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
     const requesterRuntime = persistent.openedOptions[0]!;
-    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual([
+    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name).filter((name) => [
+      "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
+    ].includes(name))).toEqual([
       "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
     ]);
+    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.required)
       .toEqual(["updateId", "kind"]);
     expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);

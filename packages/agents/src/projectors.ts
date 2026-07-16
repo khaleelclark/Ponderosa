@@ -12,6 +12,7 @@
 //   command      → Run activity + Artifact
 //   file_change  → Run activity + Artifact
 //   test_result  → Run activity + Artifact
+//   browser_*   → Run activity; explicit screenshots → Artifact
 //   work_item_update → optional engine-reported Work item
 //   session      → agent's active engine session id column
 //   turn_done    → events index only; lifecycle owns Run terminal state
@@ -250,6 +251,29 @@ export function projectEvent(
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
+
+    case "browser_screenshot": {
+      ops.push({
+        kind: "insert_artifact",
+        row: {
+          id: artifactId(agentId, seq, 0),
+          agentId,
+          executionId: event.executionId,
+          kind: "screenshot",
+          path: event.path,
+          summary: `Browser screenshot (${event.width}×${event.height})`,
+          createdAt: ts,
+        },
+      });
+      ops.push({ kind: "touch_agent", updatedAt: ts });
+      break;
+    }
+
+    case "browser_session":
+    case "browser_action":
+    case "browser_console":
+      ops.push({ kind: "touch_agent", updatedAt: ts });
+      break;
 
     case "work_item_update": {
       const id = workItemId(agentId, event.workItemId);

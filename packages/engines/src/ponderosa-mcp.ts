@@ -3,6 +3,7 @@ import {
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
+  PONDEROSA_BROWSER_TOOLS,
 } from "@ponderosa/core";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
@@ -10,6 +11,7 @@ type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
+const browserUrl = process.env.PONDEROSA_AGENT_BROWSER_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
 function send(value: unknown): void {
@@ -51,6 +53,11 @@ async function handle(request: RpcRequest): Promise<void> {
             description: PONDEROSA_MESSAGE_TOOL.description,
             inputSchema: PONDEROSA_MESSAGE_TOOL.inputSchema,
           },
+          ...PONDEROSA_BROWSER_TOOLS.map((tool) => ({
+            name: tool.name.replace(/^ponderosa_/, ""),
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          })),
         ],
       },
     });
@@ -58,12 +65,17 @@ async function handle(request: RpcRequest): Promise<void> {
   }
   if (request.method === "tools/call") {
     const params = request.params as { name?: unknown; arguments?: unknown } | undefined;
+    const browserOperation = typeof params?.name === "string" && params.name.startsWith("browser_")
+      ? params.name.slice("browser_".length)
+      : undefined;
     const targetUrl = params?.name === "coordinate"
       ? coordinateUrl
       : params?.name === "update_request"
         ? updateRequestUrl
         : params?.name === "message"
           ? messageUrl
+          : browserOperation
+            ? browserUrl
           : undefined;
     if (!targetUrl || !messageToken) {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable." }] } });
@@ -73,7 +85,9 @@ async function handle(request: RpcRequest): Promise<void> {
       const response = await fetch(targetUrl, {
         method: "POST",
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
-        body: JSON.stringify(params?.arguments ?? {}),
+        body: JSON.stringify(browserOperation
+          ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
+          : params?.arguments ?? {}),
       });
       const text = await response.text();
       send({

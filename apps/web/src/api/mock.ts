@@ -19,6 +19,7 @@ import type {
   TokenUsageRangeDto,
   CancelAgentRunResponse,
   GlobalChatSearchResponseDto,
+  BrowserSessionDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -54,6 +55,7 @@ const masterMessages: Record<string, ConversationMessageDto[]> = {
   "master-mobile": [],
 };
 const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
+const browserSessions = new Map<string, BrowserSessionDto>();
 const agentPresets: AgentPresetDto[] = [];
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
@@ -745,6 +747,40 @@ export const mockApi: PonderosaApi = {
     return { cancelled: true, replayed: false };
   },
   compactSession() { return delay({ compacted: true }); },
+  getBrowserSession(_projectId, agentId, runId) {
+    const session = browserSessions.get(agentId);
+    return session?.runId === runId ? Promise.resolve(session) : Promise.reject(new Error("Browser session not found"));
+  },
+  openBrowserSession(projectId, agentId, runId) {
+    const session: BrowserSessionDto = {
+      id: `mock-browser-${agentId}`, projectId, agentId, runId, status: "ready",
+      controlOwner: "agent", controlEpoch: 1, frameRevision: 1, url: "about:blank",
+      title: "Browser", openedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    browserSessions.set(agentId, session);
+    return Promise.resolve(session);
+  },
+  reconnectBrowserSession(projectId, agentId, runId) {
+    return this.openBrowserSession(projectId, agentId, runId);
+  },
+  closeBrowserSession(_projectId, agentId, _runId) {
+    const current = browserSessions.get(agentId)!;
+    const session = { ...current, status: "closed" as const, controlEpoch: current.controlEpoch + 1, updatedAt: new Date().toISOString() };
+    browserSessions.set(agentId, session);
+    return Promise.resolve(session);
+  },
+  setBrowserControl(_projectId, agentId, _runId, request) {
+    const current = browserSessions.get(agentId)!;
+    const session = { ...current, controlOwner: request.owner, controlEpoch: current.controlEpoch + 1, updatedAt: new Date().toISOString() };
+    browserSessions.set(agentId, session);
+    return Promise.resolve(session);
+  },
+  sendBrowserInput(_projectId, agentId) {
+    return Promise.resolve(browserSessions.get(agentId)!);
+  },
+  getBrowserFrame() {
+    return Promise.resolve({ blob: new Blob([], { type: "image/png" }), revision: 1 });
+  },
   subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {
     const handlersForAgent = subscribers.get(agentId) ?? new Set<StreamHandlers>();
     handlersForAgent.add(handlers);

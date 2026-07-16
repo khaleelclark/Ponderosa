@@ -1876,7 +1876,10 @@ export class AgentStore {
 
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
   getActivity(agentId: string): AgentActivityDto[] {
-    const activityTypes = new Set(["command", "file_change", "test_result", "tool_call", "tool_result", "error"]);
+    const activityTypes = new Set([
+      "command", "file_change", "test_result", "tool_call", "tool_result", "error",
+      "browser_session", "browser_action", "browser_console", "browser_screenshot",
+    ]);
     let activeExecutionId: string | undefined;
     const result: AgentActivityDto[] = [];
     for (const stored of this.readEvents(agentId)) {
@@ -1886,7 +1889,9 @@ export class AgentStore {
         result.push({
           id: `${agentId}:activity:${stored.seq}`,
           agentId,
-          ...(activeExecutionId ? { executionId: activeExecutionId } : {}),
+          ...("executionId" in event && typeof event.executionId === "string"
+            ? { executionId: event.executionId }
+            : activeExecutionId ? { executionId: activeExecutionId } : {}),
           seq: stored.seq,
           createdAt: stored.ts,
           event: event as AgentActivityDto["event"],
@@ -2374,6 +2379,15 @@ export class AgentStore {
             kind: "document" as const, path: generatedPath, summary: generatedPath,
             createdAt: r.createdAt, mediaType: "application/pdf" as const,
             previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+          };
+        }
+        if (r.kind === "screenshot" && agent) {
+          const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(r.id)}`;
+          return {
+            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
+            kind: "screenshot" as const, path: r.path, summary: r.summary ?? undefined,
+            createdAt: r.createdAt, mediaType: "image/png" as const,
+            previewUrl: root, downloadUrl: `${root}?download=1`,
           };
         }
         return {
