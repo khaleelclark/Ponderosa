@@ -3162,7 +3162,9 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
     expect(adapter.seeds).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
-    const shared = store.getConversationMessages(master.id).find((message) => message.text === "#Acadia Check the first-run path.");
+    expect(adapter.seeds[0]?.prompt).toContain("Required completion contract for this Project-chat request:");
+    expect(adapter.seeds[0]?.prompt).toContain('"intent":"broadcast"');
+    const shared = store.getConversationMessages(master.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
     const eventId = shared!.communicationEventId!;
     expect(store.readCommunicationEvents(project.id).filter((event) => event.eventId === eventId)).toEqual([
@@ -3201,7 +3203,7 @@ describe("server chunk F", () => {
     expect(created.statusCode, created.body).toBe(200);
     const agent = created.json<AgentDto>();
     await expect.poll(() => store.readEvents(agent.id).filter((event) => event.event.type === "turn_done").length, { timeout: 3_000 }).toBe(1);
-    const message = store.getConversationMessages(conversation.id).find((candidate) => candidate.text === "#Atomic Read the brief")!;
+    const message = store.getConversationMessages(conversation.id).find((candidate) => candidate.text === "Read the brief")!;
     expect(message.attachments).toEqual([expect.objectContaining({ name: "brief.txt", state: "associated", agentId: agent.id })]);
     expect(adapter.seeds[0]?.prompt).toContain("Attached images/assets (server-validated local files");
     expect(adapter.seeds[0]?.prompt).toContain(message.attachments![0]!.id);

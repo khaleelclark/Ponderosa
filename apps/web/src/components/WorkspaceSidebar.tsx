@@ -12,10 +12,6 @@ import {
   Button,
   Chip,
   Collapse,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   IconButton,
   List,
   ListItemButton,
@@ -26,7 +22,6 @@ import {
   Stack,
   Tooltip,
   Typography,
-  TextField,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
@@ -89,7 +84,7 @@ function projectSnapshots(
   }));
 }
 
-export function WorkspaceSidebar({ projects, route, notifications, drawer = false, onNavigate, onCreateProject, onManageProject }: {
+export function WorkspaceSidebar({ projects, route, notifications, drawer = false, onNavigate, onCreateProject, onManageProject, onRenameConversation, onDeleteConversation }: {
   projects: ProjectDto[];
   route: Route;
   notifications: WorkspaceNotificationDto[];
@@ -98,6 +93,8 @@ export function WorkspaceSidebar({ projects, route, notifications, drawer = fals
   onNavigate(route: Route): void;
   onCreateProject(): void;
   onManageProject(project: ProjectDto): void;
+  onRenameConversation(conversation: ConversationDto): void;
+  onDeleteConversation(conversation: ConversationDto): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const routedProjectId = routeProjectId(route);
@@ -127,9 +124,6 @@ export function WorkspaceSidebar({ projects, route, notifications, drawer = fals
   const [collapsed, setCollapsed] = useState(() => localValue(storageKeys.collapsed) === "true");
   const [agentsExpanded, setAgentsExpanded] = useState(() => localValue(storageKeys.agentsExpanded) !== "false");
   const [menu, setMenu] = useState<{ anchor: HTMLElement; conversation: ConversationDto }>();
-  const [rename, setRename] = useState<ConversationDto>();
-  const [renameText, setRenameText] = useState("");
-  const [deleting, setDeleting] = useState<ConversationDto>();
   const resizing = useRef(false);
 
   useEffect(() => { if (!resizing.current) setDraftWidth(localWidth); }, [localWidth]);
@@ -261,10 +255,8 @@ export function WorkspaceSidebar({ projects, route, notifications, drawer = fals
     /> : null}
 
     {menu ? <Menu anchorEl={menu.anchor} open onClose={() => setMenu(undefined)}>
-      <MenuItem onClick={() => { if (menu) { setRename(menu.conversation); setRenameText(menu.conversation.title); } setMenu(undefined); }}>Rename</MenuItem>
-      <MenuItem sx={{ color: "error.main" }} onClick={() => { setDeleting(menu?.conversation); setMenu(undefined); }}>Delete</MenuItem>
+      <MenuItem onClick={() => { onRenameConversation(menu.conversation); setMenu(undefined); }}>Rename</MenuItem>
+      <MenuItem sx={{ color: "error.main" }} onClick={() => { onDeleteConversation(menu.conversation); setMenu(undefined); }}>Delete</MenuItem>
     </Menu> : null}
-    {rename ? <Dialog open onClose={() => setRename(undefined)} fullWidth maxWidth="xs"><DialogTitle>Rename Project chat</DialogTitle><DialogContent><TextField autoFocus fullWidth value={renameText} onChange={(event) => setRenameText(event.target.value)} sx={{ mt: 1 }} /></DialogContent><DialogActions><Button onClick={() => setRename(undefined)}>Cancel</Button><Button variant="contained" disabled={!renameText.trim()} onClick={() => void api.updateConversation(rename.id, { title: renameText.trim() }).then(() => { void queryClient.invalidateQueries({ queryKey: ["conversations", rename.projectId] }); setRename(undefined); })}>Save</Button></DialogActions></Dialog> : null}
-    {deleting ? <Dialog open onClose={() => setDeleting(undefined)} fullWidth maxWidth="xs"><DialogTitle>Delete Project chat?</DialogTitle><DialogContent><Typography>This preserves project history and refuses deletion while an agent in this chat is running.</Typography></DialogContent><DialogActions><Button onClick={() => setDeleting(undefined)}>Cancel</Button><Button color="error" variant="contained" onClick={() => void api.deleteConversation(deleting.id).then(() => { void queryClient.invalidateQueries({ queryKey: ["conversations", deleting.projectId] }); setDeleting(undefined); })}>Delete</Button></DialogActions></Dialog> : null}
   </Box>;
 }

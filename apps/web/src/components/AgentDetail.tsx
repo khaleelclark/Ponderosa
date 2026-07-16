@@ -410,6 +410,9 @@ export function AgentDetail({
   const spawningAgent = detail.agent.spawnedByAgentId
     ? agents.find((candidate) => candidate.id === detail.agent.spawnedByAgentId)
     : undefined;
+  const lineageAgent = spawningAgent ?? organizationalParent;
+  const lineageAgentId = detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
+  const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Reports to";
   const descendantCount = agentDescendants(detail.agent.id, agents).length;
   const agentRuntimeControls = <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: { xs: "100%", sm: "max-content" } }}>
     <FormControl size="small" variant="standard" disabled sx={{ minWidth: { xs: 0, sm: 105 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
@@ -529,11 +532,11 @@ export function AgentDetail({
             <Typography variant="h6" noWrap>
               {detail.agent.title}
             </Typography>
-            {detail.agent.spawnedByAgentId ? <Typography variant="caption" color="text.secondary" noWrap>
-              Created by{" "}
-              {spawningAgent ? <Link component="button" variant="caption" onClick={() => onOpenAgent(spawningAgent.id)}>
-                {spawningAgent.title}
-              </Link> : detail.agent.spawnedByAgentId}
+            {lineageAgentId ? <Typography variant="caption" color="text.secondary" noWrap>
+              {lineageLabel}{" "}
+              {lineageAgent ? <Link component="button" variant="caption" onClick={() => onOpenAgent(lineageAgent.id)}>
+                {lineageAgent.title}
+              </Link> : lineageAgentId}
             </Typography> : null}
           </Box>
           <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />

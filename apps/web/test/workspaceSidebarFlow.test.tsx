@@ -38,6 +38,8 @@ describe("responsive workspace sidebar flow", () => {
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}
       onManageProject={vi.fn()}
+      onRenameConversation={vi.fn()}
+      onDeleteConversation={vi.fn()}
     /></QueryClientProvider>);
 
     expect(view.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "workspace-navigation-scroll")).toHaveLength(1);

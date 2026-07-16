@@ -213,7 +213,7 @@ describe("Project composer runtime capability refresh", () => {
 
     buttons(view.root, "Switch to team chat")[0]!.props.onClick();
     await vi.waitFor(() => {
-      expect(visibleText(view.root, "Team chat is read-only. Agent collaboration appears here; message an agent from its Agent chat.")).not.toHaveLength(0);
+      expect(visibleText(view.root, "Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.")).not.toHaveLength(0);
       expect(buttons(view.root, "Add attachment or capability")).toHaveLength(0);
     });
 

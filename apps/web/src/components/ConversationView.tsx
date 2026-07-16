@@ -893,7 +893,7 @@ export function ConversationView({
         <Box data-chat-column sx={{ width: "min(800px, 100%)", mx: "auto", p: { xs: 1, sm: 1.5 }, pb: 3 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>
             {activeView === "collaboration" ? (
-              <>Agent-to-agent messages appear here. Tag an agent by name, reply to an agent message, or use <Box component="strong">#everyone</Box> to notify every agent in this Project chat.</>
+              <>Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.</>
             ) : (
               <>Chat normally to start a fresh agent with this Project chat's shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file.</>
             )}
@@ -930,7 +930,7 @@ export function ConversationView({
             {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {activeView === "collaboration"
-                  ? "No team messages yet. Tag an agent to start agent-to-agent coordination."
+                  ? "No agent-to-agent messages yet."
                   : "No messages yet. Send a request to start your first agent — its completed answer returns here."}
               </Typography>
             ) : null}
@@ -1096,11 +1096,7 @@ export function ConversationView({
           onCancelReply={() => {
             clearReply();
           }}
-        /> : <Box sx={{ width: { xs: "calc(100% - 16px)", sm: "min(780px, calc(100% - 24px))" }, mx: "auto", mt: 1, mb: { xs: 1, sm: 1.5 } }}>
-          <Alert severity="info">
-            Team chat is read-only. Agent collaboration appears here; message an agent from its Agent chat.
-          </Alert>
-        </Box>}
+        /> : null}
       </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
