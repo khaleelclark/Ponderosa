@@ -7,6 +7,7 @@ import {
   BrowserSessionError,
   BrowserSessionManager,
   chromeBrowserDriverFactory,
+  initialBrowserTargetRequest,
   redactBrowserUrl,
   validateBrowserUrl,
   type BrowserDriver,
@@ -87,6 +88,13 @@ describe("run-scoped browser sessions", () => {
     const createDriver = chromeBrowserDriverFactory(dataDir, process.execPath);
 
     await expect(createDriver("exiting-browser", () => undefined)).rejects.toThrow();
+  });
+
+  it("creates a Chrome target without window-only position or size options", () => {
+    expect(initialBrowserTargetRequest()).toEqual({ url: "about:blank" });
+    expect(initialBrowserTargetRequest()).not.toHaveProperty("newWindow");
+    expect(initialBrowserTargetRequest()).not.toHaveProperty("width");
+    expect(initialBrowserTargetRequest()).not.toHaveProperty("height");
   });
 
   it("redacts credential-bearing current and redirect URLs before DTOs, audit, and snapshots", async () => {
