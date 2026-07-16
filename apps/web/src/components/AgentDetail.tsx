@@ -470,7 +470,7 @@ export function AgentDetail({
   };
 
   return (
-    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
       <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
@@ -484,7 +484,7 @@ export function AgentDetail({
               <ArrowBackIcon />
             </IconButton>
           </Tooltip>
-          <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "calc(100% - 60px)", sm: "auto" }, overflow: "hidden" }}>
+          <Box sx={{ minWidth: 0, maxWidth: "100%", width: { xs: "calc(100% - 52px)", sm: "auto" }, flex: { xs: "0 0 calc(100% - 52px)", sm: 1 }, overflow: "hidden" }}>
             <Typography variant="h6" noWrap>
               {detail.agent.title}
             </Typography>
