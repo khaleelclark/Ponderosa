@@ -4294,11 +4294,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             publish(agent.id, stored);
           }
         }
+        const pendingForAgent = coordinationV3.pendingActivations(project.id)
+          .filter((activation) => activation.agentId === agent.id);
+        const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
+        const position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
         coordinationV3Scheduler.notify();
         publishCoordinationV3Changed(agent.id);
         return reply.code(202).send({
           queued: true,
-          position: 1,
+          position,
           activationId: v3Intake.activationId,
           communicationEventId,
         });

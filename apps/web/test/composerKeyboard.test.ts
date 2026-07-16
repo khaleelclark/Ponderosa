@@ -60,10 +60,11 @@ describe("composer submission availability", () => {
 });
 
 describe("explicit queue control", () => {
-  it("appears only for a non-empty draft while the agent is responding", () => {
-    expect(shouldShowQueueControl({ text: "later", agentResponding: true, disabled: false })).toBe(true);
-    expect(shouldShowQueueControl({ text: "   ", agentResponding: true, disabled: false })).toBe(false);
-    expect(shouldShowQueueControl({ text: "later", agentResponding: false, disabled: false })).toBe(false);
-    expect(shouldShowQueueControl({ text: "later", agentResponding: true, disabled: true })).toBe(false);
+  it("appears for text or attachment-only drafts while the agent is responding", () => {
+    expect(shouldShowQueueControl({ text: "later", hasAttachments: false, agentResponding: true, disabled: false })).toBe(true);
+    expect(shouldShowQueueControl({ text: "   ", hasAttachments: true, agentResponding: true, disabled: false })).toBe(true);
+    expect(shouldShowQueueControl({ text: "   ", hasAttachments: false, agentResponding: true, disabled: false })).toBe(false);
+    expect(shouldShowQueueControl({ text: "later", hasAttachments: false, agentResponding: false, disabled: false })).toBe(false);
+    expect(shouldShowQueueControl({ text: "later", hasAttachments: false, agentResponding: true, disabled: true })).toBe(false);
   });
 });
