@@ -394,6 +394,32 @@ remain in Tasks/Artifacts. The design does not introduce WebSocket transport;
 any future live browser transport or broader proxy requires a separate design
 and authorization review.
 
+### 4.9 Persistent Project browser
+
+Each Project may own one operator-controlled host browser independent of Agent
+execution lifetime. It uses the same bounded frame/input transport, isolated
+profile, anonymous CDP pipe, URL validation, credential redaction, and browser
+process implementation as the exact-Run browser. The profile and process remain
+alive across Runs so ordinary HTTP(S) chat links and an operator-entered address
+can open inside Ponderosa. This is the only operator route authorized to select
+a navigation target; it exists specifically as an authenticated remote-browser
+surface and does not widen file-browser or arbitrary protocol access.
+
+The operator owns control at creation. They may grant it only to one Agent whose
+Run is currently authoritative in the same Project. The grant stores the exact
+Agent and Run IDs, routes that Run's shared browser tools to the Project browser,
+and fences operator input using the existing control epoch. The Agent cannot
+self-grant. Run completion, failure, cancellation, lease expiry, or Agent
+deletion revokes the grant and returns control to the operator without closing
+the Project browser. Project deletion, explicit browser close, and daemon
+shutdown close the process and remove its profile.
+
+Project-browser state is intentionally process-lifetime state, not durable
+application knowledge: a daemon restart closes it and a later open starts a
+fresh profile. Borrowed Agent actions and screenshots retain exact-Run audit and
+artifact attribution; ordinary operator browsing does not enter Agent context,
+Chat, or organizational communication.
+
 ## 5. Design-record maintenance
 
 Do not use this file as a duplicate implementation manual. Domain behavior stays

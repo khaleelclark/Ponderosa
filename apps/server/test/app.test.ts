@@ -1043,6 +1043,55 @@ describe("interactive browser API", () => {
     await app.close();
   });
 
+  it("keeps a Project browser alive across Runs and lends it only to an exact active agent", async () => {
+    adapter.mode = "hang";
+    const driver = trackedBrowserDriver();
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const project = (await app.inject({
+      method: "POST", url: "/api/projects", payload: { label: "Persistent browser", hostPath: repoDir, defaultEngine: "codex" },
+    })).json<{ id: string }>();
+    const agent = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`, payload: { title: "Borrower", engine: "codex" },
+    })).json<{ id: string }>();
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect the shared browser" } })).statusCode).toBe(202);
+    await expect.poll(() => store.getRuns(agent.id)[0]?.status).toBe("running");
+    await waitForSeedCount(1);
+    const runId = store.getRuns(agent.id)[0]!.id;
+    const capability = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const root = `/api/projects/${project.id}/browser`;
+
+    const opened = await app.inject({ method: "POST", url: root, payload: { url: "https://example.com/start" } });
+    expect(opened.statusCode).toBe(200);
+    expect(opened.json()).toMatchObject({ projectId: project.id, status: "ready", controlOwner: "operator" });
+    expect((await app.inject({ method: "PUT", url: `${root}/control`, payload: { owner: "agent", expectedControlEpoch: 1 } })).statusCode).toBe(409);
+    const lent = await app.inject({
+      method: "PUT", url: `${root}/control`, payload: { owner: "agent", agentId: agent.id, expectedControlEpoch: 1 },
+    });
+    expect(lent.json()).toMatchObject({ controlOwner: "agent", controllerAgentId: agent.id, controllerRunId: runId });
+
+    const navigated = await app.inject({
+      method: "POST", url: "/api/agent-browser", headers: { authorization: `Bearer ${capability}` },
+      payload: { operation: "navigate", url: "https://example.com/borrowed" },
+    });
+    expect(navigated.statusCode).toBe(200);
+    expect(navigated.json()).toMatchObject({ session: { projectId: project.id, url: "https://example.com/borrowed" } });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "release-project-browser" } });
+    await expect.poll(async () => (await app.inject({ method: "GET", url: root })).json().controlOwner).toBe("operator");
+    const idempotentReclaim = await app.inject({
+      method: "PUT", url: `${root}/control`, payload: { owner: "operator", expectedControlEpoch: 1 },
+    });
+    expect(idempotentReclaim.statusCode).toBe(200);
+    expect(idempotentReclaim.json()).toMatchObject({ controlOwner: "operator" });
+    expect(driver.close).not.toHaveBeenCalled();
+    const afterRun = await app.inject({ method: "POST", url: `${root}/navigate`, payload: { url: "https://example.com/after-run" } });
+    expect(afterRun.json()).toMatchObject({ status: "ready", controlOwner: "operator", url: "https://example.com/after-run" });
+
+    expect((await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` })).statusCode).toBe(200);
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
   it.each([
     { terminal: "completed" as const, failure: undefined, reason: "run_completed" },
     { terminal: "failed" as const, failure: "browser owner failed", reason: "run_failed" },
@@ -4694,6 +4743,7 @@ describe("server chunk F", () => {
     expect(index.headers["x-content-type-options"]).toBe("nosniff");
     expect(index.headers["x-frame-options"]).toBe("DENY");
     expect(index.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(index.headers["content-security-policy"]).toContain("img-src 'self' data: blob:");
     expect(asset.body).toContain("console.log");
     expect(index.headers["cache-control"]).toBe("no-cache");
     expect(fallback.headers["cache-control"]).toBe("no-cache");

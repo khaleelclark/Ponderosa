@@ -3,6 +3,7 @@ import SettingsIcon from "@mui/icons-material/Settings";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
 import SearchIcon from "@mui/icons-material/Search";
+import LanguageIcon from "@mui/icons-material/Language";
 import {
   Alert,
   AppBar,
@@ -30,7 +31,7 @@ import {
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
 import { TokenUsageButton } from "./components/TokenUsageButton";
@@ -51,6 +52,8 @@ import {
 import type { ColorMode } from "./theme";
 import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
+import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
+import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
 
 export default function App({
   colorMode,
@@ -97,6 +100,9 @@ export default function App({
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
   const [sidebarConversationTitle, setSidebarConversationTitle] = useState("");
+  const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+  const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
+  const projectBrowserRequestId = useRef(0);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
 
   useEffect(() => {
@@ -130,6 +136,12 @@ export default function App({
     routedProjectId && projects.some((project) => project.id === routedProjectId)
       ? routedProjectId
       : undefined;
+
+  const openProjectBrowser = (url?: string) => {
+    projectBrowserRequestId.current += 1;
+    setProjectBrowserRequest({ ...(url ? { url } : {}), requestId: projectBrowserRequestId.current });
+    setProjectBrowserOpen(true);
+  };
 
   // Land on a concrete project: honour the URL, else the last-used project, else
   // the first available. Uses replace so the initial redirect isn't a history step.
@@ -246,6 +258,7 @@ export default function App({
   const goHome = (next: Route) => navigate(next);
 
   return (
+    <ProjectBrowserContext.Provider value={{ projectId: selectedProjectId, open: openProjectBrowser }}>
     <Box
       data-testid="ponderosa-app"
       sx={{
@@ -286,6 +299,7 @@ export default function App({
           </Button>
           <Tooltip title="Search chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><SearchIcon /></IconButton></Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
+          <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()}><LanguageIcon /></IconButton></span></Tooltip>
           <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find((engine) => engine.authenticated)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
@@ -551,6 +565,8 @@ export default function App({
         <DialogTitle>Delete this project?</DialogTitle><DialogContent><Alert severity="warning">This permanently deletes its Project chats, agents, runs, work items, and files &amp; results. The working folder and its source files are not deleted.</Alert>{deleteProject.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProject.error)}</Alert> : null}</DialogContent>
         <DialogActions><Button onClick={() => setDeleteConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteProject.isPending} onClick={() => deleteProject.mutate()}>Delete permanently</Button></DialogActions>
       </Dialog>
+      <ProjectBrowserDialog projectId={selectedProjectId} open={projectBrowserOpen} request={projectBrowserRequest} onClose={() => setProjectBrowserOpen(false)} />
     </Box>
+    </ProjectBrowserContext.Provider>
   );
 }

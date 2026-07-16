@@ -46,6 +46,8 @@ import type {
   BrowserSessionDto,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
+  ProjectBrowserSessionDto,
+  ProjectBrowserControlRequest,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
@@ -379,6 +381,40 @@ export const realApi: PonderosaApi = {
   },
   async getBrowserFrame(projectId, agentId, runId) {
     const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame`, { cache: "no-store" });
+    if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
+    return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
+  },
+  getProjectBrowser(projectId) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`);
+  },
+  openProjectBrowser(projectId, url) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, {
+      method: "POST", body: JSON.stringify(url ? { url } : {}),
+    });
+  },
+  navigateProjectBrowser(projectId, url) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/navigate`, {
+      method: "POST", body: JSON.stringify({ url }),
+    });
+  },
+  reconnectProjectBrowser(projectId) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/reconnect`, { method: "POST" });
+  },
+  closeProjectBrowser(projectId) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, { method: "DELETE" });
+  },
+  setProjectBrowserControl(projectId, request) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/control`, {
+      method: "PUT", body: JSON.stringify(request satisfies ProjectBrowserControlRequest),
+    });
+  },
+  sendProjectBrowserInput(projectId, request) {
+    return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/input`, {
+      method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
+    });
+  },
+  async getProjectBrowserFrame(projectId) {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
   },

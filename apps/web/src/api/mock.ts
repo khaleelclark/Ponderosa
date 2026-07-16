@@ -20,6 +20,7 @@ import type {
   CancelAgentRunResponse,
   GlobalChatSearchResponseDto,
   BrowserSessionDto,
+  ProjectBrowserSessionDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -56,6 +57,7 @@ const masterMessages: Record<string, ConversationMessageDto[]> = {
 };
 const collaborationMessages: Record<string, ConversationMessageDto[]> = {};
 const browserSessions = new Map<string, BrowserSessionDto>();
+const projectBrowserSessions = new Map<string, ProjectBrowserSessionDto>();
 const agentPresets: AgentPresetDto[] = [];
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
@@ -782,6 +784,48 @@ export const mockApi: PonderosaApi = {
     return Promise.resolve(browserSessions.get(agentId)!);
   },
   getBrowserFrame() {
+    return Promise.resolve({ blob: new Blob([], { type: "image/png" }), revision: 1 });
+  },
+  getProjectBrowser(projectId) {
+    const session = projectBrowserSessions.get(projectId);
+    return session ? Promise.resolve(session) : Promise.reject(new Error("Project browser not found"));
+  },
+  openProjectBrowser(projectId, url) {
+    const session: ProjectBrowserSessionDto = {
+      id: `mock-project-browser-${projectId}`, projectId, status: "ready", controlOwner: "operator",
+      controlEpoch: 1, frameRevision: 1, url: url ?? "about:blank", title: "Project browser",
+      openedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    projectBrowserSessions.set(projectId, session);
+    return Promise.resolve(session);
+  },
+  navigateProjectBrowser(projectId, url) {
+    const current = projectBrowserSessions.get(projectId);
+    if (!current) return this.openProjectBrowser(projectId, url);
+    const session = { ...current, url, frameRevision: current.frameRevision + 1, updatedAt: new Date().toISOString() };
+    projectBrowserSessions.set(projectId, session);
+    return Promise.resolve(session);
+  },
+  reconnectProjectBrowser(projectId) {
+    const current = projectBrowserSessions.get(projectId);
+    return current ? Promise.resolve({ ...current, status: "ready" as const }) : this.openProjectBrowser(projectId);
+  },
+  closeProjectBrowser(projectId) {
+    const current = projectBrowserSessions.get(projectId)!;
+    const session = { ...current, status: "closed" as const, controlEpoch: current.controlEpoch + 1, updatedAt: new Date().toISOString() };
+    projectBrowserSessions.set(projectId, session);
+    return Promise.resolve(session);
+  },
+  setProjectBrowserControl(projectId, request) {
+    const current = projectBrowserSessions.get(projectId)!;
+    const session = { ...current, controlOwner: request.owner, ...(request.owner === "agent" ? { controllerAgentId: request.agentId, controllerRunId: "mock-run" } : { controllerAgentId: undefined, controllerRunId: undefined }), controlEpoch: current.controlEpoch + 1, updatedAt: new Date().toISOString() };
+    projectBrowserSessions.set(projectId, session);
+    return Promise.resolve(session);
+  },
+  sendProjectBrowserInput(projectId) {
+    return Promise.resolve(projectBrowserSessions.get(projectId)!);
+  },
+  getProjectBrowserFrame() {
     return Promise.resolve({ blob: new Blob([], { type: "image/png" }), revision: 1 });
   },
   subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {

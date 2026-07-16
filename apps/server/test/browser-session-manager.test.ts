@@ -76,6 +76,16 @@ describe("run-scoped browser sessions", () => {
     expect(events.at(-1)).toMatchObject({ type: "browser_session", status: "closed", reason: "run_completed" });
   });
 
+  it("can open an operator-owned persistent surface without changing Run defaults", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const manager = new BrowserSessionManager(dataDir, async () => fakeDriver(), () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+
+    expect(await manager.open(scope, "https://example.com", "operator")).toMatchObject({ controlOwner: "operator", url: "https://example.com/" });
+    expect(await manager.open(scope, "https://example.com/next", "operator")).toMatchObject({ controlOwner: "operator", url: "https://example.com/next" });
+  });
+
   it("accepts only non-credentialed http(s) navigation", () => {
     expect(validateBrowserUrl("https://example.com/a")).toBe("https://example.com/a");
     expect(() => validateBrowserUrl("file:///etc/passwd")).toThrow(BrowserSessionError);

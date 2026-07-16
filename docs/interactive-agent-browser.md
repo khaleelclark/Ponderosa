@@ -2,6 +2,29 @@
 
 **Status:** Implemented design record.
 
+## Project browser
+
+Ponderosa also provides one operator-owned browser per Project. Unlike the
+execution browser below, this browser persists across Agent Runs and keeps the
+same isolated profile until the operator closes it, the Project is deleted, or
+the server shuts down. It is the in-product destination for ordinary HTTP(S)
+links and for an address entered by the authenticated operator.
+
+The operator owns input and navigation by default. They may explicitly lend
+control to one Agent's exact active Run. While that grant exists, the same
+runtime browser tools operate the Project browser and operator navigation/input
+is fenced. Completion, cancellation, failure, lease expiry, Agent deletion, or
+Project deletion revokes the grant transactionally and returns control to the
+operator without closing the browser. An Agent cannot discover, claim, or keep
+the browser without that explicit grant.
+
+This intentionally broadens the former client-navigation restriction for this
+one authenticated, Project-scoped surface. URLs remain limited to
+non-credentialed HTTP(S), DTOs and diagnostics retain the same redaction rules,
+CDP remains on anonymous pipes, and browser data remains in a dedicated
+Ponderosa profile. The profile is not reconstructed after a server restart and
+is never the operator's normal browser profile.
+
 ## Decision
 
 Ponderosa may launch one host-managed Chromium/Chrome session for an exact active
@@ -14,8 +37,9 @@ anonymous child-process pipes. It does not bind a DevTools TCP port. The browser
 uses an isolated, run-session profile below `PONDEROSA_DATA_DIR/browser-sessions`
 and deletes that profile when the session closes.
 
-This capability is not a general browser proxy, host proxy, or arbitrary client
-automation API.
+The exact-Run capability is not a general browser proxy, host proxy, or
+arbitrary client automation API. Client-selected navigation belongs only to the
+separate Project browser above.
 
 ## Ownership and authorization
 
