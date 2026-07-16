@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { conversationChangedQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor } from "../src/hooks/useWorkspaceStream";
 
 describe("workspace stream cursor recovery", () => {
   it("invalidates only the changed project's runtime discovery cache", async () => {
@@ -74,5 +74,20 @@ describe("workspace stream cursor recovery", () => {
       ["collaboration-chat", "conversation-1"],
     ]);
     expect(phoneAfterReconnect).toEqual(desktop);
+  });
+
+  it("refetches every owning conversation for replayed canonical file activity", () => {
+    expect(fileActivityConversationQueryKeys({
+      type: "agent_event", projectId: "project", agentId: "agent", conversationIds: ["one", "two"],
+      seq: 9, eventType: "file_change", category: "file", executionId: "run",
+    })).toEqual([["conversation", "one"], ["conversation", "two"]]);
+    expect(fileActivityConversationQueryKeys({
+      type: "agent_event", projectId: "project", agentId: "agent", conversationIds: ["one"],
+      seq: 10, eventType: "command", category: "task",
+    })).toEqual([]);
+    expect(fileActivityConversationQueryKeys({
+      type: "agent_event", projectId: "project", agentId: "agent", conversationIds: ["one"],
+      seq: 11, eventType: "agent_lifecycle", category: "lifecycle", executionId: "run",
+    })).toEqual([["conversation", "one"]]);
   });
 });

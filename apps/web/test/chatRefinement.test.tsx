@@ -12,7 +12,10 @@ const baseMessage: ConversationMessageDto = {
   authorAgentId: "agent-1",
   text: "Completed the requested change.",
   createdAt: "2026-07-15T00:00:00.000Z",
-  fileActivity: [{ path: "src/app.ts", kind: "edit", status: "completed", additions: 12, deletions: 3 }],
+  fileActivity: [{
+    path: "src/app.ts", kind: "edit", status: "completed", sourceSeq: 12,
+    artifactId: "agent-1:a:12:0", previewable: true, additions: 12, deletions: 3,
+  }],
 };
 
 describe("chat interaction refinement", () => {
@@ -56,7 +59,9 @@ describe("chat interaction refinement", () => {
     expect(html).toContain("src/app.ts");
     expect(html).toContain("+12");
     expect(html).toContain("−3");
-    expect(html).toContain(">Review</button>");
+    expect(html).toContain("1 changed file");
+    expect(html).toContain("Open focused diff for src/app.ts");
+    expect(html).toContain(">Review all</button>");
   });
 
   it("focuses direct replies and supports hover/focus/touch action disclosure", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatActivitySpan, groupActivityByExecution, summarizeActivityText } from "../src/components/panes";
+import { formatActivitySpan, groupActivityByExecution, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
 
 describe("activity summaries", () => {
   it("collapses multiline output and bounds large payloads", () => {
@@ -19,5 +19,12 @@ describe("activity summaries", () => {
       ["run-a", ["one", "two"]], ["run-b", ["three"]],
     ]);
     expect(formatActivitySpan(groups[0]!.firstAt, groups[0]!.lastAt)).toBe("2s activity span");
+  });
+
+  it("counts content lines without treating unified-diff headers as changes", () => {
+    expect(unifiedDiffLineTotals(
+      "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-old\n+new\n+added",
+    )).toEqual({ additions: 2, deletions: 1 });
+    expect(unifiedDiffLineTotals("diff --git a/image.png b/image.png")).toBeUndefined();
   });
 });

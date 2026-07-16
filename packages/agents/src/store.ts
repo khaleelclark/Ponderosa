@@ -60,13 +60,14 @@ import type {
   TokenUsageRangeDto,
   TokenUsage,
   RunOutputDto,
+  ResponseFileActivityDto,
   UpdateProjectRequest,
   UpdateAgentConversationMembershipsRequest,
   UpdateConversationRequest,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
-import { communicationHasProjectionTarget, deriveCommunicationBehavior } from "@ponderosa/core";
+import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
 
 function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
   const { content: _content, ...metadata } = document;
@@ -85,18 +86,6 @@ import {
   type ProjectionOp,
   type ProjectionState,
 } from "./projectors.js";
-
-function unifiedDiffTotals(diff: string | undefined): { additions: number; deletions: number } | undefined {
-  if (!diff) return undefined;
-  let additions = 0;
-  let deletions = 0;
-  for (const line of diff.split(/\r?\n/u)) {
-    if (line.startsWith("+++") || line.startsWith("---")) continue;
-    if (line.startsWith("+")) additions += 1;
-    else if (line.startsWith("-")) deletions += 1;
-  }
-  return additions || deletions ? { additions, deletions } : undefined;
-}
 
 function revisedRenderedText(rendered: string, original: string, replacement: string): string {
   if (rendered === original) return replacement;
@@ -1465,20 +1454,22 @@ export class AgentStore {
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
     const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId);
     const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
+    const activityByAgentAndStatus = new Map<string, Map<string, ResponseFileActivityDto[]>>();
+    const runsByAgent = new Map<string, AgentRunDto[]>();
     return projected.map((message) => {
-      const fileActivity = message.authorAgentId && message.executionId && this.getAgent(message.authorAgentId)
-        ? this.getChangedFiles(message.authorAgentId)
-          .filter((file) => file.executionIds.includes(message.executionId!))
-          .map((file) => {
-            const totals = unifiedDiffTotals(file.diff);
-            return {
-              path: file.path,
-              kind: file.kind,
-              status: "completed" as const,
-              ...(totals ? totals : {}),
-            };
-          })
-        : undefined;
+      let fileActivity: ResponseFileActivityDto[] | undefined;
+      if (message.authorAgentId && message.executionId && this.getAgent(message.authorAgentId)) {
+        const runs = runsByAgent.get(message.authorAgentId) ?? this.getRuns(message.authorAgentId);
+        runsByAgent.set(message.authorAgentId, runs);
+        const status: ResponseFileActivityDto["status"] = runs.some((run) =>
+          run.id === message.executionId && (run.status === "running" || run.status === "compacting")
+        ) ? "in_progress" : "completed";
+        const cacheKey = `${message.authorAgentId}:${status}`;
+        const byExecution = activityByAgentAndStatus.get(cacheKey)
+          ?? this.responseFileActivityByExecution(message.authorAgentId, status);
+        activityByAgentAndStatus.set(cacheKey, byExecution);
+        fileActivity = byExecution.get(message.executionId);
+      }
       return {
         id: message.messageId,
         communicationEventId: message.eventId,
@@ -1492,7 +1483,7 @@ export class AgentStore {
         ...(message.document ? { document: message.document } : {}),
         ...(message.citations?.length ? { citations: message.citations } : {}),
         ...(message.executionId ? { executionId: message.executionId } : {}),
-        ...(fileActivity ? { fileActivity } : {}),
+        ...(fileActivity?.length ? { fileActivity } : {}),
         ...(message.correctionOfEventId ? { correctionOfMessageId: message.correctionOfEventId } : {}),
         ...(correctedBy.has(message.eventId) ? { correctedByMessageId: correctedBy.get(message.eventId) } : {}),
         ...(message.editedAt ? { editedAt: message.editedAt, editRevision: message.editRevision } : {}),
@@ -1791,9 +1782,11 @@ export class AgentStore {
   /** Completed ordinary responses are read only from canonical agent_output records. */
   getRunOutputs(agentId: string): RunOutputDto[] {
     const entries: RunOutputDto[] = [];
+    const fileActivityByExecution = this.responseFileActivityByExecution(agentId, "completed");
     for (const stored of this.readEvents(agentId)) {
       const { event } = stored;
       if (event.type === "agent_output" && event.text.trim()) {
+        const fileActivity = fileActivityByExecution.get(event.executionId) ?? [];
         entries.push({
           id: `${agentId}:runOutput:${stored.seq}`,
           agentId,
@@ -1805,6 +1798,7 @@ export class AgentStore {
           sourceSeqStart: event.sourceSeqStart,
           sourceSeqEnd: event.sourceSeqEnd,
           createdAt: stored.ts,
+          ...(fileActivity.length ? { fileActivity } : {}),
         });
       }
     }
@@ -1818,7 +1812,7 @@ export class AgentStore {
     const result: AgentActivityDto[] = [];
     for (const stored of this.readEvents(agentId)) {
       const event = stored.event;
-      if (event.type === "agent_lifecycle" && event.status === "running") activeExecutionId = event.executionId;
+      if (event.type === "agent_lifecycle" && (event.status === "running" || event.status === "compacting")) activeExecutionId = event.executionId;
       if (activityTypes.has(event.type)) {
         result.push({
           id: `${agentId}:activity:${stored.seq}`,
@@ -1829,7 +1823,7 @@ export class AgentStore {
           event: event as AgentActivityDto["event"],
         });
       }
-      if (event.type === "turn_done" || (event.type === "agent_lifecycle" && event.status !== "running")) {
+      if (event.type === "turn_done" || (event.type === "agent_lifecycle" && ["cancelled", "completed", "failed", "interrupted"].includes(event.status))) {
         activeExecutionId = undefined;
       }
     }
@@ -1854,6 +1848,49 @@ export class AgentStore {
       });
     }
     return [...byPath.values()].sort((a, b) => a.lastSeq - b.lastSeq);
+  }
+
+  /**
+   * Compact file provenance for one exact Run. This deliberately groups the
+   * canonical activity stream by (execution, path) instead of consulting the
+   * agent-wide latest-file view, which could attribute a later Run's diff to an
+   * earlier response.
+   */
+  getResponseFileActivity(
+    agentId: string,
+    executionId: string,
+    status: ResponseFileActivityDto["status"],
+  ): ResponseFileActivityDto[] {
+    return this.responseFileActivityByExecution(agentId, status).get(executionId) ?? [];
+  }
+
+  private responseFileActivityByExecution(
+    agentId: string,
+    status: ResponseFileActivityDto["status"],
+  ): Map<string, ResponseFileActivityDto[]> {
+    const artifactById = new Map(this.getArtifacts(agentId).map((artifact) => [artifact.id, artifact] as const));
+    const byExecution = new Map<string, Map<string, ResponseFileActivityDto>>();
+    for (const item of this.getActivity(agentId)) {
+      if (!item.executionId || item.event.type !== "file_change") continue;
+      const projectedArtifactId = artifactId(agentId, item.seq, 0);
+      const artifact = artifactById.get(projectedArtifactId);
+      const totals = unifiedDiffLineTotals(item.event.diff);
+      const byPath = byExecution.get(item.executionId) ?? new Map<string, ResponseFileActivityDto>();
+      byPath.set(item.event.path, {
+        path: item.event.path,
+        kind: item.event.kind,
+        status,
+        sourceSeq: item.seq,
+        ...(artifact ? { artifactId: artifact.id } : {}),
+        previewable: Boolean(item.event.diff && artifact?.kind === "diff"),
+        ...(totals ? totals : {}),
+      });
+      byExecution.set(item.executionId, byPath);
+    }
+    return new Map([...byExecution].map(([executionId, byPath]) => [
+      executionId,
+      [...byPath.values()].sort((a, b) => a.sourceSeq - b.sourceSeq),
+    ]));
   }
 
   getProjectedAgentMessages(agentId: string): MessageDto[] {

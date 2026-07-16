@@ -619,7 +619,10 @@ describe("AgentStore — canonical communication events", () => {
     store.appendCommunicationEvent(event);
     store.appendConversationMessage(room.id, { role: "assistant", text: event.text }, author.id, "main", undefined, undefined, event.eventId);
     expect(store.getProjectedConversationMessages(room.id)[0]?.fileActivity)
-      .toEqual([{ path: "src/history.ts", kind: "edit", status: "completed", additions: 2, deletions: 1 }]);
+      .toEqual([expect.objectContaining({
+        path: "src/history.ts", kind: "edit", status: "in_progress", sourceSeq: 2,
+        artifactId: `${author.id}:a:2:0`, previewable: true, additions: 2, deletions: 1,
+      })]);
 
     expect(store.deleteAgent(author.id)).toBe(true);
     expect(store.getProjectedConversationMessages(room.id)).toEqual([
@@ -715,6 +718,10 @@ describe("AgentStore — append + projection", () => {
       text: "I'll handle this.Done — auth refactor complete.",
       sourceSeqStart: 4,
       sourceSeqEnd: 8,
+      fileActivity: [{
+        path: "auth.ts", kind: "edit", status: "completed", sourceSeq: 7,
+        artifactId: `${agentId}:a:7:0`, previewable: true,
+      }],
     })]);
     expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);
     expect(detail.changedFiles).toEqual([expect.objectContaining({
@@ -792,10 +799,13 @@ describe("AgentStore — append + projection", () => {
     store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-a" });
     store.appendEvent(agentId, { type: "command", command: "pnpm test", cwd: "/repo" });
     store.appendEvent(agentId, { type: "file_change", path: "src/a.ts", kind: "create", diff: "+first" });
+    store.appendEvent(agentId, { type: "agent_output", executionId: "run-a", text: "First", sourceSeqStart: 2, sourceSeqEnd: 3 });
     store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-a" });
     store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-b" });
     store.appendEvent(agentId, { type: "test_result", passed: true, summary: "unit tests" });
     store.appendEvent(agentId, { type: "file_change", path: "src/a.ts", kind: "edit", diff: "+second" });
+    store.appendEvent(agentId, { type: "agent_output", executionId: "run-b", text: "Second", sourceSeqStart: 6, sourceSeqEnd: 7 });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-b" });
 
     store.close();
     store = new AgentStore(dir);
@@ -806,6 +816,10 @@ describe("AgentStore — append + projection", () => {
     expect(detail.changedFiles).toEqual([expect.objectContaining({
       path: "src/a.ts", kind: "edit", diff: "+second", executionIds: ["run-a", "run-b"],
     })]);
+    expect(detail.runOutput.map((entry) => entry.fileActivity)).toEqual([
+      [expect.objectContaining({ path: "src/a.ts", kind: "create", sourceSeq: 3, additions: 1 })],
+      [expect.objectContaining({ path: "src/a.ts", kind: "edit", sourceSeq: 8, additions: 1 })],
+    ]);
   });
 
   it("assigns monotonic per-agent seq and is append-only (readSince works)", () => {
