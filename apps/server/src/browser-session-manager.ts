@@ -17,6 +17,7 @@ const MAX_SNAPSHOT_TEXT = 16_000;
 const MAX_NAVIGATION_URL = 2_048;
 const MAX_SELECTOR_TEXT = 500;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
+const MAX_BROWSER_LAUNCH_ERROR = 4_000;
 
 export interface BrowserScope {
   projectId: string;
@@ -674,6 +675,19 @@ async function terminateBrowserProcess(child: ChildProcess): Promise<void> {
   await waitForChildExit(child, 2_000);
 }
 
+async function removeBrowserProfile(profileDir: string): Promise<void> {
+  // Chrome can keep creating profile files for a short interval after the
+  // browser process exits. Node's recursive rm otherwise exposes a transient
+  // ENOTEMPTY and can mask the launch failure that actually caused teardown.
+  await fs.rm(profileDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+}
+
+export function initialBrowserTargetRequest(): { url: string } {
+  // Current Chrome rejects width/height when newWindow is false. The viewport
+  // is established below through Emulation.setDeviceMetricsOverride instead.
+  return { url: "about:blank" };
+}
+
 class CdpConnection {
   private nextId = 1;
   private buffer = Buffer.alloc(0);
@@ -766,13 +780,17 @@ class ChromeCdpDriver implements BrowserDriver {
       env: Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"]
         .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
     });
+    let launchError = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      launchError = `${launchError}${chunk}`.slice(-MAX_BROWSER_LAUNCH_ERROR);
+    });
     try {
       const input = child.stdio[3] as Writable | null;
       const output = child.stdio[4] as Readable | null;
       if (!input || !output) throw new Error("browser debugging pipe could not be created");
-      child.stderr?.resume();
       const connection = new CdpConnection(input, output);
-      const created = await connection.send("Target.createTarget", { url: "about:blank", width: VIEWPORT.width, height: VIEWPORT.height, newWindow: false });
+      const created = await connection.send("Target.createTarget", initialBrowserTargetRequest());
       const targetId = String(created.targetId ?? "");
       if (!targetId) throw new Error("browser did not create a page target");
       const attached = await connection.send("Target.attachToTarget", { targetId, flatten: true });
@@ -802,8 +820,10 @@ class ChromeCdpDriver implements BrowserDriver {
       return driver;
     } catch (error) {
       await terminateBrowserProcess(child);
-      await fs.rm(profileDir, { recursive: true, force: true });
-      throw error;
+      await removeBrowserProfile(profileDir).catch(() => undefined);
+      const primary = error instanceof Error ? error.message : String(error);
+      const diagnostics = redactBrowserText(launchError.trim());
+      throw new Error(diagnostics ? `${primary}\n${diagnostics}` : primary);
     }
   }
 
@@ -902,7 +922,7 @@ class ChromeCdpDriver implements BrowserDriver {
   async close(): Promise<void> {
     await this.connection.send("Browser.close").catch(() => undefined);
     await terminateBrowserProcess(this.child);
-    await fs.rm(this.profileDir, { recursive: true, force: true });
+    await removeBrowserProfile(this.profileDir);
   }
 }
 
