@@ -74,6 +74,9 @@ describe("V3.2 Trigger Run context", () => {
       ]);
       expect(input?.sourceManifest.sources.filter((source) => source.kind === "activation")).toHaveLength(2);
       expect(input?.sourceManifest.sources.filter((source) => source.kind === "trigger_occurrence")).toHaveLength(2);
+      const occurrenceSources = input?.sourceManifest.sources.filter((source) => source.kind === "trigger_occurrence") ?? [];
+      expect(occurrenceSources[0]?.hash).not.toBe(coordination.getTriggerOccurrence(first.occurrenceId)?.inputHash);
+      expect(occurrenceSources[1]?.hash).not.toBe(coordination.getTriggerOccurrence(second.occurrenceId)?.inputHash);
     } finally {
       await app.close();
     }

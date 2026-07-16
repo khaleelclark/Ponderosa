@@ -3322,11 +3322,37 @@ export class CoordinationV3Store {
   }
 
   private cancelPendingTriggerWork(triggerId: string, reason: string, now: string): void {
+    const uninjectedRuns = this.sqlite.prepare(`
+      SELECT DISTINCT run.id, run.agent_id
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN trigger_occurrences occurrence ON occurrence.activation_id = attached.activation_id
+      WHERE occurrence.trigger_id = ? AND run.status IN ('leased', 'running')
+        AND run.prompt_injection_state = 'not_injected'
+    `).all(triggerId) as Array<{ id: string; agent_id: string }>;
+    for (const run of uninjectedRuns) {
+      const fence = this.nextFence(run.agent_id);
+      this.sqlite.prepare(`
+        UPDATE scheduler_runs
+        SET status = 'cancelled', fencing_token = ?, updated_at = ?, terminal_at = ?
+        WHERE id = ? AND status IN ('leased', 'running') AND prompt_injection_state = 'not_injected'
+      `).run(fence, now, now, run.id);
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND state = 'pending'
+      `).run(now, now, run.id);
+    }
     this.sqlite.prepare(`
       UPDATE agent_activations
       SET state = 'cancelled', terminal_outcome = NULL, terminal_at = ?,
           last_delivery_error = ?, updated_at = ?
-      WHERE (state IN ('pending', 'retry_pending') OR (state = 'failed' AND terminal_outcome = 'recipient_unavailable')) AND id IN (
+      WHERE (state IN ('pending', 'retry_pending') OR
+        (state = 'attached' AND id IN (
+          SELECT attached.activation_id FROM scheduler_run_activations attached
+          JOIN scheduler_runs run ON run.id = attached.run_id
+          WHERE run.status = 'cancelled' AND run.prompt_injection_state = 'not_injected'
+        )) OR (state = 'failed' AND terminal_outcome = 'recipient_unavailable')) AND id IN (
         SELECT activation_id FROM trigger_occurrences WHERE trigger_id = ?
       )
     `).run(now, reason, now, triggerId);

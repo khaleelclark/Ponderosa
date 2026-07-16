@@ -6469,7 +6469,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             kind: "trigger_occurrence" as const,
             ref: occurrence.artifactId,
             delivery: "submitted" as const,
-            hash: occurrence.inputHash,
+            // Distinct from inputHash (source-delivery idempotency): this hash
+            // covers the immutable occurrence material submitted in the prompt.
+            hash: createHash("sha256").update(JSON.stringify({
+              triggerSnapshot: occurrence.triggerSnapshot,
+              payload: occurrence.payload,
+              provenance: occurrence.provenance,
+              payloadMediaType: occurrence.payloadMediaType,
+            })).digest("hex"),
             createdAt: occurrence.createdAt,
           })),
           ...manifestCommunicationEventIds

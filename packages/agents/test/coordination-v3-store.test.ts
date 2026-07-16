@@ -1423,7 +1423,14 @@ describe("CoordinationV3Store scheduler", () => {
     store.updateTriggerDefinition("webhook:fence", { enabled: false });
     expect(() => store.markPromptSubmitted({
       injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
-    })).toThrow("disabled or deleted");
+    })).toThrow("stale run fencing token");
+    expect(opened.client.prepare(`SELECT status, prompt_injection_state FROM scheduler_runs WHERE id = ?`).get(lease.runId))
+      .toEqual({ status: "cancelled", prompt_injection_state: "not_injected" });
+    expect(store.getTriggerOccurrence(
+      (lease.activations[0]!.payload as { occurrence: { id: string } }).occurrence.id,
+    )).toMatchObject({ state: "cancelled" });
+    expect(store.leaseNextRun({ workerId: "worker-2" })).toBeUndefined();
+    expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 0, activeRuns: 0 });
   });
 
   it("recovers a pre-injection lease after a process restart", () => {
