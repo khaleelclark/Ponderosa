@@ -50,6 +50,12 @@ server revision, and a draft clears only after send confirmation. Selected views
 and reading position are restored across navigation and refresh so inspecting
 another agent does not discard the manager's place.
 
+Editing a sent Broadcast appends an immutable revision event and projects the
+latest text under the original message identity. The original event, its scope,
+audience, and sent attachments remain unchanged. An edit is passive: it updates
+future shared projections but never redelivers work or rewrites context already
+received by an active runtime.
+
 Agent Detail separates durable views of the same execution domain: Chat for
 explicit communication, Work log for ordinary runtime output, Activity for the
 chronological command/test/tool/file feed, Changed Files for the canonical

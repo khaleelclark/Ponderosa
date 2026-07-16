@@ -293,6 +293,9 @@ export interface ConversationMessageDto {
   }>;
   correctionOfMessageId?: string;
   correctedByMessageId?: string;
+  /** Latest append-only edit projected under this message's stable identity. */
+  editedAt?: string;
+  editRevision?: number;
 }
 
 /** Engine-agnostic citation metadata emitted only after edge normalization/verification. */
@@ -377,6 +380,8 @@ export interface CreateCollaborationMessageRequest {
   /** Stable IDs resolved by the client; display handles are never routing input. */
   recipientAgentIds: string[];
   replyToMessageId?: string;
+  /** Target-owned asset copies for safe delivery to each addressed runtime. */
+  recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
   /** Stable across transport retries so a collaboration message is appended once. */
   idempotencyKey?: string;
 }
@@ -459,7 +464,7 @@ export interface CancelAgentRunResponse {
 export interface CorrectConversationMessageRequest {
   text: string;
   idempotencyKey: string;
-  /** Corrections are immutable follow-up turns and therefore can only queue. */
+  /** Directed corrections queue; passive Broadcast edits never redeliver. */
   activeRunDelivery?: "queue";
 }
 

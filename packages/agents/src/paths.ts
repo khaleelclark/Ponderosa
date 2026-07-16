@@ -7,6 +7,7 @@
 //       <project-id>/
 //         project.json                 ← label, host path, createdAt
 //         communication-events.jsonl   ← canonical cross-surface communication
+//         communication-revisions.jsonl ← append-only edits of communication text
 //         communication-context.jsonl  ← explicit context eligibility
 //         communication-projections.jsonl ← rebuildable cross-surface placements
 //         agent-organization.jsonl    ← canonical mutable reporting relationships
@@ -55,6 +56,10 @@ export function projectJsonPath(dataDir: string, projectId: string): string {
 /** Canonical project-level communication log; chat surfaces are projections. */
 export function communicationEventsPath(dataDir: string, projectId: string): string {
   return path.join(projectDir(dataDir, projectId), "communication-events.jsonl");
+}
+
+export function communicationRevisionsPath(dataDir: string, projectId: string): string {
+  return path.join(projectDir(dataDir, projectId), "communication-revisions.jsonl");
 }
 
 export function communicationContextPath(dataDir: string, projectId: string): string {

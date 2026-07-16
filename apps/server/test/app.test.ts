@@ -891,6 +891,135 @@ describe("project lifecycle API", () => {
     await app.close();
   });
 
+  it("accepts text, attachments, and attachment-only Broadcast and Collaboration sends", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    const agentTitle = store.getAgent(agent.id)!.title;
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/agents/${agent.id}/conversation-memberships`,
+      payload: { conversationIds: [conversationId], primaryConversationId: conversationId },
+    })).statusCode).toBe(200);
+    const upload = async (name: string) => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/attachments`,
+        headers: { "content-type": "application/pdf", "x-ponderosa-filename": name },
+        payload: Buffer.from(`%PDF-1.7\n${name}`),
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      return response.json<Record<string, unknown>>();
+    };
+
+    const broadcastAsset = await upload("broadcast.pdf");
+    const broadcast = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: { text: "", attachments: [broadcastAsset], idempotencyKey: "attachment-only-broadcast" },
+    });
+    expect(broadcast.statusCode, broadcast.body).toBe(200);
+    expect(broadcast.json()).toMatchObject({ text: "#broadcast", attachments: [{ id: broadcastAsset.id, name: "broadcast.pdf" }] });
+
+    const collaborationAsset = await upload("collaboration.pdf");
+    const collaboration = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/collaboration/messages`,
+      payload: {
+        text: "",
+        recipientAgentIds: [agent.id],
+        recipientAttachments: [{ agentId: agent.id, attachmentIds: [collaborationAsset.id] }],
+        idempotencyKey: "attachment-only-collaboration",
+      },
+    });
+    expect(collaboration.statusCode, collaboration.body).toBe(200);
+    expect(collaboration.json()).toMatchObject({
+      message: { text: `#${agentTitle}`, attachments: [{ id: collaborationAsset.id, name: "collaboration.pdf" }] },
+      notifiedAgentIds: [agent.id],
+    });
+    const canonical = store.getCommunicationEvent(
+      project.id,
+      collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId,
+    );
+    expect(canonical).toMatchObject({ text: "", attachments: [{ id: collaborationAsset.id }] });
+    expect(new WorkspaceStore(dataDir).readSince(0).filter((item) =>
+      item.event.type === "conversation_changed" && item.event.conversationId === conversationId && item.event.action === "message",
+    )).toHaveLength(2);
+    await app.close();
+  });
+
+  it("edits a Broadcast append-only without redelivery and survives reconnect/restart", async () => {
+    let app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 0 } });
+    const project = store.createProject({ label: "Broadcast edits", hostPath: repoDir, defaultEngine: "codex" });
+    const conversationId = project.lastConversationId!;
+    const sent = await app.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/messages`,
+      payload: { text: "#broadcast Original shared note", idempotencyKey: "original-broadcast" },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const original = sent.json<{ id: string; communicationEventId: string }>();
+    const runtimeBefore = new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id).length;
+    const editPayload = { text: "#broadcast Edited shared note", idempotencyKey: "edit-broadcast", activeRunDelivery: "queue" };
+    const edited = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages/${original.id}/corrections`, payload: editPayload });
+    const replay = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages/${original.id}/corrections`, payload: editPayload });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({ originalMessageId: original.id, queued: false, replayed: false });
+    expect(replay.json()).toMatchObject({ originalMessageId: original.id, queued: false, replayed: true, correctionMessageId: edited.json<{ correctionMessageId: string }>().correctionMessageId });
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(1);
+    expect(store.readCommunicationEvents(project.id)[0]).toMatchObject({ eventId: original.communicationEventId, text: "Original shared note" });
+    expect(store.readCommunicationRevisions(project.id)).toHaveLength(1);
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id)).toHaveLength(runtimeBefore);
+    expect(store.getConversationMessages(conversationId)).toEqual([
+      expect.objectContaining({ id: original.id, communicationEventId: original.communicationEventId, text: "#broadcast Edited shared note", editRevision: 1 }),
+    ]);
+
+    await app.close();
+    store = new AgentStore(dataDir);
+    app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 0 } });
+    const reconnected = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}` });
+    expect(reconnected.json<{ messages: Array<{ id: string; text: string; editRevision?: number }> }>().messages).toEqual([
+      expect.objectContaining({ id: original.id, text: "#broadcast Edited shared note", editRevision: 1 }),
+    ]);
+    const changes = new WorkspaceStore(dataDir).readSince(0).filter((item) =>
+      item.event.type === "conversation_changed" && item.event.conversationId === conversationId && item.event.action === "updated",
+    );
+    expect(changes).toHaveLength(1);
+    await app.close();
+  });
+
+  it("does not redeliver a Broadcast edit to the runtime that already received the original", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    await app.inject({
+      method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`,
+      payload: { conversationIds: [conversationId], primaryConversationId: conversationId },
+    });
+    adapter.mode = "hang";
+    const original = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Original active request", sourceChannel: "main", sourceConversationId: conversationId, shareWithOrganization: true },
+    });
+    expect(original.statusCode, original.body).toBe(202);
+    await waitForSeedCount(1);
+    const originalMessage = store.getConversationMessages(conversationId).find((message) =>
+      message.communicationEventId === original.json<{ communicationEventId: string }>().communicationEventId,
+    )!;
+    const runtimeBefore = new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id).length;
+    const edited = await app.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/messages/${originalMessage.id}/corrections`,
+      payload: { text: "Edited active request", idempotencyKey: "active-broadcast-edit", activeRunDelivery: "queue" },
+    });
+    expect(edited.json()).toMatchObject({ queued: false, replayed: false });
+    await sleep(40);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.continues).toHaveLength(0);
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id)).toHaveLength(runtimeBefore);
+    expect(store.getConversationMessages(conversationId).find((message) => message.id === originalMessage.id)).toMatchObject({
+      text: "Edited active request", editRevision: 1,
+    });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-active-edit-test" } });
+    await app.close();
+  });
+
   it("persists staged draft attachments and restores them after a server restart", async () => {
     let app = createServer({ dataDir, store, engines, logger: false });
     const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Drafts", hostPath: repoDir, defaultEngine: "codex" } });

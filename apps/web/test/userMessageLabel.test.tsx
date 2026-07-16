@@ -119,4 +119,33 @@ describe("user message labels on chat surfaces", () => {
     expect(html).not.toContain("Reply directly to Pinnacles");
     expect(html).toContain("<time");
   });
+
+  it("renders attachment-only Broadcasts and the latest passive edit affordance", () => {
+    const attachmentOnly = renderMaster(masterMessage({
+      text: "",
+      attachments: [{ id: "attachment-1", agentId: "agent-1", name: "brief.pdf", mediaType: "application/pdf", size: 42, url: "/brief.pdf" }],
+    }));
+    const edited = renderToStaticMarkup(
+      <ConversationMessage
+        message={masterMessage({
+          text: "#broadcast Edited context",
+          editedAt: "2026-07-12T12:35:56.000Z",
+          editRevision: 1,
+        })}
+        conversation="main"
+        agentTitle={() => "Pinnacles"}
+        agentIdForHandle={() => undefined}
+        onOpenAgent={vi.fn()}
+        onReply={vi.fn()}
+        onDirectReply={vi.fn()}
+        onReact={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+    expect(attachmentOnly).toContain("brief.pdf");
+    expect(attachmentOnly).toContain('aria-label="Download brief.pdf"');
+    expect(edited).toContain("Edited context");
+    expect(edited).toContain(">Edited</span>");
+    expect(edited).toContain('aria-label="Edit latest message"');
+  });
 });

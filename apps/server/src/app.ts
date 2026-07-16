@@ -17,6 +17,7 @@ import type {
   AgentMessageChannel,
   AgentEvent,
   CommunicationEvent,
+  CommunicationRevisionEvent,
   AgentHealthProjectionDto,
   ArtifactContentDto,
   ChatMessage,
@@ -36,6 +37,7 @@ import type {
   ConversationMessageDto,
   ConversationDetailDto,
   CollaborationViewDto,
+  CreateCollaborationMessageRequest,
   AssetDto,
   ImageAttachmentDto,
   CreateDirectReplyRequest,
@@ -3640,14 +3642,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
     const text = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
-    if (!text) return reply.code(400).send({ error: "broadcast text is required after #broadcast" });
+    const requestedAssets = request.body?.attachments ?? [];
+    if (!text && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
+      return reply.code(400).send({ error: "broadcast text or an attachment is required" });
+    }
     if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
-    const requestedAssets = request.body.attachments ?? [];
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: "at most 4 assets are allowed" });
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
@@ -3692,6 +3696,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return assets.associate(owner.projectId, owner.id, [asset.id]);
     }));
     if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
+    if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
     return message ?? reply.code(404).send({ error: "conversation not found" });
   });
 
@@ -4103,6 +4108,37 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? messages.find((message) => message.id === existingMessage.correctionOfMessageId)
       : latestOperatorMessage;
     const originalEventId = original?.communicationEventId;
+    const originalCommunication = originalEventId
+      ? store.getCommunicationEvent(conversation.projectId, originalEventId)
+      : undefined;
+    if (originalCommunication?.intent === "broadcast") {
+      const revisionText = stripLeadingScopeTag(text, "broadcast");
+      const eventId = `communication-edit-${createHash("sha256").update(receiptKey).digest("hex")}`;
+      const revision: CommunicationRevisionEvent = {
+        eventId,
+        schemaVersion: 1,
+        kind: "edit",
+        projectId: conversation.projectId,
+        conversationId: conversation.id,
+        targetEventId: originalCommunication.eventId,
+        sender: { kind: "user", userId: "local-operator" },
+        text: revisionText,
+        createdAt: new Date().toISOString(),
+        idempotencyKey: receiptKey,
+      };
+      try {
+        const stored = store.appendCommunicationRevision(revision);
+        if (!stored.replayed) appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+        return {
+          originalMessageId: request.params.messageId,
+          correctionMessageId: stored.revision.eventId,
+          replayed: stored.replayed,
+          queued: false,
+        } satisfies CorrectConversationMessageResponse;
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast edit conflict" });
+      }
+    }
     const targets = originalEventId ? coordinationV3.communicationRecipientAgentIds(originalEventId) : [];
     if (targets.length !== 1) {
       return reply.code(409).send({ error: targets.length === 0 ? "message delivery has not been scheduled" : "messages sent to multiple agents cannot be corrected as one turn" });
@@ -4182,10 +4218,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorAgentId?: string; idempotencyKey?: string };
+    Body: CreateCollaborationMessageRequest & { directReplyToAuthorAgentId?: string };
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
-    const text = request.body?.text?.trim();
-    if (!text) return reply.code(400).send({ error: "text is required" });
+    const text = request.body?.text?.trim() ?? "";
+    const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
+    if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
+      return reply.code(400).send({ error: "text or an attachment is required" });
+    }
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
@@ -4206,7 +4245,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (targets.some((target) => !target || target.archived)) {
         return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this conversation" });
       }
-      renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+      const recipientPrefix = targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ");
+      renderedText = text ? `${recipientPrefix} ${text}` : recipientPrefix;
       routing = {
         intents: targets.map((target) => ({
           targetAgentId: target!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
@@ -4220,6 +4260,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
     }
     const master = store.getConversation(request.params.id)!;
+    if (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.length > routing.intents.length) {
+      return reply.code(400).send({ error: "recipientAttachments must match collaboration recipients" });
+    }
+    const attachmentIdsByAgent = new Map<string, string[]>();
+    for (const recipient of requestedRecipientAttachments) {
+      if (!recipient || typeof recipient.agentId !== "string" || attachmentIdsByAgent.has(recipient.agentId) ||
+          !routing.intents.some((intent) => intent.targetAgentId === recipient.agentId) || !Array.isArray(recipient.attachmentIds) ||
+          recipient.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(recipient.attachmentIds).size !== recipient.attachmentIds.length) {
+        return reply.code(400).send({ error: "each collaboration recipient supports at most 4 unique owned attachments" });
+      }
+      attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
+    }
+    const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+    for (const intent of routing.intents) {
+      const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
+      const attached = await Promise.all(ids.map((id) => assetMetadata(intent.targetAgentId, id)));
+      if (attached.some((item) => !item || item.agentId !== intent.targetAgentId)) return reply.code(404).send({ error: "collaboration attachment not found" });
+      if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
+      attachmentsByAgent.set(intent.targetAgentId, (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
+        const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = item;
+        return { ...publicAsset, state: "associated" as const };
+      }));
+    }
+    const canonicalAttachments = routing.intents
+      .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
+      .find((items) => items.length > 0) ?? [];
     if (request.body.replyToMessageId) {
       const replyTarget = detail.messages.find((message) => message.id === request.body.replyToMessageId);
       const replyEvent = replyTarget?.communicationEventId
@@ -4242,6 +4308,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
       text, createdAt: existingRuntime?.createdAt ?? new Date().toISOString(),
+      ...(canonicalAttachments.length ? { attachments: canonicalAttachments } : {}),
       ...(idempotencyKey ? { idempotencyKey: `collaboration:${master.id}:${idempotencyKey}` } : {}),
     };
     let intake;
@@ -4254,7 +4321,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         audience: communication.audience,
         payload: {
           communication,
-          dispatch: { conversationId: master.id, text: renderedText, replyToMessageId: request.body.replyToMessageId ?? null },
+          dispatch: {
+            conversationId: master.id,
+            text: renderedText,
+            replyToMessageId: request.body.replyToMessageId ?? null,
+            recipients: routing.intents.map((intent) => ({
+              agentId: intent.targetAgentId,
+              attachments: (attachmentsByAgent.get(intent.targetAgentId) ?? []).map((item) => ({
+                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
+              })),
+            })),
+          },
         },
         activations: routing.intents.map((intent, index) => ({
           agentId: intent.targetAgentId,
@@ -4281,7 +4358,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     let message;
     try { message = store.appendConversationMessage(
       request.params.id,
-      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId },
+      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId, attachments: canonicalAttachments },
+      // The canonical chat snapshot uses one copy; per-recipient copies stay in
+      // dispatch/audit data and are never rendered as duplicates.
       undefined,
       "collaboration",
       routing.intents,
@@ -4293,9 +4372,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       store.appendCommunicationProjection(master.projectId, {
         eventId, surface: "agent_inbox", projectionKey: intent.targetAgentId, projectedAt: communication.createdAt,
       });
-      projectCommunicationToAgentAudit(intent.targetAgentId, communication, renderedText);
+      const recipientAttachments = attachmentsByAgent.get(intent.targetAgentId) ?? [];
+      if (!intake.replayed && recipientAttachments.length) {
+        await assets.associate(master.projectId, intent.targetAgentId, recipientAttachments.map((item) => item.id));
+      }
+      projectCommunicationToAgentAudit(intent.targetAgentId, communication, renderedText, recipientAttachments);
       publishCoordinationV3Changed(intent.targetAgentId);
     }
+    if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
     coordinationV3Scheduler.notify();
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetAgentId));
     return {
