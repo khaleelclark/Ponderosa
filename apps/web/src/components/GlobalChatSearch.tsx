@@ -1,10 +1,12 @@
 import SearchIcon from "@mui/icons-material/Search";
+import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
   Dialog,
   DialogContent,
   DialogTitle,
+  IconButton,
   InputAdornment,
   LinearProgress,
   List,
@@ -130,7 +132,12 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   };
 
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" fullScreen={fullScreen} aria-labelledby="global-chat-search-title">
-    <DialogTitle id="global-chat-search-title" sx={{ pb: 1 }}>Search chats</DialogTitle>
+    <DialogTitle id="global-chat-search-title" sx={{ pb: 1, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper" }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+        <Typography variant="h6" component="span" sx={{ flex: 1 }}>Search chats</Typography>
+        <IconButton aria-label="Close chat search" onClick={onClose}><CloseIcon /></IconButton>
+      </Stack>
+    </DialogTitle>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2.5 }, pb: 2 }}>
       <TextField
         autoFocus

@@ -3,12 +3,14 @@ import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import SearchIcon from "@mui/icons-material/Search";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Box,
   Button,
   Chip,
   IconButton,
+  InputAdornment,
   List,
   ListItemButton,
   ListItemIcon,
@@ -21,6 +23,7 @@ import {
 } from "@mui/material";
 import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import type { Route } from "../routing";
@@ -74,6 +77,18 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
 }): JSX.Element {
   const snapshots = useWorkspaceSnapshots(projects);
+  const [filter, setFilter] = useState("");
+  const normalizedFilter = filter.trim().toLocaleLowerCase();
+  const filteredSnapshots = useMemo(() => normalizedFilter
+    ? snapshots.filter((snapshot) => {
+      const searchable = [
+        snapshot.project.label,
+        snapshot.project.hostPath,
+        ...snapshot.conversations.map((conversation) => conversation.title),
+      ].join(" ").toLocaleLowerCase();
+      return searchable.includes(normalizedFilter);
+    })
+    : snapshots, [snapshots, normalizedFilter]);
   const moveProject = (projectId: string, offset: -1 | 1) => {
     const order = projects.map((project) => project.id);
     const from = order.indexOf(projectId);
@@ -88,7 +103,15 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
         <Typography variant="h5" component="h2" fontWeight={800}>All projects</Typography>
         <Typography variant="body2" color="text.secondary">Every project stays identifiable by its host folder and recent Project chat.</Typography>
       </Box>
-      <Stack direction="row" spacing={1}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: { xs: "100%", sm: "auto" } }}>
+        <TextField
+          size="small"
+          label="Filter projects"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          sx={{ minWidth: { sm: 220 } }}
+        />
         <TextField
           select
           size="small"
@@ -101,11 +124,13 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
           <MenuItem value="alphabetical">Alphabetical</MenuItem>
           <MenuItem value="custom">Custom</MenuItem>
         </TextField>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject}>New project</Button>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New project</Button>
       </Stack>
     </Stack>
-    <List aria-label="All projects" disablePadding sx={{ display: "grid", gap: 1, maxWidth: 920 }}>
-      {snapshots.map((snapshot, index) => {
+    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>{filteredSnapshots.length === projects.length ? `${projects.length} projects` : `${filteredSnapshots.length} of ${projects.length} projects`}</Typography>
+    <List aria-label="All projects" disablePadding sx={{ display: "grid", gap: 1, maxWidth: 1040 }}>
+      {filteredSnapshots.map((snapshot) => {
+        const index = projects.findIndex((project) => project.id === snapshot.project.id);
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
         return <Stack key={snapshot.project.id} direction="row" sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, overflow: "hidden", bgcolor: "background.paper" }}>
@@ -128,6 +153,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
           </Tooltip>
         </Stack>;
       })}
+      {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
     </List>
   </Box>;
 }
@@ -136,15 +162,55 @@ export function AllAgentsView({ projects, onNavigate }: {
   projects: ProjectDto[];
   onNavigate(route: Route): void;
 }): JSX.Element {
-  const rows = workspaceAgents(useWorkspaceSnapshots(projects));
+  const snapshots = useWorkspaceSnapshots(projects);
+  const rows = workspaceAgents(snapshots);
+  const [filter, setFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "running" | "idle">("all");
+  const normalizedFilter = filter.trim().toLocaleLowerCase();
+  const filteredRows = useMemo(() => rows.filter((row) => {
+    if (projectFilter !== "all" && row.project.id !== projectFilter) return false;
+    if (statusFilter === "running" && row.status !== "running" && row.status !== "compacting") return false;
+    if (statusFilter === "idle" && row.status !== "idle") return false;
+    if (!normalizedFilter) return true;
+    return `${row.agent.title} ${row.project.label} ${row.agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter);
+  }), [rows, projectFilter, statusFilter, normalizedFilter]);
   const running = rows.filter((row) => row.status === "running" || row.status === "compacting").length;
   return <Box sx={{ width: "100%", minWidth: 0, minHeight: 0, overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
-    <Box sx={{ mb: 2 }}>
-      <Typography variant="h5" component="h2" fontWeight={800}>All agents</Typography>
-      <Typography variant="body2" color="text.secondary">{rows.length} across {projects.length} projects{running ? ` · ${running} running` : ""}</Typography>
-    </Box>
-    <List aria-label="All agents across projects" disablePadding sx={{ display: "grid", gap: .75, maxWidth: 920 }}>
-      {rows.map(({ agent, project, status }) => <ListItemButton
+    <Stack spacing={1.5} sx={{ mb: 2, maxWidth: 1040 }}>
+      <Box>
+        <Typography variant="h5" component="h2" fontWeight={800}>All agents</Typography>
+        <Typography variant="body2" color="text.secondary">{rows.length} across {projects.length} projects{running ? ` · ${running} running` : ""}</Typography>
+      </Box>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+        <TextField
+          size="small"
+          label="Filter agents"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          sx={{ minWidth: { md: 280 }, flex: { md: 1 } }}
+        />
+        <Box component="label" sx={{ display: "grid", gap: .25, minWidth: { md: 220 } }}>
+          <Typography variant="caption" color="text.secondary">Project</Typography>
+          <Box component="select" aria-label="Filter agents by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} sx={{ minWidth: 0, height: 40, px: 1.25, color: "text.primary", bgcolor: "background.paper", border: 1, borderColor: "divider", borderRadius: 1, font: "inherit" }}>
+            <option value="all">All projects</option>
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.label}</option>)}
+          </Box>
+        </Box>
+        <Box component="label" sx={{ display: "grid", gap: .25, minWidth: { md: 140 } }}>
+          <Typography variant="caption" color="text.secondary">Status</Typography>
+          <Box component="select" aria-label="Filter agents by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} sx={{ minWidth: 0, height: 40, px: 1.25, color: "text.primary", bgcolor: "background.paper", border: 1, borderColor: "divider", borderRadius: 1, font: "inherit" }}>
+            <option value="all">All statuses</option>
+            <option value="running">Running</option>
+            <option value="idle">Idle</option>
+          </Box>
+        </Box>
+      </Stack>
+      <Typography variant="caption" color="text.secondary">{filteredRows.length === rows.length ? `${rows.length} agents` : `${filteredRows.length} of ${rows.length} agents`}</Typography>
+    </Stack>
+    <List aria-label="All agents across projects" disablePadding sx={{ display: "grid", gap: .75, maxWidth: 1040 }}>
+      {filteredRows.map(({ agent, project, status }) => <ListItemButton
         key={agent.id}
         aria-label={`Open agent ${agent.title} in ${projectDisambiguator(project, projects)}`}
         onClick={() => onNavigate({ kind: "agent", projectId: project.id, agentId: agent.id })}
@@ -160,6 +226,7 @@ export function AllAgentsView({ projects, onNavigate }: {
         <Chip size="small" color={agentStatusColor(status)} variant={status === "idle" ? "outlined" : "filled"} label={agentStatusLabel(status)} sx={{ ml: 1 }} />
       </ListItemButton>)}
       {rows.length === 0 ? <Typography color="text.secondary" sx={{ py: 2 }}>No active agents.</Typography> : null}
+      {rows.length > 0 && filteredRows.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No agents match these filters</Typography><Typography variant="body2" color="text.secondary">Try another name, project, or status.</Typography></Box> : null}
     </List>
   </Box>;
 }

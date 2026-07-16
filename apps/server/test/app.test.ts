@@ -777,6 +777,24 @@ async function createProjectAndAgent() {
   return { app, project, agent };
 }
 
+describe("notification panel actions", () => {
+  it("marks every notification read and clears them through canonical workspace events", async () => {
+    const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Release chat" });
+    const workspace = new WorkspaceStore(dataDir);
+    workspace.createNotification({ projectId: project.id, conversationId: conversation.id, communicationEventId: "message-one", kind: "mentions", title: "Agent", body: "Review this" });
+    workspace.createNotification({ projectId: project.id, conversationId: conversation.id, communicationEventId: "message-two", kind: "direct_responses", title: "Agent", body: "Done" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toHaveLength(2);
+    expect((await app.inject({ method: "POST", url: "/api/notifications/read" })).json()).toEqual({ read: 2 });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ readAt?: string }>>().every((item) => Boolean(item.readAt))).toBe(true);
+    expect((await app.inject({ method: "DELETE", url: "/api/notifications" })).json()).toEqual({ cleared: 2 });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([]);
+    await app.close();
+  });
+});
+
 async function waitForRun(agentId: string, expectedTurnDoneCount = 1): Promise<void> {
   for (let i = 0; i < 80; i += 1) {
     const done = store.readEvents(agentId).filter((event) => event.event.type === "turn_done").length;

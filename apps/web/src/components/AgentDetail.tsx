@@ -470,21 +470,21 @@ export function AgentDetail({
   };
 
   return (
-    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={1}
           useFlexGap
           flexWrap="wrap"
-          sx={{ alignItems: "center", minWidth: 0 }}
+          sx={{ width: "100%", maxWidth: "100%", alignItems: "center", minWidth: 0, overflow: "hidden" }}
         >
           <Tooltip title="Back to agents">
             <IconButton aria-label="Back to agents" onClick={onBack} edge="start" sx={{ minWidth: 44, minHeight: 44 }}>
               <ArrowBackIcon />
             </IconButton>
           </Tooltip>
-          <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "calc(100% - 48px)", sm: "auto" } }}>
+          <Box sx={{ minWidth: 0, maxWidth: "100%", width: { xs: "calc(100% - 52px)", sm: "auto" }, flex: { xs: "0 0 calc(100% - 52px)", sm: 1 }, overflow: "hidden" }}>
             <Typography variant="h6" noWrap>
               {detail.agent.title}
             </Typography>
@@ -620,9 +620,10 @@ export function AgentDetail({
         onChange={(_event, value: AgentTab) => setTab(value)}
         variant="scrollable"
         scrollButtons="auto"
-        sx={{ borderBottom: 1, borderColor: "divider", minHeight: 48, maxWidth: "100%" }}
+        allowScrollButtonsMobile
+        sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", borderBottom: 1, borderColor: "divider", minHeight: 48 }}
       >
-        {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48 }} />)}
+        {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
       <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>

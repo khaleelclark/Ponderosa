@@ -176,7 +176,17 @@ export function ConversationMessage({
             <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
           </Box>
         ) : null}
-        <ChatMessageBody text={visibleText} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined} />
+        <ChatMessageBody
+          text={visibleText}
+          citations={message.citations}
+          agentIdForHandle={agentIdForHandle}
+          agentMentionForHandle={(handle) => {
+            const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
+            return binding ? { agentId: binding.agentId, label: agentMentionHandle(agentTitle(binding.agentId)) } : undefined;
+          }}
+          onOpenAgent={onOpenAgent}
+          previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined}
+        />
         {message.editedAt ? <Chip size="small" variant="outlined" label="Edited" sx={{ mt: 0.75 }} /> : null}
         {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
         {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}

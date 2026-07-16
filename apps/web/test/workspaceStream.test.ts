@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { conversationChangedQueryKeys, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
 
 describe("workspace stream cursor recovery", () => {
+  it("refreshes a background tab when another tab advances the canonical cursor", () => {
+    expect(workspaceStorageCursor("ponderosa.workspace.cursor.v2", "14", 12)).toBe(14);
+    expect(workspaceStorageCursor("ponderosa.workspace.cursor.v2", "12", 12)).toBeUndefined();
+    expect(workspaceStorageCursor("unrelated", "14", 12)).toBeUndefined();
+    expect(workspaceStorageCursor("ponderosa.workspace.cursor.v2", "invalid", 12)).toBeUndefined();
+  });
+
+  it("separates explicit sibling-tab refreshes from replay cursor changes", () => {
+    expect(workspaceRefreshStorageKey("ponderosa.workspace.refresh.v1")).toBe(true);
+    expect(workspaceRefreshStorageKey("ponderosa.workspace.cursor.v2")).toBe(false);
+    expect(workspaceRefreshStorageKey(null)).toBe(false);
+  });
+
   it("invalidates only the changed project's runtime discovery cache", async () => {
     const client = new QueryClient();
     client.setQueryData(["engine-capabilities", "project-a"], ["old-a"]);
