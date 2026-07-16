@@ -26,6 +26,7 @@ import type {
   ChangedFileDto,
   AgentOrganizationEvent,
   CommunicationEvent,
+  CommunicationRevisionEvent,
   CommunicationDocumentRecord,
   CommunicationDocumentReference,
   CommunicationContextClassification,
@@ -96,6 +97,12 @@ function unifiedDiffTotals(diff: string | undefined): { additions: number; delet
   }
   return additions || deletions ? { additions, deletions } : undefined;
 }
+
+function revisedRenderedText(rendered: string, original: string, replacement: string): string {
+  if (rendered === original) return replacement;
+  if (original && rendered.endsWith(original)) return `${rendered.slice(0, -original.length)}${replacement}`.trimEnd();
+  return replacement;
+}
 import {
   artifacts,
   agentPresets,
@@ -116,6 +123,7 @@ import {
   eventsPath,
   conversationDir,
   communicationEventsPath,
+  communicationRevisionsPath,
   communicationContextPath,
   communicationProjectionsPath,
   messageDispatchesPath,
@@ -330,6 +338,12 @@ export class AgentStore {
     byId: Map<string, CommunicationEvent>;
     byIdempotency: Map<string, CommunicationEvent>;
   }>();
+  private readonly communicationRevisionCache = new Map<string, {
+    revisions: CommunicationRevisionEvent[];
+    byId: Map<string, CommunicationRevisionEvent>;
+    byIdempotency: Map<string, CommunicationRevisionEvent>;
+    byTarget: Map<string, CommunicationRevisionEvent[]>;
+  }>();
   private readonly contextClassificationCache = new Map<string, Map<string, CommunicationContextClassification>>();
   private readonly communicationProjectionCache = new Map<string, {
     projections: CommunicationProjection[];
@@ -380,6 +394,30 @@ export class AgentStore {
     }
     cached = { events, byId, byIdempotency };
     this.communicationEventCache.set(projectId, cached);
+    return cached;
+  }
+
+  private communicationRevisionIndex(projectId: string) {
+    let cached = this.communicationRevisionCache.get(projectId);
+    if (cached) return cached;
+    const revisions = readRepairableJsonl<CommunicationRevisionEvent>(
+      communicationRevisionsPath(this.dataDir, projectId),
+      "communication revision log",
+      true,
+    );
+    const byId = new Map(revisions.map((revision) => [revision.eventId, revision]));
+    const byIdempotency = new Map(revisions.map((revision) => [
+      `${JSON.stringify(revision.sender)}\u0000${revision.idempotencyKey}`,
+      revision,
+    ]));
+    const byTarget = new Map<string, CommunicationRevisionEvent[]>();
+    for (const revision of revisions) {
+      const target = byTarget.get(revision.targetEventId) ?? [];
+      target.push(revision);
+      byTarget.set(revision.targetEventId, target);
+    }
+    cached = { revisions, byId, byIdempotency, byTarget };
+    this.communicationRevisionCache.set(projectId, cached);
     return cached;
   }
 
@@ -576,6 +614,54 @@ export class AgentStore {
     }
   }
 
+  /**
+   * Append a passive text edit without changing the original communication or
+   * any sent attachment. The immutable target retains scope and audience, so a
+   * revision cannot create a delivery or alter context eligibility.
+   */
+  appendCommunicationRevision(input: CommunicationRevisionEvent): { revision: CommunicationRevisionEvent; replayed: boolean } {
+    const project = this.getProject(input.projectId);
+    if (!project) throw new Error("communication revision project not found");
+    const target = this.getCommunicationEvent(input.projectId, input.targetEventId);
+    if (!target || target.conversationId !== input.conversationId) throw new Error("communication revision target not found");
+    if (input.schemaVersion !== 1 || input.kind !== "edit" || !input.eventId || !input.idempotencyKey || !input.createdAt) {
+      throw new Error("communication revision is incomplete");
+    }
+    if (target.intent !== "broadcast") throw new Error("only broadcasts support passive edits");
+    if (target.sender.kind !== "user" || input.sender.kind !== "user" || target.sender.userId !== input.sender.userId) {
+      throw new Error("communication revision author does not own its target");
+    }
+    if (!input.text.trim() && !target.attachments?.length) throw new Error("communication revision text is required");
+    const index = this.communicationRevisionIndex(input.projectId);
+    const idempotency = `${JSON.stringify(input.sender)}\u0000${input.idempotencyKey}`;
+    const equivalent = (candidate: CommunicationRevisionEvent) =>
+      candidate.projectId === input.projectId && candidate.conversationId === input.conversationId &&
+      candidate.targetEventId === input.targetEventId && candidate.kind === input.kind && candidate.text === input.text;
+    const replay = index.byIdempotency.get(idempotency);
+    if (replay) {
+      if (!equivalent(replay)) throw new Error("communication revision idempotency collision");
+      return { revision: replay, replayed: true };
+    }
+    const existing = index.byId.get(input.eventId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(input)) throw new Error("communication revision event ID collision");
+      return { revision: existing, replayed: true };
+    }
+    appendFsyncedJsonl(communicationRevisionsPath(this.dataDir, input.projectId), [input]);
+    index.revisions.push(input);
+    index.byId.set(input.eventId, input);
+    index.byIdempotency.set(idempotency, input);
+    const targetRevisions = index.byTarget.get(input.targetEventId) ?? [];
+    targetRevisions.push(input);
+    index.byTarget.set(input.targetEventId, targetRevisions);
+    return { revision: input, replayed: false };
+  }
+
+  readCommunicationRevisions(projectId: string): CommunicationRevisionEvent[] {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    return [...this.communicationRevisionIndex(projectId).revisions];
+  }
+
   readCommunicationEvents(projectId: string): CommunicationEvent[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return [...this.communicationIndex(projectId).events];
@@ -704,6 +790,7 @@ export class AgentStore {
     projectionKey: string,
   ): ProjectedCommunicationMessage[] {
     const events = this.communicationIndex(projectId).byId;
+    const revisions = this.communicationRevisionIndex(projectId).byTarget;
     return this.projectionIndex(projectId).projections
       .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey &&
         projection.message && this.communicationProjectionAllowed(projectId, projection))
@@ -717,14 +804,20 @@ export class AgentStore {
           : event.sender.kind === "user"
             ? "user"
             : message.role;
+        const targetRevisions = revisions.get(event.eventId) ?? [];
+        const latestRevision = targetRevisions.at(-1);
+        const renderedText = message.renderedText ?? event.text;
         return [{
           eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
-          role: canonicalRole, text: message.renderedText ?? event.text, createdAt: message.createdAt,
+          role: canonicalRole,
+          text: latestRevision ? revisedRenderedText(renderedText, event.text, latestRevision.text) : renderedText,
+          createdAt: message.createdAt,
           ...(message.orderKey ? { orderKey: message.orderKey } : {}),
           ...(message.sequence !== undefined ? { sequence: message.sequence } : {}),
           ...(canonicalAuthorAgentId ? { authorAgentId: canonicalAuthorAgentId } : {}),
           ...(event.sender.kind === "agent" ? { executionId: event.sender.executionId } : {}),
           ...(event.correctionOfEventId ? { correctionOfEventId: event.correctionOfEventId } : {}),
+          ...(latestRevision ? { editedAt: latestRevision.createdAt, editRevision: targetRevisions.length } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
@@ -1402,6 +1495,7 @@ export class AgentStore {
         ...(fileActivity ? { fileActivity } : {}),
         ...(message.correctionOfEventId ? { correctionOfMessageId: message.correctionOfEventId } : {}),
         ...(correctedBy.has(message.eventId) ? { correctedByMessageId: correctedBy.get(message.eventId) } : {}),
+        ...(message.editedAt ? { editedAt: message.editedAt, editRevision: message.editRevision } : {}),
       };
     });
   }

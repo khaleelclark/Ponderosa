@@ -5,9 +5,9 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentStore } from "../src/store.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
-import type { CommunicationEvent } from "@ponderosa/core";
+import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -555,6 +555,34 @@ describe("AgentStore — canonical communication events", () => {
     rmSync(communicationProjectionsPath(dir, project.id), { force: true });
     store = new AgentStore(dir);
     expect(store.getProjectedConversationMessages(room.id)).toEqual(expected);
+  });
+
+  it("keeps the original Broadcast immutable while projecting the latest append-only edit after restart", () => {
+    const project = store.createProject({ label: "Revisions", hostPath: "/repo" });
+    const room = store.createConversation(project.id, { title: "Room" });
+    const original: CommunicationEvent = {
+      eventId: "broadcast-original", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Original",
+      createdAt: "2026-07-16T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(original);
+    const message = store.appendConversationMessage(room.id, { text: "#broadcast Original" }, undefined, "main", undefined, undefined, original.eventId)!;
+    const revisions: CommunicationRevisionEvent[] = [
+      { eventId: "edit-1", schemaVersion: 1, kind: "edit", projectId: project.id, conversationId: room.id, targetEventId: original.eventId, sender: original.sender, text: "First edit", createdAt: "2026-07-16T00:01:00.000Z", idempotencyKey: "edit:1" },
+      { eventId: "edit-2", schemaVersion: 1, kind: "edit", projectId: project.id, conversationId: room.id, targetEventId: original.eventId, sender: original.sender, text: "Latest edit", createdAt: "2026-07-16T00:02:00.000Z", idempotencyKey: "edit:2" },
+    ];
+    for (const revision of revisions) store.appendCommunicationRevision(revision);
+    expect(store.getCommunicationEvent(project.id, original.eventId)).toEqual(original);
+    expect(store.getConversationMessages(room.id)).toEqual([
+      expect.objectContaining({ id: message.id, communicationEventId: original.eventId, text: "#broadcast Latest edit", editRevision: 2, editedAt: revisions[1]!.createdAt }),
+    ]);
+    expect(readFileSync(communicationRevisionsPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(2);
+
+    store.close();
+    store = new AgentStore(dir);
+    expect(store.getCommunicationEvent(project.id, original.eventId)).toEqual(original);
+    expect(store.getConversationMessages(room.id)[0]).toMatchObject({ id: message.id, text: "#broadcast Latest edit", editRevision: 2 });
   });
 
   it("recovers a durable execution start that has no terminal event after restart", () => {

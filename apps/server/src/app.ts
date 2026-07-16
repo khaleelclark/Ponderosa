@@ -17,6 +17,7 @@ import type {
   AgentMessageChannel,
   AgentEvent,
   CommunicationEvent,
+  CommunicationRevisionEvent,
   AgentHealthProjectionDto,
   ArtifactContentDto,
   ChatMessage,
@@ -36,6 +37,7 @@ import type {
   ConversationMessageDto,
   ConversationDetailDto,
   CollaborationViewDto,
+  CreateCollaborationMessageRequest,
   AssetDto,
   ImageAttachmentDto,
   CreateDirectReplyRequest,
@@ -2119,7 +2121,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }
 
   async function reconcileRuntimeCommunicationProjections(): Promise<number> {
-    let projected = 0;
+    let repaired = 0;
     for (const row of coordinationV3.runtimeCommunications()) {
       const payload = row.payload && typeof row.payload === "object"
         ? row.payload as Record<string, unknown>
@@ -2135,54 +2137,126 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         event.projectId !== row.projectId
       ) continue;
       const communicationEventId = event.eventId;
-      let recoveredAttachmentIds: string[] = [];
-      let recoveredAttachmentAgentId: string | undefined;
-      if (!event.text.trim() && !event.attachments?.length) {
-        const audience = row.audience && typeof row.audience === "object"
-          ? row.audience as Record<string, unknown>
-          : undefined;
-        const dispatch = payload?.dispatch && typeof payload.dispatch === "object"
-          ? payload.dispatch as Record<string, unknown>
-          : undefined;
-        const rawAttachments = Array.isArray(dispatch?.attachments) ? dispatch.attachments : [];
-        recoveredAttachmentAgentId = typeof audience?.agentId === "string" ? audience.agentId : undefined;
-        if (recoveredAttachmentAgentId && rawAttachments.length) {
-          const recovered: ImageAttachmentDto[] = [];
-          for (const raw of rawAttachments) {
-            if (!raw || typeof raw !== "object") continue;
-            const expected = raw as Record<string, unknown>;
-            if (typeof expected.id !== "string") continue;
-            const metadata = await assetMetadata(recoveredAttachmentAgentId, expected.id);
-            if (!metadata || metadata.name !== expected.name || metadata.mediaType !== expected.mediaType || metadata.size !== expected.size) continue;
-            const {
-              projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile,
-              associatedAt: _associatedAt, ...publicAsset
-            } = metadata;
-            recovered.push({ ...publicAsset, state: "associated" });
-          }
-          if (recovered.length === rawAttachments.length) {
-            recoveredAttachmentIds = recovered.map((attachment) => attachment.id);
-            event = { ...event, attachments: recovered };
-          }
+      const audience = row.audience && typeof row.audience === "object"
+        ? row.audience as Record<string, unknown>
+        : undefined;
+      const dispatch = payload?.dispatch && typeof payload.dispatch === "object"
+        ? payload.dispatch as Record<string, unknown>
+        : undefined;
+
+      // The runtime row is the durable handoff boundary. Multi-recipient sends
+      // deliberately store target-owned copies under dispatch.recipients; the
+      // top-level form remains for single-recipient/direct legacy handoffs.
+      const rawRecipientSets: Array<{ agentId: string; rawAttachments: unknown[] }> = [];
+      if (Array.isArray(dispatch?.recipients)) {
+        for (const value of dispatch.recipients) {
+          if (!value || typeof value !== "object") continue;
+          const recipient = value as Record<string, unknown>;
+          if (typeof recipient.agentId !== "string" || !Array.isArray(recipient.attachments)) continue;
+          rawRecipientSets.push({ agentId: recipient.agentId, rawAttachments: recipient.attachments });
         }
       }
-      if (!store.getCommunicationEvent(row.projectId, communicationEventId)) {
-        try {
-          recordCommunication(event as CommunicationEvent);
-          if (recoveredAttachmentAgentId && recoveredAttachmentIds.length) {
-            await assets.associate(row.projectId, recoveredAttachmentAgentId, recoveredAttachmentIds);
-          }
-          projected += 1;
-        } catch (error) {
-          app.log.error({
-            err: error,
-            runtimeCommunicationId: row.id,
-            communicationEventId,
-          }, "runtime communication projection recovery failed");
+      if (Array.isArray(dispatch?.attachments) && typeof audience?.agentId === "string" &&
+          !rawRecipientSets.some((recipient) => recipient.agentId === audience.agentId)) {
+        rawRecipientSets.push({ agentId: audience.agentId, rawAttachments: dispatch.attachments });
+      }
+
+      const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+      for (const { agentId, rawAttachments } of rawRecipientSets) {
+        if (attachmentsByAgent.has(agentId) || new Set(rawAttachments.map((raw) =>
+          raw && typeof raw === "object" ? (raw as Record<string, unknown>).id : undefined)).size !== rawAttachments.length) continue;
+        const recovered: ImageAttachmentDto[] = [];
+        for (const raw of rawAttachments) {
+          if (!raw || typeof raw !== "object") continue;
+          const expected = raw as Record<string, unknown>;
+          if (typeof expected.id !== "string") continue;
+          const metadata = await assetMetadata(agentId, expected.id);
+          if (!metadata || metadata.name !== expected.name || metadata.mediaType !== expected.mediaType || metadata.size !== expected.size) continue;
+          const {
+            projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile,
+            associatedAt: _associatedAt, ...publicAsset
+          } = metadata;
+          recovered.push({ ...publicAsset, state: "associated" });
         }
+        if (recovered.length === rawAttachments.length) attachmentsByAgent.set(agentId, recovered);
+      }
+
+      const firstRecoveredAttachments = [...attachmentsByAgent.values()].find((items) => items.length > 0);
+      if (!event.attachments?.length && firstRecoveredAttachments?.length) {
+        event = { ...event, attachments: firstRecoveredAttachments };
+      }
+      try {
+        if (!store.getCommunicationEvent(row.projectId, communicationEventId)) {
+          recordCommunication(event as CommunicationEvent);
+          repaired += 1;
+        }
+        const canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
+        if (!canonical) continue;
+
+        if (canonical.intent === "collaboration" && canonical.conversationId && dispatch) {
+          const renderedText = typeof dispatch.text === "string" ? dispatch.text : canonical.text;
+          const roomMessage = store.getConversationMessages(canonical.conversationId, "collaboration")
+            .find((message) => message.communicationEventId === canonical.eventId);
+          const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
+          const deliveryIntents: ConversationDeliveryIntent[] = canonical.audience.agentIds.map((agentId) => ({
+            targetAgentId: agentId, relayDepth: 0, mentionTrail: [], kind: "tag", audience: canonical.audienceSelector ?? "mention",
+            ...(attachmentsByAgent.get(agentId)?.length ? { attachmentIds: attachmentsByAgent.get(agentId)!.map((item) => item.id) } : {}),
+          }));
+          if (!roomMessage) {
+            store.appendConversationMessage(
+              canonical.conversationId,
+              {
+                role: canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant",
+                text: renderedText,
+                ...(typeof dispatch.replyToMessageId === "string" ? { replyToMessageId: dispatch.replyToMessageId } : {}),
+                ...(roomAttachments?.length ? { attachments: roomAttachments } : {}),
+              },
+              canonical.sender.kind === "agent" ? canonical.sender.agentId : undefined,
+              "collaboration",
+              deliveryIntents,
+              undefined,
+              canonical.eventId,
+            );
+            repaired += 1;
+          } else if (roomAttachments?.length && !roomMessage.attachments?.length) {
+            store.appendCommunicationProjection(canonical.projectId, {
+              eventId: canonical.eventId, surface: "collaboration_view", projectionKey: canonical.conversationId,
+              projectedAt: roomMessage.createdAt,
+              message: {
+                messageId: roomMessage.id, role: roomMessage.role, renderedText: roomMessage.text,
+                createdAt: roomMessage.createdAt, attachments: roomAttachments,
+                ...(roomMessage.authorAgentId ? { authorAgentId: roomMessage.authorAgentId } : {}),
+                ...(roomMessage.replyTo ? { replyTo: roomMessage.replyTo } : {}),
+              },
+            });
+            repaired += 1;
+          }
+
+          for (const agentId of canonical.audience.agentIds) {
+            store.appendCommunicationProjection(canonical.projectId, {
+              eventId: canonical.eventId, surface: "agent_inbox", projectionKey: agentId, projectedAt: canonical.createdAt,
+            });
+            const recipientAttachments = attachmentsByAgent.get(agentId) ?? [];
+            if (recipientAttachments.length) {
+              await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
+            }
+            projectCommunicationToAgentAudit(agentId, canonical, renderedText, recipientAttachments);
+          }
+        } else {
+          for (const [agentId, recipientAttachments] of attachmentsByAgent) {
+            if (!recipientAttachments.length) continue;
+            await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
+          }
+        }
+      } catch (error) {
+        app.log.error({
+          err: error,
+          runtimeCommunicationId: row.id,
+          communicationEventId,
+        }, "runtime communication projection recovery failed");
       }
     }
-    return projected;
+    return repaired;
   }
 
   app.addHook("onRequest", async (request, reply) => {
@@ -2391,9 +2465,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     renderedText: string,
     attachments?: ImageAttachmentDto[],
   ): void {
-    if (store.readCommunicationProjections(event.projectId).some((projection) =>
+    const existing = store.readCommunicationProjections(event.projectId).find((projection) =>
       projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
-      projection.projectionKey === agentId && projection.message)) return;
+      projection.projectionKey === agentId && projection.message);
+    if (existing?.message) {
+      if (attachments?.length && !existing.message.attachments?.length) {
+        store.appendCommunicationProjection(event.projectId, {
+          ...existing,
+          message: { ...existing.message, attachments },
+        });
+      }
+      return;
+    }
     store.appendCommunicationProjection(event.projectId, {
       eventId: event.eventId,
       surface: "direct_agent_audit",
@@ -3640,14 +3723,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
     const text = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
-    if (!text) return reply.code(400).send({ error: "broadcast text is required after #broadcast" });
+    const requestedAssets = request.body?.attachments ?? [];
+    if (!text && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
+      return reply.code(400).send({ error: "broadcast text or an attachment is required" });
+    }
     if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
-    const requestedAssets = request.body.attachments ?? [];
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: "at most 4 assets are allowed" });
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
@@ -3692,6 +3777,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return assets.associate(owner.projectId, owner.id, [asset.id]);
     }));
     if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
+    if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
     return message ?? reply.code(404).send({ error: "conversation not found" });
   });
 
@@ -4103,6 +4189,37 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? messages.find((message) => message.id === existingMessage.correctionOfMessageId)
       : latestOperatorMessage;
     const originalEventId = original?.communicationEventId;
+    const originalCommunication = originalEventId
+      ? store.getCommunicationEvent(conversation.projectId, originalEventId)
+      : undefined;
+    if (originalCommunication?.intent === "broadcast") {
+      const revisionText = stripLeadingScopeTag(text, "broadcast");
+      const eventId = `communication-edit-${createHash("sha256").update(receiptKey).digest("hex")}`;
+      const revision: CommunicationRevisionEvent = {
+        eventId,
+        schemaVersion: 1,
+        kind: "edit",
+        projectId: conversation.projectId,
+        conversationId: conversation.id,
+        targetEventId: originalCommunication.eventId,
+        sender: { kind: "user", userId: "local-operator" },
+        text: revisionText,
+        createdAt: new Date().toISOString(),
+        idempotencyKey: receiptKey,
+      };
+      try {
+        const stored = store.appendCommunicationRevision(revision);
+        if (!stored.replayed) appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+        return {
+          originalMessageId: request.params.messageId,
+          correctionMessageId: stored.revision.eventId,
+          replayed: stored.replayed,
+          queued: false,
+        } satisfies CorrectConversationMessageResponse;
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast edit conflict" });
+      }
+    }
     const targets = originalEventId ? coordinationV3.communicationRecipientAgentIds(originalEventId) : [];
     if (targets.length !== 1) {
       return reply.code(409).send({ error: targets.length === 0 ? "message delivery has not been scheduled" : "messages sent to multiple agents cannot be corrected as one turn" });
@@ -4182,10 +4299,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { text: string; recipientAgentIds?: string[]; replyToMessageId?: string; directReplyToAuthorAgentId?: string; idempotencyKey?: string };
+    Body: CreateCollaborationMessageRequest & { directReplyToAuthorAgentId?: string };
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
-    const text = request.body?.text?.trim();
-    if (!text) return reply.code(400).send({ error: "text is required" });
+    const text = request.body?.text?.trim() ?? "";
+    const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
+    if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
+      return reply.code(400).send({ error: "text or an attachment is required" });
+    }
     if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
@@ -4206,7 +4326,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (targets.some((target) => !target || target.archived)) {
         return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this conversation" });
       }
-      renderedText = `${targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ")} ${text}`;
+      const recipientPrefix = targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ");
+      renderedText = text ? `${recipientPrefix} ${text}` : recipientPrefix;
       routing = {
         intents: targets.map((target) => ({
           targetAgentId: target!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
@@ -4220,6 +4341,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
     }
     const master = store.getConversation(request.params.id)!;
+    if (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.length > routing.intents.length) {
+      return reply.code(400).send({ error: "recipientAttachments must match collaboration recipients" });
+    }
+    const attachmentIdsByAgent = new Map<string, string[]>();
+    for (const recipient of requestedRecipientAttachments) {
+      if (!recipient || typeof recipient.agentId !== "string" || attachmentIdsByAgent.has(recipient.agentId) ||
+          !routing.intents.some((intent) => intent.targetAgentId === recipient.agentId) || !Array.isArray(recipient.attachmentIds) ||
+          recipient.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(recipient.attachmentIds).size !== recipient.attachmentIds.length) {
+        return reply.code(400).send({ error: "each collaboration recipient supports at most 4 unique owned attachments" });
+      }
+      attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
+    }
+    const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
+    for (const intent of routing.intents) {
+      const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
+      const attached = await Promise.all(ids.map((id) => assetMetadata(intent.targetAgentId, id)));
+      if (attached.some((item) => !item || item.agentId !== intent.targetAgentId)) return reply.code(404).send({ error: "collaboration attachment not found" });
+      if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
+      attachmentsByAgent.set(intent.targetAgentId, (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
+        const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = item;
+        return { ...publicAsset, state: "associated" as const };
+      }));
+    }
+    const canonicalAttachments = routing.intents
+      .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
+      .find((items) => items.length > 0) ?? [];
     if (request.body.replyToMessageId) {
       const replyTarget = detail.messages.find((message) => message.id === request.body.replyToMessageId);
       const replyEvent = replyTarget?.communicationEventId
@@ -4242,6 +4389,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
       text, createdAt: existingRuntime?.createdAt ?? new Date().toISOString(),
+      ...(canonicalAttachments.length ? { attachments: canonicalAttachments } : {}),
       ...(idempotencyKey ? { idempotencyKey: `collaboration:${master.id}:${idempotencyKey}` } : {}),
     };
     let intake;
@@ -4254,7 +4402,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         audience: communication.audience,
         payload: {
           communication,
-          dispatch: { conversationId: master.id, text: renderedText, replyToMessageId: request.body.replyToMessageId ?? null },
+          dispatch: {
+            conversationId: master.id,
+            text: renderedText,
+            replyToMessageId: request.body.replyToMessageId ?? null,
+            recipients: routing.intents.map((intent) => ({
+              agentId: intent.targetAgentId,
+              attachments: (attachmentsByAgent.get(intent.targetAgentId) ?? []).map((item) => ({
+                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
+              })),
+            })),
+          },
         },
         activations: routing.intents.map((intent, index) => ({
           agentId: intent.targetAgentId,
@@ -4281,7 +4439,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     let message;
     try { message = store.appendConversationMessage(
       request.params.id,
-      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId },
+      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId, attachments: canonicalAttachments },
+      // The canonical chat snapshot uses one copy; per-recipient copies stay in
+      // dispatch/audit data and are never rendered as duplicates.
       undefined,
       "collaboration",
       routing.intents,
@@ -4293,9 +4453,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       store.appendCommunicationProjection(master.projectId, {
         eventId, surface: "agent_inbox", projectionKey: intent.targetAgentId, projectedAt: communication.createdAt,
       });
-      projectCommunicationToAgentAudit(intent.targetAgentId, communication, renderedText);
+      const recipientAttachments = attachmentsByAgent.get(intent.targetAgentId) ?? [];
+      if (!intake.replayed && recipientAttachments.length) {
+        await assets.associate(master.projectId, intent.targetAgentId, recipientAttachments.map((item) => item.id));
+      }
+      projectCommunicationToAgentAudit(intent.targetAgentId, communication, renderedText, recipientAttachments);
       publishCoordinationV3Changed(intent.targetAgentId);
     }
+    if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
     coordinationV3Scheduler.notify();
     notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetAgentId));
     return {

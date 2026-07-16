@@ -85,6 +85,25 @@ export type CommunicationEventV2 = Omit<CommunicationEventBase, "schemaVersion">
 /** V1 is retained for append-only replay; all new communication uses V2. */
 export type CommunicationEvent = CommunicationEventV1 | CommunicationEventV2;
 
+/**
+ * Append-only replacement text for one immutable communication. The original
+ * event continues to own scope, audience, attachments, and send provenance.
+ * Revisions are presentation/context projection inputs only: they never create
+ * deliveries or wake a runtime.
+ */
+export interface CommunicationRevisionEvent {
+  eventId: string;
+  schemaVersion: 1;
+  kind: "edit";
+  projectId: string;
+  conversationId: string;
+  targetEventId: string;
+  sender: CommunicationActor;
+  text: string;
+  createdAt: string;
+  idempotencyKey: string;
+}
+
 export type CommunicationProjectionSurface =
   | "conversation"
   | "collaboration_view"
@@ -256,6 +275,8 @@ export interface ProjectedCommunicationMessage {
   citations?: VerifiedCitationRecord[];
   executionId?: string;
   correctionOfEventId?: string;
+  editedAt?: string;
+  editRevision?: number;
 }
 
 export type CommunicationDeliveryStatus =

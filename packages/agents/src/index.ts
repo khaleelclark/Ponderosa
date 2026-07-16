@@ -28,7 +28,7 @@ export { openDb } from "./db.js";
 export {
   artifactContentPath, artifactsDir, attachmentPath, attachmentsDir,
   communicationEventsPath, communicationContextPath,
-  communicationProjectionsPath,
+  communicationProjectionsPath, communicationRevisionsPath,
 } from "./paths.js";
 export type { Db } from "./db.js";
 

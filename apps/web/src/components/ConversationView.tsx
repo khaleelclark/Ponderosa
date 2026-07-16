@@ -47,7 +47,7 @@ import { useCollaborationView, useConversation } from "../hooks/queries";
 import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
+import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles, uploadFilesForRecipients } from "../conversationReply";
 import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
@@ -160,6 +160,7 @@ export function ConversationMessage({
           </Box>
         ) : null}
         <ChatMessageBody text={visibleText} citations={message.citations} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined} />
+        {message.editedAt ? <Chip size="small" variant="outlined" label="Edited" sx={{ mt: 0.75 }} /> : null}
         {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
         {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
@@ -192,7 +193,7 @@ export function ConversationMessage({
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {conversation === "main" && onEdit ? <Tooltip title="Correct latest message"><IconButton size="small" aria-label="Correct latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" && onEdit ? <Tooltip title="Edit latest message"><IconButton size="small" aria-label="Edit latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {conversation === "main" && message.authorAgentId ? (
           <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
             size="small"
@@ -206,6 +207,39 @@ export function ConversationMessage({
       </> : undefined} />
     </Box>
   );
+}
+
+/** The operator-facing Team surface uses the same attachment-capable Composer
+ * as Project chat, while keeping explicit agent routing as its send boundary. */
+export function TeamCollaborationComposer({
+  conversationId,
+  projectId,
+  mentionHandles,
+  disabled,
+  replyTo,
+  onSend,
+  onCancelReply,
+}: {
+  conversationId: string;
+  projectId: string;
+  mentionHandles: string[];
+  disabled: boolean;
+  replyTo?: ConversationMessageDto;
+  onSend(text: string, files: File[]): Promise<unknown> | unknown;
+  onCancelReply(): void;
+}): JSX.Element {
+  return <Composer
+    draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.collaboration`)}
+    disabled={disabled}
+    running={false}
+    mentionHandles={mentionHandles}
+    allowUnmentionedSend={Boolean(replyTo?.authorAgentId)}
+    placeholder="Tag #agent or #everyone; attachments can be sent without message text"
+    onSend={onSend}
+    replyTo={replyTo}
+    projectId={projectId}
+    onCancelReply={onCancelReply}
+  />;
 }
 
 export function ConversationView({
@@ -427,8 +461,19 @@ export function ConversationView({
   });
 
   const broadcast = useMutation({
-    mutationFn: ({ text, replyToMessageId, requestId }: { text: string; replyToMessageId?: string; requestId: string }) =>
-      api.sendConversationMessage(conversationId, { text, replyToMessageId, idempotencyKey: requestId }),
+    mutationFn: async ({ text, files, replyToMessageId, requestId }: { text: string; files: File[]; replyToMessageId?: string; requestId: string }) => {
+      const owner = agents.find((agent) => !agent.archived);
+      if (files.length && !owner) throw new Error("Create an agent before attaching files to shared project context.");
+      const attachments = owner
+        ? await uploadDirectReplyFiles(files, (file) => api.uploadAttachment(owner.id, file), (item) => api.deleteAttachment(owner.id, item.id))
+        : [];
+      try {
+        return await api.sendConversationMessage(conversationId, { text, replyToMessageId, attachments, idempotencyKey: requestId });
+      } catch (error) {
+        if (owner) await Promise.allSettled(attachments.map((item) => api.deleteAttachment(owner.id, item.id)));
+        throw error;
+      }
+    },
     onSuccess: () => {
       clearReply();
       invalidate();
@@ -497,8 +542,26 @@ export function ConversationView({
   });
 
   const collaborate = useMutation({
-    mutationFn: ({ text, recipientAgentIds, replyToMessageId, requestId }: { text: string; recipientAgentIds: string[]; replyToMessageId?: string; requestId: string }) =>
-      api.sendCollaborationMessage(conversationId, { text, recipientAgentIds, replyToMessageId, idempotencyKey: requestId }),
+    mutationFn: async ({ text, files, recipientAgentIds, replyToMessageId, requestId }: { text: string; files: File[]; recipientAgentIds: string[]; replyToMessageId?: string; requestId: string }) => {
+      const uploaded = await uploadFilesForRecipients(
+        recipientAgentIds,
+        files,
+        (agentId, file) => api.uploadAttachment(agentId, file),
+        (agentId, item) => api.deleteAttachment(agentId, item.id),
+      );
+      try {
+        return await api.sendCollaborationMessage(conversationId, {
+          text,
+          recipientAgentIds,
+          replyToMessageId,
+          recipientAttachments: uploaded.map(({ agentId, attachments }) => ({ agentId, attachmentIds: attachments.map((item) => item.id) })),
+          idempotencyKey: requestId,
+        });
+      } catch (error) {
+        await Promise.allSettled(uploaded.flatMap(({ agentId, attachments }) => attachments.map((item) => api.deleteAttachment(agentId, item.id))));
+        throw error;
+      }
+    },
     onSuccess: () => {
       clearReply();
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
@@ -646,7 +709,6 @@ export function ConversationView({
 
   const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer") => {
     if (activeView === "collaboration") {
-      if (files.length) throw new Error("Image attachments require a manager-to-agent message.");
       const activeAgents = agents.filter((agent) => !agent.archived);
       let targets = hasEveryoneMention(text) ? activeAgents : findMentionedAgentsStrict(text, activeAgents);
       if (targets.length === 0 && replyTo?.authorAgentId) {
@@ -655,15 +717,14 @@ export function ConversationView({
       }
       if (targets.length === 0) throw new Error("Tag one unambiguous agent with #name, use #everyone, or reply to an agent message.");
       const messageText = stripCollaborationRoutingTags(text, activeAgents);
-      if (!messageText) throw new Error("Add a message after the routing tag.");
-      await collaborate.mutateAsync({ text: messageText, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
+      if (!messageText && files.length === 0) throw new Error("Add a message or attachment after the routing tag.");
+      await collaborate.mutateAsync({ text: messageText, files, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
       return;
     }
     const broadcastText = managerBroadcastText(text);
     if (broadcastText !== undefined) {
-      if (!broadcastText) throw new Error("Add informational context after #broadcast.");
-      if (files.length) throw new Error("#broadcast does not currently support attachments.");
-      await broadcast.mutateAsync({ text: broadcastText, replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
+      if (!broadcastText && files.length === 0) throw new Error("Add informational context or an attachment after #broadcast.");
+      await broadcast.mutateAsync({ text: broadcastText, files, replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
       return;
     }
     const targets = hasEveryoneMention(text)
@@ -997,7 +1058,7 @@ export function ConversationView({
         </Box>
       </Drawer>
 
-      {activeView === "main" ? <Box>
+      <Box>
         {queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
@@ -1008,11 +1069,21 @@ export function ConversationView({
         {agents.length > 0 ? (
           <Box sx={{ px: { xs: 1, sm: 1.5 }, pt: 0.75, borderTop: 1, borderColor: "divider" }}>
             <Typography variant="caption" color="text.secondary">
-              Type <Box component="strong">#agent</Box> to message an existing agent, <Box component="strong">@</Box> to reference a file, or just send to start a new agent.
+              {activeView === "collaboration"
+                ? <>Tag <Box component="strong">#agent</Box> or <Box component="strong">#everyone</Box>, then send text, attachments, or both to the Team chat.</>
+                : <>Type <Box component="strong">#agent</Box> to message an existing agent, <Box component="strong">@</Box> to reference a file, or just send to start a new agent.</>}
             </Typography>
           </Box>
         ) : null}
-        <Composer
+        {activeView === "collaboration" ? <TeamCollaborationComposer
+          conversationId={conversationId}
+          projectId={conversation.projectId}
+          mentionHandles={mentionHandles}
+          disabled={agents.filter((agent) => !agent.archived).length === 0}
+          replyTo={replyTo}
+          onSend={submit}
+          onCancelReply={clearReply}
+        /> : <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
           conversationDraftId={conversationId}
           controls={runtimeControls}
@@ -1038,8 +1109,8 @@ export function ConversationView({
           onCancelReply={() => {
             clearReply();
           }}
-        />
-      </Box> : null}
+        />}
+      </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename Project chat</DialogTitle>
@@ -1067,13 +1138,13 @@ export function ConversationView({
       </Dialog>
 
       <Dialog open={Boolean(editingMessage)} onClose={() => !correctMessage.isPending && setEditingMessage(undefined)} fullWidth maxWidth="sm">
-        <DialogTitle>Correct latest message</DialogTitle>
+        <DialogTitle>Edit latest message</DialogTitle>
         <DialogContent>
-          <Alert severity="warning" sx={{ mb: 2 }}>The original remains immutable. Saving appends a linked correction and starts exactly one follow-up turn; earlier side effects are not undone.</Alert>
-          <TextField autoFocus fullWidth multiline minRows={3} label="Correction" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} />
+          <Alert severity="info" sx={{ mb: 2 }}>The original remains in append-only history. Shared-project edits update the visible revision without redelivering to an active agent.</Alert>
+          <TextField autoFocus fullWidth multiline minRows={3} label="Message" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} />
           {correctMessage.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(correctMessage.error)}</Alert> : null}
         </DialogContent>
-        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save correction</Button></DialogActions>
+        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save edit</Button></DialogActions>
       </Dialog>
 
       <Dialog

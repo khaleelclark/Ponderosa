@@ -891,6 +891,135 @@ describe("project lifecycle API", () => {
     await app.close();
   });
 
+  it("accepts text, attachments, and attachment-only Broadcast and Collaboration sends", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    const agentTitle = store.getAgent(agent.id)!.title;
+    expect((await app.inject({
+      method: "PUT",
+      url: `/api/agents/${agent.id}/conversation-memberships`,
+      payload: { conversationIds: [conversationId], primaryConversationId: conversationId },
+    })).statusCode).toBe(200);
+    const upload = async (name: string) => {
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/agents/${agent.id}/attachments`,
+        headers: { "content-type": "application/pdf", "x-ponderosa-filename": name },
+        payload: Buffer.from(`%PDF-1.7\n${name}`),
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      return response.json<Record<string, unknown>>();
+    };
+
+    const broadcastAsset = await upload("broadcast.pdf");
+    const broadcast = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/messages`,
+      payload: { text: "", attachments: [broadcastAsset], idempotencyKey: "attachment-only-broadcast" },
+    });
+    expect(broadcast.statusCode, broadcast.body).toBe(200);
+    expect(broadcast.json()).toMatchObject({ text: "#broadcast", attachments: [{ id: broadcastAsset.id, name: "broadcast.pdf" }] });
+
+    const collaborationAsset = await upload("collaboration.pdf");
+    const collaboration = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversationId}/collaboration/messages`,
+      payload: {
+        text: "",
+        recipientAgentIds: [agent.id],
+        recipientAttachments: [{ agentId: agent.id, attachmentIds: [collaborationAsset.id] }],
+        idempotencyKey: "attachment-only-collaboration",
+      },
+    });
+    expect(collaboration.statusCode, collaboration.body).toBe(200);
+    expect(collaboration.json()).toMatchObject({
+      message: { text: `#${agentTitle}`, attachments: [{ id: collaborationAsset.id, name: "collaboration.pdf" }] },
+      notifiedAgentIds: [agent.id],
+    });
+    const canonical = store.getCommunicationEvent(
+      project.id,
+      collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId,
+    );
+    expect(canonical).toMatchObject({ text: "", attachments: [{ id: collaborationAsset.id }] });
+    expect(new WorkspaceStore(dataDir).readSince(0).filter((item) =>
+      item.event.type === "conversation_changed" && item.event.conversationId === conversationId && item.event.action === "message",
+    )).toHaveLength(2);
+    await app.close();
+  });
+
+  it("edits a Broadcast append-only without redelivery and survives reconnect/restart", async () => {
+    let app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 0 } });
+    const project = store.createProject({ label: "Broadcast edits", hostPath: repoDir, defaultEngine: "codex" });
+    const conversationId = project.lastConversationId!;
+    const sent = await app.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/messages`,
+      payload: { text: "#broadcast Original shared note", idempotencyKey: "original-broadcast" },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const original = sent.json<{ id: string; communicationEventId: string }>();
+    const runtimeBefore = new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id).length;
+    const editPayload = { text: "#broadcast Edited shared note", idempotencyKey: "edit-broadcast", activeRunDelivery: "queue" };
+    const edited = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages/${original.id}/corrections`, payload: editPayload });
+    const replay = await app.inject({ method: "POST", url: `/api/conversations/${conversationId}/messages/${original.id}/corrections`, payload: editPayload });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({ originalMessageId: original.id, queued: false, replayed: false });
+    expect(replay.json()).toMatchObject({ originalMessageId: original.id, queued: false, replayed: true, correctionMessageId: edited.json<{ correctionMessageId: string }>().correctionMessageId });
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(1);
+    expect(store.readCommunicationEvents(project.id)[0]).toMatchObject({ eventId: original.communicationEventId, text: "Original shared note" });
+    expect(store.readCommunicationRevisions(project.id)).toHaveLength(1);
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id)).toHaveLength(runtimeBefore);
+    expect(store.getConversationMessages(conversationId)).toEqual([
+      expect.objectContaining({ id: original.id, communicationEventId: original.communicationEventId, text: "#broadcast Edited shared note", editRevision: 1 }),
+    ]);
+
+    await app.close();
+    store = new AgentStore(dataDir);
+    app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 0 } });
+    const reconnected = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}` });
+    expect(reconnected.json<{ messages: Array<{ id: string; text: string; editRevision?: number }> }>().messages).toEqual([
+      expect.objectContaining({ id: original.id, text: "#broadcast Edited shared note", editRevision: 1 }),
+    ]);
+    const changes = new WorkspaceStore(dataDir).readSince(0).filter((item) =>
+      item.event.type === "conversation_changed" && item.event.conversationId === conversationId && item.event.action === "updated",
+    );
+    expect(changes).toHaveLength(1);
+    await app.close();
+  });
+
+  it("does not redeliver a Broadcast edit to the runtime that already received the original", async () => {
+    const { app, project, agent } = await createProjectAndAgent();
+    const conversationId = store.getProject(project.id)!.lastConversationId!;
+    await app.inject({
+      method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`,
+      payload: { conversationIds: [conversationId], primaryConversationId: conversationId },
+    });
+    adapter.mode = "hang";
+    const original = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Original active request", sourceChannel: "main", sourceConversationId: conversationId, shareWithOrganization: true },
+    });
+    expect(original.statusCode, original.body).toBe(202);
+    await waitForSeedCount(1);
+    const originalMessage = store.getConversationMessages(conversationId).find((message) =>
+      message.communicationEventId === original.json<{ communicationEventId: string }>().communicationEventId,
+    )!;
+    const runtimeBefore = new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id).length;
+    const edited = await app.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/messages/${originalMessage.id}/corrections`,
+      payload: { text: "Edited active request", idempotencyKey: "active-broadcast-edit", activeRunDelivery: "queue" },
+    });
+    expect(edited.json()).toMatchObject({ queued: false, replayed: false });
+    await sleep(40);
+    expect(adapter.seeds).toHaveLength(1);
+    expect(adapter.continues).toHaveLength(0);
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunications(project.id)).toHaveLength(runtimeBefore);
+    expect(store.getConversationMessages(conversationId).find((message) => message.id === originalMessage.id)).toMatchObject({
+      text: "Edited active request", editRevision: 1,
+    });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-active-edit-test" } });
+    await app.close();
+  });
+
   it("persists staged draft attachments and restores them after a server restart", async () => {
     let app = createServer({ dataDir, store, engines, logger: false });
     const created = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Drafts", hostPath: repoDir, defaultEngine: "codex" } });
@@ -3178,6 +3307,150 @@ describe("server chunk F", () => {
     });
     expect(store.getCommunicationEvent(project.id, malformedEventId)).toBeUndefined();
     expect((await recoveredApp.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(200);
+    await recoveredApp.close();
+  });
+
+  it("repairs recipient-specific Collaboration copies idempotently at every durable handoff boundary", async () => {
+    const project = store.createProject({ label: "Recipient recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Team recovery" });
+    const recipients = ["Alpha", "Beta"].map((title) => store.createAgent(project.id, {
+      title, engine: "codex", conversationId: conversation.id,
+    }));
+    const stagingApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    const upload = async (agentId: string, name: string) => {
+      const response = await stagingApp.inject({
+        method: "POST", url: `/api/agents/${agentId}/attachments`,
+        headers: { "content-type": "application/pdf", "x-ponderosa-filename": name },
+        payload: Buffer.from(`%PDF-1.7\n${name}`),
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      return response.json<import("@ponderosa/core").ImageAttachmentDto>();
+    };
+    const phases = ["sqlite-only", "canonical-only", "room-only"] as const;
+    const copies = new Map<string, import("@ponderosa/core").ImageAttachmentDto[]>();
+    for (const phase of phases) {
+      copies.set(phase, await Promise.all(recipients.map((recipient) => upload(recipient.id, `${phase}-${recipient.title}.pdf`))));
+    }
+    await stagingApp.close();
+    store = new AgentStore(dataDir);
+
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const eventIds = new Map<string, string>();
+    for (const [index, phase] of phases.entries()) {
+      const phaseCopies = copies.get(phase)!;
+      const event: CommunicationEvent = {
+        eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
+        audience: { kind: "agents", agentIds: recipients.map((recipient) => recipient.id) as [string, ...string[]] },
+        audienceSelector: "mention", text: "", createdAt: new Date(Date.UTC(2026, 6, 16, 1, index)).toISOString(),
+        attachments: [{ ...phaseCopies[0]!, state: "associated" }],
+      };
+      eventIds.set(phase, event.eventId);
+      coordination.recordRuntimeCommunication({
+        id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent, audience: event.audience,
+        payload: {
+          communication: event,
+          dispatch: {
+            conversationId: conversation.id,
+            text: `#${recipients[0]!.title} #${recipients[1]!.title}`,
+            recipients: recipients.map((recipient, recipientIndex) => ({
+              agentId: recipient.id,
+              attachments: [{
+                id: phaseCopies[recipientIndex]!.id,
+                name: phaseCopies[recipientIndex]!.name,
+                mediaType: phaseCopies[recipientIndex]!.mediaType,
+                size: phaseCopies[recipientIndex]!.size,
+              }],
+            })),
+          },
+        },
+        activations: recipients.map((recipient, recipientIndex) => ({
+          agentId: recipient.id, kind: "human_message", priority: 100,
+          dispatchPolicy: "steer_or_run", promptClass: "human",
+          dedupeKey: `recovery:${event.eventId}:${recipientIndex}`,
+        })),
+        now: event.createdAt,
+      });
+      if (phase !== "sqlite-only") store.appendCommunicationEvent(event);
+      if (phase === "room-only") {
+        store.appendConversationMessage(
+          conversation.id,
+          { role: "user", text: `#${recipients[0]!.title} #${recipients[1]!.title}`, attachments: event.attachments },
+          undefined,
+          "collaboration",
+          recipients.map((recipient) => ({
+            targetAgentId: recipient.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
+          })),
+          undefined,
+          event.eventId,
+        );
+        // Crash after the first recipient was fully materialized, but before
+        // the second recipient's inbox/audit/association handoff.
+        const firstRecipient = recipients[0]!;
+        const firstCopy = phaseCopies[0]!;
+        store.appendCommunicationProjection(project.id, {
+          eventId: event.eventId, surface: "agent_inbox", projectionKey: firstRecipient.id, projectedAt: event.createdAt,
+        });
+        store.appendCommunicationProjection(project.id, {
+          eventId: event.eventId, surface: "direct_agent_audit", projectionKey: firstRecipient.id, projectedAt: event.createdAt,
+          message: {
+            messageId: `${event.eventId}:agent-audit:${firstRecipient.id}`, role: "user",
+            renderedText: `#${recipients[0]!.title} #${recipients[1]!.title}`,
+            createdAt: event.createdAt, attachments: [{ ...firstCopy, state: "associated" }],
+          },
+        });
+        const metadataPath = path.join(
+          dataDir, "projects", project.id, "agents", firstRecipient.id, "attachments", `${firstCopy.id}.json`,
+        );
+        const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+        writeFileSync(metadataPath, JSON.stringify({ ...metadata, state: "associated", associatedAt: event.createdAt }));
+      }
+    }
+
+    let recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    for (const phase of phases) {
+      const eventId = eventIds.get(phase)!;
+      expect(store.getCommunicationEvent(project.id, eventId)?.attachments?.map((item) => item.id))
+        .toEqual([copies.get(phase)![0]!.id]);
+      expect(store.getConversationMessages(conversation.id, "collaboration").filter((message) =>
+        message.communicationEventId === eventId)).toHaveLength(1);
+      for (const [recipientIndex, recipient] of recipients.entries()) {
+        const expected = copies.get(phase)![recipientIndex]!;
+        const audit = store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", recipient.id)
+          .find((message) => message.eventId === eventId);
+        expect(audit?.attachments?.map((item) => item.id)).toEqual([expected.id]);
+        const metadata = JSON.parse(readFileSync(path.join(
+          dataDir, "projects", project.id, "agents", recipient.id, "attachments", `${expected.id}.json`,
+        ), "utf8")) as { state: string };
+        expect(metadata.state).toBe("associated");
+        expect((await recoveredApp.inject({ method: "DELETE", url: `/api/agents/${recipient.id}/attachments/${expected.id}` })).statusCode).toBe(409);
+      }
+    }
+    await recoveredApp.close();
+
+    // A second restart must not append duplicate room/audit placements or make
+    // an associated recipient copy eligible for staged-file cleanup.
+    store = new AgentStore(dataDir);
+    recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    for (const eventId of eventIds.values()) {
+      const projections = store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId);
+      expect(projections.filter((projection) => projection.surface === "collaboration_view")).toHaveLength(1);
+      for (const recipient of recipients) {
+        expect(projections.filter((projection) =>
+          projection.surface === "direct_agent_audit" && projection.projectionKey === recipient.id)).toHaveLength(1);
+      }
+    }
     await recoveredApp.close();
   });
 

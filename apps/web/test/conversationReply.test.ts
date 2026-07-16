@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../src/conversationReply.js";
+import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles, uploadFilesForRecipients } from "../src/conversationReply.js";
 
 describe("conversation Reply Directly routing", () => {
   it("recognizes only a leading standalone #broadcast directive", () => {
@@ -35,5 +35,20 @@ describe("conversation Reply Directly routing", () => {
       async (item) => { cleaned.push(item.id); },
     )).rejects.toThrow("upload failed");
     expect(cleaned).toEqual(["asset-one"]);
+  });
+
+  it("uploads one attachment copy per Collaboration recipient and cleans all copies after a later failure", async () => {
+    const files = [new File(["one"], "one.pdf")];
+    const cleaned: string[] = [];
+    await expect(uploadFilesForRecipients(
+      ["agent-a", "agent-b"],
+      files,
+      async (agentId) => {
+        if (agentId === "agent-b") throw new Error("second recipient failed");
+        return { id: `${agentId}-asset` };
+      },
+      async (agentId, item) => { cleaned.push(`${agentId}:${item.id}`); },
+    )).rejects.toThrow("second recipient failed");
+    expect(cleaned).toEqual(["agent-a:agent-a-asset"]);
   });
 });
