@@ -4,6 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentStore } from "../src/store.js";
+import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
 import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
@@ -95,6 +96,13 @@ function appendCanonicalConversationMessage(
 }
 
 describe("AgentStore — V1 layout", () => {
+  it("enforces exclusive live ownership of a data directory", () => {
+    expect(() => new AgentStore(dir)).toThrow("already owned");
+    store.close();
+    store = new AgentStore(dir);
+    expect(store.listProjects()).toEqual([]);
+  });
+
   it("drops pre-V1 identity and Task-era state while preserving managed source workspaces", () => {
     const legacyDir = join(dir, "legacy-state");
     const workspaceFile = join(legacyDir, "workspaces", "demo", "README.md");
@@ -463,6 +471,44 @@ describe("AgentStore — canonical communication events", () => {
       .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
     expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id))
       .toEqual([expect.objectContaining({ eventId: event.eventId, text: event.text, role: "user" })]);
+  });
+
+  it("fails reconciliation on runtime payload conflicts and orphan Request references", () => {
+    const project = store.createProject({ label: "Integrity", hostPath: "/repo" });
+    const room = store.createConversation(project.id, { title: "Room" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: room.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
+    const event: CommunicationEvent = {
+      eventId: "integrity-event", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "agent", agentId: requester.id, executionId: "run" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Canonical",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendConversationMessage(room.id, { text: "#recipient Canonical" }, requester.id, "collaboration", undefined, undefined, event.eventId);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.recordRuntimeCommunication({
+      id: "integrity-runtime", projectId: project.id, sender: event.sender,
+      intent: event.intent, audience: event.audience, payload: event,
+    });
+    coordination.coordinate({
+      projectId: project.id, conversationId: room.id, requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`, idempotencyKey: "integrity-request",
+      requests: [{ requestId: "integrity-request", recipientAgentId: recipient.id, lifetime: { kind: "indefinite" } }],
+    });
+    coordination.attachRequestCommunication("integrity-request", "missing-event", project.id);
+    store.sqlite.prepare(`UPDATE runtime_communications SET payload_json = ? WHERE id = 'integrity-runtime'`)
+      .run(JSON.stringify({ ...event, text: "Conflicting" }));
+
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({
+      ok: false,
+      orphanRequestCommunicationEventIds: ["missing-event"],
+      runtimePayloadConflicts: [{
+        eventId: event.eventId,
+        canonicalHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        runtimeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }],
+    });
   });
 
   it("append-only enriches placement-only migration records for authoritative reads", () => {

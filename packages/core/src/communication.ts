@@ -297,5 +297,12 @@ export interface CommunicationReconciliationReport {
   orphanProjectionEventIds: string[];
   missingClassificationEventIds: string[];
   missingProjectionMetadataEventIds: string[];
+  orphanRuntimeCommunicationEventIds: string[];
+  orphanRequestCommunicationEventIds: string[];
+  runtimePayloadConflicts: Array<{
+    eventId: string;
+    canonicalHash: string;
+    runtimeHash: string;
+  }>;
   ok: boolean;
 }

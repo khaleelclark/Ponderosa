@@ -101,12 +101,19 @@ export class CoordinationV3Scheduler {
           const steering = this.store.leaseNextSteering({ workerId: this.options.workerId, now });
           if (!steering) break;
           const prompt = formatActivationPrompt(steering);
-          this.store.preparePromptInjection({
-            injectionId: steering.injectionId,
-            runId: steering.runId,
-            fencingToken: steering.fencingToken,
-            prompt,
-          });
+          try {
+            this.store.preparePromptInjection({
+              injectionId: steering.injectionId,
+              runId: steering.runId,
+              fencingToken: steering.fencingToken,
+              prompt,
+            });
+          } catch (error) {
+            // Cancellation/deletion may advance the fence after leasing. That
+            // race is already durably settled and must not reject the drain.
+            this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+            continue;
+          }
           let result: CoordinationV3DispatchResult;
           try {
             result = await this.options.dispatchSteering(steering, prompt);
@@ -114,17 +121,21 @@ export class CoordinationV3Scheduler {
             result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
           }
           if (!result.accepted) {
-            if (result.outcomeUnknown) this.store.markSteeringOutcomeUnknown({
-              injectionId: steering.injectionId,
-              runId: steering.runId,
-              fencingToken: steering.fencingToken,
-            });
-            else this.store.deferSteering({
-              injectionId: steering.injectionId,
-              runId: steering.runId,
-              fencingToken: steering.fencingToken,
-              retryDelayMs: result.retryable === false ? 30_000 : 500,
-            });
+            try {
+              if (result.outcomeUnknown) this.store.markSteeringOutcomeUnknown({
+                injectionId: steering.injectionId,
+                runId: steering.runId,
+                fencingToken: steering.fencingToken,
+              });
+              else this.store.deferSteering({
+                injectionId: steering.injectionId,
+                runId: steering.runId,
+                fencingToken: steering.fencingToken,
+                retryDelayMs: result.retryable === false ? 30_000 : 500,
+              });
+            } catch (error) {
+              this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+            }
           }
         }
       }
@@ -141,12 +152,17 @@ export class CoordinationV3Scheduler {
         this.metrics.claimedRuns += 1;
         const started = (this.options.now ?? Date.now)();
         const prompt = formatActivationPrompt(lease);
-        this.store.preparePromptInjection({
-          injectionId: lease.injectionId,
-          runId: lease.runId,
-          fencingToken: lease.fencingToken,
-          prompt,
-        });
+        try {
+          this.store.preparePromptInjection({
+            injectionId: lease.injectionId,
+            runId: lease.runId,
+            fencingToken: lease.fencingToken,
+            prompt,
+          });
+        } catch (error) {
+          this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+          continue;
+        }
         let result: CoordinationV3DispatchResult;
         try {
           result = await this.dispatch(lease, prompt);
@@ -159,14 +175,18 @@ export class CoordinationV3Scheduler {
         } else {
           this.metrics.rejectedRuns += 1;
           this.metrics.lastDispatchError = result.error ?? "scheduler dispatch rejected";
-          this.store.failRun({
-            runId: lease.runId,
-            fencingToken: lease.fencingToken,
-            workerId: this.options.workerId,
-            sameRunResumable: false,
-            retryDelayMs: result.retryable === false ? 30_000 : 500,
-            now: new Date((this.options.now ?? Date.now)()).toISOString(),
-          });
+          try {
+            this.store.failRun({
+              runId: lease.runId,
+              fencingToken: lease.fencingToken,
+              workerId: this.options.workerId,
+              sameRunResumable: false,
+              retryDelayMs: result.retryable === false ? 30_000 : 500,
+              now: new Date((this.options.now ?? Date.now)()).toISOString(),
+            });
+          } catch (error) {
+            this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+          }
         }
       }
     } finally {
@@ -182,7 +202,11 @@ export class CoordinationV3Scheduler {
     const setTimer = this.options.setTimer ?? setTimeout;
     this.timer = setTimer(() => {
       this.timer = undefined;
-      void this.drainOnce().finally(() => this.schedule(this.options.pollMs ?? 250));
+      void this.drainOnce()
+        .catch((error) => {
+          this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+        })
+        .finally(() => this.schedule(this.options.pollMs ?? 250));
     }, delayMs);
     this.timer.unref?.();
   }

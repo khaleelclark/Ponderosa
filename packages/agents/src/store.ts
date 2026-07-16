@@ -9,6 +9,8 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  openSync,
+  closeSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -137,6 +139,53 @@ interface ProjectJson {
   lastUsedAt?: string;
   defaultEngine: string;
   lastConversationId?: string;
+}
+
+interface DataDirectoryOwnership {
+  path: string;
+  token: string;
+}
+
+function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
+  const path = join(dataDir, ".ponderosa-daemon.lock");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = randomUUID();
+    try {
+      const descriptor = openSync(path, "wx", 0o600);
+      try {
+        writeFileSync(descriptor, JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() }), "utf8");
+      } finally {
+        closeSync(descriptor);
+      }
+      return { path, token };
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+      if (code !== "EEXIST") throw error;
+      let owner: { pid?: number; token?: string } = {};
+      try { owner = JSON.parse(readFileSync(path, "utf8")) as { pid?: number; token?: string }; } catch { /* stale malformed lock */ }
+      let alive = false;
+      if (Number.isSafeInteger(owner.pid) && owner.pid! > 0) {
+        try { process.kill(owner.pid!, 0); alive = true; } catch { /* stale owner */ }
+      }
+      if (alive) throw new Error(`data directory is already owned by Ponderosa process ${owner.pid}`);
+      // Remove only the stale record we inspected; a changed token means
+      // another contender already acquired ownership.
+      try {
+        const current = JSON.parse(readFileSync(path, "utf8")) as { token?: string };
+        if (current.token !== owner.token) continue;
+      } catch { /* malformed stale record remains removable */ }
+      rmSync(path, { force: true });
+    }
+  }
+  throw new Error("could not acquire exclusive Ponderosa data-directory ownership");
+}
+
+function releaseDataDirectoryOwnership(ownership: DataDirectoryOwnership | undefined): void {
+  if (!ownership) return;
+  try {
+    const current = JSON.parse(readFileSync(ownership.path, "utf8")) as { token?: string };
+    if (current.token === ownership.token) rmSync(ownership.path, { force: true });
+  } catch { /* a missing/replaced lock is no longer ours */ }
 }
 
 interface AgentJson {
@@ -287,22 +336,31 @@ export class AgentStore {
     byTuple: Map<string, CommunicationProjection>;
   }>();
   private readonly messageDispatchCache = new Map<string, MessageDispatchRecord[]>();
+  private ownership?: DataDirectoryOwnership;
+  private closed = false;
 
   constructor(private readonly dataDir: string) {
     ensureV1Layout(dataDir);
     mkdirSync(dataDir, { recursive: true });
     mkdirSync(projectsDir(dataDir), { recursive: true });
+    this.ownership = acquireDataDirectoryOwnership(dataDir);
     this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
     this.deliverySequence = readJsonLines<{ sequence: number }>(this.deliverySequenceFile)
       .reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
-    const opened = openDb(dbPath(dataDir));
-    this.db = opened.db;
-    this.client = opened.client;
-    // Canonical files are written before their SQLite projections. Rebuilding
-    // on startup closes the crash window where a durable append succeeded but
-    // the projection write did not, and keeps every read path deterministic.
-    this.rebuildProjections();
-    for (const project of this.listProjects()) this.ensureCommunicationProjectionLedger(project.id);
+    try {
+      const opened = openDb(dbPath(dataDir));
+      this.db = opened.db;
+      this.client = opened.client;
+      // Canonical files are written before their SQLite projections. Rebuilding
+      // on startup closes the crash window where a durable append succeeded but
+      // the projection write did not, and keeps every read path deterministic.
+      this.rebuildProjections();
+      for (const project of this.listProjects()) this.ensureCommunicationProjectionLedger(project.id);
+    } catch (error) {
+      releaseDataDirectoryOwnership(this.ownership);
+      this.ownership = undefined;
+      throw error;
+    }
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
@@ -748,6 +806,63 @@ export class AgentStore {
     const missingProjectionMetadataEventIds = [...new Set(projections
       .filter((projection) => (projection.surface === "conversation" || projection.surface === "collaboration_view" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
+    const canonicalById = new Map(canonical.map((event) => [event.eventId, event]));
+    const runtimeRows = this.client.prepare(`
+      SELECT payload_json FROM runtime_communications WHERE project_id = ? ORDER BY id
+    `).all(projectId) as Array<{ payload_json: string }>;
+    const orphanRuntimeCommunicationEventIds: string[] = [];
+    const runtimePayloadConflicts: CommunicationReconciliationReport["runtimePayloadConflicts"] = [];
+    const stable = (value: unknown): unknown => Array.isArray(value)
+      ? value.map(stable)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value as Record<string, unknown>)
+            .filter(([, item]) => item !== undefined)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, item]) => [key, stable(item)]))
+        : value;
+    const canonicalizeAudience = (value: Record<string, unknown>): Record<string, unknown> => {
+      if (value.schemaVersion !== 2 || !value.audience || typeof value.audience !== "object") return value;
+      const audience = value.audience as Record<string, unknown>;
+      if (value.intent === "collaboration" && audience.kind === "agents" && Array.isArray(audience.agentIds)) {
+        return { ...value, audience: { ...audience, agentIds: [...new Set(audience.agentIds)].sort() } };
+      }
+      if (value.intent === "user_dm" && audience.kind === "user_agents" && Array.isArray(audience.agentIds)) {
+        return { ...value, audience: { ...audience, agentIds: [...new Set(audience.agentIds)].sort() } };
+      }
+      return value;
+    };
+    const digest = (value: Record<string, unknown>) => createHash("sha256")
+      .update(JSON.stringify(stable(canonicalizeAudience(value))))
+      .digest("hex");
+    for (const row of runtimeRows) {
+      const payload = JSON.parse(row.payload_json) as unknown;
+      if (!payload || typeof payload !== "object") continue;
+      const root = payload as Record<string, unknown>;
+      const candidate = root.communication && typeof root.communication === "object"
+        ? root.communication as Record<string, unknown>
+        : root;
+      if (typeof candidate.eventId !== "string") continue;
+      const expected = canonicalById.get(candidate.eventId);
+      if (!expected) {
+        orphanRuntimeCommunicationEventIds.push(candidate.eventId);
+        continue;
+      }
+      const canonicalHash = digest(expected as unknown as Record<string, unknown>);
+      const runtimeHash = digest(candidate);
+      if (canonicalHash !== runtimeHash) runtimePayloadConflicts.push({
+        eventId: candidate.eventId,
+        canonicalHash,
+        runtimeHash,
+      });
+    }
+    const orphanRequestCommunicationEventIds = (this.client.prepare(`
+      SELECT DISTINCT communication_event_id
+      FROM coordination_requests
+      WHERE project_id = ? AND communication_event_id IS NOT NULL
+      ORDER BY communication_event_id
+    `).all(projectId) as Array<{ communication_event_id: string }>)
+      .map((row) => row.communication_event_id)
+      .filter((eventId) => !canonicalIds.has(eventId));
     return {
       projectId,
       canonicalEvents: canonical.length,
@@ -757,9 +872,13 @@ export class AgentStore {
       orphanProjectionEventIds,
       missingClassificationEventIds,
       missingProjectionMetadataEventIds,
+      orphanRuntimeCommunicationEventIds: [...new Set(orphanRuntimeCommunicationEventIds)].sort(),
+      orphanRequestCommunicationEventIds,
+      runtimePayloadConflicts,
       ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
         orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
-        missingProjectionMetadataEventIds.length === 0,
+        missingProjectionMetadataEventIds.length === 0 && orphanRuntimeCommunicationEventIds.length === 0 &&
+        orphanRequestCommunicationEventIds.length === 0 && runtimePayloadConflicts.length === 0,
     };
   }
 
@@ -850,12 +969,43 @@ export class AgentStore {
     return { ...current, label };
   }
 
-  /** Permanently remove the canonical project tree and every rebuildable projection. */
-  deleteProject(id: string): boolean {
+  /** Permanently remove the canonical project tree and every rebuildable
+   * projection. The callback shares the projection-deletion transaction so
+   * authoritative runtime state cannot survive a deleted Project row. */
+  deleteProject(id: string, beforeProjectionDelete?: (projectId: string) => void): boolean {
     const current = this.getProject(id);
     if (!current) return false;
     const agentIds = this.listAgents(id).map((agent) => agent.id);
-    rmSync(projectDir(this.dataDir, id), { recursive: true, force: true });
+    const canonicalDir = projectDir(this.dataDir, id);
+    const deletingDir = join(dirname(canonicalDir), `.${id}.deleting-${randomUUID()}`);
+    renameSync(canonicalDir, deletingDir);
+    try {
+      this.db.transaction(() => {
+        beforeProjectionDelete?.(id);
+        this.client.prepare(`DELETE FROM events WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM artifacts WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM work_items WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM runs WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM messages WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM agent_conversation_memberships WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
+          .run(id);
+        this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM agents WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+      });
+    } catch (error) {
+      renameSync(deletingDir, canonicalDir);
+      throw error;
+    }
+    // A crash before this cleanup leaves a hidden tombstone directory which
+    // startup projection repair already discards rather than resurrecting.
+    rmSync(deletingDir, { recursive: true, force: true });
     this.communicationEventCache.delete(id);
     this.contextClassificationCache.delete(id);
     this.communicationProjectionCache.delete(id);
@@ -864,7 +1014,6 @@ export class AgentStore {
       this.logs.delete(agentId);
       this.states.delete(agentId);
     }
-    this.rebuildProjections();
     return true;
   }
 
@@ -1438,6 +1587,7 @@ export class AgentStore {
   updateAgentConversationMemberships(
     id: string,
     input: UpdateAgentConversationMembershipsRequest,
+    beforeMembershipProjectionChange?: (agentId: string, removedConversationIds: string[]) => void,
   ): AgentDto | undefined {
     const agent = this.getAgent(id);
     if (!agent) return undefined;
@@ -1452,7 +1602,9 @@ export class AgentStore {
       if (!master || master.projectId !== agent.projectId) throw new Error("conversation does not belong to project");
       if (master.archived && !agent.conversationIds.includes(conversationId)) throw new Error("archived conversation cannot accept agents");
     }
-    this.persistAgentMemberships(id, ids, input.primaryConversationId);
+    const removedConversationIds = agent.conversationIds.filter((conversationId) => !ids.includes(conversationId));
+    this.persistAgentMemberships(id, ids, input.primaryConversationId, () =>
+      beforeMembershipProjectionChange?.(id, removedConversationIds));
     return this.getAgent(id);
   }
 
@@ -2084,7 +2236,11 @@ export class AgentStore {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.client.close();
+    releaseDataDirectoryOwnership(this.ownership);
+    this.ownership = undefined;
   }
 
   // ─── internals ─────────────────────────────────────────────────────────────
@@ -2284,7 +2440,12 @@ export class AgentStore {
   }
 
 
-  private persistAgentMemberships(id: string, conversationIds: string[], primaryConversationId?: string): void {
+  private persistAgentMemberships(
+    id: string,
+    conversationIds: string[],
+    primaryConversationId?: string,
+    beforeProjectionChange?: () => void,
+  ): void {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
     if (!row) throw new Error(`unknown agent: ${id}`);
     const now = new Date().toISOString();
@@ -2292,13 +2453,19 @@ export class AgentStore {
     const json = readJson<AgentJson>(jsonPath);
     // Canonical metadata is committed first; SQLite remains a rebuildable projection.
     writeJson(jsonPath, { ...json, conversationId: primaryConversationId, conversationIds, updatedAt: now });
-    this.db.transaction((tx) => {
-      tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-      conversationIds.forEach((conversationId, position) => {
-        tx.insert(agentConversationMemberships).values({ agentId: id, conversationId, position }).run();
+    try {
+      this.db.transaction((tx) => {
+        beforeProjectionChange?.();
+        tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
+        conversationIds.forEach((conversationId, position) => {
+          tx.insert(agentConversationMemberships).values({ agentId: id, conversationId, position }).run();
+        });
+        tx.update(agents).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(agents.id, id)).run();
       });
-      tx.update(agents).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(agents.id, id)).run();
-    });
+    } catch (error) {
+      writeJson(jsonPath, json);
+      throw error;
+    }
   }
 
   private conversationRowToDto(row: typeof conversations.$inferSelect): ConversationDto {

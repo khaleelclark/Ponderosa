@@ -133,6 +133,7 @@ export const events = sqliteTable("events", {
 export const coordinationRequests = sqliteTable("coordination_requests", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id"),
   requesterAgentId: text("requester_agent_id"),
   recipientAgentId: text("recipient_agent_id").notNull(),
   communicationEventId: text("communication_event_id"),
@@ -165,6 +166,7 @@ export const coordinationRequestUpdates = sqliteTable("coordination_request_upda
 export const coordinationJoins = sqliteTable("coordination_joins", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id"),
   ownerAgentId: text("owner_agent_id").notNull(),
   mode: text("mode").notNull(),
   quorum: integer("quorum").notNull(),
@@ -187,6 +189,7 @@ export const agentActivations = sqliteTable("agent_activations", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
   agentId: text("agent_id").notNull(),
+  scopeKey: text("scope_key").notNull().default(""),
   kind: text("kind").notNull(),
   priority: integer("priority").notNull(),
   dispatchPolicy: text("dispatch_policy").notNull(),
@@ -215,6 +218,8 @@ export const schedulerRuns = sqliteTable("scheduler_runs", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),
   agentId: text("agent_id").notNull(),
+  scopeKey: text("scope_key").notNull().default(""),
+  contextDisposition: text("context_disposition").notNull().default("fresh_task"),
   status: text("status").notNull(),
   leaseOwner: text("lease_owner").notNull(),
   leaseExpiresAt: text("lease_expires_at").notNull(),

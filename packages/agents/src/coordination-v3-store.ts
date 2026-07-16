@@ -19,9 +19,16 @@ import {
 
 type Actor = { kind: "agent" | "user" | "system" | "supervisor"; id?: string };
 
+export interface RunAuthorizationV3 {
+  runId: string;
+  agentId: string;
+  fencingToken: number;
+}
+
 interface RequestRow {
   id: string;
   project_id: string;
+  conversation_id: string | null;
   requester_agent_id: string | null;
   recipient_agent_id: string;
   state: CoordinationRequestState;
@@ -36,6 +43,7 @@ interface RequestRow {
 interface JoinRow {
   id: string;
   project_id: string;
+  conversation_id: string | null;
   owner_agent_id: string;
   mode: CoordinationJoinMode;
   quorum: number;
@@ -49,6 +57,7 @@ interface ActivationRow {
   id: string;
   project_id: string;
   agent_id: string;
+  scope_key: string;
   kind: string;
   priority: number;
   dispatch_policy: ActivationDispatchPolicy;
@@ -63,9 +72,14 @@ interface ActivationRow {
 
 export interface CoordinateV3Input {
   projectId: string;
+  /** Team Chat authorization boundary. Provider-authored coordination must set this. */
+  conversationId?: string;
   requesterAgentId?: string;
   actorScope: string;
   idempotencyKey: string;
+  /** Required for provider-authored mutations. Checked in the same SQLite
+   * transaction as the mutation so cancellation cannot race authorization. */
+  runAuthorization?: RunAuthorizationV3;
   requests: Array<{
     requestId?: string;
     recipientAgentId: string;
@@ -96,6 +110,8 @@ export interface UpdateRequestV3Input {
   updateId: string;
   kind: CoordinationRequestUpdateKind;
   actor: Actor;
+  /** Provider-authored updates may only target requests attached to this Run. */
+  runAuthorization?: RunAuthorizationV3;
   inReplyToUpdateId?: string;
   payload?: unknown;
   now?: string;
@@ -122,6 +138,7 @@ export interface SchedulerLease {
   runId: string;
   projectId: string;
   agentId: string;
+  scopeKey: string;
   fencingToken: number;
   leaseOwner: string;
   leaseExpiresAt: string;
@@ -147,6 +164,9 @@ export interface RuntimeCommunicationV3Input {
   intent: string;
   audience: unknown;
   payload: unknown;
+  scopeKey?: string;
+  /** Required for provider-authored communications. */
+  runAuthorization?: RunAuthorizationV3;
   activation?: {
     agentId: string;
     kind: string;
@@ -191,10 +211,17 @@ export interface PendingActivationV3View {
   createdAt: string;
 }
 
+export interface CoordinationWaitCycleV3 {
+  agentIds: string[];
+  requestIds: string[];
+  oldestRequestAt: string;
+}
+
 export interface SteeringLease {
   runId: string;
   projectId: string;
   agentId: string;
+  scopeKey: string;
   fencingToken: number;
   injectionId: string;
   providerSessionId?: string;
@@ -230,6 +257,7 @@ export interface OutboxItem {
 export interface EnqueueMessageActivationInput {
   projectId: string;
   agentId: string;
+  scopeKey?: string;
   messageId: string;
   kind: "human" | "urgent" | "ordinary";
   dispatchPolicy?: ActivationDispatchPolicy;
@@ -304,6 +332,7 @@ export class CoordinationV3Store {
     };
     const hash = payloadHash(canonical);
     return this.sqlite.transaction(() => {
+      if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
       this.requireProject(input.projectId);
       const existing = this.sqlite.prepare(`
         SELECT payload_hash FROM runtime_communications WHERE id = ?
@@ -337,6 +366,7 @@ export class CoordinationV3Store {
       const activationIds = activationInputs.map((activation, index) => this.createActivation({
         projectId: input.projectId,
         agentId: activation.agentId,
+        scopeKey: input.scopeKey ?? this.communicationScopeKey(input.payload, activation.agentId),
         kind: activation.kind,
         priority: activation.priority,
         dispatchPolicy: activation.dispatchPolicy,
@@ -541,6 +571,23 @@ export class CoordinationV3Store {
     return rows.map((row) => row.requester_agent_id);
   }
 
+  /** Ordinary recipient-to-requester messages during correlated work are
+   * audit copies regardless of provider tool order. The Request or Join owns
+   * the single actionable wake; urgent messages remain an explicit override. */
+  requesterIdsForRun(runId: string, agentId: string): string[] {
+    const requestIds = this.requestIdsAttachedToRun(runId, agentId);
+    if (requestIds.length === 0) return [];
+    const placeholders = requestIds.map(() => "?").join(", ");
+    return (this.sqlite.prepare(`
+      SELECT DISTINCT requester_agent_id
+      FROM coordination_requests
+      WHERE id IN (${placeholders}) AND recipient_agent_id = ?
+        AND requester_agent_id IS NOT NULL
+      ORDER BY requester_agent_id
+    `).all(...requestIds, agentId) as Array<{ requester_agent_id: string }>)
+      .map((row) => row.requester_agent_id);
+  }
+
   /** Whether this Run consumes creation of a new request addressed to the
    * recipient. V3.1 uses this durable causal edge to select a fresh provider
    * cache without conflating provider memory with agent identity. Request
@@ -561,39 +608,74 @@ export class CoordinationV3Store {
     return Boolean(row);
   }
 
+  /** A provider cache is scoped to one Team Chat at a time. Switching an
+   * Agent between chats must reseed rather than carrying hidden context across
+   * membership boundaries. */
+  runChangesScope(runId: string, agentId: string): boolean {
+    const current = this.sqlite.prepare(`
+      SELECT scope_key FROM scheduler_runs WHERE id = ? AND agent_id = ?
+    `).get(runId, agentId) as { scope_key: string } | undefined;
+    if (!current) throw new Error("run not found");
+    const previous = this.sqlite.prepare(`
+      SELECT scope_key FROM scheduler_runs
+      WHERE agent_id = ? AND id <> ?
+      ORDER BY created_at DESC, rowid DESC LIMIT 1
+    `).get(agentId, runId) as { scope_key: string } | undefined;
+    return Boolean(previous && previous.scope_key !== current.scope_key);
+  }
+
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
     if (!input.idempotencyKey.trim()) throw new Error("idempotencyKey is required");
     if (input.requests.length === 0 && !input.join?.requestIds?.length) {
       throw new Error("at least one new or existing request is required");
     }
     const normalized = {
-      ...input,
+      projectId: input.projectId,
+      conversationId: input.conversationId ?? null,
+      requesterAgentId: input.requesterAgentId,
+      actorScope: input.actorScope,
+      idempotencyKey: input.idempotencyKey,
       requests: input.requests.map((request) => ({ ...request, requestId: request.requestId ?? null })),
       join: input.join ? { ...input.join, id: input.join.id ?? null } : null,
     };
     const hash = payloadHash(normalized);
 
     return this.sqlite.transaction(() => {
+      if (input.runAuthorization) this.requireAuthorizedRun(
+        input.runAuthorization,
+        input.conversationId ? `conversation:${input.conversationId}` : undefined,
+      );
       const replay = this.idempotentReplay<CoordinateV3Result>(
         input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash,
       );
       if (replay) return { ...replay, replayed: true };
       this.requireProject(input.projectId);
       if (input.requesterAgentId) this.requireAgent(input.projectId, input.requesterAgentId);
+      if (input.runAuthorization && !input.conversationId) {
+        throw new Error("provider coordination requires a Team Chat scope");
+      }
+      if (input.conversationId) {
+        this.requireConversation(input.projectId, input.conversationId);
+        if (input.requesterAgentId) this.requireConversationMember(input.conversationId, input.requesterAgentId);
+      }
+      const scopeKey = input.conversationId
+        ? `conversation:${input.conversationId}`
+        : `agent:${input.requesterAgentId ?? input.requests[0]?.recipientAgentId ?? "system"}`;
 
       const requestIds: string[] = [];
       for (const request of input.requests) {
         this.requireAgent(input.projectId, request.recipientAgentId);
+        if (input.conversationId) this.requireConversationMember(input.conversationId, request.recipientAgentId);
         this.validateLifetime(request.lifetime, now);
         const requestId = request.requestId ?? randomUUID();
         this.sqlite.prepare(`
           INSERT INTO coordination_requests (
-            id, project_id, requester_agent_id, recipient_agent_id,
+            id, project_id, conversation_id, requester_agent_id, recipient_agent_id,
             communication_event_id, payload_json, state, version, lifetime_kind, deadline_at,
             created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?)
         `).run(
-          requestId, input.projectId, input.requesterAgentId ?? null,
+          requestId, input.projectId, input.conversationId ?? null, input.requesterAgentId ?? null,
           request.recipientAgentId, request.communicationEventId ?? null,
           stableJson(request.payload ?? null),
           request.lifetime.kind,
@@ -604,6 +686,7 @@ export class CoordinationV3Store {
         this.createActivation({
           projectId: input.projectId,
           agentId: request.recipientAgentId,
+          scopeKey,
           kind: "coordination_request",
           priority: PRIORITY.request,
           dedupeKey: `request:${requestId}:created`,
@@ -621,9 +704,10 @@ export class CoordinationV3Store {
         const newRecipientIds = new Set(input.requests.map((request) => request.recipientAgentId));
         for (const requestId of input.join.requestIds ?? []) {
           const existing = this.sqlite.prepare(`
-            SELECT project_id, requester_agent_id FROM coordination_requests WHERE id = ?
-          `).get(requestId) as { project_id: string; requester_agent_id: string | null } | undefined;
-          if (existing?.project_id === input.projectId && existing.requester_agent_id === input.requesterAgentId) {
+            SELECT project_id, conversation_id, requester_agent_id FROM coordination_requests WHERE id = ?
+          `).get(requestId) as { project_id: string; conversation_id: string | null; requester_agent_id: string | null } | undefined;
+          if (existing?.project_id === input.projectId && existing.requester_agent_id === input.requesterAgentId &&
+              existing.conversation_id === (input.conversationId ?? null)) {
             existingMemberRequestIds.push(requestId);
             continue;
           }
@@ -639,6 +723,7 @@ export class CoordinationV3Store {
         for (const requestId of continuationRequestIds) {
           const continuation = this.getRequestRow(requestId);
           if (continuation.project_id !== input.projectId || continuation.recipient_agent_id !== input.requesterAgentId ||
+              continuation.conversation_id !== (input.conversationId ?? null) ||
               TERMINAL_REQUEST_STATES.has(continuation.state)) {
             throw new Error("every join continuation must be a nonterminal request assigned to the join owner");
           }
@@ -655,6 +740,7 @@ export class CoordinationV3Store {
           throw new Error("join deadline must be a future ISO timestamp");
         }
         const definitionHash = payloadHash({
+          conversationId: input.conversationId ?? null,
           requestIds: [...memberRequestIds].sort(),
           mode,
           quorum,
@@ -676,12 +762,12 @@ export class CoordinationV3Store {
         }
         this.sqlite.prepare(`
           INSERT INTO coordination_joins (
-            id, project_id, owner_agent_id, mode, quorum,
+            id, project_id, conversation_id, owner_agent_id, mode, quorum,
             satisfying_outcomes_json, state, deadline_at, definition_hash,
             continuation_request_ids_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
         `).run(
-          joinId, input.projectId, input.requesterAgentId, mode, quorum,
+          joinId, input.projectId, input.conversationId ?? null, input.requesterAgentId, mode, quorum,
           stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash,
           stableJson(continuationRequestIds), now, now,
         );
@@ -717,6 +803,7 @@ export class CoordinationV3Store {
       return this.createActivation({
         projectId: input.projectId,
         agentId: input.agentId,
+        scopeKey: input.scopeKey ?? `agent:${input.agentId}`,
         kind: `${input.kind}_message`,
         priority: input.kind === "human" ? PRIORITY.human : input.kind === "urgent" ? PRIORITY.urgent : PRIORITY.ordinary,
         dispatchPolicy: input.dispatchPolicy ?? (input.kind === "ordinary" ? "next_run" : "steer_or_run"),
@@ -782,6 +869,72 @@ export class CoordinationV3Store {
     };
   }
 
+  /** Diagnose long-lived indefinite wait cycles without rejecting flexible
+   * organization shapes. Consumers may surface these as operational warnings. */
+  waitGraphCycles(
+    now = new Date().toISOString(),
+    minimumAgeMs = 5 * 60_000,
+  ): CoordinationWaitCycleV3[] {
+    const cutoff = new Date(Date.parse(now) - Math.max(0, minimumAgeMs)).toISOString();
+    const edges = this.sqlite.prepare(`
+      SELECT id, requester_agent_id, recipient_agent_id, created_at
+      FROM coordination_requests
+      WHERE requester_agent_id IS NOT NULL AND lifetime_kind = 'indefinite'
+        AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+        AND created_at <= ?
+      ORDER BY created_at, id
+    `).all(cutoff) as Array<{
+      id: string; requester_agent_id: string; recipient_agent_id: string; created_at: string;
+    }>;
+    const graph = new Map<string, Set<string>>();
+    for (const edge of edges) {
+      graph.set(edge.requester_agent_id, graph.get(edge.requester_agent_id) ?? new Set());
+      graph.get(edge.requester_agent_id)!.add(edge.recipient_agent_id);
+      if (!graph.has(edge.recipient_agent_id)) graph.set(edge.recipient_agent_id, new Set());
+    }
+    let index = 0;
+    const indices = new Map<string, number>();
+    const low = new Map<string, number>();
+    const stack: string[] = [];
+    const stacked = new Set<string>();
+    const components: string[][] = [];
+    const visit = (agentId: string): void => {
+      indices.set(agentId, index);
+      low.set(agentId, index);
+      index += 1;
+      stack.push(agentId);
+      stacked.add(agentId);
+      for (const target of graph.get(agentId) ?? []) {
+        if (!indices.has(target)) {
+          visit(target);
+          low.set(agentId, Math.min(low.get(agentId)!, low.get(target)!));
+        } else if (stacked.has(target)) {
+          low.set(agentId, Math.min(low.get(agentId)!, indices.get(target)!));
+        }
+      }
+      if (low.get(agentId) !== indices.get(agentId)) return;
+      const component: string[] = [];
+      while (stack.length) {
+        const member = stack.pop()!;
+        stacked.delete(member);
+        component.push(member);
+        if (member === agentId) break;
+      }
+      if (component.length > 1) components.push(component.sort());
+    };
+    for (const agentId of [...graph.keys()].sort()) if (!indices.has(agentId)) visit(agentId);
+    return components.map((agentIds) => {
+      const members = new Set(agentIds);
+      const cycleEdges = edges.filter((edge) =>
+        members.has(edge.requester_agent_id) && members.has(edge.recipient_agent_id));
+      return {
+        agentIds,
+        requestIds: cycleEdges.map((edge) => edge.id).sort(),
+        oldestRequestAt: cycleEdges.map((edge) => edge.created_at).sort()[0]!,
+      };
+    });
+  }
+
   agentSnapshot(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto {
     const requests = this.sqlite.prepare(`
       SELECT id, requester_agent_id, recipient_agent_id, state, version, deadline_at, updated_at
@@ -811,11 +964,12 @@ export class CoordinationV3Store {
       ORDER BY created_at DESC, id DESC LIMIT 100
     `).all(agentId) as Array<{ id: string; kind: string; priority: number; state: string; created_at: string }>;
     const activeRun = this.sqlite.prepare(`
-      SELECT id, status, fencing_token, prompt_injection_state, lease_expires_at
+      SELECT id, status, fencing_token, prompt_injection_state, context_disposition, lease_expires_at
       FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
     `).get(agentId) as {
       id: string; status: string; fencing_token: number;
-      prompt_injection_state: "not_injected" | "injecting" | "injected"; lease_expires_at: string;
+      prompt_injection_state: "not_injected" | "injecting" | "injected";
+      context_disposition: "fresh_task" | "continued_session" | "reseeded"; lease_expires_at: string;
     } | undefined;
     return {
       availability: this.getAgentAvailability(agentId),
@@ -843,6 +997,7 @@ export class CoordinationV3Store {
       ...(activeRun ? { activeRun: {
         id: activeRun.id, status: activeRun.status, fencingToken: activeRun.fencing_token,
         promptInjectionState: activeRun.prompt_injection_state,
+        providerContextDisposition: activeRun.context_disposition,
         leaseExpiresAt: activeRun.lease_expires_at,
       } } : {}),
     };
@@ -859,6 +1014,11 @@ export class CoordinationV3Store {
     };
     const hash = payloadHash(replayPayload);
     return this.sqlite.transaction(() => {
+      if (input.runAuthorization) {
+        this.requireAuthorizedRun(input.runAuthorization);
+        const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
+        if (!attached.includes(input.requestId)) throw new Error("request is not attached to the authoritative run");
+      }
       const existing = this.sqlite.prepare(`
         SELECT request_id, actor_kind, actor_id, payload_hash, resulting_state, resulting_version
         FROM coordination_request_updates WHERE id = ?
@@ -1050,6 +1210,10 @@ export class CoordinationV3Store {
 
   handleAgentDeletion(agentId: string, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {
+      // This is intentionally idempotent with the server's pre-interrupt call.
+      // Keeping it here makes direct store callers uphold the same fence-first
+      // deletion invariant inside the projection-deletion transaction.
+      this.cancelAgentRun({ agentId, idempotencyKey: `agent-delete:${agentId}`, now });
       const owned = this.sqlite.prepare(`
         SELECT id FROM coordination_joins WHERE owner_agent_id = ? AND state = 'open'
       `).all(agentId) as Array<{ id: string }>;
@@ -1082,6 +1246,134 @@ export class CoordinationV3Store {
     })();
   }
 
+  /** Revoke one explicit Team Chat capability without affecting the Agent's
+   * memberships or work in its other chats. */
+  handleAgentConversationRemoval(
+    agentId: string,
+    conversationId: string,
+    now = new Date().toISOString(),
+  ): void {
+    this.sqlite.transaction(() => {
+      const scopeKey = `conversation:${conversationId}`;
+      const active = this.sqlite.prepare(`
+        SELECT 1 FROM scheduler_runs
+        WHERE agent_id = ? AND scope_key = ? AND status IN ('leased', 'running')
+      `).get(agentId, scopeKey);
+      if (active) this.cancelAgentRun({
+        agentId,
+        idempotencyKey: `conversation-removal:${conversationId}:${agentId}`,
+        now,
+      });
+      const joins = this.sqlite.prepare(`
+        SELECT id FROM coordination_joins
+        WHERE owner_agent_id = ? AND conversation_id = ? AND state = 'open'
+      `).all(agentId, conversationId) as Array<{ id: string }>;
+      for (const join of joins) this.cancelJoin(join.id, agentId, now);
+      const received = this.sqlite.prepare(`
+        SELECT id FROM coordination_requests
+        WHERE recipient_agent_id = ? AND conversation_id = ?
+          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+      `).all(agentId, conversationId) as Array<{ id: string }>;
+      for (const request of received) this.updateRequest({
+        requestId: request.id,
+        updateId: `system:conversation-recipient-unavailable:${conversationId}:${request.id}`,
+        kind: "recipient_unavailable",
+        actor: { kind: "system", id: "conversation-membership-removal" },
+        payload: { conversationId },
+        now,
+      });
+      const requested = this.sqlite.prepare(`
+        SELECT id FROM coordination_requests
+        WHERE requester_agent_id = ? AND conversation_id = ?
+          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+      `).all(agentId, conversationId) as Array<{ id: string }>;
+      for (const request of requested) this.updateRequest({
+        requestId: request.id,
+        updateId: `user:conversation-request-cancelled:${conversationId}:${request.id}`,
+        kind: "cancelled",
+        actor: { kind: "user", id: "local-operator" },
+        payload: { conversationId, reason: "requester_removed_from_conversation" },
+        now,
+      });
+      this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        WHERE agent_id = ? AND scope_key = ? AND state IN ('pending', 'retry_pending')
+      `).run(now, agentId, scopeKey);
+    })();
+  }
+
+  /** Fence and settle a whole project before any provider process is stopped.
+   * The canonical project still exists during this phase, so a crash leaves a
+   * retryable deletion with no live scheduler ownership. */
+  prepareProjectDeletion(projectId: string, now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => {
+      this.requireProject(projectId);
+      const activeAgents = this.sqlite.prepare(`
+        SELECT agent_id FROM scheduler_runs
+        WHERE project_id = ? AND status IN ('leased', 'running')
+        ORDER BY agent_id
+      `).all(projectId) as Array<{ agent_id: string }>;
+      for (const { agent_id } of activeAgents) {
+        this.cancelAgentRun({ agentId: agent_id, idempotencyKey: `project-delete:${projectId}:${agent_id}`, now });
+      }
+      this.sqlite.prepare(`
+        UPDATE coordination_joins
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE project_id = ? AND state = 'open'
+      `).run(now, now, projectId);
+      this.sqlite.prepare(`
+        UPDATE coordination_requests
+        SET state = 'cancelled', version = version + 1, open_question_update_id = NULL,
+            updated_at = ?, terminal_at = ?
+        WHERE project_id = ? AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+      `).run(now, now, projectId);
+      this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        WHERE project_id = ? AND state IN ('pending', 'retry_pending', 'attached')
+      `).run(now, projectId);
+    })();
+  }
+
+  /** Remove every authoritative V3 row for a project. Call from the same
+   * SQLite transaction that deletes the canonical project projections. */
+  purgeProject(projectId: string): void {
+    this.sqlite.transaction(() => {
+      this.sqlite.prepare(`DELETE FROM activation_outbox WHERE activation_id IN (
+        SELECT id FROM agent_activations WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM provider_operation_outbox WHERE run_id IN (
+        SELECT id FROM scheduler_runs WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM scheduler_cancellation_receipts WHERE agent_id IN (
+        SELECT id FROM agents WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM scheduler_prompt_injections WHERE run_id IN (
+        SELECT id FROM scheduler_runs WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM scheduler_run_activations WHERE run_id IN (
+        SELECT id FROM scheduler_runs WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM scheduler_runs WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id IN (
+        SELECT id FROM agent_activations WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM agent_activations WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM coordination_join_members WHERE join_id IN (
+        SELECT id FROM coordination_joins WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM coordination_joins WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM coordination_request_updates WHERE request_id IN (
+        SELECT id FROM coordination_requests WHERE project_id = ?
+      )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM coordination_requests WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM runtime_communications WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM coordination_idempotency WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM scheduler_agent_fences WHERE agent_id IN (
+        SELECT id FROM agents WHERE project_id = ?
+      )`).run(projectId);
+    })();
+  }
+
   leaseNextRun(input: {
     workerId: string;
     now?: string;
@@ -1094,7 +1386,7 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       this.recoverExpiredUninjectedRuns(now);
       const candidate = this.sqlite.prepare(`
-        SELECT a.agent_id, a.project_id
+        SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
           AND NOT EXISTS (
@@ -1103,13 +1395,14 @@ export class CoordinationV3Store {
           )
         ORDER BY a.priority DESC, a.created_at, a.id
         LIMIT 1
-      `).get(now) as { agent_id: string; project_id: string } | undefined;
+      `).get(now) as { agent_id: string; project_id: string; scope_key: string } | undefined;
       if (!candidate) return undefined;
       const queuedActivations = this.sqlite.prepare(`
         SELECT * FROM agent_activations
-        WHERE agent_id = ? AND state IN ('pending', 'retry_pending') AND available_at <= ?
+        WHERE agent_id = ? AND scope_key = ?
+          AND state IN ('pending', 'retry_pending') AND available_at <= ?
         ORDER BY priority DESC, created_at, id LIMIT 64
-      `).all(candidate.agent_id, now) as ActivationRow[];
+      `).all(candidate.agent_id, candidate.scope_key, now) as ActivationRow[];
       // A new inbound request starts a fresh provider task context. Human
       // messages, join resumptions, answers, and blockers retain continuity,
       // so combining the two classes would make session disposition ambiguous.
@@ -1126,10 +1419,10 @@ export class CoordinationV3Store {
       const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
       this.sqlite.prepare(`
         INSERT INTO scheduler_runs (
-          id, project_id, agent_id, status, lease_owner, lease_expires_at,
+          id, project_id, agent_id, scope_key, status, lease_owner, lease_expires_at,
           fencing_token, prompt_injection_state, heartbeat_at, created_at, updated_at
-        ) VALUES (?, ?, ?, 'leased', ?, ?, ?, 'not_injected', ?, ?, ?)
-      `).run(runId, candidate.project_id, candidate.agent_id, input.workerId, leaseExpiresAt, fencingToken, now, now, now);
+        ) VALUES (?, ?, ?, ?, 'leased', ?, ?, ?, 'not_injected', ?, ?, ?)
+      `).run(runId, candidate.project_id, candidate.agent_id, candidate.scope_key, input.workerId, leaseExpiresAt, fencingToken, now, now, now);
       const attach = this.sqlite.prepare(`
         INSERT INTO scheduler_run_activations (run_id, activation_id, attached_at) VALUES (?, ?, ?)
       `);
@@ -1152,6 +1445,7 @@ export class CoordinationV3Store {
         runId,
         projectId: candidate.project_id,
         agentId: candidate.agent_id,
+        scopeKey: candidate.scope_key,
         fencingToken,
         leaseOwner: input.workerId,
         leaseExpiresAt,
@@ -1174,9 +1468,9 @@ export class CoordinationV3Store {
     const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
     return this.sqlite.transaction(() => {
       const candidate = this.sqlite.prepare(`
-        SELECT a.agent_id, a.project_id, r.id AS run_id, r.fencing_token, r.provider_session_id
+        SELECT a.agent_id, a.project_id, a.scope_key, r.id AS run_id, r.fencing_token, r.provider_session_id
         FROM agent_activations a
-        JOIN scheduler_runs r ON r.agent_id = a.agent_id AND r.status = 'running'
+        JOIN scheduler_runs r ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key AND r.status = 'running'
         WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (
@@ -1187,16 +1481,17 @@ export class CoordinationV3Store {
         ORDER BY a.priority DESC, a.created_at, a.id
         LIMIT 1
       `).get(now) as {
-        agent_id: string; project_id: string; run_id: string;
+        agent_id: string; project_id: string; scope_key: string; run_id: string;
         fencing_token: number; provider_session_id: string | null;
       } | undefined;
       if (!candidate) return undefined;
       const activations = this.sqlite.prepare(`
         SELECT * FROM agent_activations
-        WHERE agent_id = ? AND state IN ('pending', 'retry_pending') AND available_at <= ?
+        WHERE agent_id = ? AND scope_key = ?
+          AND state IN ('pending', 'retry_pending') AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
         ORDER BY priority DESC, created_at, id LIMIT ?
-      `).all(candidate.agent_id, now, limit) as ActivationRow[];
+      `).all(candidate.agent_id, candidate.scope_key, now, limit) as ActivationRow[];
       if (activations.length === 0) return undefined;
       const injectionId = randomUUID();
       const sequence = (this.sqlite.prepare(`
@@ -1228,6 +1523,7 @@ export class CoordinationV3Store {
         runId: candidate.run_id,
         projectId: candidate.project_id,
         agentId: candidate.agent_id,
+        scopeKey: candidate.scope_key,
         fencingToken: candidate.fencing_token,
         injectionId,
         ...(candidate.provider_session_id ? { providerSessionId: candidate.provider_session_id } : {}),
@@ -1303,6 +1599,18 @@ export class CoordinationV3Store {
       UPDATE scheduler_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
       WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
     `, [now, now, runId, fence]);
+  }
+
+  setRunContextDisposition(
+    runId: string,
+    fence: number,
+    disposition: "fresh_task" | "continued_session" | "reseeded",
+    now = new Date().toISOString(),
+  ): void {
+    this.mutateFencedRun(runId, fence, `
+      UPDATE scheduler_runs SET context_disposition = ?, updated_at = ?
+      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
+    `, [disposition, now, runId, fence]);
   }
 
   preparePromptInjection(input: {
@@ -1503,6 +1811,14 @@ export class CoordinationV3Store {
         WHERE id = ?
       `).run(fence, now, now, run.id);
       this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'outcome_unknown', updated_at = ?
+        WHERE id IN (
+          SELECT activation.value
+          FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) activation
+          WHERE injection.run_id = ? AND injection.state = 'submitted'
+        ) AND state = 'attached'
+      `).run(now, run.id);
+      this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
           AND state = 'attached'
@@ -1510,6 +1826,10 @@ export class CoordinationV3Store {
       this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
         WHERE run_id = ? AND state = 'pending'
+      `).run(now, now, run.id);
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND state = 'submitted'
       `).run(now, now, run.id);
       this.sqlite.prepare(`
         INSERT INTO scheduler_cancellation_receipts (
@@ -1652,6 +1972,38 @@ export class CoordinationV3Store {
     }
   }
 
+  private requireConversation(projectId: string, conversationId: string): void {
+    if (!this.sqlite.prepare(`
+      SELECT 1 FROM conversations WHERE id = ? AND project_id = ? AND archived = 0
+    `).get(conversationId, projectId)) throw new Error("Team Chat not found in project");
+  }
+
+  private requireConversationMember(conversationId: string, agentId: string): void {
+    if (!this.sqlite.prepare(`
+      SELECT 1 FROM agent_conversation_memberships
+      WHERE conversation_id = ? AND agent_id = ?
+    `).get(conversationId, agentId)) {
+      throw new Error("every coordination participant must be an active member of this Team Chat");
+    }
+  }
+
+  private coordinationScopeKey(conversationId: string | null, agentId: string): string {
+    return conversationId ? `conversation:${conversationId}` : `agent:${agentId}`;
+  }
+
+  private communicationScopeKey(payload: unknown, agentId: string): string {
+    if (payload && typeof payload === "object") {
+      const root = payload as Record<string, unknown>;
+      const communication = root.communication && typeof root.communication === "object"
+        ? root.communication as Record<string, unknown>
+        : root;
+      if (typeof communication.conversationId === "string" && communication.conversationId) {
+        return `conversation:${communication.conversationId}`;
+      }
+    }
+    return `agent:${agentId}`;
+  }
+
   private agentSurvives(agentId: string): boolean {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents WHERE id = ? AND archived = 0`).get(agentId));
   }
@@ -1688,6 +2040,7 @@ export class CoordinationV3Store {
     if (kind === "question" && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
+        scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
         kind: "coordination_question", priority: PRIORITY.urgent,
         dedupeKey: `request:${request.id}:question:${updateId}`,
         payload: { requestId: request.id, questionUpdateId: updateId, update: updatePayload ?? null },
@@ -1698,6 +2051,7 @@ export class CoordinationV3Store {
     if ((kind === "answer" || kind === "dependency_resolved") && this.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
+        scopeKey: this.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
         kind: kind === "answer" ? "coordination_answer" : "coordination_dependency_resolved",
         priority: kind === "answer" ? PRIORITY.urgent : PRIORITY.actionable,
         dedupeKey: `request:${request.id}:${kind}:${updateId}`,
@@ -1709,6 +2063,7 @@ export class CoordinationV3Store {
     if ((kind === "cancelled" || kind === "superseded") && this.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
+        scopeKey: this.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
         kind: `coordination_${kind}`, priority: PRIORITY.urgent,
         dedupeKey: `request:${request.id}:${kind}`,
         payload: { requestId: request.id, state: nextState, update: updatePayload ?? null },
@@ -1719,6 +2074,7 @@ export class CoordinationV3Store {
     if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
+        scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
         kind: "coordination_outcome",
         priority: nextState === "completed" ? PRIORITY.satisfied : PRIORITY.actionable,
         dedupeKey: `request:${request.id}:terminal`,
@@ -1791,6 +2147,7 @@ export class CoordinationV3Store {
     this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
+      scopeKey: this.coordinationScopeKey(join.conversation_id, join.owner_agent_id),
       kind: `coordination_join_${state}`,
       priority: state === "satisfied" ? PRIORITY.satisfied : PRIORITY.actionable,
       dedupeKey: `join:${join.id}:terminal`,
@@ -1823,6 +2180,7 @@ export class CoordinationV3Store {
 
   private createActivation(input: {
     projectId: string; agentId: string; kind: string; priority: number; dedupeKey: string;
+    scopeKey: string;
     dispatchPolicy?: ActivationDispatchPolicy; promptClass?: ActivationPromptClass;
     payload: unknown; sourceKind: string; sourceId: string; now: string;
   }): string {
@@ -1830,11 +2188,11 @@ export class CoordinationV3Store {
     const defaults = activationDefaults(input.kind, input.priority);
     const inserted = this.sqlite.prepare(`
       INSERT OR IGNORE INTO agent_activations (
-        id, project_id, agent_id, kind, priority, dispatch_policy, prompt_class, state, dedupe_key,
+        id, project_id, agent_id, scope_key, kind, priority, dispatch_policy, prompt_class, state, dedupe_key,
         payload_json, available_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
     `).run(
-      id, input.projectId, input.agentId, input.kind, input.priority,
+      id, input.projectId, input.agentId, input.scopeKey, input.kind, input.priority,
       input.dispatchPolicy ?? defaults.dispatchPolicy,
       input.promptClass ?? defaults.promptClass,
       input.dedupeKey, stableJson(input.payload), input.now, input.now, input.now,
@@ -1949,6 +2307,21 @@ export class CoordinationV3Store {
       ON CONFLICT(agent_id) DO UPDATE SET next_fencing_token = excluded.next_fencing_token
     `).run(agentId, token + 1);
     return token;
+  }
+
+  private requireAuthorizedRun(authorization: RunAuthorizationV3, expectedScopeKey?: string): void {
+    if (!Number.isSafeInteger(authorization.fencingToken) || authorization.fencingToken <= 0) {
+      throw new Error("invalid run fencing token");
+    }
+    const authoritative = this.sqlite.prepare(`
+      SELECT scope_key FROM scheduler_runs
+      WHERE id = ? AND agent_id = ? AND fencing_token = ?
+        AND status IN ('leased', 'running')
+    `).get(authorization.runId, authorization.agentId, authorization.fencingToken) as { scope_key: string } | undefined;
+    if (!authoritative) throw new Error("run is no longer authoritative");
+    if (expectedScopeKey && authoritative.scope_key !== expectedScopeKey) {
+      throw new Error("mutation scope does not match the authoritative run");
+    }
   }
 
   private getFencedRun(runId: string, fence: number): Record<string, unknown> {
