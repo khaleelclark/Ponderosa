@@ -1,10 +1,16 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { artifactDisplayLabel } from "../src/components/panes";
 
 const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/api/real.ts", import.meta.url), "utf8");
 
 describe("general asset UI contract", () => {
+  it("presents file changes and shell results with compact human labels", () => {
+    expect(artifactDisplayLabel({ kind: "diff", path: "artifact.diff", summary: "edit /very/long/path/report.md" })).toBe("Edit · report.md");
+    expect(artifactDisplayLabel({ kind: "log", path: "result.log", summary: "/bin/bash -lc test -f report.md" })).toBe("Command · test -f report.md");
+  });
+
   it("offers only server-supported formats and retains 44px attachment actions", () => {
     expect(panes).toContain("application/pdf,text/plain,application/json,application/zip");
     expect(panes).not.toContain("image/gif");

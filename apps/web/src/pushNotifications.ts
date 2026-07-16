@@ -27,7 +27,7 @@ export function classifyWebPushState(
   deviceActive = false,
   failure?: string,
 ): WebPushState {
-  if (!prerequisites.supported) return { kind: "unsupported", message: "This browser does not support Web Push. In-app notifications still work." };
+  if (!prerequisites.supported) return { kind: "unsupported", message: "This browser does not support Web Push." };
   if (!prerequisites.secure) return { kind: "insecure_origin", message: "Browser push requires HTTPS or localhost. Open Ponderosa from a secure origin." };
   if (host && host.configuration !== "active") return {
     kind: "host_unconfigured",

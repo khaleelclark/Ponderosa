@@ -1421,11 +1421,13 @@ describe("project lifecycle API", () => {
     await app.close();
   });
 
-  it("requires an explicit validated working-folder choice", async () => {
+  it("creates a private managed workspace when a working folder is omitted", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const response = await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Missing folder", defaultEngine: "codex" } });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: "a validated host folder is required" });
+    expect(response.statusCode).toBe(200);
+    const project = response.json<{ hostPath: string }>();
+    expect(project.hostPath.startsWith(path.join(dataDir, "workspaces", "project-"))).toBe(true);
+    expect(readdirSync(project.hostPath)).toEqual([]);
     await app.close();
   });
 
@@ -2593,6 +2595,20 @@ describe("server chunk F", () => {
     store.appendEvent(author.id, {
       type: "communication_projection", communicationEventId, text: "Original agent result", role: "assistant",
     });
+    let reactionReplyStatus: number | undefined;
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: {
+          intent: "direct_to_user",
+          text: "Reaction acknowledged",
+          idempotencyKey: "ack-reaction",
+        },
+      });
+      reactionReplyStatus = response.statusCode;
+    };
 
     const sent = await app.inject({
       method: "POST",
@@ -2612,7 +2628,12 @@ describe("server chunk F", () => {
     expect(replay.json()).toMatchObject({ replayed: true, targetAuthorAgentId: author.id });
     await waitForRun(author.id);
 
-    expect(store.getConversationMessages(master.id)).toEqual([expect.objectContaining({ id: original.id })]);
+    expect(reactionReplyStatus).toBe(200);
+    expect(store.getConversationMessages(master.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: original.id }),
+      expect.objectContaining({ role: "assistant", text: "#user Reaction acknowledged", authorAgentId: author.id }),
+    ]));
+    expect(store.getConversationMessages(master.id).some((message) => message.text === text)).toBe(false);
     const detail = await app.inject({ method: "GET", url: `/api/conversations/${master.id}` });
     expect(detail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
       { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
@@ -2621,16 +2642,21 @@ describe("server chunk F", () => {
     expect(authorDetail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
       { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
     ]);
+    const reactionCommunication = store.readCommunicationEvents(project.id).find((event) => event.text === text);
+    expect(reactionCommunication).toMatchObject({
+      schemaVersion: 2,
+      intent: "user_dm",
+      audience: { kind: "user_agent", agentId: author.id },
+    });
     expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text, communicationEventId: undefined }),
+      expect.objectContaining({ role: "user", text, communicationEventId: reactionCommunication?.eventId }),
     ]));
     expect(store.getMessages(observer.id).some((message) => message.text === text)).toBe(false);
     expect(adapter.seeds.filter((seed) => seed.agentId === author.id)).toHaveLength(1);
     expect(adapter.seeds[0]?.prompt).toContain(text);
     expect(adapter.seeds[0]?.prompt).toContain("Original agent result");
-    expect(adapter.seeds[0]?.prompt).toContain("user_reaction");
     expect(adapter.seeds.filter((seed) => seed.agentId === observer.id)).toHaveLength(0);
-    expect(store.readCommunicationEvents(project.id).filter((event) => event.text === text)).toHaveLength(0);
+    expect(store.getRuns(author.id).at(-1)?.wakeCause).toBe("direct_message");
     await app.close();
   });
 

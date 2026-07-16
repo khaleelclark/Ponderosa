@@ -4023,7 +4023,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const defaultEngine = request.body?.defaultEngine;
     if (!defaultEngine || !engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
     if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
-    if (!request.body.hostPath && !request.body.createFolderName?.trim()) return reply.code(400).send({ error: "a validated host folder is required" });
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
     let hostPath: string;
     let createdManagedFolder = false;
@@ -4038,11 +4037,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "hostPath does not exist" });
       }
     } else {
-      const requestedName = request.body.createFolderName?.trim();
-      if (requestedName && (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) || requestedName === "." || requestedName === "..")) {
+      const requestedName = request.body.createFolderName?.trim() || `project-${randomUUID()}`;
+      if (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) || requestedName === "." || requestedName === "..") {
         return reply.code(400).send({ error: "folder name must be a single safe name" });
       }
-      hostPath = path.join(managedWorkspacesRoot, requestedName!);
+      hostPath = path.join(managedWorkspacesRoot, requestedName);
       try {
         await fs.mkdir(hostPath, { recursive: false });
         createdManagedFolder = true;
@@ -4493,31 +4492,55 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       },
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
+    const reactionText = `the user reacted with ${emoji}`;
+    const reactionCommunication: CommunicationEvent = {
+      eventId: id,
+      schemaVersion: 2,
+      projectId,
+      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
+      text: reactionText,
+      createdAt: event.createdAt,
+      idempotencyKey,
+    };
     let intake;
     try {
       intake = coordinationV3.recordRuntimeCommunication({
         id,
         projectId,
-        sender: { kind: "user", userId: "local-operator" },
-        intent: "reaction",
+        sender: reactionCommunication.sender,
+        intent: reactionCommunication.intent,
         audience: { agentId: target.id },
         payload: {
+          communication: reactionCommunication,
+          dispatch: {
+            conversationId: target.conversationId ?? null,
+            sourceConversationId: target.conversationId ?? null,
+            sourceChannel: null,
+            shareWithOrganization: false,
+            text: reactionText,
+            communicationEventId: reactionCommunication.eventId,
+            replyToMessageId: event.replyTo.messageId,
+          },
           reaction: event,
-          notification: { text: `the user reacted with ${emoji}`, reactedTo: event.replyTo },
+          notification: { text: reactionText, reactedTo: event.replyTo },
         },
         activation: {
           agentId: target.id,
-          kind: "user_reaction",
+          kind: "human_message",
           priority: 100,
           dispatchPolicy: "steer_or_run",
           promptClass: "human",
         },
         now: event.createdAt,
       });
+      recordCommunication(reactionCommunication);
       userReactions.record(event);
       if (!intake.replayed) {
         const stored = store.appendEvent(target.id, {
-          type: "user_message", text: `the user reacted with ${emoji}`, replyTo: event.replyTo,
+          type: "user_message", text: reactionText, communicationEventId: reactionCommunication.eventId, replyTo: event.replyTo,
         });
         publish(target.id, stored);
       }

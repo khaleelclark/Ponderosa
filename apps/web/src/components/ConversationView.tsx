@@ -7,6 +7,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
@@ -45,9 +46,9 @@ import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrga
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
 import { effortOptionsForModel, effortSelectionIsCompatible, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
-import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, findMentionedAgentsStrict, hasEveryoneMention, stripCollaborationRoutingTags } from "../mentions";
+import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { compactViewportQuery } from "../responsive";
-import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles, uploadFilesForRecipients } from "../conversationReply";
+import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
 import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp } from "./MessageTimestamp";
@@ -232,39 +233,6 @@ export function ConversationMessage({
       </> : undefined} />
     </Box>
   );
-}
-
-/** The operator-facing Team surface uses the same attachment-capable Composer
- * as Project chat, while keeping explicit agent routing as its send boundary. */
-export function TeamCollaborationComposer({
-  conversationId,
-  projectId,
-  mentionHandles,
-  disabled,
-  replyTo,
-  onSend,
-  onCancelReply,
-}: {
-  conversationId: string;
-  projectId: string;
-  mentionHandles: string[];
-  disabled: boolean;
-  replyTo?: ConversationMessageDto;
-  onSend(text: string, files: File[]): Promise<unknown> | unknown;
-  onCancelReply(): void;
-}): JSX.Element {
-  return <Composer
-    draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.collaboration`)}
-    disabled={disabled}
-    running={false}
-    mentionHandles={mentionHandles}
-    allowUnmentionedSend={Boolean(replyTo?.authorAgentId)}
-    placeholder="Tag #agent or #everyone; attachments can be sent without message text"
-    onSend={onSend}
-    replyTo={replyTo}
-    projectId={projectId}
-    onCancelReply={onCancelReply}
-  />;
 }
 
 export function ConversationView({
@@ -496,9 +464,9 @@ export function ConversationView({
         .map((recipient) => detailQuery.data?.agents.find((agent) => agent.id === recipient.agentId)?.title ?? "Agent");
       setQueuedReplyNotice(
         queuedTitles.length > 0
-          ? variables.activeRunDelivery === "steer"
-            ? `Delivery to ${queuedTitles.join(", ")} is pending provider confirmation.`
-            : `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
+          ? variables.activeRunDelivery === "queue"
+            ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
+            : undefined
           : undefined,
       );
       const activeIds = response.recipients.filter((recipient) => !recipient.queued).map((recipient) => recipient.agentId);
@@ -555,9 +523,9 @@ export function ConversationView({
       clearReply();
       invalidate();
       setQueuedReplyNotice(response.queued
-        ? variables.activeRunDelivery === "steer"
-          ? `Delivery to ${agentTitle(response.targetAuthorAgentId)} is pending provider confirmation.`
-          : `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.`
+        ? variables.activeRunDelivery === "queue"
+          ? `Queued for ${agentTitle(response.targetAuthorAgentId)}; it will start when the current response finishes.`
+          : undefined
         : undefined);
       if (response.queued) setActiveOperation(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
@@ -569,7 +537,7 @@ export function ConversationView({
       api.sendUserReaction({ projectId: conversation!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
     onSuccess: (response) => {
       invalidate();
-      setQueuedReplyNotice(response.queued ? `Reaction delivery to ${agentTitle(response.targetAuthorAgentId)} is pending provider confirmation.` : undefined);
+      setQueuedReplyNotice(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
@@ -595,33 +563,6 @@ export function ConversationView({
     },
   });
 
-  const collaborate = useMutation({
-    mutationFn: async ({ text, files, recipientAgentIds, replyToMessageId, requestId }: { text: string; files: File[]; recipientAgentIds: string[]; replyToMessageId?: string; requestId: string }) => {
-      const uploaded = await uploadFilesForRecipients(
-        recipientAgentIds,
-        files,
-        (agentId, file) => api.uploadAttachment(agentId, file),
-        (agentId, item) => api.deleteAttachment(agentId, item.id),
-      );
-      try {
-        return await api.sendCollaborationMessage(conversationId, {
-          text,
-          recipientAgentIds,
-          replyToMessageId,
-          recipientAttachments: uploaded.map(({ agentId, attachments }) => ({ agentId, attachmentIds: attachments.map((item) => item.id) })),
-          idempotencyKey: requestId,
-        });
-      } catch (error) {
-        await Promise.allSettled(uploaded.flatMap(({ agentId, attachments }) => attachments.map((item) => api.deleteAttachment(agentId, item.id))));
-        throw error;
-      }
-    },
-    onSuccess: () => {
-      clearReply();
-      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
-      if (conversation) void queryClient.invalidateQueries({ queryKey: ["agents", conversation.projectId] });
-    },
-  });
 
   const rename = useMutation({
     mutationFn: (title: string) => api.updateConversation(conversationId, { title }),
@@ -665,7 +606,7 @@ export function ConversationView({
       setPendingDelete(undefined);
     },
   });
-  const busy = spawn.isPending || reply.isPending || directReply.isPending || collaborate.isPending || broadcast.isPending;
+  const busy = spawn.isPending || reply.isPending || directReply.isPending || broadcast.isPending;
 
   useEffect(() => {
     if (!activeOperation || activeOperation.agentIds.length === 0) return;
@@ -741,19 +682,14 @@ export function ConversationView({
     })),
   );
   const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
-  const mentionHandles = activeView === "collaboration"
-    ? [
-        "everyone",
-        ...agents.filter((agent) => !agent.archived).map((agent) => agentMentionHandle(agent.title)),
-      ]
-    : [
-        "broadcast",
-        "everyone",
-        ...agents
-          .filter((agent) => !agent.archived)
-          .map((agent) => agentMentionHandle(agent.title))
-          .filter((handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase())),
-      ];
+  const mentionHandles = [
+    "broadcast",
+    "everyone",
+    ...agents
+      .filter((agent) => !agent.archived)
+      .map((agent) => agentMentionHandle(agent.title))
+      .filter((handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase())),
+  ];
   const findMentioned = (text: string): AgentDto[] => findMentionedAgents(text, agents);
 
   const busyMentionHandles = agents
@@ -776,19 +712,6 @@ export function ConversationView({
   };
 
   const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer", draftAttachmentIds: string[] = []) => {
-    if (activeView === "collaboration") {
-      const activeAgents = agents.filter((agent) => !agent.archived);
-      let targets = hasEveryoneMention(text) ? activeAgents : findMentionedAgentsStrict(text, activeAgents);
-      if (targets.length === 0 && replyTo?.authorAgentId) {
-        const author = activeAgents.find((agent) => agent.id === replyTo.authorAgentId);
-        if (author) targets = [author];
-      }
-      if (targets.length === 0) throw new Error("Tag one unambiguous agent with #name, use #everyone, or reply to an agent message.");
-      const messageText = stripCollaborationRoutingTags(text, activeAgents);
-      if (!messageText && files.length === 0) throw new Error("Add a message or attachment after the routing tag.");
-      await collaborate.mutateAsync({ text: messageText, files, recipientAgentIds: targets.map((target) => target.id), replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
-      return;
-    }
     const broadcastText = managerBroadcastText(text);
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) throw new Error("Add informational context or an attachment after #broadcast.");
@@ -1065,6 +988,11 @@ export function ConversationView({
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
             <Typography variant="h6" sx={{ flex: 1 }}>Agents in this Project chat</Typography>
             <Chip size="small" label={agents.length} />
+            <Tooltip title="Close agent roster">
+              <IconButton aria-label="Close agent roster" onClick={() => setAgentsOpen(false)} sx={{ minWidth: 44, minHeight: 44 }}>
+                <CloseIcon />
+              </IconButton>
+            </Tooltip>
           </Stack>
           {agents.length === 0 ? (
             <Alert severity="info">No agents yet. Send a message to spawn one.</Alert>
@@ -1134,50 +1062,45 @@ export function ConversationView({
       <Box>
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
-        {spawn.isError || reply.isError || directReply.isError || collaborate.isError ? (
+        {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? collaborate.error) as Error)}
+            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? sendReaction.error) as Error)}
           </Alert>
         ) : null}
-        {/* Team/broadcast attachment transport is supplied by the companion
-            broadcast-attachments change. The shared Composer intentionally
-            keeps its default enabled control so the branches compose. */}
-        <Composer
+        {activeView === "main" ? <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
-          conversationDraftId={activeView === "collaboration" ? `collaboration:${conversationId}` : conversationId}
+          conversationDraftId={conversationId}
           controls={runtimeControls}
-          guidance={activeView === "collaboration"
-            ? "Tag an agent with #name, reply to an agent message, or use #everyone. Team chat stays private to its agent recipients."
-            : agents.length > 0
-              ? "Send normally to start a fresh agent, use #agent to target an existing agent, or @ to reference a project file."
-              : "Send normally to start a fresh agent, or use @ to reference a project file."}
-          disabled={activeView === "main" ? busy && !operationRunning : collaborate.isPending}
-          running={activeView === "main" && operationRunning}
+          guidance={agents.length > 0
+            ? "Send normally to start a fresh agent, use #agent to target an existing agent, or @ to reference a project file."
+            : "Send normally to start a fresh agent, or use @ to reference a project file."}
+          disabled={busy && !operationRunning}
+          running={operationRunning}
           mentionHandles={mentionHandles}
           commands={commands}
           capabilities={composerRuntime.capabilities}
           onCapabilitiesOpen={onRefreshCapabilities}
           busyMentionHandles={busyMentionHandles}
-          allowUnmentionedSend={activeView === "main" ? engineReady || Boolean(directReplyTargetId) : Boolean(replyTo?.authorAgentId)}
-          placeholder={
-            activeView === "collaboration"
-              ? "Message agents with #name or #everyone"
-              : engineReady
+          allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
+          placeholder={engineReady
               ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
-              : "#tag an agent or use #broadcast for shared context"
-          }
+              : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
-          onQueue={activeView === "main" ? (text, files, stagedIds) => submit(text, files, "queue", stagedIds) : undefined}
-          agentResponding={activeView === "main" && Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
+          onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
+          agentResponding={Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
           projectId={conversation.projectId}
           focusReply={Boolean(directReplyTargetId)}
-          onCancel={activeView === "main" ? stopOperation : undefined}
+          onCancel={stopOperation}
           onCancelReply={() => {
             clearReply();
           }}
-        />
+        /> : <Box sx={{ width: { xs: "calc(100% - 16px)", sm: "min(780px, calc(100% - 24px))" }, mx: "auto", mt: 1, mb: { xs: 1, sm: 1.5 } }}>
+          <Alert severity="info">
+            Team chat is read-only. Agent collaboration appears here; message an agent from its Agent chat.
+          </Alert>
+        </Box>}
       </Box>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">

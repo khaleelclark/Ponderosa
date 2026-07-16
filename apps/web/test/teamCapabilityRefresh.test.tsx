@@ -133,10 +133,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Team composer runtime capability refresh", () => {
-  it("shows selected-runtime capabilities and refreshes them on menu-open, runtime change, and reconnect", async () => {
+describe("Project composer runtime capability refresh", () => {
+  it("refreshes selected-runtime capabilities while Team chat remains read-only", async () => {
     const values = new Map<string, string>();
-    values.set(chatStateKey("view", `conversation.${conversationId}`), "collaboration");
+    values.set(chatStateKey("view", `conversation.${conversationId}`), "main");
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => { values.set(key, value); },
@@ -179,8 +179,7 @@ describe("Team composer runtime capability refresh", () => {
 
     const view = create(<QueryClientProvider client={client}><CapabilityConversation /></QueryClientProvider>);
 
-    expect(buttons(view.root, "Switch to project chat")).toHaveLength(1);
-    expect(visibleText(view.root, "Tag an agent with #name, reply to an agent message, or use #everyone. Team chat stays private to its agent recipients.")).not.toHaveLength(0);
+    expect(buttons(view.root, "Switch to team chat")).toHaveLength(1);
 
     buttons(view.root, "Add attachment or capability")[0]!.props.onClick({ currentTarget: {} });
     await vi.waitFor(() => {
@@ -210,6 +209,12 @@ describe("Team composer runtime capability refresh", () => {
       expect(capabilityRequest).toHaveBeenCalledTimes(3);
       expect(visibleText(view.root, "Reconnected skill")).not.toHaveLength(0);
       expect(visibleText(view.root, "Issue tracker")).toHaveLength(0);
+    });
+
+    buttons(view.root, "Switch to team chat")[0]!.props.onClick();
+    await vi.waitFor(() => {
+      expect(visibleText(view.root, "Team chat is read-only. Agent collaboration appears here; message an agent from its Agent chat.")).not.toHaveLength(0);
+      expect(buttons(view.root, "Add attachment or capability")).toHaveLength(0);
     });
 
     view.unmount();
