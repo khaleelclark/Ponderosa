@@ -42,7 +42,7 @@ export function formatMessageTimestamp(
   };
 }
 
-export function MessageTimestamp({ value }: { value: string }): JSX.Element | null {
+export function MessageTimestamp({ value, compact = false, align = "end" }: { value: string; compact?: boolean; align?: "start" | "end" }): JSX.Element | null {
   const timestamp = formatMessageTimestamp(value);
   if (!timestamp) {
     return null;
@@ -60,10 +60,10 @@ export function MessageTimestamp({ value }: { value: string }): JSX.Element | nu
         maxWidth: "100%",
         mt: 0,
         overflowWrap: "anywhere",
-        textAlign: "end",
+        textAlign: align,
       }}
     >
-      {timestamp.label}
+      {compact ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)) : timestamp.label}
     </Typography>
   );
 }
@@ -72,9 +72,11 @@ export function MessageTimestamp({ value }: { value: string }): JSX.Element | nu
 export function MessageActionsAndTimestamp({
   actions,
   value,
+  showTimestamp = true,
 }: {
   actions?: ReactNode;
   value: string;
+  showTimestamp?: boolean;
 }): JSX.Element {
   const [touchRevealed, setTouchRevealed] = useState(false);
   const revealOnTouch = (event: PointerEvent<HTMLDivElement>) => {
@@ -83,6 +85,6 @@ export function MessageActionsAndTimestamp({
   return <Stack direction="row" spacing={0.25} className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ alignItems: "center", mt: 0.25, minHeight: 28, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
     <Box className="chat-message-action-buttons" sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>{actions}</Box>
     <Box sx={{ flex: 1 }} />
-    <MessageTimestamp value={value} />
+    {showTimestamp ? <MessageTimestamp value={value} /> : null}
   </Stack>;
 }

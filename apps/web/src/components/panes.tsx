@@ -54,7 +54,7 @@ import type { ExecutionItem } from "../hooks/useAgentStream";
 import { agentMentionHandle, findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { CopyMessageButton } from "./CopyMessageButton";
-import { MessageActionsAndTimestamp } from "./MessageTimestamp";
+import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { useProjectBrowser } from "./ProjectBrowserContext";
@@ -699,7 +699,7 @@ export function ChatPane({
       aria-label="Conversation"
       className="chat-scroll-region"
       ref={scrollRef}
-      spacing={1}
+      spacing={0}
       tabIndex={0}
       onScroll={(event) => {
         revealChatScrollbar(event.currentTarget);
@@ -708,7 +708,7 @@ export function ChatPane({
           if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
-      sx={{ p: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(760px, 100%)", alignSelf: "center" } }}
+      sx={{ p: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(820px, 100%)", alignSelf: "center" } }}
     >
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
@@ -720,6 +720,7 @@ export function ChatPane({
         const senderLabel = message.role === "user" && operatorProfile
           ? operatorProfile.displayName
           : individualChatSenderLabel(message.role, visibleAgentName);
+        const fromUser = message.role === "user";
         return (
         <Box
           key={message.id}
@@ -730,25 +731,33 @@ export function ChatPane({
           tabIndex={-1}
           sx={{
             alignSelf: "center",
-            width: "min(760px, 100%)",
+            width: "min(820px, 100%)",
             maxWidth: "100%",
             minWidth: 0,
+            py: { xs: 1, sm: 1.5 },
           }}
         >
-          {message.role === "user" ? <UserMessageLabel profile={operatorProfile} /> : <Box sx={{ px: { xs: 1, sm: 1.5 } }}><MessageSenderLabel name={senderLabel} /></Box>}
-          <Box
-            data-message-bubble="true"
-            sx={{
-              px: { xs: 1, sm: 1.5 },
-              py: { xs: 0.75, sm: 1 },
-              borderRadius: 2,
-              bgcolor: message.role === "user" ? "action.hover" : "transparent",
-              color: "text.primary",
-              border: 1,
-              borderColor: "transparent",
-            }}
-          >
-            {message.role === "user" ? <MessageSenderLabel name={operatorProfile?.displayName ?? senderLabel} /> : null}
+          <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
+            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: "action.selected", color: "primary.light", border: 1, borderColor: "divider", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+            <Box sx={{ minWidth: 0, width: fromUser ? "min(72%, 620px)" : "min(100%, 740px)" }}>
+              {!fromUser ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
+                <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
+                <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
+              </Stack> : null}
+              {fromUser ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}
+              <Box
+                data-message-bubble="true"
+                sx={{
+                  px: fromUser ? { xs: 1.25, sm: 1.5 } : 0,
+                  py: fromUser ? { xs: 1, sm: 1.15 } : 0,
+                  borderRadius: 2,
+                  bgcolor: fromUser ? "action.hover" : "transparent",
+                  color: "text.primary",
+                  border: 1,
+                  borderColor: fromUser ? "divider" : "transparent",
+                }}
+              >
+            {fromUser ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name="You" /></Box> : null}
             {message.replyTo ? (
               <Box
                 component="button"
@@ -788,15 +797,19 @@ export function ChatPane({
               receipts={message.deliveryReceipts}
               recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
             /> : null}
-          </Box>
-          <MessageActionsAndTimestamp
-            value={message.createdAt}
-            actions={<>
+              </Box>
+              {fromUser ? <Box sx={{ mt: 0.5, color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact /></Box> : null}
+              <MessageActionsAndTimestamp
+                showTimestamp={false}
+                value={message.createdAt}
+                actions={<>
               {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
               <CopyMessageButton text={message.text} />
               {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton> : null}
-            </>}
-          />
+                </>}
+              />
+            </Box>
+          </Stack>
         </Box>
         );
       })}
@@ -1968,13 +1981,14 @@ export function Composer({
 
   return (
     <Paper
+      className="ponderosa-composer"
       elevation={0}
       sx={{
         position: "relative",
         zIndex: 3,
         border: 1,
         borderColor: "divider",
-        borderRadius: { xs: 1.5, sm: 1.5 },
+        borderRadius: { xs: 2, sm: 2.25 },
         width: { xs: "calc(100% - 16px)", sm: "min(880px, calc(100% - 24px))" },
         mx: "auto",
         mt: { xs: 0.75, sm: 1 },
@@ -1983,14 +1997,15 @@ export function Composer({
         maxWidth: "100%",
         overflow: "hidden",
         bgcolor: "background.paper",
-        px: { xs: 0.75, sm: 1 },
-        pt: { xs: 0.75, sm: 1 },
-        pb: "max(8px, env(safe-area-inset-bottom))",
+        px: { xs: 1, sm: 1.5 },
+        pt: { xs: 1, sm: 1.25 },
+        pb: "max(10px, env(safe-area-inset-bottom))",
+        boxShadow: "0 12px 34px rgba(0,0,0,.18)",
       }}
     >
       {guidance ? (
-        <Box sx={{ px: 0.5, pb: 0.75, color: "text.secondary" }}>
-          {typeof guidance === "string" ? <Typography variant="caption">{guidance}</Typography> : guidance}
+        <Box sx={{ px: 0.25, pb: 0.9, color: "text.secondary" }}>
+          {typeof guidance === "string" ? <Typography variant="body2" sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}>{guidance}</Typography> : guidance}
         </Box>
       ) : null}
       {replyTo ? (
@@ -2011,7 +2026,7 @@ export function Composer({
       {draftConflict ? <Alert severity="warning" sx={{ mb: 1 }} action={<Button size="small" onClick={() => { update(draftConflict.displaced.text); setDraftConflict(undefined); inputRef.current?.focus(); }}>Restore</Button>}>
         This chat changed in another tab. Your displaced draft is preserved: “{replyPreviewText(draftConflict.displaced.text)}”
       </Alert> : null}
-      <Stack direction="row" spacing={{ xs: 0.25, sm: 1 }} useFlexGap sx={{ alignItems: "flex-end", flexWrap: "wrap" }}>
+      <Stack direction="row" spacing={{ xs: 0.25, sm: 0.5 }} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
           addFiles(Array.from(event.target.files ?? []));
           event.target.value = "";
@@ -2084,7 +2099,8 @@ export function Composer({
             </Paper>
           </ClickAwayListener>
         </Popper>
-        {controls ? <Box sx={{ minWidth: 0, flex: "1 1 0", overflowX: "auto" }}>{controls}</Box> : null}
+        <Box sx={{ flex: 1, minWidth: { xs: 0, sm: 24 } }} />
+        {controls ? <Box sx={{ minWidth: 0, maxWidth: "100%", overflowX: "auto" }}>{controls}</Box> : null}
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
           <TextField
             fullWidth
@@ -2093,8 +2109,8 @@ export function Composer({
             minRows={1}
             maxRows={5}
             sx={{
-              "& .MuiInputBase-root": { alignItems: "flex-end", bgcolor: "transparent", px: 0.5 },
-              "& textarea": { fontSize: 14, lineHeight: "20px" },
+              "& .MuiInputBase-root": { alignItems: "flex-end", bgcolor: "transparent", px: 0.25, pb: 0.5 },
+              "& textarea": { fontSize: 15, lineHeight: "22px" },
             }}
             InputProps={{ disableUnderline: true }}
             value={text}
@@ -2212,6 +2228,22 @@ export function Composer({
           </Popper>
         </Box>
         {showQueue ? (
+          <Tooltip title="Steer the active response">
+            <span>
+              <Button
+                size="small"
+                variant="contained"
+                disabled={!canSend}
+                onClick={send}
+                aria-label="Steer active response"
+                sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
+              >
+                Steer
+              </Button>
+            </span>
+          </Tooltip>
+        ) : null}
+        {showQueue ? (
           <Tooltip title="Send after the active response finishes">
             <span>
               <Button
@@ -2220,7 +2252,7 @@ export function Composer({
                 disabled={!canSend}
                 onClick={queue}
                 aria-label="Queue message"
-                sx={{ minHeight: 44 }}
+                sx={{ minHeight: 40, px: 1.5 }}
               >
                 Queue
               </Button>
@@ -2233,7 +2265,7 @@ export function Composer({
               <StopCircleIcon />
             </IconButton>
           </Tooltip>
-        ) : (
+        ) : showQueue ? null : (
           <Tooltip title="Send">
             <span>
               <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"} sx={{ minWidth: 44, minHeight: 44 }}>
