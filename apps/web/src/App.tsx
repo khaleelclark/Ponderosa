@@ -360,7 +360,7 @@ export default function App({
       <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.5 }}><MenuIcon /></IconButton>
-          <Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 28, height: 28, mr: 1 }} />
+          <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 28, height: 28, mr: 1, borderRadius: 1 }} />
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
             Ponderosa
           </Typography>
@@ -434,7 +434,7 @@ export default function App({
         ) : projects.length === 0 && !projectsQuery.isLoading ? (
           <Box sx={{ minHeight: 0, display: "grid", placeItems: "center", p: 2 }}>
             <Stack spacing={1.5} sx={{ alignItems: "center", maxWidth: 480, textAlign: "center", p: { xs: 2.5, sm: 4 }, border: 1, borderColor: "divider", borderRadius: 3, bgcolor: "background.paper" }}>
-              <Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 56, height: 56 }} />
+              <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 56, height: 56, borderRadius: 2 }} />
               <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
               <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>

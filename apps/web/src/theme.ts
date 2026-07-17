@@ -22,19 +22,19 @@ export function createPonderosaTheme(mode: ColorMode) {
     palette: {
       mode,
       primary: {
-        main: mode === "dark" ? "#79c9a5" : "#245c53",
-        dark: mode === "dark" ? "#315f52" : "#173f39",
-        light: mode === "dark" ? "#9fdfbd" : "#5f8f85",
+        main: mode === "dark" ? "#9bc8ad" : "#20382b",
+        dark: mode === "dark" ? "#385c4b" : "#172b21",
+        light: mode === "dark" ? "#c0ddcd" : "#607d6e",
       },
       secondary: {
         main: mode === "dark" ? "#f0ad8b" : "#8f4b2e",
       },
       background: {
-        default: mode === "dark" ? "#071619" : "#f6f7f4",
-        paper: mode === "dark" ? "#0f2023" : "#ffffff",
+        default: mode === "dark" ? "#091510" : "#faf6f3",
+        paper: mode === "dark" ? "#11221a" : "#fffdfa",
       },
-      divider: mode === "dark" ? "#24393b" : "rgba(0,0,0,.12)",
-      text: mode === "dark" ? { primary: "#edf4f1", secondary: "#91a39e", disabled: "#63736f" } : undefined,
+      divider: mode === "dark" ? "#293c33" : "rgba(32,48,40,.16)",
+      text: mode === "dark" ? { primary: "#f5f1eb", secondary: "#9eaea5", disabled: "#6e7d75" } : { primary: "#203028", secondary: "#66756d", disabled: "#98a19c" },
       success: {
         main: mode === "dark" ? "#75c990" : "#277a46",
       },
@@ -65,7 +65,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       MuiCssBaseline: {
         styleOverrides: {
           body: {
-            backgroundImage: mode === "dark" ? "radial-gradient(circle at 55% 15%, rgba(42, 88, 77, .08), transparent 32%)" : "none",
+            backgroundImage: mode === "dark" ? "radial-gradient(circle at 55% 15%, rgba(70, 111, 89, .08), transparent 32%)" : "none",
           },
         },
       },
@@ -89,7 +89,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
       MuiOutlinedInput: {
         styleOverrides: {
-          root: mode === "dark" ? { backgroundColor: "rgba(255,255,255,.025)", "& fieldset": { borderColor: "#294043" }, "&:hover fieldset": { borderColor: "#45605e" } } : {},
+          root: mode === "dark" ? { backgroundColor: "rgba(255,255,255,.025)", "& fieldset": { borderColor: "#2e453a" }, "&:hover fieldset": { borderColor: "#4b6558" } } : {},
         },
       },
       MuiIconButton: {

@@ -92,4 +92,13 @@ describe("chat interaction refinement", () => {
     expect(panes).not.toContain('maxHeight: "60vh", overflow: "auto"');
     expect(panes).toContain('tabIndex={0}');
   });
+
+  it("keeps Markdown block rhythm compact without losing authored line breaks", () => {
+    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+
+    expect(panes).toContain('whiteSpace: "normal"');
+    expect(panes).toContain('"& p": { my: 0.35, whiteSpace: "pre-wrap" }');
+    expect(panes).toContain('"& ul, & ol": { my: 0.45, pl: 2.75 }');
+    expect(panes).toContain('"& li + li": { mt: 0.15 }');
+  });
 });
