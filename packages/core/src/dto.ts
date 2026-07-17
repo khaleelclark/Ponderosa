@@ -1407,6 +1407,7 @@ export interface AgentCoordinationV3Dto {
   joins: Array<{
     id: string;
     mode: "all" | "any" | "quorum";
+    wakePolicy: "each_result" | "final_only";
     quorum: number;
     state: "open" | "satisfied" | "impossible" | "expired" | "cancelled";
     completed: number;

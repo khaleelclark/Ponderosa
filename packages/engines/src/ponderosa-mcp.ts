@@ -1,6 +1,8 @@
 import { createInterface } from "node:readline";
 import {
   PONDEROSA_COORDINATE_TOOL,
+  PONDEROSA_CONTEXT_TOOL,
+  PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_BROWSER_TOOLS,
@@ -18,6 +20,8 @@ const browserUrl = process.env.PONDEROSA_AGENT_BROWSER_URL;
 const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
 const decisionUrl = process.env.PONDEROSA_AGENT_DECISION_URL;
 const manageUrl = process.env.PONDEROSA_AGENT_MANAGE_URL;
+const directoryUrl = process.env.PONDEROSA_AGENT_DIRECTORY_URL;
+const contextUrl = process.env.PONDEROSA_AGENT_CONTEXT_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
 function send(value: unknown): void {
@@ -74,6 +78,16 @@ async function handle(request: RpcRequest): Promise<void> {
             description: PONDEROSA_MANAGE_TOOL.description,
             inputSchema: PONDEROSA_MANAGE_TOOL.inputSchema,
           },
+          {
+            name: "team_directory",
+            description: PONDEROSA_TEAM_DIRECTORY_TOOL.description,
+            inputSchema: PONDEROSA_TEAM_DIRECTORY_TOOL.inputSchema,
+          },
+          {
+            name: "context",
+            description: PONDEROSA_CONTEXT_TOOL.description,
+            inputSchema: PONDEROSA_CONTEXT_TOOL.inputSchema,
+          },
           ...PONDEROSA_BROWSER_TOOLS.map((tool) => ({
             name: tool.name.replace(/^ponderosa_/, ""),
             description: tool.description,
@@ -89,6 +103,14 @@ async function handle(request: RpcRequest): Promise<void> {
     const browserOperation = typeof params?.name === "string" && params.name.startsWith("browser_")
       ? params.name.slice("browser_".length)
       : undefined;
+    const isDirectory = params?.name === "team_directory";
+    const isContext = params?.name === "context";
+    const args = params?.arguments && typeof params.arguments === "object"
+      ? params.arguments as { agentId?: unknown; before?: unknown; limit?: unknown }
+      : {};
+    const contextQuery = new URLSearchParams();
+    if (typeof args.before === "string" && args.before.trim()) contextQuery.set("before", args.before.trim());
+    if (typeof args.limit === "number") contextQuery.set("limit", String(args.limit));
     const targetUrl = params?.name === "create_managed_agent"
       ? spawnUrl
       : params?.name === "coordinate"
@@ -101,6 +123,10 @@ async function handle(request: RpcRequest): Promise<void> {
             ? decisionUrl
             : params?.name === "manage"
               ? manageUrl
+            : isDirectory
+              ? directoryUrl && `${directoryUrl}${typeof args.agentId === "string" && args.agentId.trim() ? `/${encodeURIComponent(args.agentId.trim())}` : ""}`
+            : isContext
+              ? contextUrl && `${contextUrl}${contextQuery.size ? `?${contextQuery.toString()}` : ""}`
           : browserOperation
             ? browserUrl
           : undefined;
@@ -110,11 +136,11 @@ async function handle(request: RpcRequest): Promise<void> {
     }
     try {
       const response = await fetch(targetUrl, {
-        method: "POST",
+        method: isDirectory || isContext ? "GET" : "POST",
         headers: { authorization: `Bearer ${messageToken}`, "content-type": "application/json" },
-        body: JSON.stringify(browserOperation
+        ...(!(isDirectory || isContext) ? { body: JSON.stringify(browserOperation
           ? { ...(params?.arguments && typeof params.arguments === "object" ? params.arguments : {}), operation: browserOperation }
-          : params?.arguments ?? {}),
+          : params?.arguments ?? {}) } : {}),
       });
       const text = await response.text();
       send({

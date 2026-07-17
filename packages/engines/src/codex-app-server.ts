@@ -204,9 +204,14 @@ export class CodexAppServerSession implements RuntimeSession {
         ? ((notification.params as { turn?: { id?: unknown } } | undefined)?.turn?.id)
         : undefined;
       if (notification.method === "turn/completed") this.activeTurnId = undefined;
-      const completedUsage = typeof completedTurnId === "string" ? this.usageByTurnId.get(completedTurnId) : undefined;
-      const providerRequestUsage = completedUsage && typeof completedTurnId === "string"
-        ? reconcileProviderRequestUsage(completedUsage, this.providerRequestUsageByTurnId.get(completedTurnId) ?? [])
+      const completedRequestUsage = typeof completedTurnId === "string"
+        ? this.providerRequestUsageByTurnId.get(completedTurnId) ?? []
+        : [];
+      const completedUsage = typeof completedTurnId === "string"
+        ? this.usageByTurnId.get(completedTurnId) ?? sumProviderRequestUsage(completedRequestUsage)
+        : undefined;
+      const providerRequestUsage = completedUsage
+        ? reconcileProviderRequestUsage(completedUsage, completedRequestUsage)
         : undefined;
       yield* mapCodexAppServerNotification(
         notification,
@@ -263,6 +268,34 @@ export function reconcileProviderRequestUsage(aggregate: TokenUsage, requests: T
     if ((aggregate[key] ?? 0) !== sums.get(key)) return undefined;
   }
   return requests;
+}
+
+/** Recover an exact turn aggregate from Codex's per-request `last` checkpoints.
+ * This is independent of the cumulative thread baseline, which may be absent
+ * on the first successful turn after a process crash or provider retry. */
+export function sumProviderRequestUsage(requests: TokenUsage[]): TokenUsage | undefined {
+  if (!requests.length) return undefined;
+  const requiredKeys: Array<keyof TokenUsage> = ["inputTokens", "outputTokens", "totalTokens"];
+  const optionalKeys: Array<keyof TokenUsage> = ["cachedInputTokens", "cacheWriteInputTokens", "reasoningOutputTokens"];
+  const sums = new Map<keyof TokenUsage, number>();
+  for (const request of requests) {
+    if (requiredKeys.some((key) => !Number.isSafeInteger(request[key]) || request[key]! < 0)) return undefined;
+    if (optionalKeys.some((key) => request[key] !== undefined &&
+        (!Number.isSafeInteger(request[key]) || request[key]! < 0))) return undefined;
+    if ((request.cachedInputTokens ?? 0) + (request.cacheWriteInputTokens ?? 0) > request.inputTokens!) return undefined;
+    if ((request.reasoningOutputTokens ?? 0) > request.outputTokens!) return undefined;
+    for (const key of [...requiredKeys, ...optionalKeys]) {
+      if (request[key] !== undefined) sums.set(key, (sums.get(key) ?? 0) + request[key]!);
+    }
+  }
+  return {
+    inputTokens: sums.get("inputTokens")!,
+    ...(sums.has("cachedInputTokens") ? { cachedInputTokens: sums.get("cachedInputTokens")! } : {}),
+    ...(sums.has("cacheWriteInputTokens") ? { cacheWriteInputTokens: sums.get("cacheWriteInputTokens")! } : {}),
+    outputTokens: sums.get("outputTokens")!,
+    ...(sums.has("reasoningOutputTokens") ? { reasoningOutputTokens: sums.get("reasoningOutputTokens")! } : {}),
+    totalTokens: sums.get("totalTokens")!,
+  };
 }
 
 /** Delta compatible absolute thread checkpoints; any reset fails closed. */

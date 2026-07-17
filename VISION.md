@@ -324,6 +324,11 @@ open joins. Ponderosa never guesses these effects from prose; request progress,
 join state, activation sources, and resumed Runs remain inspectable and update
 live.
 
+The normal managed-work path uses one aggregate Join and wakes the manager as
+new child results arrive. The parent workflow remains open across those progress
+Runs and becomes terminally actionable only when the Join ends. Final-only and
+record-only delivery remain explicit advanced choices.
+
 Collaboration messages do not appear in Project chat and do not become shared
 context for future agents. If a finding matters to the organization, an agent
 creates a new Broadcast. If it matters only to the user, the agent creates a

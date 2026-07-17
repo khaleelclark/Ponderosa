@@ -62,6 +62,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     expect(responses[1]).toMatchObject({ result: { tools: [
       { name: "create_managed_agent" }, { name: "coordinate" }, { name: "update_request" }, { name: "message" },
       { name: "decision" }, { name: "manage" },
+      { name: "team_directory" }, { name: "context" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
@@ -98,6 +99,8 @@ describe("Ponderosa stdio MCP bridge", () => {
         PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${origin}/api/agent-request-updates`,
         PONDEROSA_AGENT_BROWSER_URL: `${origin}/api/agent-browser`,
         PONDEROSA_AGENT_SPAWN_URL: `${origin}/api/agent-spawn`,
+        PONDEROSA_AGENT_DIRECTORY_URL: `${origin}/api/agent-directory`,
+        PONDEROSA_AGENT_CONTEXT_URL: `${origin}/api/agent-context`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -116,14 +119,28 @@ describe("Ponderosa stdio MCP bridge", () => {
       jsonrpc: "2.0", id: 3, method: "tools/call",
       params: { name: "browser_open", arguments: { url: "https://example.com" } },
     })}\n`);
-    await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(3);
+    child.stdin!.write(`${JSON.stringify({
+      jsonrpc: "2.0", id: 4, method: "tools/call",
+      params: { name: "team_directory", arguments: { agentId: "agent/a" } },
+    })}\n`);
+    child.stdin!.write(`${JSON.stringify({
+      jsonrpc: "2.0", id: 5, method: "tools/call",
+      params: { name: "context", arguments: { before: "cursor", limit: 12 } },
+    })}\n`);
+    await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(5);
     expect(responses[0]).toMatchObject({ result: { tools: [
       { name: "create_managed_agent" }, { name: "coordinate" }, { name: "update_request" }, { name: "message" },
       { name: "decision" }, { name: "manage" },
+      { name: "team_directory" }, { name: "context" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
-    expect(received).toEqual(["/api/agent-coordinate", "/api/agent-browser"]);
+    expect(received.sort()).toEqual([
+      "/api/agent-coordinate",
+      "/api/agent-browser",
+      "/api/agent-directory/agent%2Fa",
+      "/api/agent-context?before=cursor&limit=12",
+    ].sort());
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });
 });

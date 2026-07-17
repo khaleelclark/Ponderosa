@@ -155,17 +155,32 @@ any other historical Request.
 
 ## Join state machine
 
-A join stores immutable request IDs and a mode: `all`, `any`, or `quorum`.
+A join stores immutable request IDs, a mode (`all`, `any`, or `quorum`), and a
+wake policy. `each_result` creates a deduplicated progress Activation whenever a
+new member becomes terminal while the Join remains open; results that arrive
+before dispatch coalesce into the same Run. `final_only` suppresses intermediate
+wakes. Both policies create exactly one terminal Activation when the Join ends.
 It moves from `open` to exactly one of `satisfied`, `impossible`, `expired`, or
 `cancelled`. Satisfied, impossible, and expired joins activate their surviving
 owner. A join cancelled by its owner closes without creating a redundant
 activation.
 
+The server records the requester's canonical reply route on every outbound
+Request. Only outcome and Join Activations back to that requester inherit the
+route, so `ponderosa_message({text})` remains valid in progress and terminal
+continuations without granting the recipient authority to reply to the
+requester's user. Aggregate Join members must agree on one non-null route or
+the resumed Run requires explicit routing.
+
 When a request recipient creates a join while handling that request, the join
 durably records the inbound request as its continuation. Creating the join
 moves that request to `waiting_dependency`; completing the current Run does not
-make its outcome unknown. The terminal join Activation reattaches the
-continuation request to the resumed Run so `ponderosa_update_request` resolves
+make its outcome unknown. An intermediate progress Activation reattaches the
+continuation without making it terminally actionable: ending that Run returns
+the continuation to durable waiting. A concurrently queued terminal Join
+Activation also preserves the continuation. The terminal join Activation
+reattaches the continuation request to the resumed Run so
+`ponderosa_update_request` resolves
 it authoritatively. The join Activation includes the continuation's durable
 payload and an explicit terminal-update obligation. If the resumed Run ends
 without fulfilling a still-suspended continuation, the supervisor transitions
@@ -288,19 +303,24 @@ The cutover gate must prove:
 - steering attaches without creating a competing Run;
 - restart recovery cannot duplicate prompt injection;
 - cancellation fences every late output;
-- terminal joins cause at most one actionable wake;
+- each terminal member causes at most one progress wake when enabled, and a
+  terminal Join causes at most one final wake;
 - provider failure at each transaction boundary recovers deterministically; and
 - V2 scheduler files, tables, routes, and handlers have no readers or writers.
 
 ## Provider-visible tools
 
-Only three coordination tools are exposed to the model:
+The coordination contract exposes three mutation tools and two read-only
+discovery tools to the model:
 
-- `ponderosa_coordinate`: `{recipientAgentId,text}` is the common delegation
-  contract. The server derives stable idempotency, gives the Request an
-  indefinite lifetime, and creates an all-results Join unless `awaitResult` is
-  false. The advanced request array and Join fields remain available for fan-out,
-  deadlines, quorum/any, recovery, and background work.
+- `ponderosa_coordinate`: `{recipientAgentId,text}` is the common single
+  delegation contract; `{delegations:[...]}` is common fan-out. The server
+  derives stable idempotency, gives each Request an indefinite lifetime, and
+  creates one aggregate all-results Join with `wakePolicy: each_result` by
+  default. `completionMode: callback` preserves the legacy unjoined per-result
+  wake, while `completionMode: record` stores and displays results without
+  waking the requester. The advanced request array and Join fields remain
+  available for deadlines, quorum/any, recovery, and `final_only` delivery.
 - `ponderosa_update_request`: `{text}` is the common canonical report and
   `{question}` is the common correlated blocking follow-up. The former completes
   the sole Request attached to the Run; the latter asks its original requester.
@@ -316,6 +336,10 @@ Only three coordination tools are exposed to the model:
   stable idempotency. Ambiguous/non-message Runs require explicit intent and
   recipients. One inferred material reply is allowed; exact transport retries
   replay it.
+- `ponderosa_team_directory`: retrieves the current run-scoped Team Chat roster
+  or one focused Agent entry without relying on provider shell/network access.
+- `ponderosa_context`: retrieves paginated older scoped history only when the
+  current Run advertises that bounded context omitted it.
 
 “Coordinate and wait” is a skill/helper around `ponderosa_coordinate`, not a
 fourth runtime tool. All tool mutations commit SQLite state and an outbox record

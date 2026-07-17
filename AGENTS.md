@@ -144,6 +144,9 @@ pay-per-token provider API keys.
    its opening Request plus optional Join together. A terminal Request update is
    the canonical final handoff; ordinary follow-up reports are passive audit
    copies and acknowledgement-only collaboration must not create new work.
+   Common fan-out must use one aggregate Join. Intermediate results may wake the
+   manager for pipelining, but they must preserve every parent continuation until
+   the Join's terminal Activation is handled.
 
    Broadcasts inherited as context are shown through the originating execution's
    inspectable context manifest, not manufactured as Agent-chat messages.

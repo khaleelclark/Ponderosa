@@ -110,6 +110,8 @@ import {
   agentRoleProfile,
   deriveCommunicationBehavior,
   PONDEROSA_COORDINATE_TOOL,
+  PONDEROSA_CONTEXT_TOOL,
+  PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
@@ -635,7 +637,7 @@ function communicationV3Prompt(): string[] {
   return [
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
     "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
-    "Common delegation: ponderosa_coordinate({recipientAgentId,text}). It creates one tracked Request and, by default, a Join that wakes you with the outcome.",
+    "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
     "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
     "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
@@ -645,7 +647,7 @@ function communicationV3Prompt(): string[] {
     "Live Team identities and overflow Activation payloads are retrievable from their run-scoped Ponderosa references.",
     "When bounded context omits older scoped material, the current Run receives a separate on-demand reference for it.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
-    'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" using the Bearer token.',
+    "Discover stable teammate IDs with ponderosa_team_directory({}).",
   ];
 }
 
@@ -695,14 +697,14 @@ function directUserRequestCompletionPrompt(): string {
 function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
   return contextSection("TEAM DIRECTORY", "ON-DEMAND REFERENCE", [
     `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
-    'Fetch current identities, reporting lines, and status only when needed from "$PONDEROSA_AGENT_DIRECTORY_URL".',
+    "Fetch current identities, reporting lines, and status only when needed with ponderosa_team_directory({}).",
   ]);
 }
 
 function olderContextPrompt(): string {
   return contextSection("OLDER SCOPED CONTEXT", "ON-DEMAND REFERENCE", [
     "Earlier messages in this Agent's current scoped history were omitted from the bounded provider input.",
-    'Fetch them only if the current request needs that history with GET "$PONDEROSA_AGENT_CONTEXT_URL" using the Bearer token.',
+    "Fetch them only if the current request needs that history with ponderosa_context({}).",
   ]);
 }
 
@@ -3852,7 +3854,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runAuthorization: runAuthorization(capability!),
           requests: [{ requestId, recipientAgentId: child.id, lifetime: request.body.lifetime!, payload: {
             text, requesterRunId: capability!.runId, managedAgentOpening: true,
-          } }],
+          }, ...(capability!.defaultReply ? { replyAuthority: capability!.defaultReply } : {}) }],
           ...(request.body.awaitResult === false ? {} : { join: {
             id: `managed:${child.id}:join`, mode: "all" as const,
             continuationRequestIds: coordinationV3.requestIdsAttachedToRun(capability!.runId, manager!.id)
@@ -3897,10 +3899,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       idempotencyKey?: string;
       recipientAgentId?: string;
       text?: string;
+      delegations?: Array<{ recipientAgentId?: string; text?: string }>;
+      completionMode?: "join" | "callback" | "record";
+      wakePolicy?: "each_result" | "final_only";
       awaitResult?: boolean;
       deadlineAt?: string;
       requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
-      join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[] };
+      join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[]; wakePolicy?: "each_result" | "final_only" };
       inspectActivationIds?: string[];
     };
   }>("/api/agent-coordinate", async (request, reply) => {
@@ -3914,24 +3919,53 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
-      !["idempotencyKey", "recipientAgentId", "text", "awaitResult", "deadlineAt", "requests", "join", "inspectActivationIds"].includes(key));
+      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "deadlineAt", "requests", "join", "inspectActivationIds"].includes(key));
     if (unknownTopLevel.length) {
       return reply.code(400).send({ error: `unknown coordinate field(s): ${unknownTopLevel.join(", ")}` });
     }
     if (body.requests !== undefined && !Array.isArray(body.requests)) {
       return reply.code(400).send({ error: "requests must be an array" });
     }
+    if (body.delegations !== undefined && !Array.isArray(body.delegations)) {
+      return reply.code(400).send({ error: "delegations must be an array" });
+    }
     if (body.idempotencyKey !== undefined && typeof body.idempotencyKey !== "string") {
       return reply.code(400).send({ error: "idempotencyKey must be a string" });
     }
-    const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.awaitResult !== undefined || body.deadlineAt !== undefined;
+    const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.delegations !== undefined ||
+      body.completionMode !== undefined || body.wakePolicy !== undefined || body.awaitResult !== undefined || body.deadlineAt !== undefined;
     if (shorthand && (body.requests !== undefined || body.join !== undefined || body.inspectActivationIds !== undefined)) {
-      return reply.code(400).send({ error: "recipientAgentId/text shorthand cannot be combined with requests, join, or inspectActivationIds" });
+      return reply.code(400).send({ error: "common delegation fields cannot be combined with requests, join, or inspectActivationIds" });
     }
-    if (shorthand && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string" ||
+    const hasSingleDelegation = body.recipientAgentId !== undefined || body.text !== undefined;
+    if (body.delegations !== undefined && hasSingleDelegation) {
+      return reply.code(400).send({ error: "delegations cannot be combined with recipientAgentId or text" });
+    }
+    if (hasSingleDelegation && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string" ||
         (body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
         (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string"))) {
       return reply.code(400).send({ error: "coordinate shorthand requires string recipientAgentId and text; awaitResult is boolean and deadlineAt is an ISO timestamp" });
+    }
+    if (body.delegations !== undefined) {
+      if (body.delegations.length === 0 || body.delegations.length > 100 || body.delegations.some((item) =>
+        !item || typeof item !== "object" || Array.isArray(item) ||
+        Object.keys(item).some((key) => !["recipientAgentId", "text"].includes(key)) ||
+        typeof item.recipientAgentId !== "string" || typeof item.text !== "string")) {
+        return reply.code(400).send({ error: "delegations must contain 1 to 100 recipientAgentId/text objects" });
+      }
+    }
+    if (body.completionMode !== undefined && !["join", "callback", "record"].includes(body.completionMode)) {
+      return reply.code(400).send({ error: "completionMode must be join, callback, or record" });
+    }
+    if (body.wakePolicy !== undefined && !["each_result", "final_only"].includes(body.wakePolicy)) {
+      return reply.code(400).send({ error: "wakePolicy must be each_result or final_only" });
+    }
+    if (body.completionMode !== undefined && body.awaitResult !== undefined) {
+      return reply.code(400).send({ error: "completionMode cannot be combined with legacy awaitResult" });
+    }
+    if ((body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
+        (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string")) {
+      return reply.code(400).send({ error: "awaitResult must be boolean and deadlineAt must be an ISO timestamp" });
     }
     for (const candidate of body.requests ?? []) {
       if (!candidate || typeof candidate !== "object") {
@@ -3965,7 +3999,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "join must be an object" });
       }
       const unknownJoin = Object.keys(body.join).filter((key) =>
-        !["id", "mode", "quorum", "deadlineAt", "satisfyingOutcomes", "requestIds"].includes(key));
+        !["id", "mode", "quorum", "deadlineAt", "satisfyingOutcomes", "requestIds", "wakePolicy"].includes(key));
       if (unknownJoin.length) {
         const hint = unknownJoin.includes("deadline") ? "; use deadlineAt" : "";
         return reply.code(400).send({ error: `unknown join field(s): ${unknownJoin.join(", ")}${hint}` });
@@ -3973,6 +4007,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if ((body.join.id !== undefined && typeof body.join.id !== "string") ||
           (body.join.deadlineAt !== undefined && typeof body.join.deadlineAt !== "string") ||
           (body.join.quorum !== undefined && typeof body.join.quorum !== "number") ||
+          (body.join.wakePolicy !== undefined && !["each_result", "final_only"].includes(body.join.wakePolicy)) ||
           (body.join.requestIds !== undefined && !Array.isArray(body.join.requestIds)) ||
           (body.join.satisfyingOutcomes !== undefined && !Array.isArray(body.join.satisfyingOutcomes))) {
         return reply.code(400).send({ error: "join fields do not match the published coordinate schema" });
@@ -3991,22 +4026,36 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       return { activations: payloads };
     }
-    const requests = shorthand ? [{
+    const commonDelegations = body.delegations ?? (hasSingleDelegation ? [{
       recipientAgentId: body.recipientAgentId,
       text: body.text,
-      lifetime: body.deadlineAt?.trim()
-        ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
-        : { kind: "indefinite" as const },
-    }] : body.requests ?? [];
+    }] : []);
+    const completionMode = shorthand
+      ? body.completionMode ?? (body.awaitResult === false ? "callback" : "join")
+      : undefined;
+    if (shorthand && completionMode !== "join" && body.wakePolicy !== undefined) {
+      return reply.code(400).send({ error: "wakePolicy is only valid when completionMode is join" });
+    }
+    const commonLifetime = body.deadlineAt?.trim()
+      ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
+      : { kind: "indefinite" as const };
+    const requests: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }> = shorthand ? commonDelegations.map((delegation) => ({
+      recipientAgentId: delegation.recipientAgentId,
+      text: delegation.text,
+      lifetime: commonLifetime,
+    })) : body.requests ?? [];
     const join = shorthand
-      ? (body.awaitResult === false ? undefined : { mode: "all" as const })
+      ? (completionMode === "join" ? { mode: "all" as const, wakePolicy: body.wakePolicy ?? "each_result" as const } : undefined)
       : body.join;
     const existingJoinRequestIds = join?.requestIds ?? [];
     const idempotencyKey = body.idempotencyKey?.trim() || (shorthand
       ? derivedRunActionKey(capability.runId, "delegate", {
-          recipientAgentId: body.recipientAgentId!.trim(),
-          text: body.text!.trim(),
-          awaitResult: body.awaitResult !== false,
+          delegations: commonDelegations.map((delegation) => ({
+            recipientAgentId: delegation.recipientAgentId?.trim(),
+            text: delegation.text?.trim(),
+          })),
+          completionMode,
+          wakePolicy: join?.wakePolicy ?? null,
           deadlineAt: body.deadlineAt?.trim() || null,
         })
       : undefined);
@@ -4062,11 +4111,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(candidate.requestId ? { requestId: candidate.requestId } : {}),
           recipientAgentId: candidate.recipientAgentId,
           lifetime: candidate.lifetime,
-          payload: { text: candidate.text, requesterRunId: capability.runId },
+          payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
+          ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
         })),
         ...(join ? { join: {
           ...(join.id?.trim() ? { id: join.id.trim() } : {}),
           mode: join.mode!,
+          ...(join.wakePolicy ? { wakePolicy: join.wakePolicy } : {}),
           ...(join.quorum !== undefined ? { quorum: join.quorum } : {}),
           ...(join.deadlineAt?.trim() ? { deadlineAt: join.deadlineAt.trim() } : {}),
           ...(join.satisfyingOutcomes ? { satisfyingOutcomes: join.satisfyingOutcomes } : {}),
@@ -4116,7 +4167,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     coordinationV3Scheduler?.notify();
     return {
       ...result,
-      ...(result.joinId ? { executionDirective: "End this turn now unless independent work explicitly remains; Ponderosa will reactivate you when the durable join needs action." } : {}),
+      ...(result.joinId ? {
+        executionDirective: join?.wakePolicy === "each_result"
+          ? "End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied."
+          : "End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition.",
+      } : completionMode === "record" ? {
+        executionDirective: "The Request is tracked and its result will remain visible, but it will not wake you into another provider Run.",
+      } : completionMode === "callback" ? {
+        executionDirective: "The Request is tracked without a Join; its terminal result will wake you as an individual callback.",
+      } : {}),
     };
   });
 
@@ -4142,6 +4201,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const kind = question ? "question" : request.body?.kind ?? (request.body?.text?.trim() ? "completed" : undefined);
     if (!kind) return reply.code(400).send({ error: "request update requires text, question, or an explicit kind" });
+    if (kind === "answer" && !request.body?.inReplyToUpdateId?.trim()) {
+      return reply.code(400).send({
+        error: "answer requires inReplyToUpdateId=\"<question ID>\" from the current coordination_question Activation",
+      });
+    }
     if (!requestId) return reply.code(400).send({
       error: attachedRequestIds.length === 0
         ? "requestId is required because the current run has no attached correlated request"
@@ -7536,6 +7600,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : [];
       });
       const hasOneCanonicalReplySource = new Set(activationCommunicationEventIds).size === 1;
+      const inheritedReplyAuthorities: Array<NonNullable<AgentMessageCapability["defaultReply"]>> =
+        manifestActivationPayloads.flatMap(({ payload }) => {
+          if (!payload || typeof payload !== "object") return [];
+          const authority = (payload as { replyAuthority?: unknown }).replyAuthority;
+          if (!authority || typeof authority !== "object") return [];
+          const candidate = authority as { intent?: unknown; recipientAgentIds?: unknown };
+          const rawRecipients = candidate.recipientAgentIds;
+          const recipients = Array.isArray(rawRecipients)
+            ? rawRecipients.filter((agentId): agentId is string => typeof agentId === "string")
+            : [];
+          if (!(candidate.intent === "broadcast" || candidate.intent === "direct_to_user" || candidate.intent === "collaboration") ||
+              (rawRecipients !== undefined && (!Array.isArray(rawRecipients) || recipients.length !== rawRecipients.length)) ||
+              (candidate.intent === "collaboration" ? recipients.length === 0 : recipients.length > 0) ||
+              new Set(recipients).size !== recipients.length || recipients.some((agentId) => !agentId.trim())) return [];
+          return [{
+            intent: candidate.intent,
+            ...(recipients.length > 0 ? { recipientAgentIds: [...recipients].sort() } : {}),
+          }] satisfies Array<NonNullable<AgentMessageCapability["defaultReply"]>>;
+        });
       const contextMessages = [...roomMessages, ...initialBroadcastContext];
       const contextCommunicationEventIds = contextMessages.flatMap((message) =>
         message.communicationEventId ? [message.communicationEventId] : []);
@@ -7692,6 +7775,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ownershipState: "running",
       };
       claimActiveRun(agent.id, activeRun);
+      const immediateDefaultReply = hasOneCanonicalReplySource && sharedTaskTurn
+        ? { intent: "broadcast" as const }
+        : hasOneCanonicalReplySource && directUserTaskTurn
+          ? { intent: "direct_to_user" as const }
+          : hasOneCanonicalReplySource && communication?.intent === "collaboration" && communication.sender.kind === "agent" &&
+              coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
+            ? { intent: "collaboration" as const, recipientAgentIds: [communication.sender.agentId] }
+            : undefined;
+      const replyAuthorities = [...(immediateDefaultReply ? [immediateDefaultReply] : []), ...inheritedReplyAuthorities];
+      const distinctReplyAuthorities = [...new Map(replyAuthorities.map((authority) => [JSON.stringify(authority), authority])).values()];
+      const defaultReply = distinctReplyAuthorities.length === 1 ? distinctReplyAuthorities[0] : undefined;
       agentMessageCapabilities.set(messageCapability, {
         agentId: agent.id,
         conversationId: routingConversationId,
@@ -7701,14 +7795,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
-        ...(hasOneCanonicalReplySource && sharedTaskTurn
-          ? { defaultReply: { intent: "broadcast" as const } }
-          : hasOneCanonicalReplySource && directUserTaskTurn
-            ? { defaultReply: { intent: "direct_to_user" as const } }
-            : hasOneCanonicalReplySource && communication?.intent === "collaboration" && communication.sender.kind === "agent" &&
-                coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
-              ? { defaultReply: { intent: "collaboration" as const, recipientAgentIds: [communication.sender.agentId] } }
-              : {}),
+        ...(defaultReply ? { defaultReply } : {}),
       });
 
       void (async () => {
@@ -7746,11 +7833,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: [PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_DECISION_TOOL, PONDEROSA_MANAGE_TOOL, PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL, ...PONDEROSA_BROWSER_TOOLS],
+              dynamicTools: [PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_DECISION_TOOL, PONDEROSA_MANAGE_TOOL, PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL, PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_CONTEXT_TOOL, ...PONDEROSA_BROWSER_TOOLS],
               handleDynamicToolCall: async (call) => {
                 const browserOperation = call.name.startsWith("ponderosa_browser_")
                   ? call.name.slice("ponderosa_browser_".length)
                   : undefined;
+                const directoryArguments = call.arguments && typeof call.arguments === "object"
+                  ? call.arguments as { agentId?: unknown }
+                  : {};
+                const contextArguments = call.arguments && typeof call.arguments === "object"
+                  ? call.arguments as { before?: unknown; limit?: unknown }
+                  : {};
+                const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
+                const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
+                const contextQuery = new URLSearchParams();
+                if (typeof contextArguments.before === "string" && contextArguments.before.trim()) contextQuery.set("before", contextArguments.before.trim());
+                if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
                 const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
                   ? "/api/agent-spawn"
                   : call.name === PONDEROSA_DECISION_TOOL.name
@@ -7763,6 +7861,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     ? "/api/agent-request-updates"
                     : call.name === PONDEROSA_MESSAGE_TOOL.name
                       ? "/api/agent-messages"
+                      : isDirectory
+                        ? `/api/agent-directory${typeof directoryArguments.agentId === "string" && directoryArguments.agentId.trim() ? `/${encodeURIComponent(directoryArguments.agentId.trim())}` : ""}`
+                      : isContext
+                        ? `/api/agent-context${contextQuery.size ? `?${contextQuery.toString()}` : ""}`
                       : browserOperation
                         ? "/api/agent-browser"
                       : undefined;
@@ -7770,15 +7872,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   return { success: false, text: `Unknown Ponderosa tool: ${call.name}` };
                 }
                 const response = await app.inject({
-                  method: "POST",
+                  method: isDirectory || isContext ? "GET" : "POST",
                   url,
                   headers: {
                     authorization: `Bearer ${messageCapability}`,
                     "content-type": "application/json",
                   },
-                  payload: JSON.stringify(browserOperation
+                  ...(!(isDirectory || isContext) ? { payload: JSON.stringify(browserOperation
                     ? { ...(call.arguments && typeof call.arguments === "object" ? call.arguments : {}), operation: browserOperation }
-                    : call.arguments ?? {}),
+                    : call.arguments ?? {}) } : {}),
                 });
                 return {
                   success: response.statusCode >= 200 && response.statusCode < 300,

@@ -13,17 +13,18 @@ const REQUEST_LIFETIME_SCHEMA = {
   ],
 } as const;
 
-/** Communication V3 provider surface. Keep this to three tools: the common
- * delegation waits through an atomic Join, while the advanced form controls
- * asynchronous requests and optional joins explicitly. */
+/** Communication V3 provider surface. Common delegation forms keep Request and
+ * Join mechanics server-owned; advanced forms remain available for unusual
+ * lifetimes, quorum conditions, and exact recovery. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Delegate common tracked work with {recipientAgentId,text}; Ponderosa supplies stable idempotency, an indefinite lifetime, and (unless awaitResult:false) an all-results Join. The text must be self-contained because the recipient does not inherit your hidden prompt. Use the advanced requests/join form only for fan-out, deadlines, quorum/any joins, background requests, recovery, or inspection. A returned joinId already exists; do not create it again.",
+  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Ponderosa supplies stable idempotency, indefinite lifetimes, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. Use completionMode record only for genuine fire-and-observe work; callback preserves the legacy ungrouped per-result wake. Use the advanced requests/join form for deadlines, quorum/any joins, exact recovery, or final-only aggregation. A returned joinId already exists; do not create it again.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     oneOf: [
       { required: ["recipientAgentId", "text"] },
+      { required: ["delegations"] },
       { required: ["requests"] },
       { required: ["inspectActivationIds"] },
     ],
@@ -31,7 +32,26 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for the common delegation form." },
       recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Common delegation recipient stable Agent ID." },
       text: { type: "string", minLength: 1, maxLength: 4000, description: "Common self-contained assignment, question, or consultation." },
-      awaitResult: { type: "boolean", description: "Common delegation defaults true and creates an all-results Join. Set false only for background work." },
+      delegations: {
+        type: "array", minItems: 1, maxItems: 100,
+        description: "Common parallel fan-out. Every item becomes one Request in the same aggregate all-results Join.",
+        items: {
+          type: "object", additionalProperties: false, required: ["recipientAgentId", "text"],
+          properties: {
+            recipientAgentId: { type: "string", minLength: 1, maxLength: 200 },
+            text: { type: "string", minLength: 1, maxLength: 4000 },
+          },
+        },
+      },
+      completionMode: {
+        type: "string", enum: ["join", "callback", "record"],
+        description: "Common delegation defaults join. join uses one aggregate Join; callback wakes once per unjoined result; record stores and displays results without an Agent wake.",
+      },
+      wakePolicy: {
+        type: "string", enum: ["each_result", "final_only"],
+        description: "For completionMode join, defaults each_result. each_result wakes on newly terminal members and again only as needed until the Join is terminal; final_only wakes only when the Join condition ends.",
+      },
+      awaitResult: { type: "boolean", description: "Legacy common-form alias: true means completionMode join; false means callback. Prefer completionMode." },
       deadlineAt: { type: "string", description: "Optional common-request deadline. Omit for an indefinite lifetime." },
       requests: {
         type: "array", minItems: 0, maxItems: 100,
@@ -58,6 +78,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
             type: "array", minItems: 1, uniqueItems: true,
             items: { type: "string", enum: ["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"] },
           },
+          wakePolicy: { type: "string", enum: ["each_result", "final_only"], description: "Advanced Join delivery policy. Defaults final_only for backward compatibility." },
           requestIds: {
             type: "array", minItems: 0, maxItems: 100, uniqueItems: true,
             items: { type: "string", minLength: 1, maxLength: 200 },
@@ -70,6 +91,27 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
         items: { type: "string", minLength: 1, maxLength: 200 },
         description: "Retrieve complete durable payloads for activation references supplied in the current run.",
       },
+    },
+  },
+};
+
+export const PONDEROSA_TEAM_DIRECTORY_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_team_directory",
+  description: "Retrieve the current run-scoped Team Chat directory through Ponderosa. Use this instead of localhost HTTP, browser access, or reading Ponderosa storage directly. Omit agentId for the visible roster; provide one stable ID for a focused entry.",
+  inputSchema: {
+    type: "object", additionalProperties: false,
+    properties: { agentId: { type: "string", minLength: 1, maxLength: 200 } },
+  },
+};
+
+export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_context",
+  description: "Retrieve older scoped history only when the current Run contains an OLDER SCOPED CONTEXT reference. This run-fenced tool returns canonical messages without relying on shell access to localhost.",
+  inputSchema: {
+    type: "object", additionalProperties: false,
+    properties: {
+      before: { type: "string", description: "Optional ISO timestamp cursor from a previous response." },
+      limit: { type: "integer", minimum: 1, maximum: 50, description: "Defaults 20." },
     },
   },
 };
@@ -94,7 +136,7 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
       },
       text: { type: "string", maxLength: 4000 },
       question: { type: "string", minLength: 1, maxLength: 4000, description: "Common blocking follow-up to the original requester; maps to a correlated question update." },
-      inReplyToUpdateId: { type: "string", minLength: 1, maxLength: 200 },
+      inReplyToUpdateId: { type: "string", minLength: 1, maxLength: 200, description: "Required for kind answer. Copy the exact inReplyToUpdateId from the coordination_question Activation." },
     },
   },
 };

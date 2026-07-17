@@ -2128,8 +2128,9 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DIRECTORY_URL).toContain("/api/agent-directory");
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_CONTEXT_URL).toContain("/api/agent-context");
     expect(adapter.seeds[0]!.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).toContain("ponderosa_team_directory({})");
     expect(adapter.seeds[0]!.prompt).not.toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
-    expect(adapter.seeds[0]!.prompt).not.toContain("PONDEROSA_AGENT_CONTEXT_URL");
+    expect(adapter.seeds[0]!.prompt).not.toContain("ponderosa_context({})");
     expect(adapter.seeds[0]!.prompt).not.toContain(`\"agentId\":\"${child.id}\"`);
     expect(adapter.seeds[0]!.prompt.match(/Common reply: ponderosa_message/g)).toHaveLength(1);
     const context = await app.inject({ method: "GET", url: "/api/agent-context?limit=10", headers: { authorization: `Bearer ${token}` } });
@@ -2174,7 +2175,7 @@ describe("server chunk F", () => {
     await waitForSeedCount(1);
 
     expect(adapter.seeds[0]!.prompt).toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
-    expect(adapter.seeds[0]!.prompt).toContain("PONDEROSA_AGENT_CONTEXT_URL");
+    expect(adapter.seeds[0]!.prompt).toContain("ponderosa_context({})");
     const run = store.getRuns(agent.id).at(-1);
     const providerInput = run ? store.getProviderInput(run.id, true) : undefined;
     expect(providerInput?.sourceManifest.sources).toEqual(expect.arrayContaining([
@@ -3829,6 +3830,116 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("preserves an inherited user reply route across a callback continuation", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    const project = store.createProject({ label: "Continuation reply", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const worker = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    await app.inject({
+      method: "POST", url: `/api/agents/${manager.id}/messages`,
+      payload: { text: "Ask the worker", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const opening = persistent.openedOptions[0]!;
+    const delegated = await opening.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: worker.id, text: "Return the answer", completionMode: "callback" },
+    });
+    expect(delegated.success, delegated.text).toBe(true);
+    persistent.completeTurn(0);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const workerRuntime = persistent.openedOptions[1]!;
+    const unauthorizedReply = await workerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_message", arguments: { text: "This must not inherit the manager's user route" },
+    });
+    expect(unauthorizedReply.success).toBe(false);
+    expect(unauthorizedReply.text).toContain("no unambiguous reply route");
+    const completed = await workerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Worker answer" },
+    });
+    expect(completed.success, completed.text).toBe(true);
+    persistent.completeTurn(1);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    const continuation = persistent.openedOptions[2]!;
+    expect(continuation.agentId).toBe(manager.id);
+    const reply = await continuation.handleDynamicToolCall!({
+      name: "ponderosa_message", arguments: { text: "Final answer to the user" },
+    });
+    expect(reply.success, reply.text).toBe(true);
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      intent: "user_dm", text: "Final answer to the user",
+      sender: { kind: "agent", agentId: manager.id, executionId: expect.any(String) },
+      audience: { kind: "user_agent", userId: "local-operator", agentId: manager.id },
+    }));
+    persistent.completeTurn(2);
+    await app.close();
+  });
+
+  it("creates one streaming aggregate Join for common fan-out and validates explicit completion modes", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    const project = store.createProject({ label: "Aggregate", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: conversation.id });
+    const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: conversation.id });
+    await app.inject({
+      method: "POST", url: `/api/agents/${manager.id}/messages`,
+      payload: { text: "Delegate both checks", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const fanout = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        delegations: [
+          { recipientAgentId: first.id, text: "Check A" },
+          { recipientAgentId: second.id, text: "Check B" },
+        ],
+      },
+    });
+    expect(fanout.success, fanout.text).toBe(true);
+    const fanoutResult = JSON.parse(fanout.text) as { requestIds: string[]; joinId: string };
+    expect(fanoutResult.requestIds).toHaveLength(2);
+    expect(store.sqlite.prepare(`
+      SELECT wake_policy, state FROM coordination_joins WHERE id = ?
+    `).get(fanoutResult.joinId)).toEqual({ wake_policy: "each_result", state: "open" });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_join_members WHERE join_id = ?
+    `).get(fanoutResult.joinId)).toEqual({ count: 2 });
+
+    const record = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: first.id, text: "Inventory only", completionMode: "record" },
+    });
+    expect(record.success, record.text).toBe(true);
+    const recordResult = JSON.parse(record.text) as { requestIds: string[]; joinId?: string };
+    expect(recordResult.joinId).toBeUndefined();
+    expect(store.sqlite.prepare(`SELECT json_extract(payload_json, '$.completionMode') AS mode
+      FROM coordination_requests WHERE id = ?`).get(recordResult.requestIds[0]!)).toEqual({ mode: "record" });
+
+    const malformedAnswer = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { kind: "answer", text: "Missing correlation" },
+    });
+    expect(malformedAnswer.success).toBe(false);
+    expect(JSON.parse(malformedAnswer.text)).toMatchObject({ error: expect.stringContaining("inReplyToUpdateId") });
+    await app.close();
+  });
+
   it("runs correlated V3 work through exactly three coordination tools and a fenced activation cycle", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -3856,6 +3967,21 @@ describe("server chunk F", () => {
       "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
+    expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "ponderosa_team_directory", "ponderosa_context",
+    ]));
+    const providerDirectory = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_team_directory", arguments: { agentId: recipient.id },
+    });
+    expect(providerDirectory.success, providerDirectory.text).toBe(true);
+    expect(JSON.parse(providerDirectory.text)).toMatchObject({ agentId: recipient.id });
+    const providerContext = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_context", arguments: { limit: 10 },
+    });
+    expect(providerContext.success, providerContext.text).toBe(true);
+    expect(JSON.parse(providerContext.text)).toMatchObject({
+      scope: { conversationId: conversation.id }, messages: expect.any(Array),
+    });
     expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.anyOf)
       .toEqual([{ required: ["text"] }, { required: ["question"] }, { required: ["kind"] }]);
     expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);
