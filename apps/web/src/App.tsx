@@ -38,7 +38,7 @@ import { ProjectShell } from "./components/ProjectShell";
 import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
-import { AllAgentsView, AllProjectsView } from "./components/WorkspaceOverview";
+import { AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { NotificationPanel } from "./components/NotificationPanel";
@@ -68,6 +68,7 @@ import {
   serializeWorkspaceTabs,
   workspaceTabKey,
 } from "./workspaceTabs";
+import { hasUnreadConversationNotifications } from "./workspaceNavigation";
 
 export default function App({
   colorMode,
@@ -128,6 +129,7 @@ export default function App({
   const [sidebarConversationTitle, setSidebarConversationTitle] = useState("");
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
+  const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
 
@@ -153,15 +155,24 @@ export default function App({
   }, [projectsQuery.isSuccess, projectsQuery.data]);
 
   useEffect(() => {
-    if (route.kind !== "conversation") return;
-    const conversationId = route.conversationId;
+    const update = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+
+  useEffect(() => {
+    const conversationId = route.kind === "conversation" ? route.conversationId : undefined;
+    if (!pageVisible || !hasUnreadConversationNotifications(notificationsQuery.data ?? [], conversationId)) return;
+    const readAt = new Date().toISOString();
     queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(["notifications"], (current = []) =>
-      current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt: new Date().toISOString() } : item));
-    void api.clearConversationNotifications(conversationId).then(() => {
+      current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt } : item));
+    void api.clearConversationNotifications(conversationId!).then(() => {
       announceWorkspaceRefresh();
       return queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    }).catch(() => {
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
     });
-  }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, queryClient]);
+  }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, notificationsQuery.data, pageVisible, queryClient]);
 
   useEffect(() => {
     const refresh = () => { void inspectWebPush().then(setPushState); };
@@ -440,7 +451,7 @@ export default function App({
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
             </Stack>
           </Box>
-        ) : route.kind === "projects" || route.kind === "home" ? (
+        ) : route.kind === "projects" || route.kind === "home" || route.kind === "allAgents" ? (
           <AllProjectsView
             projects={projects}
             preferences={preferences}
@@ -449,8 +460,6 @@ export default function App({
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
             onPreferences={savePreferences}
           />
-        ) : route.kind === "allAgents" ? (
-          <AllAgentsView projects={projects} onNavigate={goHome} />
         ) : selectedProjectId ? (
           <ProjectShell
             projectId={selectedProjectId}

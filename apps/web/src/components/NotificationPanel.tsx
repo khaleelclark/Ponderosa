@@ -1,6 +1,7 @@
 import CloseIcon from "@mui/icons-material/Close";
 import DoneAllIcon from "@mui/icons-material/DoneAll";
 import DeleteSweepOutlinedIcon from "@mui/icons-material/DeleteSweepOutlined";
+import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
   Alert,
   Badge,
@@ -196,17 +197,18 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                 onClose();
                 if (group.projectId) onNavigate({ kind: "conversation", projectId: group.projectId, conversationId: group.conversationId });
               }}
-              sx={{ justifyContent: "flex-start", px: 1.5, py: 1, textAlign: "left", borderRadius: 0 }}
+              sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}
             >
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="subtitle2" noWrap>{conversation?.title ?? (group.projectId ? "Project notifications" : "Ponderosa operations")}</Typography>
-                <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Across all Projects")}</Typography>
-              </Box>
+              <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "primary.light", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
+              <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="overline" color="primary.light" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
+                <Typography variant="subtitle2" noWrap>{conversation?.title ?? (group.projectId ? "Project notifications" : "Operations")}</Typography>
+              </Stack>
               {groupUnread ? <Badge color="primary" badgeContent={groupUnread} sx={{ mr: 1 }} /> : null}
             </Button>
             <List dense disablePadding aria-label={`Notifications for ${conversation?.title ?? project?.label ?? "project"}`}>
-              {group.items.map((item) => <ListItem key={item.id} disablePadding divider>
-                <ListItemButton selected={!item.readAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, py: 1 }}>
+              {group.items.map((item) => <ListItem key={item.id} disablePadding>
+                <ListItemButton selected={!item.readAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: item.readAt ? "transparent" : "primary.main", flex: "0 0 auto" }} />
                   <ListItemText
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Needs attention"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}

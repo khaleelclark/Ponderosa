@@ -37,6 +37,14 @@ export function unreadByConversation(notifications: WorkspaceNotificationDto[]):
   return unread;
 }
 
+export function hasUnreadConversationNotifications(
+  notifications: WorkspaceNotificationDto[],
+  conversationId: string | undefined,
+): boolean {
+  return Boolean(conversationId && notifications.some((notification) =>
+    notification.conversationId === conversationId && !notification.readAt));
+}
+
 export function workspaceChats(
   snapshots: WorkspaceProjectSnapshot[],
   notifications: WorkspaceNotificationDto[],

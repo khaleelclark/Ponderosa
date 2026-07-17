@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
-import { AllAgentsView } from "../src/components/WorkspaceOverview";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -51,10 +50,12 @@ describe("responsive workspace sidebar flow", () => {
 
     act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
-    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "allAgents" });
     act(() => view.root.findByProps({ "aria-label": "Open project files" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
+    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
+    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
+    expect(JSON.stringify(view.toJSON())).toContain("Search agents");
+    expect(JSON.stringify(view.toJSON())).toContain("Reviewer");
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();
@@ -69,7 +70,17 @@ describe("responsive workspace sidebar flow", () => {
       client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
     });
     const onNavigate = vi.fn();
-    const view = create(<QueryClientProvider client={client}><AllAgentsView projects={projects} onNavigate={onNavigate} /></QueryClientProvider>);
+    const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
+      projects={projects}
+      route={{ kind: "projects" }}
+      notifications={[]}
+      onNavigate={onNavigate}
+      onCreateProject={vi.fn()}
+      onManageProject={vi.fn()}
+      onRenameConversation={vi.fn()}
+      onDeleteConversation={vi.fn()}
+    /></QueryClientProvider>);
+    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     const alphaDestination = view.root.findAll((node) => node.type === "div" && node.props["aria-label"] === "Open agent Reviewer in Website · /repos/alpha");
     const betaDestination = view.root.findAll((node) => node.type === "div" && node.props["aria-label"] === "Open agent Reviewer in Website · /repos/beta");
     expect(alphaDestination).toHaveLength(1);
