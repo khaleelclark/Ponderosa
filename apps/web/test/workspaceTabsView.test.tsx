@@ -29,12 +29,14 @@ describe("workspace tab bar", () => {
     const tabs = openWorkspaceTab(openWorkspaceTab([], releaseRoute, 1), reviewerRoute, 2);
     const navigate = vi.fn();
     const onClose = vi.fn();
+    const onCloseAll = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={projects}
       route={reviewerRoute}
       navigate={navigate}
       onClose={onClose}
+      onCloseAll={onCloseAll}
     /></QueryClientProvider>);
 
     const rendered = JSON.stringify(view.toJSON());
@@ -44,6 +46,9 @@ describe("workspace tab bar", () => {
     expect(rendered).toContain("Research");
     act(() => view.root.findByProps({ "aria-label": "Close QA Reviewer" }).props.onClick());
     expect(onClose).toHaveBeenCalledWith("agent:beta:reviewer");
+    const releaseTabContainer = view.root.findByProps({ "data-tab-key": "conversation:alpha:release" });
+    expect(releaseTabContainer.props.onContextMenu).toEqual(expect.any(Function));
+    expect(onCloseAll).not.toHaveBeenCalled();
     const releaseTab = view.root.findByProps({ "aria-label": "Open Release planning in Website" });
     act(() => releaseTab.props.onClick());
     expect(navigate).toHaveBeenCalledWith(releaseRoute);

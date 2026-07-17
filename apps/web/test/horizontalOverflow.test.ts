@@ -41,7 +41,7 @@ describe("horizontal overflow containment", () => {
       /\.ponderosa-scroll:hover,\s*\.ponderosa-scroll:focus-within\s*\{[^}]*(?:width|height|padding|margin):/s,
     );
     expect(workspaceSidebar).toContain('data-testid="workspace-navigation-scroll"');
-    expect(workspaceSidebar.match(/data-testid="workspace-navigation-scroll"/g)).toHaveLength(2);
+    expect(workspaceSidebar.match(/data-testid="workspace-navigation-scroll"/g)).toHaveLength(3);
     expect(workspaceSidebar).not.toMatch(/aria-label="Agent preview"[^]*overflowY/);
   });
 });

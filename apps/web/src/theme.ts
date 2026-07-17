@@ -28,8 +28,12 @@ export function createPonderosaTheme(mode: ColorMode) {
         dark: mode === "dark" ? "#5a786b" : "#172b21",
         light: mode === "dark" ? "#c0ddcd" : "#607d6e",
       },
+      // Pine bark is a quiet structural accent. Keep actions, focus, health,
+      // unread state, and success on the green/semantic palettes.
       secondary: {
-        main: mode === "dark" ? "#f0ad8b" : "#8f4b2e",
+        main: mode === "dark" ? "#b99b84" : "#765846",
+        dark: mode === "dark" ? "#856a57" : "#523d31",
+        light: mode === "dark" ? "#d4bead" : "#9b7b66",
       },
       background: {
         default: mode === "dark" ? "#091510" : "#faf6f3",
@@ -42,11 +46,13 @@ export function createPonderosaTheme(mode: ColorMode) {
       action: mode === "dark" ? {
         active: "#c0ddcd",
         hover: "rgba(192,221,205,.10)",
-        selected: "rgba(155,200,173,.18)",
+        selected: "rgba(185,155,132,.16)",
         disabled: "#84958b",
         disabledBackground: "rgba(132,149,139,.18)",
         focus: "rgba(155,200,173,.24)",
-      } : undefined,
+      } : {
+        selected: "rgba(118,88,70,.10)",
+      },
       success: {
         main: mode === "dark" ? "#75c990" : "#277a46",
       },
@@ -77,7 +83,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       MuiCssBaseline: {
         styleOverrides: {
           body: {
-            backgroundImage: mode === "dark" ? "radial-gradient(circle at 55% 15%, rgba(70, 111, 89, .08), transparent 32%)" : "none",
+            backgroundImage: mode === "dark" ? "radial-gradient(circle at 55% 15%, rgba(185, 155, 132, .055), transparent 32%)" : "none",
           },
         },
       },

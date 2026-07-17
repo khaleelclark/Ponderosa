@@ -16,7 +16,7 @@ function fixture() {
 describe("WorkspaceStore canonical replay", () => {
   it("persists synced preferences and revisioned drafts with deterministic conflicts", () => {
     const { dir, store } = fixture();
-    store.updatePreferences({ projectSort: "custom", projectOrder: ["two", "one"], sidebarWidth: 340 });
+    store.updatePreferences({ projectSort: "custom", projectOrder: ["two", "one"], starredProjectIds: ["two"], sidebarWidth: 340 });
     const first = store.putDraft("chat", { text: "first", attachmentIds: ["asset"], expectedRevision: 0, clientId: "tab-a" });
     expect(first.revision).toBe(1);
     let conflict: unknown;
@@ -25,7 +25,7 @@ describe("WorkspaceStore canonical replay", () => {
 
     const restarted = new WorkspaceStore(dir);
     expect(restarted.instanceId()).toBe(store.instanceId());
-    expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], sidebarWidth: 340 });
+    expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], starredProjectIds: ["two"], sidebarWidth: 340 });
     expect(restarted.getDraft("chat")).toEqual(first);
     expect(restarted.listDraftConflicts("chat").conflicts).toEqual([expect.objectContaining({ current: first, displaced: expect.objectContaining({ text: "stale" }) })]);
     expect(restarted.readSince(0).map((item) => item.id)).toEqual(restarted.readSince(0).map((_, index) => index + 1));

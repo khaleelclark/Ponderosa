@@ -3,6 +3,17 @@ self.addEventListener("push", (event) => {
   let payload;
   try { payload = event.data.json(); } catch { return; }
   event.waitUntil((async () => {
+    if (payload.conversationId) {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const encodedConversationId = encodeURIComponent(payload.conversationId);
+      const alreadyOpen = windows.some((client) => {
+        if (client.visibilityState !== "visible") return false;
+        const path = new URL(client.url).pathname;
+        return path.includes(`/chats/${encodedConversationId}`)
+          || path.includes(`/conversations/${encodedConversationId}`);
+      });
+      if (alreadyOpen) return;
+    }
     // A push service may deliver again when its acknowledgement is ambiguous.
     // Retain a bounded receipt set after a successful display so reconnects or
     // server retries cannot create a second OS notification.

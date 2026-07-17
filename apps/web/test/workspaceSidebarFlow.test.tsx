@@ -1,9 +1,8 @@
-import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
-import { AllAgentsView } from "../src/components/WorkspaceOverview";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -17,6 +16,11 @@ const agents: AgentDto[] = [
   { id: "agent-alpha", projectId: "alpha", title: "Reviewer", conversationIds: ["chat-alpha"], activeEngine: "codex", state: {}, createdAt: "2026-07-14T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", archived: false },
   { id: "agent-beta", projectId: "beta", title: "Reviewer", conversationIds: ["chat-beta"], activeEngine: "codex", state: {}, createdAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", archived: false },
 ];
+const preferences: WorkspacePreferencesDto = {
+  projectSort: "last_used", projectOrder: [], starredProjectIds: ["alpha"], sidebarCollapsed: false, sidebarWidth: 320,
+  notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
+  fontFamily: "inter", providerAvailability: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: "2026-07-17T00:00:00.000Z",
+};
 describe("responsive workspace sidebar flow", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -33,11 +37,13 @@ describe("responsive workspace sidebar flow", () => {
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
+      preferences={preferences}
       route={{ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" }}
       notifications={[{ id: "unread", projectId: "beta", conversationId: "chat-beta", kind: "mentions", title: "Mention", body: "Review", createdAt: "2026-07-16T00:00:00.000Z" }]}
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}
       onManageProject={vi.fn()}
+      onPreferences={vi.fn()}
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}
     /></QueryClientProvider>);
@@ -51,10 +57,12 @@ describe("responsive workspace sidebar flow", () => {
 
     act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
-    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "allAgents" });
     act(() => view.root.findByProps({ "aria-label": "Open project files" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
+    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
+    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
+    expect(JSON.stringify(view.toJSON())).toContain("Search agents");
+    expect(JSON.stringify(view.toJSON())).toContain("Reviewer");
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();
@@ -69,7 +77,19 @@ describe("responsive workspace sidebar flow", () => {
       client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
     });
     const onNavigate = vi.fn();
-    const view = create(<QueryClientProvider client={client}><AllAgentsView projects={projects} onNavigate={onNavigate} /></QueryClientProvider>);
+    const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
+      projects={projects}
+      preferences={preferences}
+      route={{ kind: "projects" }}
+      notifications={[]}
+      onNavigate={onNavigate}
+      onCreateProject={vi.fn()}
+      onManageProject={vi.fn()}
+      onPreferences={vi.fn()}
+      onRenameConversation={vi.fn()}
+      onDeleteConversation={vi.fn()}
+    /></QueryClientProvider>);
+    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     const alphaDestination = view.root.findAll((node) => node.type === "div" && node.props["aria-label"] === "Open agent Reviewer in Website · /repos/alpha");
     const betaDestination = view.root.findAll((node) => node.type === "div" && node.props["aria-label"] === "Open agent Reviewer in Website · /repos/beta");
     expect(alphaDestination).toHaveLength(1);
@@ -77,6 +97,36 @@ describe("responsive workspace sidebar flow", () => {
     act(() => alphaDestination[0]!.props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha" });
     expect(JSON.stringify(view.toJSON())).toContain("Website · /repos/alpha · codex");
+    view.unmount();
+    client.clear();
+  });
+
+  it("persists project stars and exposes the selected project sort", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    projects.forEach((project, index) => {
+      client.setQueryData(["conversations", project.id], [conversations[index]]);
+      client.setQueryData(["agents", project.id], []);
+      client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
+    });
+    const onPreferences = vi.fn();
+    const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
+      projects={projects}
+      preferences={preferences}
+      route={{ kind: "projects" }}
+      notifications={[]}
+      onNavigate={vi.fn()}
+      onCreateProject={vi.fn()}
+      onManageProject={vi.fn()}
+      onPreferences={onPreferences}
+      onRenameConversation={vi.fn()}
+      onDeleteConversation={vi.fn()}
+    /></QueryClientProvider>);
+
+    act(() => view.root.findByProps({ "aria-label": "Unstar Website" }).props.onClick());
+    expect(onPreferences).toHaveBeenCalledWith({ starredProjectIds: [] });
+    const sortProjects = view.root.findByProps({ "aria-label": "Sort projects" });
+    expect(sortProjects.props.onClick).toEqual(expect.any(Function));
+    expect(JSON.stringify(view.toJSON())).toContain("Recent activity");
     view.unmount();
     client.clear();
   });

@@ -69,6 +69,8 @@ export interface WorkspacePreferencesDto {
   projectSort: ProjectSort;
   /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
   projectOrder: string[];
+  /** Stable project IDs pinned to the Starred section. Unknown/deleted IDs are ignored. */
+  starredProjectIds: string[];
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   notifications: NotificationPreferencesDto;
