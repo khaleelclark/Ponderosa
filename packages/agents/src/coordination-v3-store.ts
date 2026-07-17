@@ -36,6 +36,17 @@ function triggerBudgetEndsAt(period: TriggerRunBudgetDto["period"], startedAt: s
   return start.toISOString();
 }
 
+function inspectorJson(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  let rendered: string;
+  try {
+    rendered = JSON.stringify(JSON.parse(value));
+  } catch {
+    rendered = value;
+  }
+  return rendered.length > 4_000 ? `${rendered.slice(0, 4_000)}… (truncated in inspector)` : rendered;
+}
+
 export interface RunAuthorizationV3 {
   runId: string;
   agentId: string;
@@ -1580,6 +1591,433 @@ export class CoordinationV3Store {
         oldestRequestAt: cycleEdges.map((edge) => edge.created_at).sort()[0]!,
       };
     });
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
+  agentWorkItems(input: {
+    projectId: string;
+    conversationId?: string;
+    agentId?: string;
+    limit?: number;
+  }): { items: import("@ponderosa/core").AgentWorkItemDto[]; truncated: boolean } {
+    const limit = Math.max(1, Math.min(input.limit ?? 300, 1_000));
+    const scopeKey = input.conversationId ? `conversation:${input.conversationId}` : undefined;
+    type GraphKind = "request" | "join" | "activation" | "run" | "trigger";
+    const graphLimit = Math.min(Math.max(limit * 4, limit), 4_000);
+    const selectedIds = new Map<GraphKind, string[]>();
+    let truncated = false;
+    if (input.agentId) {
+      // Select only canonical IDs before reading payload-bearing rows. The
+      // recursive UNION is cycle-safe and traverses structural links in both
+      // directions. The extra row makes a bounded omission visible to callers.
+      const graphRows = this.sqlite.prepare(`
+        WITH RECURSIVE
+        seed_requests(id) AS (
+          SELECT id FROM coordination_requests
+          WHERE project_id = @projectId AND (@conversationId IS NULL OR conversation_id = @conversationId)
+            AND (requester_agent_id = @agentId OR recipient_agent_id = @agentId)
+          ORDER BY updated_at DESC, id DESC LIMIT @seedFetchLimit
+        ),
+        seed_joins(id) AS (
+          SELECT id FROM coordination_joins
+          WHERE project_id = @projectId AND (@conversationId IS NULL OR conversation_id = @conversationId)
+            AND owner_agent_id = @agentId
+          ORDER BY updated_at DESC, id DESC LIMIT @seedFetchLimit
+        ),
+        seed_activations(id) AS (
+          SELECT id FROM agent_activations
+          WHERE project_id = @projectId AND (@scopeKey IS NULL OR scope_key = @scopeKey) AND agent_id = @agentId
+          ORDER BY updated_at DESC, id DESC LIMIT @seedFetchLimit
+        ),
+        seed_runs(id) AS (
+          SELECT id FROM scheduler_runs
+          WHERE project_id = @projectId AND (@scopeKey IS NULL OR scope_key = @scopeKey) AND agent_id = @agentId
+          ORDER BY updated_at DESC, id DESC LIMIT @seedFetchLimit
+        ),
+        seed_triggers(id) AS (
+          SELECT id FROM trigger_occurrences
+          WHERE project_id = @projectId AND (@scopeKey IS NULL OR scope_key = @scopeKey) AND agent_id = @agentId
+          ORDER BY updated_at DESC, id DESC LIMIT @seedFetchLimit
+        ),
+        seeds(kind, id) AS (
+          SELECT 'request', id FROM (SELECT id FROM seed_requests LIMIT @seedLimit)
+          UNION ALL SELECT 'join', id FROM (SELECT id FROM seed_joins LIMIT @seedLimit)
+          UNION ALL SELECT 'activation', id FROM (SELECT id FROM seed_activations LIMIT @seedLimit)
+          UNION ALL SELECT 'run', id FROM (SELECT id FROM seed_runs LIMIT @seedLimit)
+          UNION ALL SELECT 'trigger', id FROM (SELECT id FROM seed_triggers LIMIT @seedLimit)
+        ),
+        base_edges(from_kind, from_id, to_kind, to_id) AS (
+          SELECT 'join', member.join_id, 'request', member.request_id
+          FROM coordination_join_members member
+          JOIN coordination_joins join_record ON join_record.id = member.join_id
+          WHERE join_record.project_id = @projectId
+            AND (@conversationId IS NULL OR join_record.conversation_id = @conversationId)
+          UNION ALL
+          SELECT 'join', join_record.id, 'request', continuation.value
+          FROM coordination_joins join_record
+          JOIN json_each(join_record.continuation_request_ids_json) continuation
+          WHERE join_record.project_id = @projectId
+            AND (@conversationId IS NULL OR join_record.conversation_id = @conversationId)
+          UNION ALL
+          SELECT 'activation', source.activation_id,
+            CASE source.source_kind
+              WHEN 'request' THEN 'request'
+              WHEN 'request_update' THEN 'request'
+              WHEN 'join' THEN 'join'
+              WHEN 'trigger_occurrence' THEN 'trigger'
+            END,
+            CASE WHEN source.source_kind = 'request_update' THEN request_update.request_id ELSE source.source_id END
+          FROM activation_sources source
+          JOIN agent_activations activation ON activation.id = source.activation_id
+          LEFT JOIN coordination_request_updates request_update
+            ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+          WHERE activation.project_id = @projectId AND (@scopeKey IS NULL OR activation.scope_key = @scopeKey)
+            AND source.source_kind IN ('request', 'request_update', 'join', 'trigger_occurrence')
+          UNION ALL
+          SELECT 'activation', mapping.source_activation_id, 'activation', mapping.recovery_activation_id
+          FROM scheduler_steering_recovery_activations mapping
+          JOIN agent_activations recovery ON recovery.id = mapping.recovery_activation_id
+          WHERE recovery.project_id = @projectId AND (@scopeKey IS NULL OR recovery.scope_key = @scopeKey)
+          UNION ALL
+          SELECT 'run', attachment.run_id, 'activation', attachment.activation_id
+          FROM scheduler_run_activations attachment
+          JOIN scheduler_runs run_record ON run_record.id = attachment.run_id
+          WHERE run_record.project_id = @projectId AND (@scopeKey IS NULL OR run_record.scope_key = @scopeKey)
+          UNION ALL
+          SELECT 'trigger', occurrence.id, 'activation', occurrence.activation_id
+          FROM trigger_occurrences occurrence
+          WHERE occurrence.project_id = @projectId AND (@scopeKey IS NULL OR occurrence.scope_key = @scopeKey)
+            AND occurrence.activation_id IS NOT NULL
+        ),
+        edges(from_kind, from_id, to_kind, to_id) AS (
+          SELECT from_kind, from_id, to_kind, to_id FROM base_edges WHERE to_id IS NOT NULL
+          UNION ALL
+          SELECT to_kind, to_id, from_kind, from_id FROM base_edges WHERE to_id IS NOT NULL
+        ),
+        reachable(kind, id) AS (
+          SELECT kind, id FROM seeds
+          UNION
+          SELECT edge.to_kind, edge.to_id
+          FROM reachable current
+          JOIN edges edge ON edge.from_kind = current.kind AND edge.from_id = current.id
+        )
+        SELECT kind, id,
+          CASE WHEN
+            (SELECT COUNT(*) FROM seed_requests) > @seedLimit OR
+            (SELECT COUNT(*) FROM seed_joins) > @seedLimit OR
+            (SELECT COUNT(*) FROM seed_activations) > @seedLimit OR
+            (SELECT COUNT(*) FROM seed_runs) > @seedLimit OR
+            (SELECT COUNT(*) FROM seed_triggers) > @seedLimit
+          THEN 1 ELSE 0 END AS seed_overflow
+        FROM reachable LIMIT @graphFetchLimit
+      `).all({
+        projectId: input.projectId,
+        conversationId: input.conversationId ?? null,
+        scopeKey: scopeKey ?? null,
+        agentId: input.agentId,
+        seedLimit: limit,
+        seedFetchLimit: limit + 1,
+        graphFetchLimit: graphLimit + 1,
+      }) as Array<{ kind: GraphKind; id: string; seed_overflow: 0 | 1 }>;
+      truncated = graphRows.length > graphLimit || graphRows[0]?.seed_overflow === 1;
+      for (const row of graphRows.slice(0, graphLimit)) {
+        const ids = selectedIds.get(row.kind) ?? [];
+        ids.push(row.id);
+        selectedIds.set(row.kind, ids);
+      }
+    }
+    const queryLimit = input.agentId ? graphLimit : limit + 1;
+    const trimUnscopedOverflow = <T>(rows: T[]): T[] => {
+      if (!input.agentId && rows.length > limit) {
+        truncated = true;
+        return rows.slice(0, limit);
+      }
+      return rows;
+    };
+    const selection = (kind: GraphKind, column: string): { sql: string; params: string[] } => {
+      if (!input.agentId) return { sql: "", params: [] };
+      const ids = selectedIds.get(kind) ?? [];
+      return ids.length
+        ? { sql: `AND ${column} IN (${ids.map(() => "?").join(", ")})`, params: ids }
+        : { sql: "AND 0", params: [] };
+    };
+    const items = new Map<string, import("@ponderosa/core").AgentWorkItemDto>();
+    const relationSets = new Map<string, Set<string>>();
+    const add = (item: import("@ponderosa/core").AgentWorkItemDto): void => {
+      items.set(item.id, item);
+      relationSets.set(item.id, new Set(item.relatedItemIds));
+    };
+    const relate = (left: string, right: string): void => {
+      if (left === right) return;
+      relationSets.set(left, relationSets.get(left) ?? new Set());
+      relationSets.set(right, relationSets.get(right) ?? new Set());
+      relationSets.get(left)!.add(right);
+      relationSets.get(right)!.add(left);
+    };
+    const details = (...values: Array<[string, unknown]>): Array<{ label: string; value: string }> =>
+      values.flatMap(([label, value]) => value === undefined || value === null || value === ""
+        ? []
+        : [{ label, value: typeof value === "string" ? value : JSON.stringify(value) }]);
+
+    const requestSelection = selection("request", "id");
+    const requestRows = trimUnscopedOverflow(this.sqlite.prepare(`
+      SELECT id, requester_agent_id, recipient_agent_id, state, version, lifetime_kind,
+        deadline_at, payload_json, communication_event_id, created_at, updated_at, terminal_at
+      FROM coordination_requests
+      WHERE project_id = ?
+        AND (? IS NULL OR conversation_id = ?)
+        ${requestSelection.sql}
+      ORDER BY CASE WHEN state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer') THEN 0 ELSE 1 END,
+        updated_at DESC, id DESC LIMIT ?
+    `).all(
+      input.projectId, input.conversationId ?? null, input.conversationId ?? null,
+      ...requestSelection.params, queryLimit,
+    ) as Array<{
+      id: string; requester_agent_id: string | null; recipient_agent_id: string; state: string;
+      version: number; lifetime_kind: string; deadline_at: string | null; payload_json: string;
+      communication_event_id: string | null; created_at: string; updated_at: string; terminal_at: string | null;
+    }>);
+    for (const row of requestRows) {
+      const id = `request:${row.id}`;
+      add({
+        id, recordId: row.id, referenceIds: [row.id, ...(row.communication_event_id ? [row.communication_event_id] : [])],
+        kind: "request", state: row.state, title: "Assigned work",
+        summary: row.state === "completed" ? "The assigned work was reported finished."
+          : ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state)
+            ? "The assigned work is still open." : `The assigned work ended ${row.state.replaceAll("_", " ")}.`,
+        agentIds: [...new Set([row.requester_agent_id, row.recipient_agent_id].filter((value): value is string => Boolean(value)))],
+        relatedItemIds: [],
+        details: details(
+          ["Request ID", row.id], ["Requester Agent ID", row.requester_agent_id ?? "user"],
+          ["Recipient Agent ID", row.recipient_agent_id], ["Version", row.version], ["Lifetime", row.lifetime_kind],
+          ["Deadline", row.deadline_at], ["Communication event", row.communication_event_id],
+          ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at],
+        ),
+        createdAt: row.created_at, updatedAt: row.updated_at,
+      });
+    }
+
+    const joinSelection = selection("join", "id");
+    const joinRows = trimUnscopedOverflow(this.sqlite.prepare(`
+      SELECT id, owner_agent_id, mode, quorum, satisfying_outcomes_json, state,
+        deadline_at, created_at, updated_at, terminal_at
+      FROM coordination_joins
+      WHERE project_id = ? AND (? IS NULL OR conversation_id = ?) ${joinSelection.sql}
+      ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, updated_at DESC, id DESC LIMIT ?
+    `).all(
+      input.projectId, input.conversationId ?? null, input.conversationId ?? null,
+      ...joinSelection.params, queryLimit,
+    ) as Array<{
+      id: string; owner_agent_id: string; mode: string; quorum: number; satisfying_outcomes_json: string;
+      state: string; deadline_at: string | null; created_at: string; updated_at: string; terminal_at: string | null;
+    }>);
+    for (const row of joinRows) add({
+      id: `join:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "join", state: row.state,
+      title: "Waiting for work", summary: row.state === "open" ? "The Agent is holding until enough assigned work returns."
+        : row.state === "satisfied" ? "The required results arrived." : `The wait ended ${row.state}.`,
+      agentIds: [row.owner_agent_id], relatedItemIds: [],
+      details: details(["Join ID", row.id], ["Mode", row.mode], ["Quorum", row.quorum],
+        ["Accepted outcomes", inspectorJson(row.satisfying_outcomes_json)], ["Deadline", row.deadline_at], ["Terminal time", row.terminal_at]),
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    });
+
+    const activationSelection = selection("activation", "id");
+    const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
+      SELECT id, agent_id, kind, priority, dispatch_policy, prompt_class, state, payload_json,
+        delivery_failures, last_delivery_error, terminal_outcome, terminal_at, created_at, updated_at
+      FROM agent_activations
+      WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
+      ORDER BY CASE WHEN state IN ('pending', 'retry_pending', 'attached') THEN 0 ELSE 1 END,
+        updated_at DESC, id DESC LIMIT ?
+    `).all(
+      input.projectId, scopeKey ?? null, scopeKey ?? null,
+      ...activationSelection.params, queryLimit,
+    ) as Array<{
+      id: string; agent_id: string; kind: string; priority: number; dispatch_policy: string; prompt_class: string;
+      state: string; payload_json: string; delivery_failures: number; last_delivery_error: string | null;
+      terminal_outcome: string | null; terminal_at: string | null; created_at: string; updated_at: string;
+    }>);
+    for (const row of activationRows) add({
+      id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
+      title: "Queued wake-up", summary: ["pending", "retry_pending", "attached"].includes(row.state)
+        ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The wake-up was consumed by its Run."
+          : `The wake-up ended ${row.state.replaceAll("_", " ")}.`,
+      agentIds: [row.agent_id], relatedItemIds: [],
+      details: details(["Activation ID", row.id], ["Kind", row.kind], ["Priority", row.priority],
+        ["Dispatch", row.dispatch_policy], ["Prompt class", row.prompt_class], ["Delivery failures", row.delivery_failures],
+        ["Terminal outcome", row.terminal_outcome], ["Last error", row.last_delivery_error],
+        ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at]),
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    });
+
+    const runSelection = selection("run", "scheduler.id");
+    const runRows = trimUnscopedOverflow(this.sqlite.prepare(`
+      SELECT scheduler.id, scheduler.agent_id, scheduler.status, scheduler.fencing_token,
+        scheduler.prompt_injection_state, scheduler.context_disposition, scheduler.lease_expires_at,
+        scheduler.created_at, scheduler.updated_at, scheduler.terminal_at,
+        provider.execution_id, provider.prompt_hash, execution.title, execution.status AS execution_status,
+        execution.wake_cause, execution.started_at, execution.completed_at
+      FROM scheduler_runs scheduler
+      LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
+      LEFT JOIN runs execution ON execution.id = provider.execution_id AND execution.agent_id = scheduler.agent_id
+      WHERE scheduler.project_id = ? AND (? IS NULL OR scheduler.scope_key = ?) ${runSelection.sql}
+      ORDER BY CASE WHEN scheduler.status IN ('leased', 'running') THEN 0 ELSE 1 END,
+        scheduler.updated_at DESC, scheduler.id DESC LIMIT ?
+    `).all(
+      input.projectId, scopeKey ?? null, scopeKey ?? null,
+      ...runSelection.params, queryLimit,
+    ) as Array<{
+      id: string; agent_id: string; status: string; fencing_token: number; prompt_injection_state: string;
+      context_disposition: string; lease_expires_at: string; created_at: string; updated_at: string; terminal_at: string | null;
+      execution_id: string | null; prompt_hash: string | null; title: string | null; execution_status: string | null;
+      wake_cause: string | null; started_at: string | null; completed_at: string | null;
+    }>);
+    for (const row of runRows) {
+      const recordId = row.execution_id ?? row.id;
+      add({
+        id: `run:${recordId}`, recordId, referenceIds: [...new Set([recordId, row.id])], kind: "run",
+        state: row.execution_status ?? row.status, title: row.title ?? "Agent Run",
+        summary: ["leased", "running"].includes(row.status) ? "The Agent is currently running."
+          : row.status === "completed" ? "The Run finished." : `The Run ended ${row.status.replaceAll("_", " ")}.`,
+        agentIds: [row.agent_id], relatedItemIds: [],
+        details: details(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id], ["Wake cause", row.wake_cause],
+          ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
+          ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
+          ["Lease expires", row.lease_expires_at], ["Terminal time", row.completed_at ?? row.terminal_at]),
+        createdAt: row.started_at ?? row.created_at, updatedAt: row.completed_at ?? row.updated_at,
+      });
+    }
+
+    const triggerSelection = selection("trigger", "occurrence.id");
+    const occurrenceRows = trimUnscopedOverflow(this.sqlite.prepare(`
+      SELECT occurrence.id, occurrence.trigger_id, occurrence.agent_id, occurrence.state, occurrence.attempts,
+        occurrence.activation_id, occurrence.last_error, occurrence.input_hash, occurrence.trigger_snapshot_json,
+        occurrence.occurred_at, occurrence.created_at, occurrence.updated_at,
+        definition.name
+      FROM trigger_occurrences occurrence
+      LEFT JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
+      WHERE occurrence.project_id = ? AND (? IS NULL OR occurrence.scope_key = ?) ${triggerSelection.sql}
+      ORDER BY CASE WHEN occurrence.state = 'pending' THEN 0 ELSE 1 END,
+        occurrence.updated_at DESC, occurrence.id DESC LIMIT ?
+    `).all(
+      input.projectId, scopeKey ?? null, scopeKey ?? null,
+      ...triggerSelection.params, queryLimit,
+    ) as Array<{
+      id: string; trigger_id: string; agent_id: string; state: string; attempts: number; activation_id: string | null;
+      last_error: string | null; input_hash: string; trigger_snapshot_json: string; occurred_at: string;
+      created_at: string; updated_at: string; name: string | null;
+    }>);
+    for (const row of occurrenceRows) {
+      const snapshot = inspectorJson(row.trigger_snapshot_json);
+      let snapshotName: string | undefined;
+      try { snapshotName = (JSON.parse(row.trigger_snapshot_json) as { name?: string }).name; } catch { /* shown in technical details */ }
+      add({
+        id: `trigger:${row.id}`, recordId: row.id, referenceIds: [row.id, row.trigger_id], kind: "trigger", state: row.state,
+        title: row.name ?? snapshotName ?? "Trigger occurrence",
+        summary: row.state === "activated" ? "This outside event queued work for the Agent."
+          : row.state === "pending" ? "This outside event is waiting to queue work."
+            : `This outside event ended ${row.state.replaceAll("_", " ")}.`,
+        agentIds: [row.agent_id], relatedItemIds: [],
+        details: details(["Occurrence ID", row.id], ["Trigger ID", row.trigger_id], ["Attempts", row.attempts],
+          ["Input hash", row.input_hash], ["Last error", row.last_error], ["Trigger snapshot", snapshot]),
+        createdAt: row.occurred_at ?? row.created_at, updatedAt: row.updated_at,
+      });
+      if (row.activation_id) relate(`trigger:${row.id}`, `activation:${row.activation_id}`);
+    }
+
+    const loadedRequestIds = requestRows.map((row) => row.id);
+    const loadedJoinIds = joinRows.map((row) => row.id);
+    const loadedActivationIds = activationRows.map((row) => row.id);
+    const loadedRunIds = runRows.map((row) => row.id);
+    const linkedSelection = (
+      leftColumn: string,
+      leftIds: string[],
+      rightColumn?: string,
+      rightIds: string[] = [],
+    ): { sql: string; params: string[] } => {
+      const clauses: string[] = [];
+      const params: string[] = [];
+      if (leftIds.length) {
+        clauses.push(`${leftColumn} IN (${leftIds.map(() => "?").join(", ")})`);
+        params.push(...leftIds);
+      }
+      if (rightColumn && rightIds.length) {
+        clauses.push(`${rightColumn} IN (${rightIds.map(() => "?").join(", ")})`);
+        params.push(...rightIds);
+      }
+      return { sql: clauses.length ? `AND (${clauses.join(" OR ")})` : "AND 0", params };
+    };
+
+    const joinLinkSelection = linkedSelection("member.join_id", loadedJoinIds, "member.request_id", loadedRequestIds);
+    const joinLinks = this.sqlite.prepare(`
+      SELECT member.join_id, member.request_id
+      FROM coordination_join_members member
+      JOIN coordination_joins join_record ON join_record.id = member.join_id
+      WHERE join_record.project_id = ? AND (? IS NULL OR join_record.conversation_id = ?)
+        ${joinLinkSelection.sql}
+    `).all(input.projectId, input.conversationId ?? null, input.conversationId ?? null, ...joinLinkSelection.params) as Array<{ join_id: string; request_id: string }>;
+    for (const row of joinLinks) relate(`join:${row.join_id}`, `request:${row.request_id}`);
+
+    const continuationSelection = linkedSelection("join_record.id", loadedJoinIds, "continuation.value", loadedRequestIds);
+    const continuationLinks = this.sqlite.prepare(`
+      SELECT join_record.id AS join_id, continuation.value AS request_id
+      FROM coordination_joins join_record
+      JOIN json_each(join_record.continuation_request_ids_json) continuation
+      WHERE join_record.project_id = ? AND (? IS NULL OR join_record.conversation_id = ?)
+        ${continuationSelection.sql}
+    `).all(input.projectId, input.conversationId ?? null, input.conversationId ?? null, ...continuationSelection.params) as Array<{ join_id: string; request_id: string }>;
+    for (const row of continuationLinks) relate(`join:${row.join_id}`, `request:${row.request_id}`);
+
+    const activationLinkSelection = linkedSelection("source.activation_id", loadedActivationIds);
+    const activationLinks = this.sqlite.prepare(`
+      SELECT source.activation_id, source.source_kind, source.source_id, request_update.request_id
+      FROM activation_sources source
+      JOIN agent_activations activation ON activation.id = source.activation_id
+      LEFT JOIN coordination_request_updates request_update
+        ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+      WHERE activation.project_id = ? AND (? IS NULL OR activation.scope_key = ?)
+        ${activationLinkSelection.sql}
+    `).all(input.projectId, scopeKey ?? null, scopeKey ?? null, ...activationLinkSelection.params) as Array<{
+      activation_id: string; source_kind: string; source_id: string; request_id: string | null;
+    }>;
+    for (const row of activationLinks) {
+      const sourceKind = row.source_kind === "trigger_occurrence" ? "trigger" : row.source_kind;
+      if (["request", "join", "trigger"].includes(sourceKind)) relate(`activation:${row.activation_id}`, `${sourceKind}:${row.source_id}`);
+      if (row.source_kind === "request_update" && row.request_id) relate(`activation:${row.activation_id}`, `request:${row.request_id}`);
+      const activationItem = items.get(`activation:${row.activation_id}`);
+      if (activationItem && !activationItem.referenceIds.includes(row.source_id)) activationItem.referenceIds.push(row.source_id);
+    }
+
+    const recoverySelection = linkedSelection(
+      "mapping.source_activation_id", loadedActivationIds,
+      "mapping.recovery_activation_id", loadedActivationIds,
+    );
+    const recoveryLinks = this.sqlite.prepare(`
+      SELECT mapping.source_activation_id, mapping.recovery_activation_id
+      FROM scheduler_steering_recovery_activations mapping
+      JOIN agent_activations recovery ON recovery.id = mapping.recovery_activation_id
+      WHERE recovery.project_id = ? AND (? IS NULL OR recovery.scope_key = ?)
+        ${recoverySelection.sql}
+    `).all(input.projectId, scopeKey ?? null, scopeKey ?? null, ...recoverySelection.params) as Array<{ source_activation_id: string; recovery_activation_id: string }>;
+    for (const row of recoveryLinks) relate(`activation:${row.source_activation_id}`, `activation:${row.recovery_activation_id}`);
+
+    const runLinkSelection = linkedSelection("attachment.run_id", loadedRunIds, "attachment.activation_id", loadedActivationIds);
+    const runLinks = this.sqlite.prepare(`
+      SELECT attachment.run_id, attachment.activation_id, provider.execution_id
+      FROM scheduler_run_activations attachment
+      JOIN scheduler_runs run_record ON run_record.id = attachment.run_id
+      LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = attachment.run_id
+      WHERE run_record.project_id = ? AND (? IS NULL OR run_record.scope_key = ?)
+        ${runLinkSelection.sql}
+    `).all(input.projectId, scopeKey ?? null, scopeKey ?? null, ...runLinkSelection.params) as Array<{ run_id: string; activation_id: string; execution_id: string | null }>;
+    for (const row of runLinks) relate(`run:${row.execution_id ?? row.run_id}`, `activation:${row.activation_id}`);
+
+    for (const item of items.values()) {
+      item.relatedItemIds = [...(relationSets.get(item.id) ?? [])].filter((id) => items.has(id)).sort();
+    }
+    const projected = [...items.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    return { items: projected, truncated };
   }
 
   agentSnapshot(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto {

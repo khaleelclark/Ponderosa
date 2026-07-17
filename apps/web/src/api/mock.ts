@@ -23,6 +23,7 @@ import type {
   ProjectBrowserSessionDto,
   TriggerDefinitionDto,
   TriggerOccurrenceDto,
+  AgentWorkInspectorDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -457,6 +458,19 @@ export const mockApi: PonderosaApi = {
     const detail: CollaborationViewDto = {
       messages: collaborationMessages[conversationId] ?? [],
       agents: agents.filter((agent) => agent.conversationId === conversationId),
+    };
+    return delay(detail);
+  },
+  getAgentWork(projectId, filter = {}) {
+    const projectAgents = agents.filter((agent) => agent.projectId === projectId && (!filter.agentId || agent.id === filter.agentId));
+    const detail: AgentWorkInspectorDto = {
+      projectId,
+      ...(filter.conversationId ? { conversationId: filter.conversationId } : {}),
+      ...(filter.agentId ? { agentId: filter.agentId } : {}),
+      generatedAt: new Date().toISOString(),
+      agents: projectAgents.map((agent) => ({ id: agent.id, title: agent.title })),
+      traces: [],
+      items: [],
     };
     return delay(detail);
   },

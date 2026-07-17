@@ -96,6 +96,8 @@ import type {
   TriggerScheduleConfig,
   TriggerSourceConfig,
   TriggerSourceKind,
+  AgentWorkInspectorDto,
+  AgentWorkItemDto,
   AgentPortablePackageDto,
   AgentExportMode,
   ImportAgentPackageRequest,
@@ -2378,6 +2380,147 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ...detail,
       messages: withMessagePresentation(detail.agent.projectId, store.getProjectedAgentMessages(agentId)),
       coordinationV3: coordinationV3.agentSnapshot(agentId),
+    };
+  }
+
+  function agentWorkInspector(input: {
+    projectId: string;
+    conversationId?: string;
+    agentId?: string;
+    limit?: number;
+  }): AgentWorkInspectorDto {
+    const projectAgents = store.listAgents(input.projectId);
+    const names = new Map(projectAgents.map((agent) => [agent.id, agent.title]));
+    const agentName = (id: string | undefined): string => id ? names.get(id) ?? "Deleted Agent" : "You";
+    const projection = coordinationV3.agentWorkItems(input);
+    const items = projection.items;
+    for (const item of items) {
+      if (item.kind === "request") {
+        const requesterId = item.details.find((detail) => detail.label === "Requester Agent ID")?.value;
+        const recipientId = item.details.find((detail) => detail.label === "Recipient Agent ID")?.value;
+        item.title = `${requesterId === "user" ? "You" : agentName(requesterId)} asked ${agentName(recipientId)} to work`;
+      } else if (item.kind === "join") {
+        item.title = `${agentName(item.agentIds[0])} is waiting for results`;
+      } else if (item.kind === "activation") {
+        item.title = `${agentName(item.agentIds[0])} has a queued wake-up`;
+      } else if (item.kind === "run") {
+        item.title = `${agentName(item.agentIds[0])} Run`;
+      } else if (item.kind === "trigger") {
+        item.title = `${item.title} woke ${agentName(item.agentIds[0])}`;
+      }
+    }
+
+    const decisionLimit = input.limit ?? 300;
+    const decisionCandidates = workspace.listDecisions({
+      projectId: input.projectId,
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+    }).filter((decision) => {
+      if (!input.agentId || decision.agentId === input.agentId) return true;
+      return items.some((item) => item.kind === "run" && item.referenceIds.includes(decision.runId))
+        || items.some((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`));
+    });
+    const decisionsTruncated = decisionCandidates.length > decisionLimit;
+    const decisions = decisionCandidates.slice(0, decisionLimit);
+    for (const decision of decisions) {
+      const runItem = items.find((item) => item.kind === "run" && item.referenceIds.includes(decision.runId));
+      const responseActivation = items.find((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`));
+      const relatedItemIds = [runItem?.id, responseActivation?.id].filter((id): id is string => Boolean(id));
+      const item: AgentWorkItemDto = {
+        id: `decision:${decision.id}`, recordId: decision.id, referenceIds: [decision.id], kind: "decision",
+        state: decision.status, title: `${agentName(decision.agentId)} asked for your decision`,
+        summary: decision.status === "pending" ? decision.question : `Decision ${decision.status}.`,
+        agentIds: [decision.agentId], relatedItemIds,
+        details: [
+          { label: "Decision ID", value: decision.id }, { label: "Run ID", value: decision.runId },
+          { label: "Mode", value: decision.mode }, { label: "Blocking", value: decision.blocking ? "yes" : "no" },
+          ...(decision.context ? [{ label: "Context", value: decision.context }] : []),
+          ...(decision.response ? [{ label: "Response", value: JSON.stringify(decision.response) }] : []),
+        ],
+        createdAt: decision.createdAt, updatedAt: decision.updatedAt,
+      };
+      items.push(item);
+      if (runItem && !runItem.relatedItemIds.includes(item.id)) runItem.relatedItemIds.push(item.id);
+      if (responseActivation && !responseActivation.relatedItemIds.includes(item.id)) responseActivation.relatedItemIds.push(item.id);
+    }
+
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const visited = new Set<string>();
+    const traces: AgentWorkInspectorDto["traces"] = [];
+    const activeStates = new Set(["open", "in_progress", "waiting_dependency", "awaiting_answer", "pending", "retry_pending", "attached", "leased", "running"]);
+    const kindOrder: AgentWorkItemDto["kind"][] = ["trigger", "request", "decision", "join", "activation", "run"];
+    for (const root of [...items].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))) {
+      if (visited.has(root.id)) continue;
+      const component: AgentWorkItemDto[] = [];
+      const queue = [root.id];
+      while (queue.length) {
+        const id = queue.shift()!;
+        if (visited.has(id)) continue;
+        const current = byId.get(id);
+        if (!current) continue;
+        visited.add(id);
+        component.push(current);
+        queue.push(...current.relatedItemIds);
+      }
+      const ordered = component.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+      const headline = [...ordered].sort((a, b) => kindOrder.indexOf(a.kind) - kindOrder.indexOf(b.kind))[0]!;
+      const componentById = new Map(ordered.map((item) => [item.id, item]));
+      const needsAttention = (item: AgentWorkItemDto): boolean => {
+        if (item.kind === "request") return ["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable"].includes(item.state);
+        if (item.kind === "join") return ["impossible", "expired"].includes(item.state);
+        if (item.kind === "trigger") return item.state === "dead_lettered";
+        if (item.kind === "activation") {
+          if (!["failed", "outcome_unknown"].includes(item.state)) return false;
+          return !item.relatedItemIds.some((id) => {
+            const related = componentById.get(id);
+            return related?.kind === "request" && related.state === "completed";
+          });
+        }
+        if (item.kind === "run" && ["failed", "outcome_unknown"].includes(item.state)) {
+          return !item.relatedItemIds.some((id) => {
+            const related = componentById.get(id);
+            return related?.kind === "activation" && ["retry_pending", "pending", "attached", "consumed"].includes(related.state);
+          });
+        }
+        return false;
+      };
+      const state = ordered.some(needsAttention) ? "attention"
+        : ordered.some((item) => activeStates.has(item.state)) ? "active" : "finished";
+      const counts = new Map<AgentWorkItemDto["kind"], number>();
+      for (const item of ordered) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
+      const summary = kindOrder.flatMap((kind) => {
+        const count = counts.get(kind);
+        return count ? [`${count} ${kind === "activation" ? "wake-up" : kind}${count === 1 ? "" : "s"}`] : [];
+      }).join(" · ");
+      traces.push({
+        id: `trace:${headline.id}`, state, title: headline.title, summary,
+        agentIds: [...new Set(ordered.flatMap((item) => item.agentIds))], itemIds: ordered.map((item) => item.id),
+        createdAt: ordered[0]!.createdAt,
+        updatedAt: ordered.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, ordered[0]!.updatedAt),
+      });
+    }
+    const traceRank = { attention: 0, active: 1, finished: 2 } as const;
+    traces.sort((a, b) => traceRank[a.state] - traceRank[b.state] || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    const itemBudget = input.limit ?? 300;
+    const selectedTraces: typeof traces = [];
+    const selectedItemIds = new Set<string>();
+    for (const trace of traces) {
+      const additions = trace.itemIds.filter((id) => !selectedItemIds.has(id));
+      if (selectedTraces.length > 0 && selectedItemIds.size + additions.length > itemBudget && trace.state === "finished") continue;
+      selectedTraces.push(trace);
+      additions.forEach((id) => selectedItemIds.add(id));
+    }
+    const selectedItems = items.filter((item) => selectedItemIds.has(item.id));
+    const responseTruncated = selectedTraces.length < traces.length;
+    return {
+      projectId: input.projectId,
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      generatedAt: new Date().toISOString(),
+      ...(projection.truncated || decisionsTruncated || responseTruncated ? { truncated: true } : {}),
+      agents: projectAgents.map((agent) => ({ id: agent.id, title: agent.title })),
+      traces: selectedTraces,
+      items: selectedItems,
     };
   }
 
@@ -4727,6 +4870,32 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       { type: "project", id: request.params.id },
       store.listAgents(request.params.id),
     );
+  });
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { conversationId?: string; agentId?: string; limit?: string };
+  }>("/api/projects/:id/agent-work", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (request.query.conversationId) {
+      const conversation = store.getConversation(request.query.conversationId);
+      if (!conversation || conversation.projectId !== project.id) return reply.code(404).send({ error: "conversation not found in project" });
+    }
+    if (request.query.agentId) {
+      const agent = store.getAgent(request.query.agentId);
+      if (!agent || agent.projectId !== project.id) return reply.code(404).send({ error: "agent not found in project" });
+    }
+    const parsedLimit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+    if (parsedLimit !== undefined && (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 1_000)) {
+      return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
+    }
+    return agentWorkInspector({
+      projectId: project.id,
+      ...(request.query.conversationId ? { conversationId: request.query.conversationId } : {}),
+      ...(request.query.agentId ? { agentId: request.query.agentId } : {}),
+      ...(parsedLimit ? { limit: parsedLimit } : {}),
+    });
   });
 
   app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {

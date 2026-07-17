@@ -950,11 +950,13 @@ export function RunsPane({
   coordinationV3,
   workItems,
   timeline,
+  onOpenAgentWork,
 }: {
   runs: AgentRunDto[];
   coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   timeline: ExecutionItem[];
+  onOpenAgentWork?(runId?: string): void;
 }): JSX.Element {
   return (
     <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
@@ -1026,6 +1028,7 @@ export function RunsPane({
                   ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
                   : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
               </Typography>
+              {onOpenAgentWork ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>View Agent work</Button> : null}
               {run.providerInput ? <RunProviderInput run={run} /> : null}
             </Paper>
           ))}

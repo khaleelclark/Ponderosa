@@ -6,12 +6,14 @@ import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutli
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import TimelineIcon from "@mui/icons-material/Timeline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
   Button,
+  ButtonBase,
   Chip,
   CircularProgress,
   Dialog,
@@ -57,6 +59,7 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { ImportAgentDialog } from "./ImportAgentDialog";
+import { AgentWorkInspector } from "./AgentWorkInspector";
 
 export function conversationComposerRuntime(
   engine: Pick<EngineDto, "id" | "authenticated" | "available"> | undefined,
@@ -290,6 +293,8 @@ export function ConversationView({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
+  const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
@@ -845,6 +850,17 @@ export function ConversationView({
             <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({agents.length})
           </Button>
           <Button
+            variant="outlined"
+            size="small"
+            startIcon={<TimelineIcon />}
+            onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
+            aria-haspopup="dialog"
+            aria-expanded={agentWorkOpen}
+            sx={{ minHeight: compactViewport ? 44 : undefined }}
+          >
+            Agent work
+          </Button>
+          <Button
             variant={activeView === "collaboration" ? "contained" : "outlined"}
             size="small"
             startIcon={<ForumOutlinedIcon />}
@@ -955,11 +971,17 @@ export function ConversationView({
 
           <Stack spacing={1} sx={{ mb: 2 }}>
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
-              {operationalEvents.map((event) => <Box key={event.id} sx={{ display: "flex", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover" }}>
-                <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
-                <Typography variant="body2" sx={{ flex: 1 }}>{event.text}</Typography>
-                <Typography variant="caption" color="text.secondary">{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
-              </Box>)}
+              {operationalEvents.map((event) => {
+                const content = <>
+                  <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
+                  <Typography variant="body2" sx={{ flex: 1 }}>{event.text}</Typography>
+                  <Typography variant="caption" color="text.secondary">{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
+                </>;
+                const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
+                return event.kind === "organization"
+                  ? <Box key={event.id} sx={sx}>{content}</Box>
+                  : <ButtonBase key={event.id} onClick={() => { setAgentWorkFocus(event.id); setAgentWorkOpen(true); }} aria-label={`${event.text}. Open Agent work details`} sx={sx}>{content}</ButtonBase>;
+              })}
             </Stack> : null}
             {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (
               <Typography variant="body2" color="text.secondary">
@@ -1093,6 +1115,13 @@ export function ConversationView({
           )}
         </Box>
       </Drawer>
+      <AgentWorkInspector
+        open={agentWorkOpen}
+        projectId={conversation.projectId}
+        conversationId={conversation.id}
+        focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
+        onClose={() => setAgentWorkOpen(false)}
+      />
 
       <Box>
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
