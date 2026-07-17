@@ -18,7 +18,7 @@ const REQUEST_LIFETIME_SCHEMA = {
  * lifetimes, quorum conditions, and exact recovery. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Ponderosa supplies stable idempotency, indefinite lifetimes, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. Use completionMode record only for genuine fire-and-observe work; callback preserves the legacy ungrouped per-result wake. Use the advanced requests/join form for deadlines, quorum/any joins, exact recovery, or final-only aggregation. A returned joinId already exists; do not create it again.",
+  description: "Delegate common tracked work to one Agent with {recipientAgentId,text} or fan out atomically with {delegations:[...]}. Ponderosa supplies stable idempotency, indefinite lifetimes, and one all-results Join whose default wakePolicy each_result reactivates you as new results arrive while preserving the open parent workflow. For ordinary final-only fan-out, keep the common form and set completionMode:\"join\" with wakePolicy:\"final_only\". Use completionMode:\"record\" only for genuine fire-and-observe work; completionMode:\"callback\" preserves the legacy ungrouped per-result wake. Use the advanced requests/join form only for quorum/any conditions, custom per-request lifetimes, existing-request recovery, or custom satisfying outcomes. A returned joinId already exists; do not create it again.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

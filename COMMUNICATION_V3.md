@@ -319,8 +319,11 @@ discovery tools to the model:
   creates one aggregate all-results Join with `wakePolicy: each_result` by
   default. `completionMode: callback` preserves the legacy unjoined per-result
   wake, while `completionMode: record` stores and displays results without
-  waking the requester. The advanced request array and Join fields remain
-  available for deadlines, quorum/any, recovery, and `final_only` delivery.
+  waking the requester. Ordinary final-only fan-out stays on the common form
+  with `completionMode: join` and `wakePolicy: final_only`. The advanced request
+  array and Join fields are reserved for quorum/any conditions, custom
+  per-request lifetimes, existing-request recovery, and custom satisfying
+  outcomes.
 - `ponderosa_update_request`: `{text}` is the common canonical report and
   `{question}` is the common correlated blocking follow-up. The former completes
   the sole Request attached to the Run; the latter asks its original requester.

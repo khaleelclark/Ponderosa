@@ -135,6 +135,12 @@ describe("Ponderosa stdio MCP bridge", () => {
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
+    const coordinateDescription = (responses[0] as {
+      result: { tools: Array<{ name: string; description: string }> };
+    }).result.tools.find((tool) => tool.name === "coordinate")?.description;
+    expect(coordinateDescription).toContain('completionMode:"join" with wakePolicy:"final_only"');
+    expect(coordinateDescription).toContain("advanced requests/join form only for quorum/any conditions");
+    expect(coordinateDescription).not.toContain("advanced requests/join form for final-only");
     expect(received.sort()).toEqual([
       "/api/agent-coordinate",
       "/api/agent-browser",
