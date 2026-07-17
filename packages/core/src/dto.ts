@@ -1023,6 +1023,8 @@ export interface MessageDto {
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
+  /** Immutable Project-chat scope of the canonical communication, when present. */
+  conversationId?: string;
   agentId: string;
   seq: number;
   role: "user" | "assistant";
@@ -1156,8 +1158,30 @@ export interface ProviderInputSourceManifestV2 {
   }>;
 }
 
-/** V1 remains readable for historical Runs; all newly recorded Runs use V2. */
-export type ProviderInputSourceManifest = ProviderInputSourceManifestV1 | ProviderInputSourceManifestV2;
+export interface ProviderInputSourceManifestV3 {
+  schemaVersion: 3;
+  /** History messages represented in the exact text submitted for this Run. */
+  historyMessageCount: number;
+  /** Sources known to remain only in the continued provider session. */
+  retainedSessionSourceCount: number;
+  activationIds: string[];
+  triggerOccurrenceIds?: string[];
+  communicationEventIds: string[];
+  artifactIds: string[];
+  conversationId?: string;
+  providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
+  sources: Array<{
+    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory";
+    ref: string;
+    /** Submitted sources contribute to exactPrompt; retained sources do not. */
+    delivery: "submitted" | "retained_session";
+    hash?: string;
+    createdAt?: string;
+  }>;
+}
+
+/** Earlier manifests remain readable for historical Runs; new Runs use V3. */
+export type ProviderInputSourceManifest = ProviderInputSourceManifestV1 | ProviderInputSourceManifestV2 | ProviderInputSourceManifestV3;
 
 export interface ProviderInputDto {
   executionId: string;
@@ -1487,6 +1511,7 @@ interface AgentMessageRequestBase {
 
 /** POST /api/agent-messages body. The server derives the author from the capability. */
 export type SendAgentMessageRequest = AgentMessageRequestBase & (
+  | { intent?: undefined; recipientAgentIds?: never }
   | { intent: "broadcast"; recipientAgentIds?: never }
   | { intent: "direct_to_user"; recipientAgentIds?: never }
   | {

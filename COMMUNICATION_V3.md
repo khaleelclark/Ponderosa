@@ -296,15 +296,41 @@ The cutover gate must prove:
 
 Only three coordination tools are exposed to the model:
 
-- `ponderosa_coordinate`: create correlated requests and optionally an immutable
-  join; requests do not imply waiting.
-- `ponderosa_update_request`: append an authorized, idempotent request update.
+- `ponderosa_coordinate`: `{recipientAgentId,text}` is the common delegation
+  contract. The server derives stable idempotency, gives the Request an
+  indefinite lifetime, and creates an all-results Join unless `awaitResult` is
+  false. The advanced request array and Join fields remain available for fan-out,
+  deadlines, quorum/any, recovery, and background work.
+- `ponderosa_update_request`: `{text}` is the common canonical report and
+  `{question}` is the common correlated blocking follow-up. The former completes
+  the sole Request attached to the Run; the latter asks its original requester.
+  Both derive a stable update ID.
+  Advanced kinds and exact IDs remain available for progress, questions,
+  failure, multiple attached Requests, and authorized historical mutation.
   When exactly one correlated request is attached to the current Run, the model
   omits `requestId` and the server resolves it from SQLite's durable Run-to-
   Activation linkage. Multiple attached requests require an exact ID; the server
   never uses fuzzy identifier matching.
-- `ponderosa_message`: send an uncorrelated human or agent message.
+- `ponderosa_message`: `{text}` replies to one uncorrelated canonical incoming
+  Communication. The server inherits its audience and visibility and derives
+  stable idempotency. Ambiguous/non-message Runs require explicit intent and
+  recipients. One inferred material reply is allowed; exact transport retries
+  replay it.
 
 “Coordinate and wait” is a skill/helper around `ponderosa_coordinate`, not a
 fourth runtime tool. All tool mutations commit SQLite state and an outbox record
 atomically; scheduling side effects occur only after commit.
+
+Provider context is shaped, not flattened. Every prompt section has a declared
+role: authoritative identity/policy, action-required current work, relevant
+bounded history, or an on-demand reference. A versioned policy snapshot is sent
+once per provider-session epoch, the full Team Directory is fetched through a
+Run capability only when needed, and fresh-session private history is restricted
+to the active Project chat. Older scoped history remains durable behind a
+paginated Run capability. Every Run persists the exact text Ponderosa submitted,
+its hash, and a manifest that distinguishes submitted material from state known
+only to remain in a continued opaque provider session.
+
+Ponderosa does not silently rewrite or redact prompt material. Secret detection
+and redaction require an explicit, inspectable product policy so reconstructed
+provider input cannot differ invisibly from what was actually supplied.

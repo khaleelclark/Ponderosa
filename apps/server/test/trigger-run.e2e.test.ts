@@ -101,7 +101,7 @@ describe("V3.2 Trigger Run context", () => {
       const input = store.getProviderInput(runId!, true);
       expect(input?.exactPrompt).toBe(options.prompt);
       expect(input?.sourceManifest.activationIds).toHaveLength(2);
-      expect(input?.sourceManifest.schemaVersion === 2 && input.sourceManifest.triggerOccurrenceIds).toEqual([
+      expect(input?.sourceManifest.schemaVersion === 3 && input.sourceManifest.triggerOccurrenceIds).toEqual([
         first.occurrenceId, second.occurrenceId,
       ]);
       expect(input?.sourceManifest.sources.filter((source) => source.kind === "activation")).toHaveLength(2);
