@@ -67,8 +67,8 @@ describe("user message labels on chat surfaces", () => {
     expect(label).toBeLessThan(bubble);
     expect(bubble).toBeLessThan(content);
     expect(content).toBeLessThan(attachment);
-    expect(attachment).toBeLessThan(timestamp);
-    expect(timestamp).toBeLessThan(reply);
+    expect(attachment).toBeLessThan(reply);
+    expect(reply).toBeLessThan(timestamp);
   });
 
   it("does not label agent messages and filters unsupported system messages from ChatPane", () => {
@@ -104,8 +104,8 @@ describe("user message labels on chat surfaces", () => {
 
     expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
-    expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf("<time"));
-    expect(manager.indexOf("<time")).toBeLessThan(manager.indexOf('aria-label="Reply to message"'));
+    expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf('aria-label="Reply to message"'));
+    expect(manager.indexOf('aria-label="Reply to message"')).toBeLessThan(manager.indexOf("<time"));
     expect(agent).toContain('data-message-tag="everyone"');
     expect(agent).toContain("#everyone</span> result");
     expect(agent.indexOf("<time")).toBeLessThan(agent.indexOf('aria-label="Reply to message"'));

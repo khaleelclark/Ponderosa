@@ -65,7 +65,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
           ? resources?.conversations.find((conversation) => conversation.id === conversationId)?.title ?? "Project Chat"
           : tab.route.kind === "agent"
             ? resources?.agents.find((agent) => agent.id === agentId)?.title ?? "Agent"
-            : tab.route.kind === "agents" ? "Agents" : project?.label ?? "Project";
+            : tab.route.kind === "agents" ? "Agents" : "Project files";
         const selected = tab.key === activeKey;
         const projectLabel = project?.label ?? "Unavailable project";
         return <Box key={tab.key} sx={{ position: "relative", minWidth: 168, maxWidth: 240, display: "flex", alignItems: "stretch", borderRight: 1, borderColor: "divider", color: selected ? "text.primary" : "text.secondary", "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>
@@ -78,7 +78,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
               </Box>
             </ButtonBase>
           </Tooltip>
-          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 32, borderRadius: 0, opacity: .55, "&:hover": { opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 32, borderRadius: 0, color: "text.secondary", opacity: .85, "&:hover": { color: "text.primary", opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
         </Box>;
       })}
     </Stack>

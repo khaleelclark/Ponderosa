@@ -113,6 +113,16 @@ select {
   font: inherit;
 }
 
+/* Raw controls do not pass through MUI's focus-visible class. Keep their
+   keyboard focus distinct on both dark and light surfaces. */
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -21,9 +21,11 @@ export function createPonderosaTheme(mode: ColorMode) {
   return createTheme({
     palette: {
       mode,
+      // Require MUI's automatic foreground selection to meet normal-text AA.
+      contrastThreshold: 4.5,
       primary: {
         main: mode === "dark" ? "#9bc8ad" : "#20382b",
-        dark: mode === "dark" ? "#385c4b" : "#172b21",
+        dark: mode === "dark" ? "#5a786b" : "#172b21",
         light: mode === "dark" ? "#c0ddcd" : "#607d6e",
       },
       secondary: {
@@ -33,8 +35,18 @@ export function createPonderosaTheme(mode: ColorMode) {
         default: mode === "dark" ? "#091510" : "#faf6f3",
         paper: mode === "dark" ? "#11221a" : "#fffdfa",
       },
-      divider: mode === "dark" ? "#293c33" : "rgba(32,48,40,.16)",
-      text: mode === "dark" ? { primary: "#f5f1eb", secondary: "#9eaea5", disabled: "#6e7d75" } : { primary: "#203028", secondary: "#66756d", disabled: "#98a19c" },
+      // In dark mode these remain visible against both default and paper
+      // surfaces. Divider also serves as the boundary for outlined controls.
+      divider: mode === "dark" ? "#547164" : "rgba(32,48,40,.20)",
+      text: mode === "dark" ? { primary: "#f5f1eb", secondary: "#9eaea5", disabled: "#84958b" } : { primary: "#203028", secondary: "#66756d", disabled: "#7d8982" },
+      action: mode === "dark" ? {
+        active: "#c0ddcd",
+        hover: "rgba(192,221,205,.10)",
+        selected: "rgba(155,200,173,.18)",
+        disabled: "#84958b",
+        disabledBackground: "rgba(132,149,139,.18)",
+        focus: "rgba(155,200,173,.24)",
+      } : undefined,
       success: {
         main: mode === "dark" ? "#75c990" : "#277a46",
       },
@@ -73,6 +85,14 @@ export function createPonderosaTheme(mode: ColorMode) {
         defaultProps: {
           disableRipple: true,
         },
+        styleOverrides: {
+          root: {
+            "&.Mui-focusVisible": {
+              outline: `2px solid ${mode === "dark" ? "#9bc8ad" : "#20382b"}`,
+              outlineOffset: 2,
+            },
+          },
+        },
       },
       MuiButton: {
         styleOverrides: {
@@ -89,7 +109,12 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
       MuiOutlinedInput: {
         styleOverrides: {
-          root: mode === "dark" ? { backgroundColor: "rgba(255,255,255,.025)", "& fieldset": { borderColor: "#2e453a" }, "&:hover fieldset": { borderColor: "#4b6558" } } : {},
+          root: mode === "dark" ? {
+            backgroundColor: "rgba(255,255,255,.035)",
+            "& fieldset": { borderColor: "#547164" },
+            "&:hover fieldset, &.Mui-focused fieldset": { borderColor: "#9bc8ad" },
+            "&.Mui-disabled fieldset": { borderColor: "#405a4e" },
+          } : {},
         },
       },
       MuiIconButton: {

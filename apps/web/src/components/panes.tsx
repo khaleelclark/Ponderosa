@@ -13,6 +13,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import LanguageIcon from "@mui/icons-material/Language";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert,
@@ -370,6 +371,30 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
   element.scrollTop = element.scrollHeight;
 }
 
+export function ScrollToLatestButton({ visible, onClick }: { visible: boolean; onClick(): void }): JSX.Element | null {
+  if (!visible) return null;
+  return <Tooltip title="Jump to latest message">
+    <IconButton
+      aria-label="Jump to latest message"
+      onClick={onClick}
+      sx={{
+        position: "absolute",
+        right: { xs: 12, sm: 20 },
+        bottom: 14,
+        zIndex: 2,
+        width: 36,
+        height: 36,
+        color: "primary.light",
+        bgcolor: "background.paper",
+        border: 1,
+        borderColor: "divider",
+        boxShadow: 3,
+        "&:hover": { bgcolor: "action.selected" },
+      }}
+    ><KeyboardArrowDownIcon /></IconButton>
+  </Tooltip>;
+}
+
 const scrollActivityTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
 
 /** Reveal the already-reserved scrollbar thumb for touch, wheel, and keyboard scrolling. */
@@ -680,6 +705,7 @@ export function ChatPane({
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowNewMessages = useRef(true);
   const restoredScrollKey = useRef<string>();
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
 
   useLayoutEffect(() => {
     if (!scrollRef.current) return;
@@ -689,15 +715,18 @@ export function ChatPane({
       if (saved !== undefined) {
         scrollRef.current.scrollTop = saved;
         shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+        setShowScrollToLatest(!shouldFollowNewMessages.current);
         return;
       }
     }
     if (shouldFollowNewMessages.current) {
       scrollChatToBottom(scrollRef.current);
+      setShowScrollToLatest(false);
     }
   }, [chatMessages, scrollStorageKey]);
 
   return (
+    <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0 }}>
     <Stack
       component="section"
       aria-label="Conversation"
@@ -709,6 +738,7 @@ export function ChatPane({
         revealChatScrollbar(event.currentTarget);
         if (scrollRef.current) {
           shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
+          setShowScrollToLatest(!shouldFollowNewMessages.current);
           if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
@@ -738,7 +768,7 @@ export function ChatPane({
             width: "min(820px, 100%)",
             maxWidth: "100%",
             minWidth: 0,
-            py: { xs: 1, sm: 1.5 },
+            py: { xs: 0.75, sm: 1 },
           }}
         >
           <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
@@ -802,9 +832,8 @@ export function ChatPane({
               recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
             /> : null}
               </Box>
-              {fromUser ? <Box sx={{ mt: 0.5, color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact /></Box> : null}
               <MessageActionsAndTimestamp
-                showTimestamp={false}
+                showTimestamp={fromUser}
                 value={message.createdAt}
                 actions={<>
               {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
@@ -818,6 +847,16 @@ export function ChatPane({
         );
       })}
     </Stack>
+    <ScrollToLatestButton
+      visible={showScrollToLatest}
+      onClick={() => {
+        if (!scrollRef.current) return;
+        shouldFollowNewMessages.current = true;
+        scrollChatToBottom(scrollRef.current);
+        setShowScrollToLatest(false);
+      }}
+    />
+    </Box>
   );
 }
 

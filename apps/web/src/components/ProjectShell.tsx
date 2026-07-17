@@ -15,6 +15,7 @@ import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
 import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
+import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { Sidebar } from "./Sidebar";
 
 interface AgentDialogState {
@@ -153,6 +154,12 @@ export function ProjectShell({
     navigate({ kind: "agent", projectId, agentId });
   };
 
+  const openProjectArtifact = (agentId: string, artifactId: string) => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), "artifacts");
+    writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), artifactId);
+    navigate({ kind: "agent", projectId, agentId });
+  };
+
   const sidebarSelection = {
     conversationId: route.kind === "conversation" ? route.conversationId : undefined,
     agentsActive: route.kind === "agents" || route.kind === "agent",
@@ -268,6 +275,8 @@ export function ProjectShell({
           : setAgentDialog({ open: true, defaultName: suggestedName() })}
       />
     );
+  } else if (route.kind === "project") {
+    main = <ProjectArtifactsView agents={agents} detailByAgentId={detailByAgentId} onOpenArtifact={openProjectArtifact} />;
   } else {
     main = (
       <Box sx={{ p: 3 }}>
