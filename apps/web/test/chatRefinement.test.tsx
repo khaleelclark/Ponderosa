@@ -88,7 +88,7 @@ describe("chat interaction refinement", () => {
     const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 
     expect(conversation).toContain("data-chat-column");
-    expect(conversation).toContain('width: "min(800px, 100%)"');
+    expect(conversation).toContain('width: "min(900px, 100%)"');
     expect(panes).not.toContain('maxHeight: "60vh", overflow: "auto"');
     expect(panes).toContain('tabIndex={0}');
   });

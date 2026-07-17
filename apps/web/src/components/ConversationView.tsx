@@ -10,6 +10,7 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   ButtonBase,
@@ -20,15 +21,12 @@ import {
   DialogContent,
   DialogTitle,
   Drawer,
-  FormControl,
   IconButton,
-  InputLabel,
   List,
   ListItem,
   ListItemButton,
   ListItemText,
   MenuItem,
-  Select,
   Stack,
   TextField,
   Tooltip,
@@ -36,7 +34,6 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -52,13 +49,14 @@ import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
 import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
-import { MessageActionsAndTimestamp } from "./MessageTimestamp";
+import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
+import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
 export function conversationComposerRuntime(
   engine: Pick<EngineDto, "id" | "authenticated" | "available"> | undefined,
@@ -129,12 +127,12 @@ export function ConversationMessage({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
-  const showUserLabel = fromManager && message.role === "user";
   // Older projections stored the structured broadcast scope as visible prose.
   // Agent-authored Project-chat messages already carry that scope structurally.
   const visibleText = conversation === "main" && message.authorAgentId
     ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
     : message.text;
+  const senderName = fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId);
 
   return (
     <Box
@@ -143,36 +141,36 @@ export function ConversationMessage({
       className="chat-message"
       aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
-      sx={{ alignSelf: "center", width: "min(760px, 100%)", maxWidth: "100%", minWidth: 0 }}
+      sx={{ alignSelf: "center", width: "min(820px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 1, sm: 1.5 } }}
     >
-      <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", minWidth: 0 }}>
-        <Box sx={{ flex: 1, minWidth: 0, px: showUserLabel ? 0 : { xs: 1, sm: 1.5 } }}>
-          {showUserLabel ? <UserMessageLabel profile={operatorProfile} /> : <MessageSenderLabel name={fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} />}
-        </Box>
-        {message.authorAgentId ? (
-          <IconButton
-            size="small"
-            aria-label={`Open agent ${agentTitle(message.authorAgentId)}`}
-            onClick={() => onOpenAgent(message.authorAgentId!)}
-            sx={{ color: "text.secondary", minWidth: 44, minHeight: 44 }}
+      <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
+        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: "action.selected", color: "primary.light", border: 1, borderColor: "divider", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+        <Box sx={{ minWidth: 0, width: fromManager ? "min(72%, 620px)" : "min(100%, 740px)" }}>
+          {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
+            <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
+            <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
+            <Box sx={{ flex: 1 }} />
+            {message.authorAgentId ? <Tooltip title={`Open ${senderName}`}><IconButton
+              size="small"
+              aria-label={`Open agent ${senderName}`}
+              onClick={() => onOpenAgent(message.authorAgentId!)}
+              sx={{ color: "text.secondary", width: 28, height: 28, opacity: 0.72 }}
+            ><OpenInNewIcon sx={{ fontSize: 16 }} /></IconButton></Tooltip> : null}
+          </Stack> : null}
+          {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}
+          <Box
+            data-message-bubble="true"
+            sx={{
+              px: fromManager ? { xs: 1.25, sm: 1.5 } : 0,
+              py: fromManager ? { xs: 1, sm: 1.15 } : 0,
+              borderRadius: 2,
+              bgcolor: fromManager ? "action.hover" : "transparent",
+              color: "text.primary",
+              border: 1,
+              borderColor: fromManager ? "divider" : "transparent",
+            }}
           >
-            <OpenInNewIcon fontSize="inherit" />
-          </IconButton>
-        ) : null}
-      </Stack>
-      <Box
-        data-message-bubble="true"
-        sx={{
-          px: { xs: 1, sm: 1.5 },
-          py: { xs: 0.75, sm: 1 },
-          borderRadius: 2,
-          bgcolor: fromManager ? "action.hover" : "transparent",
-          color: "text.primary",
-          border: 1,
-          borderColor: "transparent",
-        }}
-      >
-        {fromManager ? <MessageSenderLabel name={operatorProfile?.displayName ?? "You"} /> : null}
+        {fromManager && message.role === "user" ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={operatorProfile?.displayName ?? "You"} /></Box> : null}
         {message.replyTo ? (
           <Box component="button" aria-label="Go to replied-to message" onClick={() => {
             const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
@@ -219,8 +217,9 @@ export function ConversationMessage({
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
         {message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus receipts={message.deliveryReceipts} recipientName={(agentId) => agentTitle(agentId)} /> : null}
-      </Box>
-      <MessageActionsAndTimestamp value={message.createdAt} actions={conversation === "main" ? <>
+          </Box>
+          {fromManager ? <Box sx={{ mt: 0.5, color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact /></Box> : null}
+          <MessageActionsAndTimestamp showTimestamp={false} value={message.createdAt} actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
@@ -235,7 +234,9 @@ export function ConversationMessage({
             <QuickreplyIcon fontSize="inherit" />
           </IconButton></Tooltip>
         ) : null}
-      </> : undefined} />
+          </> : undefined} />
+        </Box>
+      </Stack>
     </Box>
   );
 }
@@ -772,52 +773,29 @@ export function ConversationView({
     }
   };
 
-  const runtimeControls = activeView === "main" ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: { xs: "100%", sm: "max-content" } }}>
-    <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 105 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
-      <InputLabel id="composer-engine-label">Engine</InputLabel>
-      <Select
-        labelId="composer-engine-label"
-        aria-label="Engine"
-        value={engines.some((option) => option.id === engine) ? engine : ""}
-        onChange={(event: SelectChangeEvent) => {
-          const next = event.target.value;
-          setEngine(next); setModel(""); setEffort("");
-          persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: null, defaultEffort: null });
-        }}
-      >
-        {engines.map((option) => <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>{option.displayName}{engineIsAvailable(option) ? "" : option.authenticated ? " — unavailable" : " — signed out"}</MenuItem>)}
-      </Select>
-    </FormControl>
-    {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 115 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
-      <InputLabel id="composer-model-label">Model</InputLabel>
-      <Select
-        labelId="composer-model-label"
-        aria-label="Model"
-        value={models.some((option) => option.id === model) ? model : ""}
-        onChange={(event: SelectChangeEvent) => {
-          const next = event.target.value;
-          const effortRemainsValid = effortSelectionIsCompatible(activeEngine, next, effort);
-          setModel(next); if (!effortRemainsValid) setEffort("");
-          persistDefaults.mutate({ defaultModel: next || null, ...(!effortRemainsValid ? { defaultEffort: null } : {}) });
-        }}
-      >
-        <MenuItem value="">Default</MenuItem>
-        {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-      </Select>
-    </FormControl> : null}
-    {efforts.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 90 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
-      <InputLabel id="composer-effort-label">Effort</InputLabel>
-      <Select
-        labelId="composer-effort-label"
-        aria-label="Effort"
-        value={efforts.some((option) => option.id === effort) ? effort : ""}
-        onChange={(event: SelectChangeEvent) => { const next = event.target.value; setEffort(next); persistDefaults.mutate({ defaultEffort: next || null }); }}
-      >
-        <MenuItem value="">Default</MenuItem>
-        {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-      </Select>
-    </FormControl> : null}
-  </Stack> : null;
+  const runtimeControls = activeView === "main" ? <ComposerRuntimeSelector
+    engine={engine}
+    engines={engines.map((option) => ({
+      id: option.id,
+      label: option.displayName,
+      disabled: !engineIsAvailable(option),
+      detail: engineIsAvailable(option) ? undefined : option.authenticated ? "Access unavailable" : "Signed out",
+    }))}
+    model={model}
+    models={models}
+    effort={effort}
+    efforts={efforts}
+    onEngineChange={(next) => {
+      setEngine(next); setModel(""); setEffort("");
+      persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: null, defaultEffort: null });
+    }}
+    onModelChange={(next) => {
+      const effortRemainsValid = effortSelectionIsCompatible(activeEngine, next, effort);
+      setModel(next); if (!effortRemainsValid) setEffort("");
+      persistDefaults.mutate({ defaultModel: next || null, ...(!effortRemainsValid ? { defaultEffort: null } : {}) });
+    }}
+    onEffortChange={(next) => { setEffort(next); persistDefaults.mutate({ defaultEffort: next || null }); }}
+  /> : null;
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
@@ -895,14 +873,10 @@ export function ConversationView({
         }}
         sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
       >
-        <Box data-chat-column sx={{ width: "min(800px, 100%)", mx: "auto", p: { xs: 1, sm: 1.5 }, pb: 3 }}>
-          <Alert severity="info" sx={{ mb: 1.5 }}>
-            {activeView === "collaboration" ? (
-              <>Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.</>
-            ) : (
-              <>Chat normally to start a fresh agent with this Project chat's shared context. Use <Box component="strong">#</Box> for explicit routing or <Box component="strong">@</Box> to reference a project file.</>
-            )}
-          </Alert>
+        <Box data-chat-column sx={{ width: "min(900px, 100%)", mx: "auto", p: { xs: 1, sm: 1.5 }, pb: 3 }}>
+          {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
+            Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
+          </Alert> : null}
           {activeView === "main" && !engineReady ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
               {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
@@ -939,7 +913,7 @@ export function ConversationView({
             </Stack>
           </Alert>)}
 
-          <Stack spacing={1} sx={{ mb: 2 }}>
+          <Stack spacing={0} sx={{ mb: 2 }}>
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
               {operationalEvents.map((event) => {
                 const content = <>

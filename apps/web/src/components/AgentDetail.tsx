@@ -62,6 +62,7 @@ import { conversationDisplayTitle } from "../conversationLabels";
 import { TriggersPane } from "./TriggersPane";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
+import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
 
@@ -475,46 +476,20 @@ export function AgentDetail({
   const lineageAgentId = detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
   const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Reports to";
   const descendantCount = agentDescendants(detail.agent.id, agents).length;
-  const agentRuntimeControls = <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", width: { xs: "100%", sm: "max-content" } }}>
-    <FormControl size="small" variant="standard" disabled sx={{ minWidth: { xs: 0, sm: 105 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
-      <InputLabel id="agent-composer-engine-label">Engine</InputLabel>
-      <Select
-        labelId="agent-composer-engine-label"
-        aria-label="Engine"
-        value={engine?.id ?? ""}
-      >
-        {engine ? <MenuItem value={engine.id}>{engine.displayName}</MenuItem> : null}
-      </Select>
-    </FormControl>
-    {models.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 115 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
-      <InputLabel id="agent-composer-model-label">Model</InputLabel>
-      <Select
-        labelId="agent-composer-model-label"
-        aria-label="Model"
-        value={models.some((option) => option.id === model) ? model : ""}
-        onChange={(event: SelectChangeEvent) => {
-          const nextModel = event.target.value;
-          setModel(nextModel);
-          if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
-        }}
-      >
-        <MenuItem value="">Default</MenuItem>
-        {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-      </Select>
-    </FormControl> : null}
-    {efforts.length ? <FormControl size="small" variant="standard" sx={{ minWidth: { xs: 0, sm: 90 }, flex: { xs: "1 1 0", sm: "0 0 auto" } }}>
-      <InputLabel id="agent-composer-effort-label">Effort</InputLabel>
-      <Select
-        labelId="agent-composer-effort-label"
-        aria-label="Effort"
-        value={efforts.some((option) => option.id === effort) ? effort : ""}
-        onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
-      >
-        <MenuItem value="">Default</MenuItem>
-        {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-      </Select>
-    </FormControl> : null}
-  </Stack>;
+  const agentRuntimeControls = <ComposerRuntimeSelector
+    engine={engine?.id ?? ""}
+    engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
+    engineLocked
+    model={model}
+    models={models}
+    effort={effort}
+    efforts={efforts}
+    onModelChange={(nextModel) => {
+      setModel(nextModel);
+      if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
+    }}
+    onEffortChange={setEffort}
+  />;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
     (text: string, files: File[]) => {
