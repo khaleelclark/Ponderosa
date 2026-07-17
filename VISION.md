@@ -103,9 +103,9 @@ manifest records remain readable after the schema evolves.
 The default provider context is deliberately shaped into four inspectable
 classes: authoritative identity and policy, action-required current work,
 relevant bounded history, and on-demand references. Policy is versioned and sent
-once per provider-session epoch. Full Team rosters and older scoped history are
-retrieved through Run-bound capabilities instead of being serialized into every
-prompt. Ponderosa records exactly what it submitted and never claims visibility
+once per provider-session epoch. Full Team rosters are retrieved through a
+Run-bound capability; the older-context reference appears only when bounded
+input actually omitted scoped history. Ponderosa records exactly what it submitted and never claims visibility
 into additional opaque context retained by Codex or Claude.
 
 Workspace and Project rules have explicit precedence and are stored by
