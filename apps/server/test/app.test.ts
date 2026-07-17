@@ -860,6 +860,7 @@ describe("Agent work inspector", () => {
       projectId: project.id, conversationId: conversation.id, requesterAgentId: agent.id,
       actorScope: `agent:${agent.id}`, idempotencyKey: "inspector-request",
       requests: [{ requestId: "inspector-request", recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: { assignment: "Inspect" } }],
+      join: { id: "inspector-join", mode: "all" },
     });
     const requestDetails = await app.inject({
       method: "GET",
@@ -869,6 +870,15 @@ describe("Agent work inspector", () => {
     expect(requestDetails.json()).toMatchObject({
       itemId: "request:inspector-request",
       details: expect.arrayContaining([{ label: "Payload", value: '{"assignment":"Inspect"}' }]),
+    });
+    const joinDetails = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/join/inspector-join?conversationId=${conversation.id}`,
+    });
+    expect(joinDetails.statusCode, joinDetails.body).toBe(200);
+    expect(joinDetails.json()).toMatchObject({
+      itemId: "join:inspector-join",
+      details: expect.arrayContaining([{ label: "Wake policy", value: "Final only" }]),
     });
     const withSelfRequest = (await app.inject({
       method: "GET",

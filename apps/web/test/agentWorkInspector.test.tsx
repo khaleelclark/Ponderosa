@@ -10,7 +10,10 @@ describe("Agent work inspector", () => {
   it("loads payload-bearing technical details only after the operator expands them", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       projectId: "project", itemId: "request:request-one", recordId: "request-one",
-      details: [{ label: "Payload", value: '{"assignment":"review"}' }],
+      details: [
+        { label: "Payload", value: '{"assignment":"review"}' },
+        { label: "Wake policy", value: "Final only" },
+      ],
     }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -38,6 +41,8 @@ describe("Agent work inspector", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/projects/project/agent-work/items/request/request-one?conversationId=chat");
     expect(JSON.stringify(view.toJSON())).toContain("assignment");
+    expect(JSON.stringify(view.toJSON())).toContain("Wake policy");
+    expect(JSON.stringify(view.toJSON())).toContain("Final only");
     view.unmount();
     client.clear();
   });

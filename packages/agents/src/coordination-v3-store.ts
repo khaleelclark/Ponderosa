@@ -55,6 +55,10 @@ function inspectorDetails(...values: Array<[string, unknown]>): Array<{ label: s
     : [{ label, value: typeof value === "string" ? value : JSON.stringify(value) }]);
 }
 
+function inspectorWakePolicy(value: CoordinationJoinWakePolicy): string {
+  return value === "each_result" ? "Each result" : "Final only";
+}
+
 export interface RunAuthorizationV3 {
   runId: string;
   agentId: string;
@@ -1863,7 +1867,7 @@ export class CoordinationV3Store {
       title: "Waiting for work", summary: row.state === "open" ? "The Agent is holding until enough assigned work returns."
         : row.state === "satisfied" ? "The required results arrived." : `The wait ended ${row.state}.`,
       agentIds: [row.owner_agent_id], relatedItemIds: [],
-      ...(includeDetails ? { details: details(["Join ID", row.id], ["Mode", row.mode], ["Wake policy", row.wake_policy], ["Quorum", row.quorum],
+      ...(includeDetails ? { details: details(["Join ID", row.id], ["Mode", row.mode], ["Wake policy", inspectorWakePolicy(row.wake_policy)], ["Quorum", row.quorum],
         ["Accepted outcomes", inspectorJson(row.satisfying_outcomes_json)], ["Deadline", row.deadline_at], ["Terminal time", row.terminal_at]) } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at,
     });
@@ -2098,14 +2102,15 @@ export class CoordinationV3Store {
     }
     if (input.kind === "join") {
       const row = this.sqlite.prepare(`
-        SELECT id, mode, quorum, satisfying_outcomes_json, deadline_at, terminal_at
+        SELECT id, mode, wake_policy, quorum, satisfying_outcomes_json, deadline_at, terminal_at
         FROM coordination_joins
         WHERE id = ? AND project_id = ? AND (? IS NULL OR conversation_id = ?)
       `).get(input.recordId, input.projectId, input.conversationId ?? null, input.conversationId ?? null) as {
-        id: string; mode: string; quorum: number; satisfying_outcomes_json: string;
+        id: string; mode: string; wake_policy: CoordinationJoinWakePolicy; quorum: number; satisfying_outcomes_json: string;
         deadline_at: string | null; terminal_at: string | null;
       } | undefined;
-      return row ? inspectorDetails(["Join ID", row.id], ["Mode", row.mode], ["Quorum", row.quorum],
+      return row ? inspectorDetails(["Join ID", row.id], ["Mode", row.mode],
+        ["Wake policy", inspectorWakePolicy(row.wake_policy)], ["Quorum", row.quorum],
         ["Accepted outcomes", inspectorJson(row.satisfying_outcomes_json)], ["Deadline", row.deadline_at],
         ["Terminal time", row.terminal_at]) : undefined;
     }
