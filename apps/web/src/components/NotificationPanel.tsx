@@ -25,6 +25,7 @@ import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import { announceWorkspaceRefresh } from "../hooks/useWorkspaceStream";
+import { AgentWorkInspector } from "./AgentWorkInspector";
 
 export interface NotificationGroup {
   key: string;
@@ -73,6 +74,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const [pending, setPending] = useState<"read" | "clear">();
   const [error, setError] = useState<string>();
   const [respondingDecisionId, setRespondingDecisionId] = useState<string>();
+  const [agentWorkTarget, setAgentWorkTarget] = useState<{ projectId: string; conversationId?: string; focusId?: string }>();
   const projectIds = useMemo(() => [...new Set(notifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [notifications]);
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
@@ -168,7 +170,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     }
   };
 
-  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
+  return <><Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
     <DialogTitle id="notifications-title" sx={{ pb: 1 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -211,7 +213,13 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                     secondary={<Stack spacing={0.5}><Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                       {item.decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondingDecisionId === item.decision!.id} onClick={(event) => { event.stopPropagation(); void respondDecision(item, option.id); }}>{option.label}</Button>)}
                       {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondingDecisionId === item.decision.id} onClick={(event) => { event.stopPropagation(); const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (answer?.trim()) void respondDecision(item, undefined, answer.trim()); }}>{item.decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}
-                    </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}</Stack>}
+                    </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
+                    {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
+                      event.stopPropagation();
+                      const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
+                      setAgentWorkTarget({ projectId: item.projectId!, ...(item.conversationId ? { conversationId: item.conversationId } : {}), ...(focusId ? { focusId } : {}) });
+                      onClose();
+                    }}>View Agent work</Button> : null}</Stack>}
                     secondaryTypographyProps={{ sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
                   />
                 </ListItemButton>
@@ -226,5 +234,12 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark all read</Button>
       <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!notifications.length || Boolean(pending)} onClick={() => void clearAll()}>Clear all</Button>
     </DialogActions>
-  </Dialog>;
+  </Dialog>
+  {agentWorkTarget ? <AgentWorkInspector
+    open
+    projectId={agentWorkTarget.projectId}
+    conversationId={agentWorkTarget.conversationId}
+    focus={agentWorkTarget.focusId ? { id: agentWorkTarget.focusId } : undefined}
+    onClose={() => setAgentWorkTarget(undefined)}
+  /> : null}</>;
 }

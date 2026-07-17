@@ -546,6 +546,50 @@ export interface TeamOperationalEventDto {
   updatedAt: string;
 }
 
+/** One canonical record shown in the read-only Agent work inspector. */
+export interface AgentWorkItemDto {
+  /** Namespaced stable identifier, for example `request:<uuid>`. */
+  id: string;
+  recordId: string;
+  /** Alternate canonical references that may open this item (for example a scheduler Run ID). */
+  referenceIds: string[];
+  kind: "request" | "join" | "activation" | "run" | "trigger" | "decision";
+  state: string;
+  title: string;
+  summary: string;
+  agentIds: string[];
+  /** Other canonical records structurally connected to this record. */
+  relatedItemIds: string[];
+  details: Array<{ label: string; value: string }>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A connected component of canonical coordination records. */
+export interface AgentWorkTraceDto {
+  id: string;
+  state: "active" | "attention" | "finished";
+  title: string;
+  summary: string;
+  agentIds: string[];
+  itemIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/projects/:id/agent-work response. This is a projection only. */
+export interface AgentWorkInspectorDto {
+  projectId: string;
+  conversationId?: string;
+  agentId?: string;
+  generatedAt: string;
+  /** True when the bounded relationship expansion omitted older connected records. */
+  truncated?: boolean;
+  agents: Array<{ id: string; title: string }>;
+  traces: AgentWorkTraceDto[];
+  items: AgentWorkItemDto[];
+}
+
 /** GET /api/conversations/:id response. */
 export interface ConversationDetailDto {
   conversation: ConversationDto;

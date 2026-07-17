@@ -798,6 +798,41 @@ describe("notification panel actions", () => {
   });
 });
 
+describe("Agent work inspector", () => {
+  it("returns a scoped read-only trace projection with Decisions", async () => {
+    const project = store.createProject({ label: "Inspector", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Work room" });
+    const agent = store.createAgent(project.id, { title: "Coordinator", engine: "codex", conversationId: conversation.id });
+    const workspace = new WorkspaceStore(dataDir);
+    const decision = workspace.createDecision({
+      projectId: project.id, conversationId: conversation.id, agentId: agent.id, runId: "execution-one",
+      mode: "approval", question: "Proceed?", options: [{ id: "yes", label: "Proceed" }],
+      allowOther: true, blocking: true, idempotencyKey: "inspector-decision",
+    });
+    const app = createServer({ dataDir, store, engines, logger: false });
+
+    const response = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}` });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({
+      projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      agents: [{ id: agent.id, title: "Coordinator" }],
+      items: [expect.objectContaining({ id: `decision:${decision.id}`, kind: "decision", state: "pending" })],
+      traces: [expect.objectContaining({ state: "active", itemIds: [`decision:${decision.id}`] })],
+    });
+    expect((await app.inject({ method: "POST", url: `/api/decisions/${decision.id}/respond`, payload: { optionId: "yes" } })).statusCode).toBe(200);
+    const afterResponse = (await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}` })).json<{
+      items: Array<{ id: string; kind: string; referenceIds: string[]; relatedItemIds: string[] }>;
+      traces: Array<{ itemIds: string[] }>;
+    }>();
+    const responseActivation = afterResponse.items.find((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`))!;
+    expect(afterResponse.items.find((item) => item.id === `decision:${decision.id}`)?.relatedItemIds).toContain(responseActivation.id);
+    expect(afterResponse.traces.some((trace) => trace.itemIds.includes(`decision:${decision.id}`) && trace.itemIds.includes(responseActivation.id))).toBe(true);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=foreign` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?limit=0` })).statusCode).toBe(400);
+    await app.close();
+  });
+});
+
 async function waitForRun(agentId: string, expectedTurnDoneCount = 1): Promise<void> {
   for (let i = 0; i < 80; i += 1) {
     const done = store.readEvents(agentId).filter((event) => event.event.type === "turn_done").length;

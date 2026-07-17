@@ -67,12 +67,13 @@ function lines(value: string): string[] {
   return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
 }
 
-function OccurrenceAudit({ occurrence }: { occurrence: TriggerOccurrenceDto }): JSX.Element {
+function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerOccurrenceDto; onOpenAgentWork?(occurrenceId: string): void }): JSX.Element {
   return <Box sx={{ py: 1, borderTop: 1, borderColor: "divider" }}>
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
       <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
       <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
       <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
+      {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>View Agent work</Button> : null}
     </Stack>
     {occurrence.lastError ? <Typography variant="caption" color="error" display="block">{occurrence.lastError}</Typography> : null}
     <Box component="details" sx={{ mt: 0.5 }}>
@@ -89,7 +90,7 @@ function OccurrenceAudit({ occurrence }: { occurrence: TriggerOccurrenceDto }): 
   </Box>;
 }
 
-export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
+export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOpenAgentWork?(occurrenceId: string): void }): JSX.Element {
   const queryClient = useQueryClient();
   const queryKey = ["triggers", agent.id] as const;
   const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
@@ -290,7 +291,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
         <Collapse in={expandedId === trigger.id}>
           <Box sx={{ px: 2, pb: 2 }}>
             {occurrences.isLoading ? <Typography variant="body2">Loading history…</Typography> : null}
-            {(occurrences.data ?? []).map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} />)}
+            {(occurrences.data ?? []).map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} onOpenAgentWork={onOpenAgentWork} />)}
             {(occurrences.data ?? []).length === 0 && !occurrences.isLoading ? <Typography variant="body2" color="text.secondary">No occurrences recorded.</Typography> : null}
           </Box>
         </Collapse>
@@ -299,7 +300,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Trigger history</Typography>
           <Typography variant="body2" color="text.secondary">Immutable occurrence records remain inspectable after their Trigger is deleted.</Typography>
-          {deletedTriggerOccurrences.map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} />)}
+          {deletedTriggerOccurrences.map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} onOpenAgentWork={onOpenAgentWork} />)}
         </CardContent>
       </Card> : null}
     </Stack>

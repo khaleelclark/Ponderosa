@@ -61,6 +61,7 @@ import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { TriggersPane } from "./TriggersPane";
 import { ImportAgentDialog } from "./ImportAgentDialog";
+import { AgentWorkInspector } from "./AgentWorkInspector";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
 
@@ -215,6 +216,8 @@ export function AgentDetail({
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
   const [runSetupOpen, setRunSetupOpen] = useState(false);
+  const [agentWorkOpen, setAgentWorkOpen] = useState(false);
+  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
@@ -567,9 +570,9 @@ export function AgentDetail({
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
-    runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} />,
+    runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} initialArtifactId={readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} />,
-    triggers: <TriggersPane agent={detail.agent} />,
+    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
   };
 
   return (
@@ -611,6 +614,15 @@ export function AgentDetail({
               {cancelRun.isPending ? "Stopping…" : "Stop"}
             </Button>
           ) : null}
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AccountTreeOutlinedIcon />}
+            onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
+            sx={{ minHeight: 36 }}
+          >
+            Agent work
+          </Button>
           <ChatOverflowMenu
             label="Agent chat actions"
             transcriptMarkdown={transcriptMarkdown}
@@ -838,6 +850,14 @@ export function AgentDetail({
         initialConversationId={detail.agent.conversationId}
         onClose={() => setImportOpen(false)}
         onImported={onOpenAgent}
+      />
+
+      <AgentWorkInspector
+        open={agentWorkOpen}
+        projectId={detail.agent.projectId}
+        agentId={detail.agent.id}
+        focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
+        onClose={() => setAgentWorkOpen(false)}
       />
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">

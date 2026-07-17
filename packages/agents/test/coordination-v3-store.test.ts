@@ -119,6 +119,60 @@ function createUncertainHumanSteer(eventId: string, now: string) {
 }
 
 describe("CoordinationV3Store transactions", () => {
+  it("projects structurally linked Agent work without inferring from message text", () => {
+    const now = new Date().toISOString();
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: recipientB,
+      actorScope: `agent:${recipientB}`, idempotencyKey: "inspect-continuation",
+      requests: [{ requestId: "continuation-request", recipientAgentId: requesterId, lifetime: indefinite }],
+    });
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`, idempotencyKey: "inspect-work",
+      requests: [{ requestId: "inspect-request", recipientAgentId: recipientA, lifetime: indefinite, payload: { assignment: "Inspect me" } }],
+      join: { id: "inspect-join", mode: "all", continuationRequestIds: ["continuation-request"] },
+    });
+
+    let { items } = store.agentWorkItems({ projectId, conversationId });
+    const request = items.find((item) => item.id === "request:inspect-request")!;
+    const waiting = items.find((item) => item.id === "join:inspect-join")!;
+    const activation = items.find((item) => item.kind === "activation" && item.relatedItemIds.includes(request.id))!;
+    expect(request.relatedItemIds).toContain(waiting.id);
+    expect(waiting.relatedItemIds).toContain(request.id);
+    expect(waiting.relatedItemIds).toContain("request:continuation-request");
+    expect(request.details).toContainEqual({ label: "Payload", value: '{"assignment":"Inspect me"}' });
+
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: recipientB,
+      actorScope: `agent:${recipientB}`, idempotencyKey: "inspect-unrelated",
+      requests: [{ requestId: "unrelated-request", recipientAgentId: requesterId, lifetime: indefinite }],
+    });
+    const scoped = store.agentWorkItems({ projectId, conversationId, agentId: recipientA });
+    expect(scoped.items.some((item) => item.id === "request:inspect-request")).toBe(true);
+    expect(scoped.items.some((item) => item.id === "join:inspect-join")).toBe(true);
+    expect(scoped.items.some((item) => item.id === "request:unrelated-request")).toBe(false);
+    expect(scoped.truncated).toBe(false);
+    const bounded = store.agentWorkItems({ projectId, conversationId, agentId: recipientA, limit: 1 });
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.items.length).toBeLessThanOrEqual(4);
+
+    store.updateRequest({
+      requestId: "inspect-request", updateId: "inspect-question", kind: "question",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Need a detail" }, now,
+    });
+    ({ items } = store.agentWorkItems({ projectId, conversationId }));
+    const questionActivation = items.find((item) => item.kind === "activation" && item.referenceIds.includes("inspect-question"))!;
+    expect(questionActivation.relatedItemIds).toContain(request.id);
+
+    const lease = store.leaseNextRun({ workerId: "inspector-test", now: new Date(Date.now() + 1_000).toISOString(), excludedAgentIds: [requesterId, recipientB] })!;
+    ({ items } = store.agentWorkItems({ projectId, conversationId }));
+    const run = items.find((item) => item.referenceIds.includes(lease.runId))!;
+    const attachedActivation = items.find((item) => item.id === activation.id)!;
+    expect(run.kind).toBe("run");
+    expect(run.relatedItemIds).toContain(activation.id);
+    expect(attachedActivation.relatedItemIds).toContain(run.id);
+  });
+
   it("records passive communication without waking and routes actionable communication only through the scheduler", () => {
     const now = "2026-07-15T00:00:00.000Z";
     expect(store.recordRuntimeCommunication({
@@ -158,6 +212,26 @@ describe("CoordinationV3Store transactions", () => {
       { id: "broadcast", projectId, audience: { kind: "organization", id: projectId }, payload: { text: "FYI" }, createdAt: now },
       { id: "direct", projectId, audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, createdAt: now },
     ]);
+  });
+
+  it("reports truncation when one Agent has more same-kind seeds than the requested limit", () => {
+    for (let index = 0; index < 5; index += 1) {
+      store.recordRuntimeCommunication({
+        id: `bounded-direct-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        audience: { kind: "agent", id: recipientA }, payload: { text: `Message ${index}` },
+        now: `2026-07-15T00:00:0${index}.000Z`,
+        activation: {
+          agentId: recipientA, kind: "human_message", priority: 100,
+          dispatchPolicy: "steer_or_run", promptClass: "human",
+        },
+      });
+    }
+    const projection = store.agentWorkItems({ projectId, agentId: recipientA, limit: 2 });
+    expect(projection.items.filter((item) => item.kind === "activation")).toHaveLength(2);
+    expect(projection.truncated).toBe(true);
+    const projectProjection = store.agentWorkItems({ projectId, limit: 2 });
+    expect(projectProjection.items.filter((item) => item.kind === "activation")).toHaveLength(2);
+    expect(projectProjection.truncated).toBe(true);
   });
 
   it("creates requests, an immutable join, activations, and an outbox atomically", () => {
@@ -1046,6 +1120,9 @@ describe("CoordinationV3Store scheduler", () => {
       state: "recovery_queued",
       recoveryActivationId: expect.any(String),
     });
+    const { items: inspected } = store.agentWorkItems({ projectId, agentId: recipientA });
+    const sourceItem = inspected.find((item) => item.id === `activation:${activationId}`)!;
+    expect(sourceItem.relatedItemIds).toContain(`activation:${recoveryReceipt.recoveryActivationId}`);
     expect(recoveryReceipt).not.toHaveProperty("canLetCurrentRunFinish");
     const recovery = store.leaseNextRun({ workerId: "worker-1", now: "2026-07-15T00:00:10.000Z" })!;
     expect(recovery.runId).not.toBe(run.runId);

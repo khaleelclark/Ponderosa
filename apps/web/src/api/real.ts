@@ -136,6 +136,13 @@ export const realApi: PonderosaApi = {
   getAgentHealth(projectId) {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
+  getAgentWork(projectId, filter = {}) {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work${toQuery({
+      conversationId: filter.conversationId,
+      agentId: filter.agentId,
+      limit: filter.limit === undefined ? undefined : String(filter.limit),
+    })}`);
+  },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto) {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;

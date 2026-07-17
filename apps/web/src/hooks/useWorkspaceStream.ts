@@ -117,6 +117,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       void queryClient.invalidateQueries({ queryKey: ["triggers"] });
       void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences"] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
       const reconciliation = reconcileWorkspaceCursor(cursor.current, envelope);
@@ -141,11 +142,13 @@ export function useWorkspaceStream(): void {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation"] });
         void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
+        void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
       }
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: ["triggers", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences", event.triggerId] });
         void queryClient.invalidateQueries({ queryKey: ["agent-trigger-occurrences", event.agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["agent-work", event.projectId] });
       }
       else if (event.type === "agent_event") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
@@ -156,6 +159,7 @@ export function useWorkspaceStream(): void {
           void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
+          void queryClient.invalidateQueries({ queryKey: ["agent-work", event.projectId] });
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
           void queryClient.invalidateQueries({ queryKey: ["workspace-status", event.projectId] });
@@ -169,6 +173,7 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+        void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
       }
     };
     const subscription = api.subscribeWorkspace(cursor.current, {
