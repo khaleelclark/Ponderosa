@@ -2566,10 +2566,10 @@ export class CoordinationV3Store {
         JOIN trigger_occurrences occurrence ON occurrence.activation_id = activation.id
         LEFT JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
         WHERE attached.run_id = ? AND activation.kind = 'trigger_occurrence'
-          AND (definition.id IS NULL OR definition.enabled = 0)
+          AND definition.id IS NULL
         LIMIT 1
       `).get(input.runId) as { trigger_id: string } | undefined;
-      if (unavailableTrigger) throw new Error(`Trigger ${unavailableTrigger.trigger_id} was disabled or deleted before prompt injection`);
+      if (unavailableTrigger) throw new Error(`Trigger ${unavailableTrigger.trigger_id} was deleted before prompt injection`);
       const changed = this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections
         SET state = 'submitted', submitted_at = COALESCE(submitted_at, ?), updated_at = ?

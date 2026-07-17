@@ -56,6 +56,7 @@ import { formatExecutionElapsed } from "./AgentDetail";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
+import { ImportAgentDialog } from "./ImportAgentDialog";
 
 export function conversationComposerRuntime(
   engine: Pick<EngineDto, "id" | "authenticated" | "available"> | undefined,
@@ -287,6 +288,7 @@ export function ConversationView({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
@@ -875,6 +877,10 @@ export function ConversationView({
                 onSelect: () => onNewAgent(conversation),
               },
               {
+                label: "Import Agent or organization…",
+                onSelect: () => setImportOpen(true),
+              },
+              {
                 label: "Delete",
                 icon: <DeleteOutlineIcon fontSize="small" />,
                 destructive: true,
@@ -1127,6 +1133,16 @@ export function ConversationView({
           }}
         /> : null}
       </Box>
+
+      <ImportAgentDialog
+        open={importOpen}
+        projectId={conversation.projectId}
+        engines={engines}
+        conversations={[conversation]}
+        initialConversationId={conversation.id}
+        onClose={() => setImportOpen(false)}
+        onImported={onOpenAgent}
+      />
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename Project chat</DialogTitle>

@@ -8,7 +8,7 @@ import path from "node:path";
 import { runInNewContext } from "node:vm";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
@@ -5346,6 +5346,13 @@ describe("V3.3 Decisions, management, and portability", () => {
     const sourceChat = store.createConversation(project.id, { title: "Source" });
     const destinationChat = store.createConversation(project.id, { title: "Destination" });
     const source = store.createAgent(project.id, { title: "Portable Agent", engine: "codex", conversationId: sourceChat.id });
+    const portableCoordination = new CoordinationV3Store(store.sqlite);
+    portableCoordination.createTriggerDefinition({
+      id: "completed-one-time", projectId: project.id, conversationId: sourceChat.id, agentId: source.id,
+      name: "Completed one-time schedule", instructions: "This historical schedule already completed.",
+      sourceKind: "schedule", sourceConfig: { scheduleKind: "once", at: "2026-07-15T00:00:00.000Z" },
+      enabled: false,
+    });
     const artifactId = randomUUID();
     const bytes = Buffer.from("portable artifact bytes");
     const artifactFile = managedArtifactContentPath(dataDir, project.id, artifactId);
@@ -5363,9 +5370,19 @@ describe("V3.3 Decisions, management, and portability", () => {
       sourceProjectInstructions: "Destination-safe Project rule",
       agents: [{ artifacts: [{ ref: artifactId, dataBase64: bytes.toString("base64") }] }],
     });
+    const template = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=template` });
+    expect(template.json()).toMatchObject({ mode: "template", agents: [{ title: "Portable Agent" }] });
+    expect(template.body).not.toContain("sourceProjectInstructions");
+    expect(template.body).not.toContain("history");
+    expect(template.body).not.toContain("artifacts");
+    expect(template.body).not.toContain("triggers");
+    const legacyContext = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=context` });
+    expect(legacyContext.json()).toMatchObject({ mode: "full", agents: [{ artifacts: expect.any(Array), triggers: expect.any(Array) }] });
+    const portablePackage = exported.json<AgentPortablePackageDto>();
+    portablePackage.sourceProjectInstructions = "SOURCE-RULE-MUST-NOT-ENTER-PROVIDER-CONTEXT";
     const imported = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/import-agents`,
-      payload: { package: exported.json(), conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+      payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
     });
     expect(imported.statusCode, imported.body).toBe(201);
     const importedAgentId = imported.json<{ rootAgentId: string }>().rootAgentId;
@@ -5374,10 +5391,20 @@ describe("V3.3 Decisions, management, and portability", () => {
     expect(importedArtifacts[0]!.id).not.toBe(artifactId);
     expect(readFileSync(managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id))).toEqual(bytes);
     expect(store.getImportedHistory(importedAgentId)?.messages.map((message) => message.text).join("\n")).toContain(importedArtifacts[0]!.id);
-    expect(store.getImportedHistory(importedAgentId)?.messages[0]?.text).toContain("Historical source Project rules");
+    expect(store.getImportedHistory(importedAgentId)?.messages.map((message) => message.text).join("\n"))
+      .not.toContain("Historical source Project rules");
+    expect(portableCoordination.listTriggerDefinitions(importedAgentId)).toEqual([
+      expect.objectContaining({
+        enabled: false,
+        name: "Completed one-time schedule",
+        sourceConfig: { scheduleKind: "once", at: "2026-07-15T00:00:00.000Z" },
+      }),
+    ]);
     adapter.mode = "hang";
     expect((await app.inject({ method: "POST", url: `/api/agents/${importedAgentId}/messages`, payload: { text: "Inspect imported state" } })).statusCode).toBe(202);
     await waitForSeedCount(1);
+    expect(adapter.seeds[0]!.prompt).toContain("Destination-safe Project rule");
+    expect(JSON.stringify(adapter.seeds[0])).not.toContain("SOURCE-RULE-MUST-NOT-ENTER-PROVIDER-CONTEXT");
     expect(adapter.seeds[0]!.history?.flatMap((message) => message.attachments ?? [])).toContainEqual(expect.objectContaining({
       artifactId: importedArtifacts[0]!.id,
       localPath: managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id),

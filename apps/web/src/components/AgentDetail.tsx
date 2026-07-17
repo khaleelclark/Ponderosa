@@ -60,6 +60,7 @@ import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { TriggersPane } from "./TriggersPane";
+import { ImportAgentDialog } from "./ImportAgentDialog";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
 
@@ -82,6 +83,24 @@ export function directAgentDeliveryNotice(
     return `Queued in position ${response.position}; it will start when the current response finishes.`;
   }
   return response.steered ? "Steered into the active turn." : undefined;
+}
+
+function portablePackageFileName(title: string, organization: boolean, mode: "template" | "full"): string {
+  const safe = title.normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").toLocaleLowerCase().slice(0, 80);
+  return `${safe || (organization ? "organization" : "agent")}-${mode === "template" ? "template" : "full"}.ponderosa.json`;
+}
+
+function downloadJson(value: unknown, fileName: string): void {
+  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function AgentRunState({
@@ -189,6 +208,7 @@ export function AgentDetail({
   const [renameValue, setRenameValue] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
   const [organizationOpen, setOrganizationOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [organizationParentId, setOrganizationParentId] = useState("");
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
   const [primaryConversationId, setPrimaryConversationId] = useState("");
@@ -301,14 +321,19 @@ export function AgentDetail({
     stopRequestId.current = idempotencyKey;
     return cancelRun.mutateAsync({ idempotencyKey });
   };
-  const copyAgentPackage = async (mode: "template" | "context" | "full", organization = false) => {
+  const copyAgentPackage = async (mode: "template" | "full", organization = false) => {
     const portable = await api.exportAgent(agentId, mode, organization);
     await navigator.clipboard.writeText(JSON.stringify(portable, null, 2));
-    setQueuedMessageNotice(`${organization ? "Organization" : "Agent"} ${mode} JSON copied.`);
+    setQueuedMessageNotice(`${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} copied.`);
+  };
+  const downloadAgentPackage = async (mode: "template" | "full", organization = false) => {
+    const portable = await api.exportAgent(agentId, mode, organization);
+    downloadJson(portable, portablePackageFileName(detail?.agent.title ?? "agent", organization, mode));
+    setQueuedMessageNotice(`${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} downloaded.`);
   };
   const quickCopyIntoHomeChat = async () => {
     if (!detail?.agent.conversationId) return;
-    const portable = await api.exportAgent(agentId, "context", false);
+    const portable = await api.exportAgent(agentId, "full", false);
     const engineMapping = Object.fromEntries([...new Set(portable.agents.map((node) => node.engine))].map((engineId) => [engineId, engineId]));
     const imported = await api.importAgents(detail.agent.projectId, { package: portable, conversationId: detail.agent.conversationId, engineMapping });
     await queryClient.invalidateQueries({ queryKey: ["agents", detail.agent.projectId] });
@@ -591,6 +616,18 @@ export function AgentDetail({
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             detailsLabel="Run setup"
+            copyActions={[
+              { label: "Agent template", onSelect: () => void copyAgentPackage("template") },
+              { label: "Full Agent", onSelect: () => void copyAgentPackage("full") },
+              { label: "Organization template", onSelect: () => void copyAgentPackage("template", true) },
+              { label: "Full organization", onSelect: () => void copyAgentPackage("full", true) },
+            ]}
+            downloadActions={[
+              { label: "Agent template", onSelect: () => void downloadAgentPackage("template") },
+              { label: "Full Agent", onSelect: () => void downloadAgentPackage("full") },
+              { label: "Organization template", onSelect: () => void downloadAgentPackage("template", true) },
+              { label: "Full organization", onSelect: () => void downloadAgentPackage("full", true) },
+            ]}
             details={<Stack spacing={1.25} aria-label="Agent setup">
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
                 <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run setup</Typography>
@@ -687,12 +724,7 @@ export function AgentDetail({
                   setMembershipOpen(true);
                 },
               },
-              { label: "Copy full Agent JSON", onSelect: () => void copyAgentPackage("full") },
-              { label: "Copy Agent template", onSelect: () => void copyAgentPackage("template") },
-              { label: "Copy Agent context", onSelect: () => void copyAgentPackage("context") },
-              { label: "Copy organization JSON", onSelect: () => void copyAgentPackage("full", true) },
-              { label: "Copy organization template", onSelect: () => void copyAgentPackage("template", true) },
-              { label: "Copy organization context", onSelect: () => void copyAgentPackage("context", true) },
+              { label: "Import Agent or organization…", onSelect: () => setImportOpen(true) },
               ...(detail.agent.conversationId ? [{ label: "Quick copy into home chat", onSelect: () => void quickCopyIntoHomeChat() }] : []),
               {
                 label: "Reports to",
@@ -797,6 +829,16 @@ export function AgentDetail({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <ImportAgentDialog
+        open={importOpen}
+        projectId={detail.agent.projectId}
+        engines={engines}
+        conversations={conversations}
+        initialConversationId={detail.agent.conversationId}
+        onClose={() => setImportOpen(false)}
+        onImported={onOpenAgent}
+      />
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename agent</DialogTitle>

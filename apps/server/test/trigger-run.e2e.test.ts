@@ -29,6 +29,37 @@ const cleanup: string[] = [];
 afterEach(() => cleanup.splice(0).forEach((entry) => rmSync(entry, { recursive: true, force: true })));
 
 describe("V3.2 Trigger Run context", () => {
+  it("attributes a Decision response Run to the Decision rather than collaboration", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-decision-run-data-"));
+    const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-decision-run-repo-"));
+    cleanup.push(dataDir, repoDir);
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: "Decision run", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Decisions" });
+    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: agent.id,
+      scopeKey: `conversation:${conversation.id}`,
+      messageId: "decision:release:response",
+      kind: "human",
+      payload: { decision: { id: "release", question: "Ship?", response: { optionId: "approve" } } },
+    });
+    const adapter = new CaptureAdapter();
+    const app = createServer({
+      dataDir, store, engines: [{ adapter, authStatus: async () => ({ authenticated: true }) }],
+      logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 1 },
+    });
+    try {
+      await app.ready();
+      await adapter.started.promise;
+      expect(store.getRuns(agent.id)[0]?.wakeCause).toBe("decision");
+    } finally {
+      await app.close();
+    }
+  });
+
   it("submits one non-duplicated same-Trigger batch and records exact activation lineage", async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-run-data-"));
     const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-run-repo-"));
@@ -66,6 +97,7 @@ describe("V3.2 Trigger Run context", () => {
       expect(options.prompt.split("Activation 2:")).toHaveLength(2);
       const runId = store.getRuns(agent.id)[0]?.id;
       expect(runId).toBeTruthy();
+      expect(store.getRuns(agent.id)[0]?.wakeCause).toBe("trigger");
       const input = store.getProviderInput(runId!, true);
       expect(input?.exactPrompt).toBe(options.prompt);
       expect(input?.sourceManifest.activationIds).toHaveLength(2);

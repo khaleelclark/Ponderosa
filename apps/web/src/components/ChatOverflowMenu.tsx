@@ -2,6 +2,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
   Divider,
   IconButton,
@@ -9,6 +10,7 @@ import {
   ListItemText,
   Menu,
   MenuItem,
+  MenuList,
   Popover,
   Snackbar,
   Tooltip,
@@ -26,11 +28,13 @@ export interface ChatOverflowAction {
   destructive?: boolean;
 }
 
-export const CHAT_TRANSCRIPT_ACTION_LABELS = ["Copy transcript", "Download transcript"] as const;
+export const CHAT_EXPORT_ACTION_LABELS = ["Copy", "Download", "Chat transcript"] as const;
 
 export function ChatOverflowMenu({
   label = "Chat actions",
   actions,
+  copyActions = [],
+  downloadActions = [],
   transcriptMarkdown,
   transcriptFileName,
   details,
@@ -38,6 +42,8 @@ export function ChatOverflowMenu({
 }: {
   label?: string;
   actions: ChatOverflowAction[];
+  copyActions?: ChatOverflowAction[];
+  downloadActions?: ChatOverflowAction[];
   transcriptMarkdown: string;
   transcriptFileName: string;
   details?: ReactNode;
@@ -45,6 +51,7 @@ export function ChatOverflowMenu({
 }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [detailsAnchor, setDetailsAnchor] = useState<HTMLElement | null>(null);
+  const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
   const [notice, setNotice] = useState<string>();
   const close = () => setAnchor(null);
   const run = (action: () => void) => {
@@ -90,22 +97,60 @@ export function ChatOverflowMenu({
       </MenuItem>)}
       {actions.length ? <Divider /> : null}
       <MenuItem onClick={() => {
+        if (anchor) setExportMenu({ kind: "copy", anchor });
         close();
-        void copyText(transcriptMarkdown)
-          .then(() => setNotice("Transcript copied"))
-          .catch((error) => setNotice(error instanceof Error ? error.message : "Transcript could not be copied"));
       }}>
         <ListItemIcon><ContentCopyOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>{CHAT_TRANSCRIPT_ACTION_LABELS[0]}</ListItemText>
+        <ListItemText>{CHAT_EXPORT_ACTION_LABELS[0]}</ListItemText>
+        <ChevronRightIcon fontSize="small" />
       </MenuItem>
-      <MenuItem onClick={() => run(() => {
-        downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName);
-        setNotice("Transcript downloaded");
-      })}>
+      <MenuItem onClick={() => {
+        if (anchor) setExportMenu({ kind: "download", anchor });
+        close();
+      }}>
         <ListItemIcon><DownloadOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText>{CHAT_TRANSCRIPT_ACTION_LABELS[1]}</ListItemText>
+        <ListItemText>{CHAT_EXPORT_ACTION_LABELS[1]}</ListItemText>
+        <ChevronRightIcon fontSize="small" />
       </MenuItem>
     </Menu>
+    <Popover
+      open={Boolean(exportMenu)}
+      anchorEl={exportMenu?.anchor}
+      onClose={() => setExportMenu(undefined)}
+      anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+      transformOrigin={{ vertical: "top", horizontal: "right" }}
+      slotProps={{ paper: { sx: { minWidth: 260, maxWidth: "min(360px, calc(100vw - 24px))" } } }}
+    >
+      <MenuList dense aria-label={`${exportMenu?.kind === "download" ? "Download" : "Copy"} options`}>
+        {(exportMenu?.kind === "download" ? downloadActions : copyActions).map((action) => <MenuItem
+          key={action.label}
+          disabled={action.disabled}
+          onClick={() => {
+            setExportMenu(undefined);
+            action.onSelect();
+          }}
+        >
+          {action.icon ? <ListItemIcon>{action.icon}</ListItemIcon> : null}
+          <ListItemText>{action.label}</ListItemText>
+        </MenuItem>)}
+        {(exportMenu?.kind === "download" ? downloadActions : copyActions).length ? <Divider /> : null}
+        <MenuItem onClick={() => {
+          const kind = exportMenu?.kind;
+          setExportMenu(undefined);
+          if (kind === "download") {
+            downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName);
+            setNotice("Chat transcript downloaded");
+            return;
+          }
+          void copyText(transcriptMarkdown)
+            .then(() => setNotice("Chat transcript copied"))
+            .catch((error) => setNotice(error instanceof Error ? error.message : "Chat transcript could not be copied"));
+        }}>
+          <ListItemIcon>{exportMenu?.kind === "download" ? <DownloadOutlinedIcon fontSize="small" /> : <ContentCopyOutlinedIcon fontSize="small" />}</ListItemIcon>
+          <ListItemText>{CHAT_EXPORT_ACTION_LABELS[2]}</ListItemText>
+        </MenuItem>
+      </MenuList>
+    </Popover>
     <Popover
       open={Boolean(detailsAnchor)}
       anchorEl={detailsAnchor}

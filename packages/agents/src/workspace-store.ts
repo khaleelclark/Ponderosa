@@ -148,6 +148,13 @@ export class WorkspaceStore {
     if (record.mutation?.kind === "decision") {
       this.decisions.set(record.mutation.decision.id, record.mutation.decision);
       this.decisionIdempotency.set(record.mutation.idempotencyKey, record.mutation.decision.id);
+      for (const [id, notification] of this.notifications) {
+        if (notification.decision?.id !== record.mutation.decision.id) continue;
+        this.notifications.set(id, {
+          ...notification,
+          decision: { ...notification.decision, status: record.mutation.decision.status },
+        });
+      }
     }
     if (record.mutation?.kind === "push_subscription") {
       for (const replacedDeviceId of record.mutation.replacedDeviceIds ?? []) this.pushSubscriptions.delete(replacedDeviceId);

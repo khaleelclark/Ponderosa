@@ -11,6 +11,42 @@ const cleanup: string[] = [];
 afterEach(() => cleanup.splice(0).forEach((entry) => rmSync(entry, { recursive: true, force: true })));
 
 describe("V3.2 Trigger API", () => {
+  it("preserves Trigger definitions when Agent projections rebuild on restart", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-restart-data-"));
+    const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-restart-repo-"));
+    cleanup.push(dataDir, repoDir);
+    const firstStore = new AgentStore(dataDir);
+    const project = firstStore.createProject({ label: "Restart", hostPath: repoDir });
+    const conversation = firstStore.createConversation(project.id, { title: "Automation" });
+    const agent = firstStore.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    const firstApp = createServer({ dataDir, store: firstStore, engines: [], logger: false, authToken: "operator", communicationV3: { maxConcurrentRuns: 0 } });
+    const authorization = { authorization: "Bearer operator" };
+    const created = await firstApp.inject({
+      method: "POST", url: `/api/agents/${agent.id}/triggers`, headers: authorization,
+      payload: {
+        conversationId: conversation.id,
+        name: "Durable webhook",
+        instructions: "Preserve this Trigger across restarts.",
+        sourceKind: "webhook",
+        sourceConfig: { replayWindowSeconds: 300 },
+        enabled: false,
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const triggerId = created.json<CreateTriggerResponse>().trigger.id;
+    await firstApp.close();
+
+    const restartedStore = new AgentStore(dataDir);
+    const restartedApp = createServer({ dataDir, store: restartedStore, engines: [], logger: false, authToken: "operator", communicationV3: { maxConcurrentRuns: 0 } });
+    try {
+      const listed = await restartedApp.inject({ method: "GET", url: `/api/agents/${agent.id}/triggers`, headers: authorization });
+      expect(listed.statusCode, listed.body).toBe(200);
+      expect(listed.json()).toEqual([expect.objectContaining({ id: triggerId, enabled: false, name: "Durable webhook" })]);
+    } finally {
+      await restartedApp.close();
+    }
+  });
+
   it("owns Triggers under an Agent, accepts an authenticated signed webhook, and preserves occurrence history", async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-api-data-"));
     const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-api-repo-"));
