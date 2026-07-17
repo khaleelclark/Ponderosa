@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { conversationChangedQueryKeys, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
+import type { WorkspaceEvent } from "@ponderosa/core";
+import { conversationChangedQueryKeys, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
+
+afterEach(() => vi.useRealTimers());
 
 describe("workspace stream cursor recovery", () => {
   it("refreshes a background tab when another tab advances the canonical cursor", () => {
@@ -36,6 +39,57 @@ describe("workspace stream cursor recovery", () => {
 
     expect(client.getQueryState(["engine-capabilities", "project-a"])?.isInvalidated).toBe(true);
     expect(client.getQueryState(["engine-capabilities", "project-b"])?.isInvalidated).toBe(true);
+  });
+
+  it("coalesces coordination bursts into one Agent work refresh per Project", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    client.setQueryData(["agent-work", "project-a"], { old: true });
+    client.setQueryData(["agent-work", "project-b"], { old: true });
+    const invalidator = createAgentWorkInvalidator(client, 350);
+
+    invalidator.schedule("project-a");
+    invalidator.schedule("project-a");
+    invalidator.schedule("project-b");
+    expect(client.getQueryState(["agent-work", "project-a"])?.isInvalidated).toBe(false);
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(client.getQueryState(["agent-work", "project-a"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["agent-work", "project-b"])?.isInvalidated).toBe(true);
+    invalidator.dispose();
+  });
+
+  it("does not starve Agent work refreshes during sustained coordination", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    client.setQueryData(["agent-work", "project-a"], { old: true });
+    const invalidator = createAgentWorkInvalidator(client, 350);
+
+    invalidator.schedule("project-a");
+    await vi.advanceTimersByTimeAsync(200);
+    invalidator.schedule("project-a");
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(client.getQueryState(["agent-work", "project-a"])?.isInvalidated).toBe(true);
+    invalidator.dispose();
+  });
+
+  it("treats a legacy unscoped delivery event as a safe global refresh", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    client.setQueryData(["agent-work", "project-a"], { old: true });
+    client.setQueryData(["agent-work", "project-b"], { old: true });
+    const invalidator = createAgentWorkInvalidator(client, 1);
+    const legacyEvent: Extract<WorkspaceEvent, { type: "message_delivery_changed" }> = {
+      type: "message_delivery_changed", agentId: "agent",
+    };
+
+    invalidator.schedule(legacyEvent.projectId);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(client.getQueryState(["agent-work", "project-a"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["agent-work", "project-b"])?.isInvalidated).toBe(true);
+    invalidator.dispose();
   });
 
   it("converges capability cache boundaries independently in multiple tabs", async () => {

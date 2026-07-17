@@ -194,7 +194,8 @@ export type WorkspaceEvent =
   | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" | "cleared" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
-  | { type: "message_delivery_changed"; agentId: string }
+  | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string }
+  | { type: "coordination_changed"; projectId: string; agentId: string }
   | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }
   | { type: "agent_event"; projectId: string; agentId: string; conversationIds: string[]; seq: number; eventType: string; category: "lifecycle" | "message" | "task" | "artifact" | "file" | "state" | "usage"; executionId?: string }
@@ -558,9 +559,13 @@ export interface AgentWorkItemDto {
   title: string;
   summary: string;
   agentIds: string[];
+  /** Request roles remain explicit even when requester and recipient match. */
+  requesterAgentId?: string;
+  recipientAgentId?: string;
   /** Other canonical records structurally connected to this record. */
   relatedItemIds: string[];
-  details: Array<{ label: string; value: string }>;
+  /** Loaded on demand so the summary projection stays lightweight. */
+  details?: Array<{ label: string; value: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -588,6 +593,14 @@ export interface AgentWorkInspectorDto {
   agents: Array<{ id: string; title: string }>;
   traces: AgentWorkTraceDto[];
   items: AgentWorkItemDto[];
+}
+
+/** Technical fields for one canonical Agent work record. */
+export interface AgentWorkItemDetailsDto {
+  projectId: string;
+  itemId: string;
+  recordId: string;
+  details: Array<{ label: string; value: string }>;
 }
 
 /** GET /api/conversations/:id response. */

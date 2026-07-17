@@ -141,6 +141,11 @@ describe("CoordinationV3Store transactions", () => {
     expect(waiting.relatedItemIds).toContain(request.id);
     expect(waiting.relatedItemIds).toContain("request:continuation-request");
     expect(request.details).toContainEqual({ label: "Payload", value: '{"assignment":"Inspect me"}' });
+    const lightweight = store.agentWorkItems({ projectId, conversationId, includeDetails: false });
+    expect(lightweight.items.find((item) => item.id === request.id)?.details).toBeUndefined();
+    expect(store.agentWorkItemDetails({
+      projectId, conversationId, kind: "request", recordId: "inspect-request",
+    })).toContainEqual({ label: "Payload", value: '{"assignment":"Inspect me"}' });
 
     store.coordinate({
       projectId, conversationId, requesterAgentId: recipientB,
@@ -232,6 +237,57 @@ describe("CoordinationV3Store transactions", () => {
     const projectProjection = store.agentWorkItems({ projectId, limit: 2 });
     expect(projectProjection.items.filter((item) => item.kind === "activation")).toHaveLength(2);
     expect(projectProjection.truncated).toBe(true);
+  });
+
+  it("keeps unresolved Agent work visible ahead of newer terminal history", () => {
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`, idempotencyKey: "old-open",
+      requests: [{ requestId: "old-open", recipientAgentId: recipientA, lifetime: indefinite }],
+    });
+    opened.client.prepare(`UPDATE coordination_requests SET created_at = ?, updated_at = ? WHERE id = 'old-open'`)
+      .run("2026-07-01T00:00:00.000Z", "2026-07-01T00:00:00.000Z");
+    for (let index = 0; index < 4; index += 1) {
+      const requestId = `new-complete-${index}`;
+      store.coordinate({
+        projectId, conversationId, requesterAgentId: requesterId,
+        actorScope: `agent:${requesterId}`, idempotencyKey: requestId,
+        requests: [{ requestId, recipientAgentId: recipientA, lifetime: indefinite }],
+      });
+      opened.client.prepare(`
+        UPDATE coordination_requests SET state = 'completed', terminal_at = ?, updated_at = ? WHERE id = ?
+      `).run(`2026-07-15T00:00:0${index}.000Z`, `2026-07-15T00:00:0${index}.000Z`, requestId);
+    }
+    const projection = store.agentWorkItems({ projectId, conversationId, agentId: recipientA, limit: 2 });
+    expect(projection.items.some((item) => item.id === "request:old-open" && item.state === "open")).toBe(true);
+    expect(projection.truncated).toBe(true);
+  });
+
+  it("uses scheduler state as Run authority while exposing a stale execution projection only in details", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "cancel-authority", kind: "ordinary", payload: { text: "Work" },
+    });
+    const lease = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(lease);
+    store.recordProviderInput({
+      executionId: "execution-authority", schedulerRunId: lease.runId, fencingToken: lease.fencingToken,
+      agentId: recipientA, projectId, prompt: "Work",
+      sourceManifest: {
+        schemaVersion: 1, historyMessageCount: 0, activationIds: lease.activationIds,
+        communicationEventIds: [], artifactIds: [], providerSessionDisposition: "fresh_task", sources: [],
+      },
+    });
+    const now = new Date().toISOString();
+    opened.client.prepare(`
+      INSERT INTO runs (id, agent_id, title, status, reason, engine, started_at, updated_at)
+      VALUES ('execution-authority', ?, 'Run', 'running', 'activation', 'codex', ?, ?)
+    `).run(recipientA, now, now);
+    expect(store.cancelAgentRun({ agentId: recipientA, expectedRunId: lease.runId, idempotencyKey: "cancel-authority" }).cancelled).toBe(true);
+
+    const item = store.agentWorkItems({ projectId, agentId: recipientA }).items.find((candidate) => candidate.id === "run:execution-authority")!;
+    expect(item.state).toBe("cancelled");
+    expect(item.details).toContainEqual({ label: "Execution projection status", value: "running" });
+    expect(item.details).toContainEqual({ label: "Scheduler status", value: "cancelled" });
   });
 
   it("creates requests, an immutable join, activations, and an outbox atomically", () => {

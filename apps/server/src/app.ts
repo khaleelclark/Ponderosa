@@ -6,6 +6,7 @@ import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type Socket } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { Readable, Transform } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, promises as fs, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -98,6 +99,7 @@ import type {
   TriggerSourceKind,
   AgentWorkInspectorDto,
   AgentWorkItemDto,
+  AgentWorkItemDetailsDto,
   AgentPortablePackageDto,
   AgentExportMode,
   ImportAgentPackageRequest,
@@ -161,6 +163,26 @@ type LinkPreviewRegistration = {
   httpConnections: Set<AbortController>;
   reconnectAttempts: number[];
 };
+
+function acceptsGzip(value: string | string[] | undefined): boolean {
+  const preferences = String(value ?? "").split(",").map((entry) => {
+    const [encoding, ...parameters] = entry.trim().toLowerCase().split(";");
+    const quality = parameters.map((parameter) => /^q\s*=\s*([0-9.]+)$/.exec(parameter.trim())?.[1])
+      .find((candidate) => candidate !== undefined);
+    return { encoding, quality: quality === undefined ? 1 : Number(quality) };
+  });
+  const explicit = preferences.find((preference) => preference.encoding === "gzip");
+  if (explicit) return explicit.quality > 0;
+  return Boolean(preferences.find((preference) => preference.encoding === "*" && preference.quality > 0));
+}
+
+function sendInspectorJson(reply: FastifyReply, acceptEncoding: string | string[] | undefined, value: unknown): FastifyReply {
+  const body = JSON.stringify(value);
+  reply.type("application/json").header("vary", "Accept-Encoding");
+  return acceptsGzip(acceptEncoding)
+    ? reply.header("content-encoding", "gzip").send(gzipSync(body))
+    : reply.send(body);
+}
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -2392,21 +2414,33 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const projectAgents = store.listAgents(input.projectId);
     const names = new Map(projectAgents.map((agent) => [agent.id, agent.title]));
     const agentName = (id: string | undefined): string => id ? names.get(id) ?? "Deleted Agent" : "You";
-    const projection = coordinationV3.agentWorkItems(input);
+    const projection = coordinationV3.agentWorkItems({ ...input, includeDetails: false });
     const items = projection.items;
     for (const item of items) {
       if (item.kind === "request") {
-        const requesterId = item.details.find((detail) => detail.label === "Requester Agent ID")?.value;
-        const recipientId = item.details.find((detail) => detail.label === "Recipient Agent ID")?.value;
-        item.title = `${requesterId === "user" ? "You" : agentName(requesterId)} asked ${agentName(recipientId)} to work`;
+        item.title = `${agentName(item.requesterAgentId)} asked ${agentName(item.recipientAgentId)} to work`;
       } else if (item.kind === "join") {
-        item.title = `${agentName(item.agentIds[0])} is waiting for results`;
+        item.title = item.state === "open"
+          ? `${agentName(item.agentIds[0])} is waiting for results`
+          : item.state === "satisfied"
+            ? `${agentName(item.agentIds[0])} received the required results`
+            : `${agentName(item.agentIds[0])}'s wait ended ${item.state.replaceAll("_", " ")}`;
       } else if (item.kind === "activation") {
-        item.title = `${agentName(item.agentIds[0])} has a queued wake-up`;
+        item.title = ["pending", "retry_pending"].includes(item.state)
+          ? `${agentName(item.agentIds[0])} has a queued wake-up`
+          : ["leased", "attached"].includes(item.state)
+            ? `${agentName(item.agentIds[0])}'s wake-up is being attached`
+            : item.state === "consumed"
+              ? `${agentName(item.agentIds[0])}'s wake-up was consumed`
+              : `${agentName(item.agentIds[0])}'s wake-up ended ${item.state.replaceAll("_", " ")}`;
       } else if (item.kind === "run") {
         item.title = `${agentName(item.agentIds[0])} Run`;
       } else if (item.kind === "trigger") {
-        item.title = `${item.title} woke ${agentName(item.agentIds[0])}`;
+        item.title = item.state === "activated"
+          ? `${item.title} woke ${agentName(item.agentIds[0])}`
+          : item.state === "pending"
+            ? `${item.title} is waiting to wake ${agentName(item.agentIds[0])}`
+            : `${item.title} ended ${item.state.replaceAll("_", " ")}`;
       }
     }
 
@@ -2430,12 +2464,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         state: decision.status, title: `${agentName(decision.agentId)} asked for your decision`,
         summary: decision.status === "pending" ? decision.question : `Decision ${decision.status}.`,
         agentIds: [decision.agentId], relatedItemIds,
-        details: [
-          { label: "Decision ID", value: decision.id }, { label: "Run ID", value: decision.runId },
-          { label: "Mode", value: decision.mode }, { label: "Blocking", value: decision.blocking ? "yes" : "no" },
-          ...(decision.context ? [{ label: "Context", value: decision.context }] : []),
-          ...(decision.response ? [{ label: "Response", value: JSON.stringify(decision.response) }] : []),
-        ],
         createdAt: decision.createdAt, updatedAt: decision.updatedAt,
       };
       items.push(item);
@@ -2524,19 +2552,53 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
-  function publishCoordinationV3Changed(agentId: string): void {
-    if (closed || !store.getAgent(agentId)) return;
+  function agentWorkItemDetails(input: {
+    projectId: string;
+    conversationId?: string;
+    kind: AgentWorkItemDto["kind"];
+    recordId: string;
+  }): AgentWorkItemDetailsDto | undefined {
+    let details: AgentWorkItemDetailsDto["details"] | undefined;
+    if (input.kind === "decision") {
+      const decision = workspace.getDecision(input.recordId);
+      if (!decision || decision.projectId !== input.projectId
+        || (input.conversationId && decision.conversationId !== input.conversationId)) return undefined;
+      details = [
+        { label: "Decision ID", value: decision.id }, { label: "Run ID", value: decision.runId },
+        { label: "Mode", value: decision.mode }, { label: "Blocking", value: decision.blocking ? "yes" : "no" },
+        ...(decision.context ? [{ label: "Context", value: decision.context }] : []),
+        ...(decision.response ? [{ label: "Response", value: JSON.stringify(decision.response) }] : []),
+      ];
+    } else {
+      details = coordinationV3.agentWorkItemDetails({
+        ...input,
+        kind: input.kind as Exclude<AgentWorkItemDto["kind"], "decision">,
+      });
+    }
+    return details ? {
+      projectId: input.projectId,
+      itemId: `${input.kind}:${input.recordId}`,
+      recordId: input.recordId,
+      details,
+    } : undefined;
+  }
+
+  function publishCoordinationV3Changed(agentId: string, publishWorkspaceEvent = true): void {
+    const agent = store.getAgent(agentId);
+    if (closed || !agent) return;
     const stored = store.appendEvent(agentId, {
       type: "coordination_v3_changed",
       coordination: coordinationV3.agentSnapshot(agentId),
     });
     publish(agentId, stored);
+    if (publishWorkspaceEvent) appendWorkspace({ type: "coordination_changed", projectId: agent.projectId, agentId });
   }
 
   function publishMessageDeliveryChanged(agentId: string): void {
-    if (closed || !store.getAgent(agentId)) return;
-    publishCoordinationV3Changed(agentId);
-    appendWorkspace({ type: "message_delivery_changed", agentId });
+    const agent = store.getAgent(agentId);
+    if (closed || !agent) return;
+    publishCoordinationV3Changed(agentId, false);
+    appendWorkspace({ type: "message_delivery_changed", projectId: agent.projectId, agentId });
   }
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
@@ -4890,12 +4952,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (parsedLimit !== undefined && (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 1_000)) {
       return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
     }
-    return agentWorkInspector({
+    const result = agentWorkInspector({
       projectId: project.id,
       ...(request.query.conversationId ? { conversationId: request.query.conversationId } : {}),
       ...(request.query.agentId ? { agentId: request.query.agentId } : {}),
       ...(parsedLimit ? { limit: parsedLimit } : {}),
     });
+    return sendInspectorJson(reply, request.headers["accept-encoding"], result);
+  });
+
+  app.get<{
+    Params: { id: string; kind: string; recordId: string };
+    Querystring: { conversationId?: string };
+  }>("/api/projects/:id/agent-work/items/:kind/:recordId", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (request.query.conversationId) {
+      const conversation = store.getConversation(request.query.conversationId);
+      if (!conversation || conversation.projectId !== project.id) return reply.code(404).send({ error: "conversation not found in project" });
+    }
+    const kinds = new Set<AgentWorkItemDto["kind"]>(["request", "join", "activation", "run", "trigger", "decision"]);
+    if (!kinds.has(request.params.kind as AgentWorkItemDto["kind"])) return reply.code(400).send({ error: "invalid Agent work item kind" });
+    const result = agentWorkItemDetails({
+      projectId: project.id,
+      ...(request.query.conversationId ? { conversationId: request.query.conversationId } : {}),
+      kind: request.params.kind as AgentWorkItemDto["kind"],
+      recordId: request.params.recordId,
+    });
+    if (!result) return reply.code(404).send({ error: "Agent work item not found in scope" });
+    return sendInspectorJson(reply, request.headers["accept-encoding"], result);
   });
 
   app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {

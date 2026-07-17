@@ -76,6 +76,8 @@ import type {
   UpdateTriggerRequest,
   AgentPortablePackageDto,
   AgentWorkInspectorDto,
+  AgentWorkItemDto,
+  AgentWorkItemDetailsDto,
   AgentExportMode,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
@@ -129,6 +131,7 @@ export interface PonderosaApi {
   deleteProject(projectId: string): Promise<void>;
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto>;
   getAgentWork(projectId: string, filter?: { conversationId?: string; agentId?: string; limit?: number }): Promise<AgentWorkInspectorDto>;
+  getAgentWorkItemDetails(projectId: string, kind: AgentWorkItemDto["kind"], recordId: string, filter?: { conversationId?: string }): Promise<AgentWorkItemDetailsDto>;
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto>;
   searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto>;
   listConversations(projectId: string): Promise<ConversationDto[]>;

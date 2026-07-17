@@ -6,6 +6,7 @@ import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runInNewContext } from "node:vm";
+import { gunzipSync } from "node:zlib";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
@@ -802,11 +803,13 @@ describe("Agent work inspector", () => {
   it("returns a scoped read-only trace projection with Decisions", async () => {
     const project = store.createProject({ label: "Inspector", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Work room" });
+    const otherConversation = store.createConversation(project.id, { title: "Other room" });
+    const otherProject = store.createProject({ label: "Other inspector", hostPath: repoDir, defaultEngine: "codex" });
     const agent = store.createAgent(project.id, { title: "Coordinator", engine: "codex", conversationId: conversation.id });
     const workspace = new WorkspaceStore(dataDir);
     const decision = workspace.createDecision({
       projectId: project.id, conversationId: conversation.id, agentId: agent.id, runId: "execution-one",
-      mode: "approval", question: "Proceed?", options: [{ id: "yes", label: "Proceed" }],
+      mode: "approval", question: "Proceed with the inspected work? ".repeat(80), options: [{ id: "yes", label: "Proceed" }],
       allowOther: true, blocking: true, idempotencyKey: "inspector-decision",
     });
     const app = createServer({ dataDir, store, engines, logger: false });
@@ -819,6 +822,60 @@ describe("Agent work inspector", () => {
       items: [expect.objectContaining({ id: `decision:${decision.id}`, kind: "decision", state: "pending" })],
       traces: [expect.objectContaining({ state: "active", itemIds: [`decision:${decision.id}`] })],
     });
+    expect(response.json<{ items: Array<{ details?: unknown }> }>().items[0]?.details).toBeUndefined();
+    const details = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/decision/${decision.id}?conversationId=${conversation.id}`,
+    });
+    expect(details.statusCode, details.body).toBe(200);
+    expect(details.json()).toMatchObject({
+      projectId: project.id,
+      itemId: `decision:${decision.id}`,
+      details: expect.arrayContaining([{ label: "Decision ID", value: decision.id }]),
+    });
+    const compressed = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}`,
+      headers: { "accept-encoding": "gzip" },
+    });
+    expect(compressed.headers["content-encoding"]).toBe("gzip");
+    expect(JSON.parse(gunzipSync(compressed.rawPayload).toString())).toMatchObject({ projectId: project.id });
+    const excludedGzip = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}`,
+      headers: { "accept-encoding": "gzip;q=0, *;q=1" },
+    });
+    expect(excludedGzip.headers["content-encoding"]).toBeUndefined();
+    expect(excludedGzip.json()).toMatchObject({ projectId: project.id });
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/decision/${decision.id}?conversationId=${otherConversation.id}`,
+    })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${otherProject.id}/agent-work/items/decision/${decision.id}`,
+    })).statusCode).toBe(404);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id, conversationId: conversation.id, requesterAgentId: agent.id,
+      actorScope: `agent:${agent.id}`, idempotencyKey: "inspector-request",
+      requests: [{ requestId: "inspector-request", recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: { assignment: "Inspect" } }],
+    });
+    const requestDetails = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/request/inspector-request?conversationId=${conversation.id}`,
+    });
+    expect(requestDetails.statusCode, requestDetails.body).toBe(200);
+    expect(requestDetails.json()).toMatchObject({
+      itemId: "request:inspector-request",
+      details: expect.arrayContaining([{ label: "Payload", value: '{"assignment":"Inspect"}' }]),
+    });
+    const withSelfRequest = (await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}`,
+    })).json<{ items: Array<{ id: string; title: string }> }>();
+    expect(withSelfRequest.items.find((item) => item.id === "request:inspector-request")?.title)
+      .toBe("Coordinator asked Coordinator to work");
     expect((await app.inject({ method: "POST", url: `/api/decisions/${decision.id}/respond`, payload: { optionId: "yes" } })).statusCode).toBe(200);
     const afterResponse = (await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}` })).json<{
       items: Array<{ id: string; kind: string; referenceIds: string[]; relatedItemIds: string[] }>;
