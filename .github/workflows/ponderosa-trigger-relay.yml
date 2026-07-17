@@ -1,0 +1,66 @@
+name: Ponderosa Trigger Relay
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - CI and deploy
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  notify-ponderosa:
+    name: Send event to Ponderosa
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Join the Ponderosa tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: pine.tail8187ff.ts.net
+
+      - name: Sign and send the GitHub event
+        shell: bash
+        env:
+          PONDEROSA_WEBHOOK_URL: ${{ secrets.PONDEROSA_WEBHOOK_URL }}
+          PONDEROSA_WEBHOOK_SECRET: ${{ secrets.PONDEROSA_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+
+          timestamp="$(date +%s)"
+          event_id="github:${GITHUB_REPOSITORY}:${GITHUB_EVENT_NAME}:${GITHUB_RUN_ID}"
+          event_file="${RUNNER_TEMP}/ponderosa-github-event.json"
+
+          jq --compact-output \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            '{source: "github_actions", event: $event, repository: $repository, runId: $runId, payload: .}' \
+            "$GITHUB_EVENT_PATH" > "$event_file"
+
+          signature="$({
+            printf '%s' "${timestamp}.${event_id}."
+            cat "$event_file"
+          } | openssl dgst -sha256 -hmac "$PONDEROSA_WEBHOOK_SECRET" -hex | awk '{print $NF}')"
+
+          curl \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --request POST \
+            "$PONDEROSA_WEBHOOK_URL" \
+            --header "Content-Type: application/json" \
+            --header "X-Ponderosa-Timestamp: $timestamp" \
+            --header "X-Ponderosa-Event-Id: $event_id" \
+            --header "X-Ponderosa-Signature: v1=$signature" \
+            --data-binary "@$event_file"
