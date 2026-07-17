@@ -130,7 +130,7 @@ describe("CoordinationV3Store transactions", () => {
       projectId, conversationId, requesterAgentId: requesterId,
       actorScope: `agent:${requesterId}`, idempotencyKey: "inspect-work",
       requests: [{ requestId: "inspect-request", recipientAgentId: recipientA, lifetime: indefinite, payload: { assignment: "Inspect me" } }],
-      join: { id: "inspect-join", mode: "all", continuationRequestIds: ["continuation-request"] },
+      join: { id: "inspect-join", mode: "all", wakePolicy: "each_result", continuationRequestIds: ["continuation-request"] },
     });
 
     let { items } = store.agentWorkItems({ projectId, conversationId });
@@ -141,11 +141,16 @@ describe("CoordinationV3Store transactions", () => {
     expect(waiting.relatedItemIds).toContain(request.id);
     expect(waiting.relatedItemIds).toContain("request:continuation-request");
     expect(request.details).toContainEqual({ label: "Payload", value: '{"assignment":"Inspect me"}' });
+    expect(waiting.details).toContainEqual({ label: "Wake policy", value: "Each result" });
     const lightweight = store.agentWorkItems({ projectId, conversationId, includeDetails: false });
     expect(lightweight.items.find((item) => item.id === request.id)?.details).toBeUndefined();
+    expect(lightweight.items.find((item) => item.id === waiting.id)?.details).toBeUndefined();
     expect(store.agentWorkItemDetails({
       projectId, conversationId, kind: "request", recordId: "inspect-request",
     })).toContainEqual({ label: "Payload", value: '{"assignment":"Inspect me"}' });
+    expect(store.agentWorkItemDetails({
+      projectId, conversationId, kind: "join", recordId: "inspect-join",
+    })).toContainEqual({ label: "Wake policy", value: "Each result" });
 
     store.coordinate({
       projectId, conversationId, requesterAgentId: recipientB,
