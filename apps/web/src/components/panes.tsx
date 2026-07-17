@@ -16,6 +16,7 @@ import LanguageIcon from "@mui/icons-material/Language";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert,
+  Avatar,
   Box,
   Button,
   Chip,
@@ -39,7 +40,7 @@ import {
   Typography,
 } from "@mui/material";
 import { unifiedDiffLineTotals } from "@ponderosa/core";
-import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, ProviderInputDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -634,15 +635,13 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentio
   );
 }
 
-export function UserMessageLabel(): JSX.Element {
+export function UserMessageLabel({ profile }: { profile?: OperatorProfileDto }): JSX.Element {
+  const glyph = ({ "default-user": "🌲", sunset: "🌅", river: "🌊", mountain: "⛰️", fox: "🦊", owl: "🦉" } as Record<string, string>)[profile?.avatarId ?? "default-user"] ?? "●";
   return (
-    <Typography
-      variant="caption"
-      component="div"
-      sx={{ mb: 0.25, px: { xs: 1, sm: 1.5 }, fontWeight: 700, color: "text.secondary" }}
-    >
-      User
-    </Typography>
+    <Stack direction="row" spacing={0.75} sx={{ mb: 0.25, px: { xs: 1, sm: 1.5 }, alignItems: "center" }}>
+      <Avatar aria-label={`${profile?.displayName ?? "User"} profile picture`} sx={{ width: 22, height: 22, fontSize: 13, bgcolor: "action.selected" }}>{glyph}</Avatar>
+      <Typography variant="caption" component="div" sx={{ fontWeight: 700, color: "text.secondary" }}>{profile?.displayName ?? "User"}</Typography>
+    </Stack>
   );
 }
 
@@ -656,6 +655,7 @@ export function ChatPane({
   onReply,
   previewScope,
   scrollStorageKey,
+  operatorProfile,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -666,6 +666,7 @@ export function ChatPane({
   onReply?(message: MessageDto): void;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
+  operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -714,7 +715,9 @@ export function ChatPane({
         const visibleAgentName = message.authorAgentId
           ? agentNameForId?.(message.authorAgentId) ?? "Agent"
           : agentName;
-        const senderLabel = individualChatSenderLabel(message.role, visibleAgentName);
+        const senderLabel = message.role === "user" && operatorProfile
+          ? operatorProfile.displayName
+          : individualChatSenderLabel(message.role, visibleAgentName);
         return (
         <Box
           key={message.id}
@@ -730,7 +733,7 @@ export function ChatPane({
             minWidth: 0,
           }}
         >
-          {message.role === "user" ? <UserMessageLabel /> : <Box sx={{ px: { xs: 1, sm: 1.5 } }}><MessageSenderLabel name={senderLabel} /></Box>}
+          {message.role === "user" ? <UserMessageLabel profile={operatorProfile} /> : <Box sx={{ px: { xs: 1, sm: 1.5 } }}><MessageSenderLabel name={senderLabel} /></Box>}
           <Box
             data-message-bubble="true"
             sx={{
@@ -743,7 +746,7 @@ export function ChatPane({
               borderColor: "transparent",
             }}
           >
-            {message.role === "user" ? <MessageSenderLabel name={senderLabel} /> : null}
+            {message.role === "user" ? <MessageSenderLabel name={operatorProfile?.displayName ?? senderLabel} /> : null}
             {message.replyTo ? (
               <Box
                 component="button"

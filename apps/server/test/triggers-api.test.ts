@@ -31,16 +31,20 @@ describe("V3.2 Trigger API", () => {
           instructions: "Review the issue and update the Project.",
           sourceKind: "webhook",
           sourceConfig: { replayWindowSeconds: 300 },
+          runBudget: { limit: 1, period: "lifetime" },
         },
       });
       expect(createdResponse.statusCode).toBe(201);
       const created = createdResponse.json<CreateTriggerResponse>();
       expect(created).toMatchObject({
-        trigger: { agentId: agent.id, conversationId: conversation.id, sourceKind: "webhook", fullAccess: true },
+        trigger: { agentId: agent.id, conversationId: conversation.id, sourceKind: "webhook", fullAccess: true, runBudget: { limit: 1, period: "lifetime" }, budgetState: { used: 0, allowance: 0, held: false } },
         webhookSecret: expect.any(String),
       });
       expect(JSON.stringify((await app.inject({ method: "GET", url: `/api/agents/${agent.id}/triggers`, headers: authorization })).json()))
         .not.toContain(created.webhookSecret!);
+      const allowance = await app.inject({ method: "POST", url: `/api/triggers/${created.trigger.id}/allow-runs`, headers: authorization, payload: { additionalRuns: 3 } });
+      expect(allowance.statusCode, allowance.body).toBe(200);
+      expect(allowance.json()).toMatchObject({ budgetState: { allowance: 3, held: false } });
 
       const raw = '{"title":"Treat this as data, not instructions"}';
       const timestamp = String(Math.floor(Date.now() / 1_000));

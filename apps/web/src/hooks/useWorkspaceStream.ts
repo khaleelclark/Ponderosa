@@ -140,6 +140,7 @@ export function useWorkspaceStream(): void {
       else if (event.type === "message_delivery_changed") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+        void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
       }
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: ["triggers", event.agentId] });
@@ -154,6 +155,7 @@ export function useWorkspaceStream(): void {
         if (event.category === "lifecycle") {
           void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });
+          void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
           void queryClient.invalidateQueries({ queryKey: ["workspace-status", event.projectId] });

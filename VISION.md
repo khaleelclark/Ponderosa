@@ -100,6 +100,11 @@ evidence known only to remain in a continued provider session. Unsent queued
 messages and unrelated artifacts appear in neither category, and historical
 manifest records remain readable after the schema evolves.
 
+Workspace and Project rules have explicit precedence and are stored by
+Ponderosa. Global provider switches hold queued work without sacrificing Runs.
+Provider denial remains a separate durable availability fact. The operator has
+one synced display profile for their name, `#handle`, and catalog avatar.
+
 ## Automatic Triggers
 
 Power users may attach schedules, signed webhooks, and Project-folder watchers
@@ -114,6 +119,11 @@ replace the latest event, silently discard intermediate events, steer an active
 Run, or mix definitions. Filesystem sources bundle paths and event metadata
 without automatically injecting file contents. Missed schedules recover as one
 occurrence rather than a Run per interval.
+
+Each Trigger may optionally limit root outside-activation Runs by day, week,
+month, or lifetime. Unlimited is the default. A batch costs one unit; work the
+Agent delegates does not. Exhausted occurrences remain queued, and the user can
+allow a chosen number of additional Runs for the current period.
 
 Automation is intentionally flexible in V3.2: Trigger Runs have the full access
 of their Agent. Ponderosa therefore presents a prominent full-access warning,
@@ -175,6 +185,19 @@ remaining descendants; a user promotes or re-parents any agent they want to keep
 before deletion. Changing the organization never rewrites creator, communication,
 or execution history.
 
+Parents can inspect and manage only their visible descendant subtree through a
+Run-scoped describe/plan/apply capability. Creation, rename, and stop may be
+autonomous. Deletion and reporting-line changes require a durable user Decision.
+Decisions support approval, Agent-defined choices, and free text, appear in the
+relevant chats and Needs attention, and preserve the operator's response.
+
+Agents and descendant organizations can be copied or imported as template,
+context, or full portable JSON. Imports require explicit engine mapping, keep
+old messages as private historical context, disable imported Triggers with new
+secrets, and treat destination rules as authoritative. Project-owned managed
+artifacts survive Agent deletion and travel with full packages within the
+documented package-size boundary.
+
 The sidebar includes a compact, collapsible agent hierarchy with live status and
 project running counts; Agent Detail remains the complete management surface.
 Stop All reports partial cancellation failures. Delete All is unavailable until
@@ -215,6 +238,13 @@ most one notification per device and never notifies its author. Standards-based
 Web Push may deliver while the PWA is closed; permission denial or unsupported
 browsers keep in-app notifications working, and VAPID/private configuration stays
 outside repositories and logs.
+
+Operational Team chat entries are derived from canonical Runs, queued work,
+Requests, waiting conditions, Triggers, Decisions, and organization changes.
+They use compact human language and never become fake authored messages.
+Notifications distinguish informational updates, attention, and urgent broken
+states, retain stable deduplication identity, and may link directly to the
+required action.
 
 ## The communication model
 

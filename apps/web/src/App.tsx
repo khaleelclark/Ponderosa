@@ -24,6 +24,7 @@ import {
   MenuItem,
   Select,
   Stack,
+  Switch,
   TextField,
   Toolbar,
   Tooltip,
@@ -90,6 +91,10 @@ export default function App({
   const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [globalInstructionsDraft, setGlobalInstructionsDraft] = useState("");
+  const [profileNameDraft, setProfileNameDraft] = useState("User");
+  const [profileHandleDraft, setProfileHandleDraft] = useState("operator");
+  const [profileAvatarDraft, setProfileAvatarDraft] = useState("default-user");
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [pushState, setPushState] = useState<WebPushState>({ kind: "permission_default", message: "Checking browser push status…" });
   const [pushBusy, setPushBusy] = useState(false);
@@ -97,6 +102,7 @@ export default function App({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsProjectId, setSettingsProjectId] = useState<string>();
   const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
+  const [projectInstructions, setProjectInstructions] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
@@ -196,9 +202,16 @@ export default function App({
       if (updated.available) setProjectDefaultEngine(updated.id);
     },
   });
+  const updateEngine = useMutation({
+    mutationFn: ({ engineId, enabled }: { engineId: string; enabled: boolean }) => api.updateEngine(engineId, { enabled }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<import("@ponderosa/core").EngineDto[]>(["engines"], (current) => current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
+      void queryClient.invalidateQueries({ queryKey: ["workspace-preferences"] });
+    },
+  });
 
   const updateProject = useMutation({
-    mutationFn: () => api.updateProject(settingsProjectId!, { label: renamedProjectLabel.trim() }),
+    mutationFn: () => api.updateProject(settingsProjectId!, { label: renamedProjectLabel.trim(), instructions: projectInstructions }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["projects"] }); setProjectSettingsOpen(false); },
   });
 
@@ -241,7 +254,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
@@ -315,7 +328,13 @@ export default function App({
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
           </Box>
-          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={() => setNotificationSettingsOpen(true)} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
+          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={() => {
+            setGlobalInstructionsDraft(preferences.globalInstructions);
+            setProfileNameDraft(preferences.profile.displayName);
+            setProfileHandleDraft(preferences.profile.handle);
+            setProfileAvatarDraft(preferences.profile.avatarId);
+            setNotificationSettingsOpen(true);
+          }} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
       </AppBar>
 
@@ -327,7 +346,7 @@ export default function App({
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
-            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
           />
@@ -368,7 +387,7 @@ export default function App({
             preferences={preferences}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
-            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
             onPreferences={savePreferences}
           />
         ) : route.kind === "allAgents" ? (
@@ -394,7 +413,7 @@ export default function App({
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
-          onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectSettingsOpen(true); }}
+          onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
         />
@@ -539,8 +558,15 @@ export default function App({
         notifications={notificationsQuery.data ?? []}
         onClose={() => setNotificationPanelOpen(false)}
         onNavigate={navigate}
+        onOpenSettings={() => {
+          setGlobalInstructionsDraft(preferences.globalInstructions);
+          setProfileNameDraft(preferences.profile.displayName);
+          setProfileHandleDraft(preferences.profile.handle);
+          setProfileAvatarDraft(preferences.profile.avatarId);
+          setNotificationSettingsOpen(true);
+        }}
       />
-      <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Settings</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
@@ -575,14 +601,27 @@ export default function App({
                   .finally(() => setPushBusy(false));
               }}>Disable on this device</Button>
             ) : null}
+            <Typography variant="subtitle2">AI providers</Typography>
+            <Typography variant="body2" color="text.secondary">Disabled providers finish active Runs, then hold queued work until re-enabled.</Typography>
+            {engines.map((engine) => <FormControlLabel key={engine.id} control={<Switch checked={engine.enabled !== false} disabled={updateEngine.isPending} onChange={(_, enabled) => updateEngine.mutate({ engineId: engine.id, enabled })} />} label={`${engine.displayName}${engine.available ? "" : ` — ${engine.availabilityDetail ?? "unavailable"}`}`} />)}
+            <Typography variant="subtitle2">Your profile</Typography>
+            <TextField label="What Agents call you" value={profileNameDraft} onChange={(event) => setProfileNameDraft(event.target.value)} inputProps={{ maxLength: 80 }} />
+            <TextField label="Handle" value={profileHandleDraft} onChange={(event) => setProfileHandleDraft(event.target.value.replace(/^#/, "").toLowerCase())} helperText="Used as your stable #handle." inputProps={{ maxLength: 32 }} />
+            <FormControl fullWidth><InputLabel id="profile-avatar-label">Picture</InputLabel><Select labelId="profile-avatar-label" label="Picture" value={profileAvatarDraft} onChange={(event) => setProfileAvatarDraft(event.target.value)}><MenuItem value="default-user">Pine</MenuItem><MenuItem value="sunset">Sunset</MenuItem><MenuItem value="river">River</MenuItem><MenuItem value="mountain">Mountain</MenuItem><MenuItem value="fox">Fox</MenuItem><MenuItem value="owl">Owl</MenuItem></Select></FormControl>
+            <Typography variant="subtitle2">Master rules</Typography>
+            <TextField label="Rules for every Ponderosa Agent" value={globalInstructionsDraft} onChange={(event) => setGlobalInstructionsDraft(event.target.value)} multiline minRows={5} helperText="Ponderosa stores these rules directly and starts affected Agents with a fresh provider session on their next Run." />
           </Stack>
         </DialogContent>
-        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Done</Button></DialogActions>
+        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={!profileNameDraft.trim() || !/^[a-z][a-z0-9_-]{1,31}$/.test(profileHandleDraft) || ["broadcast", "everyone", "user"].includes(profileHandleDraft)} onClick={() => {
+          savePreferences({ globalInstructions: globalInstructionsDraft, profile: { displayName: profileNameDraft.trim(), handle: profileHandleDraft, avatarId: profileAvatarDraft } });
+          setNotificationSettingsOpen(false);
+        }}>Save settings</Button></DialogActions>
       </Dialog>
 
       <Dialog open={projectSettingsOpen} onClose={() => setProjectSettingsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Project settings</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
           <TextField label="Project name" value={renamedProjectLabel} onChange={(event) => setRenamedProjectLabel(event.target.value)} fullWidth />
+          <TextField label="Project master rules" value={projectInstructions} onChange={(event) => setProjectInstructions(event.target.value)} multiline minRows={5} helperText="These rules apply after global rules to every Agent working in this Project." fullWidth />
           {updateProject.isError ? <Alert severity="error">{String(updateProject.error)}</Alert> : null}
           <Button color="error" variant="outlined" onClick={() => setDeleteConfirmationOpen(true)}>Delete project permanently</Button>
         </Stack></DialogContent><DialogActions><Button onClick={() => setProjectSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={!renamedProjectLabel.trim() || updateProject.isPending} onClick={() => updateProject.mutate()}>Save</Button></DialogActions>

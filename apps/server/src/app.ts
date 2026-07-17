@@ -95,6 +95,10 @@ import type {
   TriggerOccurrenceDto,
   TriggerSourceConfig,
   TriggerSourceKind,
+  AgentPortablePackageDto,
+  AgentExportMode,
+  ImportAgentPackageRequest,
+  ImportAgentPackageResponse,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -103,6 +107,8 @@ import {
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
   PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
+  PONDEROSA_DECISION_TOOL,
+  PONDEROSA_MANAGE_TOOL,
   PONDEROSA_BROWSER_TOOLS,
   TERMINAL_REQUEST_STATES,
   type CoordinationRequestState,
@@ -598,7 +604,7 @@ function communicationV3Prompt(): string[] {
     "A human message, question, or urgent event never cancels your existing joins. Handle the activation and return to waiting when a join remains unresolved.",
     "Keep bounded work context-bounded: inspect only necessary resources with targeted queries and bounded ranges; never load an entire large artifact or unbounded log/diff when a focused view will do. Avoid rereading unchanged material, run final verification once, then publish the terminal update and stop.",
     "Do not poll, sleep, send acknowledgments, or create progress-only wakeups. End the turn after creating a join when no other action remains.",
-    "Only these three communication tools exist: ponderosa_coordinate, ponderosa_update_request, and ponderosa_message.",
+    "Only these three communication tools exist: ponderosa_coordinate, ponderosa_update_request, and ponderosa_message. ponderosa_decision is a separate operator-attention capability, not a message.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" using the Bearer token.',
   ];
@@ -1364,6 +1370,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   };
   const activeRuns = new Map<string, ActiveRun>();
+  type ManagementOperation = {
+    kind: "create_agent" | "rename_agent" | "stop_agent" | "delete_agent" | "set_manager";
+    ref?: string;
+    targetAgentId?: string;
+    parentRef?: string;
+    managerAgentId?: string | null;
+    title?: string;
+    engine?: string;
+    model?: string;
+    effort?: string;
+    instructions?: string;
+    decisionId?: string;
+  };
+  type ManagementPlan = {
+    id: string;
+    agentId: string;
+    runId: string;
+    conversationId: string;
+    idempotencyKey: string;
+    operations: ManagementOperation[];
+    createdAt: string;
+    appliedAt?: string;
+    result?: unknown;
+  };
+  const managementPlans = new Map<string, ManagementPlan>();
   const linkPreviews = new Map<string, LinkPreviewRegistration>();
   const linkPreviewTtlMs = opts.linkPreviewScheduling?.registrationTtlMs ?? 4 * 60 * 60 * 1000;
   const linkPreviewHandshakeTimeoutMs = opts.linkPreviewScheduling?.upstreamHandshakeTimeoutMs ?? 10_000;
@@ -1393,6 +1424,37 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
+  const providerEnabled = (engineId: string): boolean => workspace.getPreferences().providerAvailability[engineId] !== false;
+  const createOperationalNotification = (input: {
+    dedupeKey: string;
+    category: "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
+    severity: "info" | "attention" | "urgent";
+    title: string;
+    body: string;
+    projectId?: string;
+    conversationId?: string;
+    action?: WorkspaceNotificationDto["action"];
+  }): WorkspaceNotificationDto => {
+    const cursor = workspace.cursor();
+    const notification = workspace.createNotification({ kind: "operational", status: "open", ...input }, input.severity !== "info");
+    publishWorkspaceSince(cursor);
+    return notification;
+  };
+  const resolveOperationalNotification = (dedupeKey: string): void => {
+    const current = workspace.listNotifications().find((item) => item.dedupeKey === dedupeKey && (item.status ?? "open") === "open");
+    if (!current) return;
+    const cursor = workspace.cursor();
+    workspace.setNotificationStatus(current.id, "resolved");
+    publishWorkspaceSince(cursor);
+  };
+  const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
+    const cursor = workspace.cursor();
+    for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
+      const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
+      if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+    }
+    publishWorkspaceSince(cursor);
+  };
   // Migrate pre-V3.1.3 provider evidence once. A credential file proves only
   // that login existed; a later entitlement rejection remains authoritative
   // until an explicit provider-backed probe or successful Run proves recovery.
@@ -1419,6 +1481,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       observedAt: new Date(evidence.failure.at).toISOString(),
     });
   }
+  for (const engineId of engines.keys()) {
+    const denial = engineAvailability.denial(engineId);
+    if (denial) createOperationalNotification({
+      dedupeKey: `provider:${engineId}:unavailable`,
+      category: "provider",
+      severity: "urgent",
+      title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
+      body: `${denial.detail ?? "The provider rejected runtime access."} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`,
+      action: { kind: "open_settings", targetId: engineId },
+    });
+  }
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
     return denial ? denial.detail ?? "provider rejected runtime access" : undefined;
@@ -1431,12 +1504,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ? await engineAuthStatuses.get(id, registration.authStatus)
       : { authenticated: true, detail: "runtime registered (authentication status not reported)" };
     const denial = runtimeFailureDetail(id);
+    const enabled = providerEnabled(id);
     return {
       configured: true,
       authenticated: auth.authenticated,
-      available: auth.authenticated && !denial,
+      available: enabled && auth.authenticated && !denial,
       ...(auth.detail ? { authDetail: auth.detail } : {}),
-      ...(!auth.authenticated
+      ...(!enabled ? { availabilityDetail: "disabled by the operator; queued work is held" }
+        : !auth.authenticated
         ? { availabilityDetail: auth.detail ?? "runtime is not authenticated" }
         : denial ? { availabilityDetail: `provider rejected runtime access: ${denial}` }
           : { availabilityDetail: "provider access available" }),
@@ -1470,6 +1545,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       })),
       efforts: adapter.listEfforts(),
       modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
+      enabled: providerEnabled(adapter.id),
       ...status,
     };
   };
@@ -2202,7 +2278,96 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   function collaborationViewDetail(conversationId: string): CollaborationViewDto | undefined {
     const detail = store.getCollaborationViewDetail(conversationId);
     if (!detail) return detail;
-    return { ...detail, messages: withMessagePresentation(store.getConversation(conversationId)!.projectId, store.getProjectedConversationMessages(conversationId, "collaboration")) };
+    const names = new Map(detail.agents.map((agent) => [agent.id, agent.title]));
+    const operations: NonNullable<CollaborationViewDto["operations"]> = [];
+    for (const agent of detail.agents) {
+      const snapshot = coordinationV3.agentSnapshot(agent.id);
+      const recentRuns = store.getRuns(agent.id).slice(-50);
+      for (const run of recentRuns) operations.push({
+        id: `execution:${run.id}`,
+        kind: "run",
+        state: run.status,
+        text: run.status === "running" ? `${agent.title} is running`
+          : run.status === "completed" ? `${agent.title} finished`
+            : run.status === "cancelled" || run.status === "interrupted" ? `${agent.title} stopped`
+              : `${agent.title} failed`,
+        agentIds: [agent.id],
+        createdAt: run.startedAt,
+        updatedAt: run.completedAt ?? run.updatedAt,
+      });
+      if (snapshot.activeRun && !recentRuns.some((run) => run.status === "running")) operations.push({
+        id: `run:${snapshot.activeRun.id}`,
+        kind: "run",
+        state: snapshot.activeRun.status,
+        text: `${agent.title} is running`,
+        agentIds: [agent.id],
+        createdAt: agent.updatedAt,
+        updatedAt: agent.updatedAt,
+      });
+      for (const activation of snapshot.activations.filter((item) => ["pending", "retry_pending", "attached"].includes(item.state))) operations.push({
+        id: `activation:${activation.id}`,
+        kind: activation.kind === "trigger_occurrence" ? "trigger" : "activation",
+        state: activation.state,
+        text: activation.kind === "trigger_occurrence" ? `${agent.title} was triggered and has automatic work queued` : `${agent.title} has work queued`,
+        agentIds: [agent.id],
+        createdAt: activation.createdAt,
+        updatedAt: activation.createdAt,
+      });
+      for (const request of snapshot.requests.filter((item) => item.direction === "outbound")) {
+        const recipient = request.counterpartyAgentId ? names.get(request.counterpartyAgentId) ?? "another Agent" : "another Agent";
+        const terminal = ["completed", "blocked", "cancelled", "expired", "outcome_unknown"].includes(request.state);
+        operations.push({
+          id: `request:${request.id}`,
+          kind: "request",
+          state: request.state,
+          text: request.state === "completed" ? `${recipient} finished work for ${agent.title}`
+            : terminal ? `${recipient}'s work for ${agent.title} ended ${request.state.replaceAll("_", " ")}`
+              : `${agent.title} asked ${recipient} to work`,
+          agentIds: [agent.id, ...(request.counterpartyAgentId ? [request.counterpartyAgentId] : [])],
+          createdAt: request.updatedAt,
+          updatedAt: request.updatedAt,
+        });
+      }
+      for (const join of snapshot.joins) operations.push({
+        id: `join:${join.id}`,
+        kind: "join",
+        state: join.state,
+        text: join.state === "open" ? `${agent.title} is waiting for ${Math.max(0, join.total - join.completed)} more result${join.total - join.completed === 1 ? "" : "s"}`
+          : join.state === "satisfied" ? `${agent.title} received every result it was waiting for`
+            : `${agent.title}'s wait ended ${join.state}`,
+        agentIds: [agent.id],
+        createdAt: join.updatedAt,
+        updatedAt: join.updatedAt,
+      });
+    }
+    for (const decision of workspace.listDecisions({ conversationId })) {
+      const agentName = names.get(decision.agentId) ?? "An Agent";
+      operations.push({
+        id: `decision:${decision.id}`,
+        kind: "decision",
+        state: decision.status,
+        text: decision.status === "pending" ? `${agentName} is waiting for your decision` : `You answered ${agentName}'s decision`,
+        agentIds: [decision.agentId],
+        createdAt: decision.createdAt,
+        updatedAt: decision.updatedAt,
+      });
+    }
+    for (const plan of managementPlans.values()) if (plan.conversationId === conversationId) {
+      const agentName = names.get(plan.agentId) ?? "An Agent";
+      operations.push({
+        id: `management:${plan.id}`,
+        kind: "organization",
+        state: plan.appliedAt ? "applied" : "planned",
+        text: plan.appliedAt
+          ? `${agentName} updated its organization`
+          : `${agentName} prepared an organization change`,
+        agentIds: [plan.agentId],
+        createdAt: plan.createdAt,
+        updatedAt: plan.appliedAt ?? plan.createdAt,
+      });
+    }
+    operations.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
+    return { ...detail, operations, messages: withMessagePresentation(store.getConversation(conversationId)!.projectId, store.getProjectedConversationMessages(conversationId, "collaboration")) };
   }
 
   function agentDetail(agentId: string): import("@ponderosa/core").AgentDetailDto | undefined {
@@ -2432,8 +2597,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       },
       blockedAgentIds: () => store.listProjects().flatMap((project) =>
         store.listAgents(project.id)
-          .filter((candidate) => Boolean(engineAvailability.denial(candidate.activeEngine)))
+          .filter((candidate) => !providerEnabled(candidate.activeEngine) || Boolean(engineAvailability.denial(candidate.activeEngine)))
           .map((candidate) => candidate.id)),
+      onRunLeased: (lease) => {
+        const triggerId = lease.activations.flatMap((activation) => {
+          if (activation.kind !== "trigger_occurrence" || !activation.payload || typeof activation.payload !== "object") return [];
+          const trigger = (activation.payload as { trigger?: { id?: unknown } }).trigger;
+          return typeof trigger?.id === "string" ? [trigger.id] : [];
+        })[0];
+        if (!triggerId) return;
+        const trigger = coordinationV3.getTriggerDefinition(triggerId);
+        if (!trigger?.budgetState?.held) {
+          resolveOperationalNotification(`trigger:${triggerId}:budget-held`);
+          return;
+        }
+        createOperationalNotification({
+          dedupeKey: `trigger:${trigger.id}:budget-held`,
+          category: "budget",
+          severity: "attention",
+          title: `${trigger.name} reached its automatic Run budget`,
+          body: `${trigger.budgetState.used} of ${trigger.runBudget!.limit + trigger.budgetState.allowance} ${trigger.runBudget!.period === "lifetime" ? "lifetime automatic Runs" : `automatic Runs per ${trigger.runBudget!.period}`} have been used. New outside events remain queued until the period resets or you allow more Runs.`,
+          projectId: trigger.projectId,
+          conversationId: trigger.conversationId,
+          action: { kind: "open_agent", targetId: trigger.agentId },
+        });
+      },
       onMessageDeliveryChanged: publishMessageDeliveryChanged,
     },
   );
@@ -2611,7 +2799,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -3014,6 +3202,211 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     publishCoordinationV3Changed(manager.id);
     coordinationV3Scheduler.notify();
   }
+
+  app.post<{ Body: unknown }>("/api/agent-decisions", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const agent = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !active || !agent || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "Decision capability is not authorized for an active Run" });
+    }
+    const body = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
+    const unknown = Object.keys(body).filter((key) => !["idempotencyKey", "mode", "question", "context", "options", "allowOther", "blocking"].includes(key));
+    if (unknown.length) return reply.code(400).send({ error: `unknown Decision field(s): ${unknown.join(", ")}` });
+    if (typeof body.idempotencyKey !== "string" || !body.idempotencyKey.trim() || typeof body.question !== "string" || !body.question.trim() || !["approval", "choice", "text"].includes(String(body.mode))) {
+      return reply.code(400).send({ error: "Decision requires idempotencyKey, mode, and question" });
+    }
+    const options = Array.isArray(body.options) ? body.options : [];
+    if (body.mode === "choice" && options.length === 0) return reply.code(400).send({ error: "choice Decisions require options" });
+    if (body.mode === "approval" && options.length === 0) options.push({ id: "approve", label: "Approve" }, { id: "do_not_approve", label: "Do not approve" });
+    if (body.mode === "approval" && !options.some((option) => (option as { id?: unknown })?.id === "approve")) return reply.code(400).send({ error: "approval Decisions require a canonical approve option" });
+    if (body.mode === "text" && options.length) return reply.code(400).send({ error: "text Decisions do not use options" });
+    if (options.length > 8 || options.some((option) => !option || typeof option !== "object" || typeof (option as { id?: unknown }).id !== "string" || typeof (option as { label?: unknown }).label !== "string")) {
+      return reply.code(400).send({ error: "Decision options require id and label and are limited to 8" });
+    }
+    if (new Set(options.map((option) => (option as { id: string }).id)).size !== options.length) return reply.code(400).send({ error: "Decision option IDs must be unique" });
+    const cursor = workspace.cursor();
+    const decision = workspace.createDecision({
+      idempotencyKey: body.idempotencyKey,
+      projectId: agent.projectId,
+      ...(active.conversationId ? { conversationId: active.conversationId } : {}),
+      agentId: agent.id,
+      runId: active.runId,
+      mode: body.mode as "approval" | "choice" | "text",
+      question: body.question.trim().slice(0, 1_000),
+      ...(typeof body.context === "string" && body.context.trim() ? { context: body.context.trim().slice(0, 4_000) } : {}),
+      options: options.map((option) => ({ id: String((option as { id: string }).id).slice(0, 80), label: String((option as { label: string }).label).slice(0, 120), ...(typeof (option as { description?: unknown }).description === "string" ? { description: String((option as { description: string }).description).slice(0, 400) } : {}) })),
+      allowOther: true,
+      blocking: body.blocking !== false,
+    });
+    workspace.createNotification({
+      projectId: decision.projectId,
+      conversationId: decision.conversationId,
+      kind: "decision",
+      category: "decision",
+      severity: decision.blocking ? "urgent" : "attention",
+      status: "open",
+      dedupeKey: `decision:${decision.id}`,
+      action: { kind: "open_decision", targetId: decision.id },
+      title: `${agent.title} needs a decision`,
+      body: decision.question,
+      decision: { id: decision.id, mode: decision.mode, options: decision.options, allowOther: decision.allowOther, status: decision.status },
+    }, true);
+    publishWorkspaceSince(cursor);
+    return reply.code(201).send(decision);
+  });
+
+  app.post<{ Body: unknown }>("/api/agent-management", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const owner = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !active || !owner || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
+      return reply.code(401).send({ error: "management capability is not authorized for an active Run" });
+    }
+    if (!capability.conversationId || !owner.conversationIds.includes(capability.conversationId)) {
+      return reply.code(409).send({ error: "organization management requires an active Team Chat scope" });
+    }
+    const body = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
+    const action = body.action;
+    const subtree = store.listAgentSubtree(owner.id);
+    const descendants = subtree.slice(1);
+    const descendantIds = new Set(descendants.map((agent) => agent.id));
+    if (action === "describe") {
+      return {
+        owner: { agentId: owner.id, title: owner.title },
+        conversationId: capability.conversationId,
+        descendants: descendants.map((agent) => ({
+          agentId: agent.id,
+          title: agent.title,
+          managerAgentId: agent.managerAgentId,
+          engine: agent.activeEngine,
+          state: agent.state,
+        })),
+        permissions: {
+          autonomous: ["create_agent", "rename_agent", "stop_agent"],
+          requiresApprovalDecision: ["delete_agent", "set_manager"],
+        },
+      };
+    }
+    if (action !== "plan" && action !== "apply") return reply.code(400).send({ error: "action must be describe, plan, or apply" });
+    if (action === "apply") {
+      const planId = typeof body.planId === "string" ? body.planId.trim() : "";
+      const plan = managementPlans.get(planId);
+      if (!plan || plan.agentId !== owner.id || plan.runId !== active.runId || plan.conversationId !== capability.conversationId) {
+        return reply.code(404).send({ error: "management plan is absent or does not belong to this Run" });
+      }
+      if (plan.appliedAt) return { planId: plan.id, replayed: true, result: plan.result };
+      const refs = new Map<string, string>();
+      const changedAgentIds = new Set<string>();
+      const internalHeaders = opts.authToken ? { authorization: `Bearer ${opts.authToken}` } : undefined;
+      const resolveRef = (value: string | null | undefined): string | null | undefined => {
+        if (value === null) return null;
+        if (!value) return undefined;
+        return refs.get(value) ?? value;
+      };
+      try {
+        for (const [index, operation] of plan.operations.entries()) {
+          if (operation.kind === "create_agent") {
+            const parentId = resolveRef(operation.parentRef) ?? owner.id;
+            if (parentId !== owner.id && !descendantIds.has(parentId) && ![...refs.values()].includes(parentId)) throw new Error("create parent escaped the managed subtree");
+            const engineId = operation.engine?.trim() || owner.activeEngine;
+            const engine = engines.get(engineId);
+            if (!engine) throw new Error(`unknown engine: ${engineId}`);
+            const selectionError = runtimeSelectionError(engine.adapter, operation.model, operation.effort);
+            if (selectionError) throw new Error(selectionError);
+            const created = store.createAgent(owner.projectId, {
+              title: operation.title?.trim().slice(0, 80) || "Managed Agent",
+              engine: engineId,
+              conversationId: capability.conversationId,
+              managerAgentId: parentId,
+              ...(operation.model?.trim() ? { model: operation.model.trim() } : {}),
+              ...(operation.effort?.trim() ? { effort: operation.effort.trim() } : {}),
+            }, { agentId: owner.id, executionId: active.runId, idempotencyKey: `${plan.id}:${index}`, prompt: operation.instructions?.trim() });
+            if (operation.instructions?.trim()) store.setImportedHistory(created.id, `${owner.title} management plan`, [{ role: "system", text: operation.instructions.trim(), createdAt: plan.createdAt }]);
+            if (operation.ref) refs.set(operation.ref, created.id);
+            changedAgentIds.add(created.id);
+            continue;
+          }
+          const targetId = resolveRef(operation.targetAgentId);
+          if (!targetId || (!descendantIds.has(targetId) && ![...refs.values()].includes(targetId))) throw new Error("operation target escaped the managed subtree");
+          if (operation.kind === "rename_agent") {
+            const title = operation.title?.trim();
+            if (!title) throw new Error("rename_agent requires title");
+            store.updateAgent(targetId, { title: title.slice(0, 80) });
+            changedAgentIds.add(targetId);
+          } else if (operation.kind === "stop_agent") {
+            const response = await app.inject({ method: "POST", url: `/api/agents/${encodeURIComponent(targetId)}/cancel`, headers: internalHeaders, payload: { idempotencyKey: `${plan.id}:${index}` } });
+            if (response.statusCode >= 400) throw new Error(response.json().error ?? "Agent stop failed");
+            changedAgentIds.add(targetId);
+          } else if (operation.kind === "set_manager") {
+            const managerId = resolveRef(operation.managerAgentId);
+            if (managerId !== null && managerId !== owner.id && (!managerId || (!descendantIds.has(managerId) && ![...refs.values()].includes(managerId)))) throw new Error("new manager escaped the managed subtree");
+            store.updateAgentOrganization(targetId, { managerAgentId: managerId });
+            changedAgentIds.add(targetId);
+          } else if (operation.kind === "delete_agent") {
+            const response = await app.inject({ method: "DELETE", url: `/api/agents/${encodeURIComponent(targetId)}`, headers: internalHeaders });
+            if (response.statusCode >= 400) throw new Error(response.json().error ?? "Agent deletion failed");
+            changedAgentIds.add(targetId);
+          }
+        }
+        plan.appliedAt = new Date().toISOString();
+        plan.result = { changedAgentIds: [...changedAgentIds], refs: Object.fromEntries(refs) };
+        managementPlans.set(plan.id, plan);
+        coordinationV3Scheduler.notify();
+        appendWorkspace({ type: "project_changed", projectId: owner.projectId, action: "updated" });
+        return { planId: plan.id, replayed: false, result: plan.result };
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "management plan failed", partialChangesPossible: true });
+      }
+    }
+
+    const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
+    const operations = Array.isArray(body.operations) ? body.operations as ManagementOperation[] : [];
+    if (!idempotencyKey || idempotencyKey.length > 200 || operations.length < 1 || operations.length > 100) {
+      return reply.code(400).send({ error: "plan requires idempotencyKey and 1 to 100 operations" });
+    }
+    const replay = [...managementPlans.values()].find((plan) => plan.agentId === owner.id && plan.runId === active.runId && plan.idempotencyKey === idempotencyKey);
+    if (replay) return { planId: replay.id, replayed: true, operations: replay.operations };
+    const refs = new Set<string>();
+    let reachedDelete = false;
+    for (const operation of operations) {
+      if (!operation || !["create_agent", "rename_agent", "stop_agent", "delete_agent", "set_manager"].includes(operation.kind)) return reply.code(400).send({ error: "unknown management operation" });
+      if (operation.kind === "delete_agent") reachedDelete = true;
+      else if (reachedDelete) return reply.code(400).send({ error: "delete_agent operations must be last" });
+      if (operation.kind === "create_agent") {
+        if (!operation.ref?.trim() || refs.has(operation.ref) || !operation.title?.trim()) return reply.code(400).send({ error: "create_agent requires a unique ref and title" });
+        if (operation.parentRef && operation.parentRef !== owner.id && !descendantIds.has(operation.parentRef) && !refs.has(operation.parentRef)) return reply.code(403).send({ error: "create parent is outside the managed subtree" });
+        refs.add(operation.ref);
+        continue;
+      }
+      if (!operation.targetAgentId || (!descendantIds.has(operation.targetAgentId) && !refs.has(operation.targetAgentId))) return reply.code(403).send({ error: "management target is outside the descendant subtree" });
+      if (operation.kind === "rename_agent" && !operation.title?.trim()) return reply.code(400).send({ error: "rename_agent requires title" });
+      if (operation.kind === "set_manager") {
+        const managerId = operation.managerAgentId;
+        if (managerId !== null && managerId !== owner.id && (!managerId || (!descendantIds.has(managerId) && !refs.has(managerId)))) return reply.code(403).send({ error: "new manager is outside the managed subtree" });
+      }
+      if (operation.kind === "delete_agent" || operation.kind === "set_manager") {
+        const decision = operation.decisionId ? workspace.getDecision(operation.decisionId) : undefined;
+        if (!decision || decision.agentId !== owner.id || decision.status !== "resolved" || decision.mode !== "approval" || decision.response?.optionId !== "approve") {
+          return reply.code(409).send({ error: `${operation.kind} requires this Agent's resolved approval Decision` });
+        }
+      }
+    }
+    const createdAt = new Date().toISOString();
+    const plan: ManagementPlan = {
+      id: `management-${createHash("sha256").update(`${owner.id}\0${active.runId}\0${idempotencyKey}`).digest("hex")}`,
+      agentId: owner.id,
+      runId: active.runId,
+      conversationId: capability.conversationId,
+      idempotencyKey,
+      operations: structuredClone(operations),
+      createdAt,
+    };
+    managementPlans.set(plan.id, plan);
+    return { planId: plan.id, replayed: false, operations: plan.operations, instruction: "Review the exact plan, then call apply with planId." };
+  });
 
   app.post<{
     Body: {
@@ -4254,10 +4647,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.patch<{ Params: { id: string }; Body: UpdateProjectRequest }>("/api/projects/:id", async (request, reply) => {
-    const label = request.body?.label?.trim();
+    const current = store.getProject(request.params.id);
+    if (!current) return reply.code(404).send({ error: "project not found" });
+    const label = request.body?.label?.trim() ?? current.label;
     if (!label) return reply.code(400).send({ error: "label is required" });
-    const project = store.updateProject(request.params.id, { label });
+    if (request.body.instructions !== undefined && typeof request.body.instructions !== "string") return reply.code(400).send({ error: "instructions must be a string" });
+    const instructionsChanged = request.body.instructions !== undefined && request.body.instructions !== (current.instructions ?? "");
+    const project = store.updateProject(request.params.id, { label, ...(request.body.instructions !== undefined ? { instructions: request.body.instructions } : {}) });
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (instructionsChanged) for (const agent of store.listAgents(project.id)) {
+      organizationEnvelopeStates.delete(agent.id);
+      if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
+      else {
+        const runtime = runtimeSessions.get(agent.id);
+        if (runtime) {
+          removePersistentRuntime(agent.id, runtime);
+          await runtime.session.close().catch(() => undefined);
+        }
+        store.clearResumeSession(agent.id, "request_context_rollover");
+      }
+    }
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
     return project;
   });
@@ -4270,6 +4679,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
     if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
     const agentIds = new Set(agents.map((agent) => agent.id));
+    cancelAgentDecisions(agentIds);
     for (const agentId of agentIds) deletingAgentIds.add(agentId);
     // Fence scheduler ownership before touching provider processes. The later
     // project-store callback purges V3 in the same transaction as Project rows.
@@ -5514,23 +5924,37 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   };
   const parseCreateTrigger = (value: unknown): CreateTriggerRequest => {
     const body = triggerObject(value, "Trigger body");
-    exactTriggerFields(body, ["conversationId", "name", "instructions", "sourceKind", "sourceConfig", "enabled"], "Trigger");
+    exactTriggerFields(body, ["conversationId", "name", "instructions", "sourceKind", "sourceConfig", "enabled", "runBudget"], "Trigger");
     if (typeof body.conversationId !== "string" || typeof body.name !== "string" || typeof body.instructions !== "string") throw new Error("conversationId, name, and instructions must be strings");
     if (body.sourceKind !== "schedule" && body.sourceKind !== "webhook" && body.sourceKind !== "filesystem") throw new Error("sourceKind must be schedule, webhook, or filesystem");
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
-    return { conversationId: body.conversationId, name: body.name, instructions: body.instructions, sourceKind: body.sourceKind, sourceConfig: triggerSourceConfig(body.sourceKind, body.sourceConfig), ...(body.enabled === undefined ? {} : { enabled: body.enabled }) };
+    const runBudget = body.runBudget === undefined ? undefined : triggerObject(body.runBudget, "runBudget");
+    if (runBudget) {
+      exactTriggerFields(runBudget, ["limit", "period"], "runBudget");
+      if (!Number.isSafeInteger(runBudget.limit) || !["day", "week", "month", "lifetime"].includes(String(runBudget.period))) throw new Error("runBudget requires an integer limit and day, week, month, or lifetime period");
+    }
+    return { conversationId: body.conversationId, name: body.name, instructions: body.instructions, sourceKind: body.sourceKind, sourceConfig: triggerSourceConfig(body.sourceKind, body.sourceConfig), ...(body.enabled === undefined ? {} : { enabled: body.enabled }), ...(runBudget ? { runBudget: runBudget as unknown as NonNullable<CreateTriggerRequest["runBudget"]> } : {}) };
   };
   const parseUpdateTrigger = (value: unknown, sourceKind: TriggerSourceKind): UpdateTriggerRequest => {
     const body = triggerObject(value, "Trigger patch");
-    exactTriggerFields(body, ["name", "instructions", "sourceConfig", "enabled"], "Trigger patch");
+    exactTriggerFields(body, ["name", "instructions", "sourceConfig", "enabled", "runBudget"], "Trigger patch");
     if (body.name !== undefined && typeof body.name !== "string") throw new Error("name must be a string");
     if (body.instructions !== undefined && typeof body.instructions !== "string") throw new Error("instructions must be a string");
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new Error("enabled must be a boolean");
+    let runBudget: UpdateTriggerRequest["runBudget"] | undefined;
+    if (body.runBudget === null) runBudget = null;
+    else if (body.runBudget !== undefined) {
+      const parsed = triggerObject(body.runBudget, "runBudget");
+      exactTriggerFields(parsed, ["limit", "period"], "runBudget");
+      if (!Number.isSafeInteger(parsed.limit) || !["day", "week", "month", "lifetime"].includes(String(parsed.period))) throw new Error("runBudget requires an integer limit and day, week, month, or lifetime period");
+      runBudget = parsed as unknown as NonNullable<UpdateTriggerRequest["runBudget"]>;
+    }
     return {
       ...(body.name === undefined ? {} : { name: body.name }),
       ...(body.instructions === undefined ? {} : { instructions: body.instructions }),
       ...(body.sourceConfig === undefined ? {} : { sourceConfig: triggerSourceConfig(sourceKind, body.sourceConfig) }),
       ...(body.enabled === undefined ? {} : { enabled: body.enabled }),
+      ...(runBudget === undefined ? {} : { runBudget }),
     };
   };
 
@@ -5555,6 +5979,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         sourceKind: body.sourceKind,
         sourceConfig: normalized.config,
         enabled: body.enabled,
+        runBudget: body.runBudget,
         nextFireAt: normalized.nextFireAt,
         secretCiphertext: webhookSecret?.ciphertext,
         secretFingerprint: webhookSecret?.fingerprint,
@@ -5608,6 +6033,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     })!;
     appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "updated" });
     return { trigger, webhookSecret: secret.secret } satisfies CreateTriggerResponse;
+  });
+
+  app.post<{ Params: { id: string }; Body: { additionalRuns?: number } }>("/api/triggers/:id/allow-runs", async (request, reply) => {
+    try {
+      const trigger = coordinationV3.allowTriggerRuns(request.params.id, request.body?.additionalRuns ?? 0);
+      if (!trigger) return reply.code(404).send({ error: "Trigger not found" });
+      resolveOperationalNotification(`trigger:${trigger.id}:budget-held`);
+      coordinationV3Scheduler.notify();
+      appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "updated" });
+      return trigger;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "additional Runs could not be allowed" });
+    }
   });
 
   app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/triggers/:id/occurrences", async (request, reply) => {
@@ -5678,6 +6116,195 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return detail ?? reply.code(404).send({ error: "agent not found" });
   });
 
+  app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {
+    const root = store.getAgent(request.params.id);
+    if (!root) return reply.code(404).send({ error: "agent not found" });
+    const mode: AgentExportMode = ["template", "context", "full"].includes(request.query.mode ?? "") ? request.query.mode! : "full";
+    const nodes = request.query.organization === "true" ? store.listAgentSubtree(root.id) : [root];
+    const included = new Set(nodes.map((agent) => agent.id));
+    const project = store.getProject(root.projectId)!;
+    let portableArtifactBytes = 0;
+    const agents = await Promise.all(nodes.map(async (agent) => {
+      const imported = store.getImportedHistory(agent.id)?.messages ?? [];
+      const history = [
+        ...imported,
+        ...agentMessages(agent.id).map((message) => ({ role: message.role, text: message.text, createdAt: message.createdAt })),
+      ];
+      const historyText = history.map((message) => message.text).join("\n");
+      const projectArtifacts = mode === "template" ? [] : store.getProjectArtifacts(agent.projectId).filter((artifact) =>
+        artifact.originAgentId === agent.id && (mode === "full" || artifact.pinned || artifact.visibility === "published" || historyText.includes(artifact.id))
+      );
+      const artifacts = await Promise.all(projectArtifacts.map(async (artifact) => {
+        const data = await fs.readFile(managedArtifactContentPath(opts.dataDir, agent.projectId, artifact.id));
+        portableArtifactBytes += data.length;
+        if (portableArtifactBytes > 64 * 1024 * 1024) throw new AssetError(413, "portable Agent package artifacts exceed the 64 MiB export limit");
+        return {
+          ref: artifact.id,
+          kind: artifact.kind,
+          path: artifact.path,
+          ...(artifact.summary ? { summary: artifact.summary } : {}),
+          createdAt: artifact.createdAt,
+          ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+          ...(artifact.visibility ? { visibility: artifact.visibility } : {}),
+          ...(artifact.pinned !== undefined ? { pinned: artifact.pinned } : {}),
+          ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
+          dataBase64: data.toString("base64"),
+        };
+      }));
+      const triggers = mode === "full" ? coordinationV3.listTriggerDefinitions(agent.id).map((trigger) => ({
+        name: trigger.name,
+        instructions: trigger.instructions,
+        sourceKind: trigger.sourceKind,
+        sourceConfig: trigger.sourceConfig,
+        enabled: false as const,
+        ...(trigger.runBudget ? { runBudget: trigger.runBudget } : {}),
+      })) : undefined;
+      return {
+        ref: agent.id,
+        title: agent.title,
+        engine: agent.activeEngine,
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(agent.effort ? { effort: agent.effort } : {}),
+        ...(agent.spawnPrompt || agent.presetSnapshot?.guidance ? { initialInstructions: agent.spawnPrompt ?? agent.presetSnapshot?.guidance } : {}),
+        ...(agent.managerAgentId && included.has(agent.managerAgentId) ? { managerRef: agent.managerAgentId } : {}),
+        ...(mode !== "template" ? { history } : {}),
+        ...(artifacts.length ? { artifacts } : {}),
+        ...(triggers?.length ? { triggers } : {}),
+      };
+    }));
+    const result: AgentPortablePackageDto = {
+      schema: "ponderosa.agent-package.v1",
+      mode,
+      kind: nodes.length === 1 ? "agent" : "organization",
+      exportedAt: new Date().toISOString(),
+      sourceLabel: `${project.label} / ${root.title}`,
+      ...(project.instructions ? { sourceProjectInstructions: project.instructions } : {}),
+      rootRef: root.id,
+      agents,
+    };
+    return result;
+  });
+
+  app.post<{ Params: { id: string }; Body: ImportAgentPackageRequest }>("/api/projects/:id/import-agents", { bodyLimit: 96 * 1024 * 1024 }, async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    const body = request.body;
+    const conversation = body?.conversationId ? store.getConversation(body.conversationId) : undefined;
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (!conversation || conversation.projectId !== project.id) return reply.code(400).send({ error: "destination Project chat is required" });
+    if (body?.package?.schema !== "ponderosa.agent-package.v1" || !Array.isArray(body.package.agents) || body.package.agents.length < 1 || body.package.agents.length > 100) return reply.code(400).send({ error: "invalid Ponderosa Agent package" });
+    const sourceEngines = [...new Set(body.package.agents.map((node) => node.engine))];
+    const missingMappings = sourceEngines.filter((engine) => typeof body.engineMapping?.[engine] !== "string");
+    if (missingMappings.length) return reply.code(409).send({ error: "explicit engine mapping is required", requiredEngines: missingMappings });
+    for (const source of sourceEngines) {
+      const target = body.engineMapping[source]!;
+      if (!engines.has(target)) return reply.code(400).send({ error: `mapped engine is not configured: ${target}` });
+    }
+    const refs = new Set(body.package.agents.map((node) => node.ref));
+    if (refs.size !== body.package.agents.length || !refs.has(body.package.rootRef)) return reply.code(400).send({ error: "Agent package refs must be unique and include rootRef" });
+    if (body.package.agents.some((node) => node.managerRef && !refs.has(node.managerRef))) return reply.code(400).send({ error: "organization package contains an external manager reference" });
+    const portableArtifactData = new Map<string, Buffer>();
+    const artifactRefMap = new Map<string, string>();
+    let artifactBytes = 0;
+    for (const node of body.package.agents) for (const artifact of node.artifacts ?? []) {
+      if (!/^[A-Za-z0-9_-]{1,200}$/.test(artifact.ref) || artifactRefMap.has(artifact.ref)) return reply.code(400).send({ error: "artifact refs must be unique safe identifiers" });
+      let data: Buffer;
+      try {
+        data = Buffer.from(artifact.dataBase64, "base64");
+        if (data.toString("base64").replace(/=+$/, "") !== artifact.dataBase64.replace(/=+$/, "")) throw new Error("invalid base64");
+      } catch {
+        return reply.code(400).send({ error: `artifact ${artifact.ref} has invalid data` });
+      }
+      artifactBytes += data.length;
+      if (artifactBytes > 64 * 1024 * 1024) return reply.code(413).send({ error: "portable Agent package artifacts exceed 64 MiB" });
+      portableArtifactData.set(artifact.ref, data);
+      artifactRefMap.set(artifact.ref, store.getProjectArtifact(project.id, artifact.ref) ? randomUUID() : artifact.ref);
+    }
+    const created = new Map<string, AgentDto>();
+    try {
+      for (const node of body.package.agents) {
+        const targetEngine = body.engineMapping[node.engine]!;
+        const selectionError = runtimeSelectionError(engines.get(targetEngine)!.adapter, node.model, node.effort);
+        if (selectionError) throw new Error(`${node.title}: ${selectionError}`);
+        const agent = store.createAgent(project.id, {
+          title: node.title.trim().slice(0, 80) || "Imported Agent",
+          engine: targetEngine,
+          conversationId: conversation.id,
+          ...(node.model ? { model: node.model } : {}),
+          ...(node.effort ? { effort: node.effort } : {}),
+        });
+        created.set(node.ref, agent);
+        for (const artifact of node.artifacts ?? []) {
+          const artifactId = artifactRefMap.get(artifact.ref)!;
+          const extension = path.extname(artifact.path).toLowerCase().slice(0, 16);
+          const managedPath = `imported/${artifactId}${extension}`;
+          const destination = managedArtifactContentPath(opts.dataDir, project.id, artifactId);
+          await fs.mkdir(path.dirname(destination), { recursive: true });
+          await fs.writeFile(destination, portableArtifactData.get(artifact.ref)!);
+          store.recordProjectArtifact({
+            id: artifactId,
+            projectId: project.id,
+            agentId: agent.id,
+            originAgentId: agent.id,
+            kind: artifact.kind,
+            path: managedPath,
+            ...(artifact.summary ? { summary: artifact.summary } : {}),
+            createdAt: artifact.createdAt || body.package.exportedAt,
+            ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+            visibility: artifact.visibility ?? "project",
+            pinned: artifact.pinned ?? false,
+            ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
+            size: portableArtifactData.get(artifact.ref)!.length,
+          });
+        }
+        const rewriteArtifactRefs = (text: string): string => {
+          let rewritten = text;
+          for (const [sourceId, destinationId] of artifactRefMap) if (sourceId !== destinationId) rewritten = rewritten.split(sourceId).join(destinationId);
+          return rewritten;
+        };
+        const importedHistory = [
+          ...(body.package.sourceProjectInstructions ? [{ role: "system" as const, text: `Historical source Project rules (destination rules are authoritative):\n${body.package.sourceProjectInstructions}`, createdAt: body.package.exportedAt }] : []),
+          ...(node.initialInstructions ? [{ role: "system" as const, text: `Imported initial instructions:\n${node.initialInstructions}`, createdAt: body.package.exportedAt }] : []),
+          ...(node.history ?? []),
+        ].map((message) => ({ ...message, text: rewriteArtifactRefs(message.text) }));
+        if (importedHistory.length) store.setImportedHistory(agent.id, body.package.sourceLabel, importedHistory);
+      }
+      for (const node of body.package.agents) if (node.managerRef) {
+        store.updateAgentOrganization(created.get(node.ref)!.id, { managerAgentId: created.get(node.managerRef)!.id });
+      }
+      if (body.package.mode === "full") for (const node of body.package.agents) for (const importedTrigger of node.triggers ?? []) {
+        const agent = created.get(node.ref)!;
+        const normalized = normalizeTriggerSourceConfig(importedTrigger.sourceKind, importedTrigger.sourceConfig);
+        const webhookSecret = importedTrigger.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
+        coordinationV3.createTriggerDefinition({
+          projectId: project.id,
+          conversationId: conversation.id,
+          agentId: agent.id,
+          name: importedTrigger.name,
+          instructions: importedTrigger.instructions,
+          sourceKind: importedTrigger.sourceKind,
+          sourceConfig: normalized.config,
+          enabled: false,
+          runBudget: importedTrigger.runBudget,
+          nextFireAt: normalized.nextFireAt,
+          secretCiphertext: webhookSecret?.ciphertext,
+          secretFingerprint: webhookSecret?.fingerprint,
+        });
+      }
+      await triggerSources.refresh();
+      appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
+      const response: ImportAgentPackageResponse = { rootAgentId: created.get(body.package.rootRef)!.id, agentIds: [...created.values()].map((agent) => agent.id) };
+      return reply.code(201).send(response);
+    } catch (error) {
+      for (const agent of created.values()) for (const artifact of store.getProjectArtifacts(project.id).filter((candidate) => candidate.originAgentId === agent.id)) {
+        store.deleteProjectArtifact(project.id, artifact.id, "Agent package import rolled back");
+        await fs.rm(managedArtifactContentPath(opts.dataDir, project.id, artifact.id), { force: true });
+      }
+      const roots = [...created.values()].filter((agent) => ![...created.values()].some((candidate) => candidate.id === agent.managerAgentId));
+      for (const root of roots) store.deleteAgent(root.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "Agent package import failed" });
+    }
+  });
+
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     try { return projectedUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
@@ -5736,6 +6363,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const { id } = request.params;
     const subtree = store.listAgentSubtree(id);
     if (subtree.length === 0) return reply.code(404).send({ error: "agent not found" });
+    cancelAgentDecisions(subtree.map((agent) => agent.id));
     for (const agent of subtree) deletingAgentIds.add(agent.id);
     // SQLite cancellation advances the fence and settles steering before the
     // provider is interrupted. Late tool/output activity then fails closed.
@@ -6185,7 +6813,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const artifactLocalPath = (artifact: ArtifactDto): string => artifact.projectId
         ? managedArtifactContentPath(opts.dataDir, artifact.projectId, artifact.id)
         : artifactContentPath(opts.dataDir, agent.projectId, artifact.agentId, artifact.path);
-      const fullHistory: ChatMessage[] = agentMessages(agent.id)
+      const importedHistory = store.getImportedHistory(agent.id)?.messages ?? [];
+      const fullHistory: ChatMessage[] = [
+        ...importedHistory.map((message) => {
+          const referencedArtifacts = allGeneratedArtifacts.filter((artifact) => message.text.includes(artifact.id));
+          return {
+            role: message.role === "system" ? "user" as const : message.role,
+            text: message.role === "system" ? `[Imported private context]\n${message.text}` : message.text,
+            createdAt: message.createdAt,
+            attachments: referencedArtifacts.map((artifact) => ({
+              name: artifact.summary ?? path.basename(artifact.path),
+              mediaType: artifact.mediaType ?? "application/octet-stream",
+              size: artifact.size ?? 0,
+              localPath: artifactLocalPath(artifact),
+              available: existsSync(artifactLocalPath(artifact)),
+              artifactId: artifact.id,
+              retrievalUrl: artifact.downloadUrl ?? `/api/agents/${encodeURIComponent(agent.id)}/artifacts/${encodeURIComponent(artifact.id)}`,
+            })),
+          };
+        }),
+        ...agentMessages(agent.id)
         .filter((message) => {
           // The current authored message is already represented by the durable
           // Activation. Do not pay for it a second time in seeded history.
@@ -6221,7 +6868,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           })),
         ],
         });
-        });
+        }),
+      ];
       if (contextArtifacts.length) fullHistory.push({
         role: "assistant",
         text: "Pinned or published project artifacts available to this session:",
@@ -6381,9 +7029,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? sharedRequestCompletionPrompt()
         : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
       const stableDirectory = directoryForTurn.agents.map(({ status: _status, currentActivity: _activity, ...entry }) => entry);
-      const organizationEnvelopeHash = createHash("sha256").update(JSON.stringify(stableDirectory)).digest("hex");
+      const workspacePreferences = workspace.getPreferences();
+      const globalInstructions = workspacePreferences.globalInstructions.trim();
+      const operatorProfile = workspacePreferences.profile;
+      const projectInstructions = project.instructions?.trim() ?? "";
+      const managedRules = [
+        "Ponderosa instruction precedence: runtime identity, security, communication, and capability rules are authoritative; then global rules; then Project rules; then Agent preset guidance; then the current work request.",
+        `The local operator is ${operatorProfile.displayName} and their stable Ponderosa handle is #${operatorProfile.handle}. Address them as ${operatorProfile.displayName} unless they ask otherwise.`,
+        ...(globalInstructions ? [`Global operator rules:\n${globalInstructions}`] : []),
+        ...(projectInstructions ? [`Project rules:\n${projectInstructions}`] : []),
+      ].join("\n\n");
+      const organizationEnvelopeHash = createHash("sha256").update(JSON.stringify({ stableDirectory, globalInstructions, projectInstructions, operatorProfile })).digest("hex");
       const previousOrganizationEnvelope = organizationEnvelopeStates.get(agent.id);
-      const fullSessionEnvelope = `${teamDirectoryPrompt(directoryForTurn)}\n\n${communicationV3Prompt().join("\n")}\n\n`;
+      const fullSessionEnvelope = `${teamDirectoryPrompt(directoryForTurn)}\n\n${communicationV3Prompt().join("\n")}\n\n${managedRules}\n\n`;
       // A retained provider session already has this stable organization
       // envelope. Repeat it only for a new/rolled-over session, after a server
       // restart or warm eviction, or when roster/roles/reporting lines changed.
@@ -6599,6 +7257,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
             PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
             PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
+            PONDEROSA_AGENT_DECISION_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-decisions`,
+            PONDEROSA_AGENT_MANAGE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-management`,
             PONDEROSA_AGENT_MESSAGE_TOKEN: messageCapability,
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
@@ -6612,13 +7272,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: [PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL, ...PONDEROSA_BROWSER_TOOLS],
+              dynamicTools: [PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_DECISION_TOOL, PONDEROSA_MANAGE_TOOL, PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL, ...PONDEROSA_BROWSER_TOOLS],
               handleDynamicToolCall: async (call) => {
                 const browserOperation = call.name.startsWith("ponderosa_browser_")
                   ? call.name.slice("ponderosa_browser_".length)
                   : undefined;
                 const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
                   ? "/api/agent-spawn"
+                  : call.name === PONDEROSA_DECISION_TOOL.name
+                  ? "/api/agent-decisions"
+                  : call.name === PONDEROSA_MANAGE_TOOL.name
+                  ? "/api/agent-management"
                   : call.name === PONDEROSA_COORDINATE_TOOL.name
                   ? "/api/agent-coordinate"
                   : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
@@ -6861,6 +7525,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   detail: runError,
                   source: "provider_run",
                 });
+                createOperationalNotification({
+                  dedupeKey: `provider:${agent.activeEngine}:unavailable`,
+                  category: "provider",
+                  severity: "urgent",
+                  title: `${engines.get(agent.activeEngine)?.adapter.displayName ?? agent.activeEngine} stopped accepting work`,
+                  body: `${runError} Queued Runs using this provider are now held.`,
+                  projectId: agent.projectId,
+                  conversationId: agent.conversationId,
+                  action: { kind: "open_settings", targetId: agent.activeEngine },
+                });
               }
               notifyManagerOfChildFailure(agent.id, runId, runError);
             } else if (!schedulerCancelled && engineAvailability.denial(agent.activeEngine)) {
@@ -6870,6 +7544,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 detail: "provider Run completed successfully",
                 source: "provider_run",
               });
+              resolveOperationalNotification(`provider:${agent.activeEngine}:unavailable`);
             }
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
@@ -6951,9 +7626,34 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(400).send({ error: "invalid custom project order" });
     }
     if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
+    if (patch.providerAvailability !== undefined && (typeof patch.providerAvailability !== "object" || patch.providerAvailability === null || Object.entries(patch.providerAvailability).some(([key, value]) => !engines.has(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "provider availability must contain configured engines and boolean values" });
+    if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
+    if (patch.profile !== undefined) {
+      const profile = patch.profile;
+      const handle = profile?.handle?.replace(/^#/, "").toLowerCase();
+      if (!profile || typeof profile.displayName !== "string" || typeof handle !== "string" || !/^[a-z][a-z0-9_-]{1,31}$/.test(handle) || ["broadcast", "everyone", "user"].includes(handle) || typeof profile.avatarId !== "string") {
+        return reply.code(400).send({ error: "profile requires a display name, catalog avatar, and an available 2–32 character handle" });
+      }
+      patch.profile = { ...profile, handle };
+    }
+    const previousPreferences = workspace.getPreferences();
+    const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
+    const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
     publishWorkspaceSince(cursor);
+    if (globalInstructionsChanged || profileChanged) for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
+      organizationEnvelopeStates.delete(agent.id);
+      if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
+      else {
+        const runtime = runtimeSessions.get(agent.id);
+        if (runtime) {
+          removePersistentRuntime(agent.id, runtime);
+          await runtime.session.close().catch(() => undefined);
+        }
+        store.clearResumeSession(agent.id, "request_context_rollover");
+      }
+    }
     return preferences;
   });
 
@@ -7035,6 +7735,52 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.get("/api/notifications", async () => workspace.listNotifications());
+  app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
+    const status = request.query.status;
+    if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
+    return workspace.listDecisions({
+      projectId: request.query.projectId,
+      conversationId: request.query.conversationId,
+      agentId: request.query.agentId,
+      status: status as "pending" | "resolved" | "cancelled" | undefined,
+    });
+  });
+  app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string } }>("/api/decisions/:id/respond", async (request, reply) => {
+    const current = workspace.getDecision(request.params.id);
+    if (!current) return reply.code(404).send({ error: "Decision not found" });
+    if (current.status !== "pending") return current;
+    const optionId = request.body?.optionId?.trim();
+    const text = request.body?.text?.trim();
+    if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
+    if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
+    if (!optionId && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
+    const respondedAt = new Date().toISOString();
+    const cursor = workspace.cursor();
+    const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text: text.slice(0, 4_000) } : {}), respondedAt })!;
+    const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
+    if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+    publishWorkspaceSince(cursor);
+    coordinationV3.enqueueMessageActivation({
+      projectId: decision.projectId,
+      agentId: decision.agentId,
+      scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
+      messageId: `decision:${decision.id}:response`,
+      kind: "human",
+      payload: { decision: { id: decision.id, question: decision.question, response: decision.response } },
+      now: respondedAt,
+    });
+    publishMessageDeliveryChanged(decision.agentId);
+    coordinationV3Scheduler.notify();
+    return decision;
+  });
+  app.post<{ Params: { id: string }; Body: { status?: "resolved" | "dismissed" } }>("/api/notifications/:id/status", async (request, reply) => {
+    if (request.body?.status !== "resolved" && request.body?.status !== "dismissed") return reply.code(400).send({ error: "status must be resolved or dismissed" });
+    const cursor = workspace.cursor();
+    const notification = workspace.setNotificationStatus(request.params.id, request.body.status);
+    if (!notification) return reply.code(404).send({ error: "notification not found" });
+    publishWorkspaceSince(cursor);
+    return notification;
+  });
   app.post("/api/notifications/read", async () => {
     const cursor = workspace.cursor();
     const read = workspace.readAllNotifications();
@@ -7685,6 +8431,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return Promise.all(Array.from(engines.values()).map(engineDto));
   });
 
+  app.patch<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/engines/:id", async (request, reply) => {
+    const registration = engines.get(request.params.id);
+    if (!registration) return reply.code(404).send({ error: "unknown engine" });
+    if (typeof request.body?.enabled !== "boolean") return reply.code(400).send({ error: "enabled must be a boolean" });
+    const cursor = workspace.cursor();
+    workspace.updatePreferences({
+      providerAvailability: { ...workspace.getPreferences().providerAvailability, [request.params.id]: request.body.enabled },
+    });
+    publishWorkspaceSince(cursor);
+    if (request.body.enabled) coordinationV3Scheduler.notify();
+    return engineDto(registration);
+  });
+
   app.post<{ Params: { id: string } }>("/api/engines/:id/recheck", async (request, reply) => {
     const registration = engines.get(request.params.id);
     if (!registration) return reply.code(404).send({ error: "unknown engine" });
@@ -7708,7 +8467,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       ...(result.detail ? { detail: result.detail } : {}),
       source: "operator_probe",
     });
-    if (result.available) coordinationV3Scheduler.notify();
+    if (result.available) {
+      resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
+      coordinationV3Scheduler.notify();
+    } else createOperationalNotification({
+      dedupeKey: `provider:${request.params.id}:unavailable`,
+      category: "provider",
+      severity: "urgent",
+      title: `${registration.adapter.displayName} is unavailable`,
+      body: result.detail ?? "The provider rejected the explicit access test. Queued work remains held.",
+      action: { kind: "open_settings", targetId: request.params.id },
+    });
     return engineDto(registration);
   });
 

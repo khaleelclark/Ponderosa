@@ -7,7 +7,7 @@ This contract is the scheduler and coordination source of truth. The executable
 request reducer lives in `packages/core/src/coordination-v3.ts`. Authorization,
 idempotency, and persistence surround that pure reducer.
 
-Communication V3.2 is unconditional. There is no executable V2 scheduler,
+Communication V3.3 is unconditional. There is no executable V2 scheduler,
 feature flag, migration reader, or compatibility delivery ledger. Deployments
 reset pre-cutover test data instead of replaying ambiguous scheduler state.
 
@@ -91,6 +91,19 @@ automatic Trigger Runs have the Agent's full configured local access. The UI
 must disclose that fact at creation and inspection. This is risk reduction, not
 a security sandbox; users should connect only trusted senders and write narrow
 instructions.
+
+An optional Trigger Run budget is charged atomically when the scheduler leases
+one root Run for that Trigger. Multiple compatible occurrences in the same
+bounded batch cost one unit. Descendant work, coordination Requests, steering,
+continuations, and Join resumptions are not charged. At exhaustion, occurrences
+remain queued and the Trigger becomes ineligible for leasing until its period
+resets or the operator adds a current-period allowance. Unlimited is the
+default.
+
+Decisions are first-order actionable input, not ordinary Collaboration. A user
+response creates one human-priority Activation for the exact asking Agent.
+Decision status and notification state remain durable even if the response is
+handled in a later Run.
 
 ## Request state machine
 

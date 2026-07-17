@@ -79,4 +79,48 @@ describe("WorkspaceStore canonical replay", () => {
     expect(store.clearNotifications()).toBe(0);
     expect(new WorkspaceStore(dir).listNotifications()).toEqual([]);
   });
+
+  it("persists provider switches, master rules, profile, urgent alerts, and Decisions", () => {
+    const { dir, store } = fixture();
+    store.updatePreferences({
+      providerAvailability: { codex: true, claude: false },
+      globalInstructions: "Never publish without a Decision.",
+      profile: { displayName: "Patrick", handle: "patrick", avatarId: "pine" },
+    });
+    const notification = store.createNotification({
+      kind: "operational", category: "provider", severity: "urgent", status: "open",
+      dedupeKey: "provider:claude:denied", title: "Claude needs attention", body: "Subscription unavailable",
+      action: { kind: "open_settings", targetId: "providers" },
+    });
+    expect(store.createNotification({
+      kind: "operational", category: "provider", severity: "urgent", status: "open",
+      dedupeKey: "provider:claude:denied", title: "Duplicate", body: "Duplicate",
+    }).id).toBe(notification.id);
+    const decision = store.createDecision({
+      idempotencyKey: "publish-v1", projectId: "project", conversationId: "chat", agentId: "agent", runId: "run",
+      mode: "approval", question: "Publish the release?", options: [{ id: "approve", label: "Approve" }, { id: "do_not_approve", label: "Do not approve" }],
+      allowOther: true, blocking: true,
+    });
+    expect(store.createDecision({
+      idempotencyKey: "publish-v1", projectId: "project", conversationId: "chat", agentId: "agent", runId: "run",
+      mode: "approval", question: "Changed retry", options: [], allowOther: true, blocking: true,
+    }).id).toBe(decision.id);
+    const abandoned = store.createDecision({
+      idempotencyKey: "abandoned", projectId: "project", conversationId: "chat", agentId: "deleted-agent", runId: "run",
+      mode: "text", question: "Will this survive deletion?", options: [], allowOther: true, blocking: true,
+    });
+    expect(store.cancelDecisionsForAgent("deleted-agent")).toEqual([expect.objectContaining({ id: abandoned.id, status: "cancelled" })]);
+    store.resolveDecision(decision.id, { optionId: "approve", respondedAt: "2026-07-16T00:00:00.000Z" });
+    store.setNotificationStatus(notification.id, "resolved");
+
+    const restarted = new WorkspaceStore(dir);
+    expect(restarted.getPreferences()).toMatchObject({
+      providerAvailability: { codex: true, claude: false },
+      globalInstructions: "Never publish without a Decision.",
+      profile: { displayName: "Patrick", handle: "patrick", avatarId: "pine" },
+    });
+    expect(restarted.getDecision(decision.id)).toMatchObject({ status: "resolved", response: { optionId: "approve" } });
+    expect(restarted.getDecision(abandoned.id)).toMatchObject({ status: "cancelled" });
+    expect(restarted.getNotification(notification.id)).toMatchObject({ status: "resolved", severity: "urgent" });
+  });
 });

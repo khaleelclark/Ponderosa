@@ -55,6 +55,7 @@ import type {
   AgentRunStatus,
   AgentDetailDto,
   AgentDto,
+  PortableAgentHistoryMessageDto,
   AgentState,
   TokenUsageSummaryDto,
   TokenUsageBreakdownDto,
@@ -132,6 +133,7 @@ import {
   projectDir,
   agentDir,
   agentJsonPath,
+  importedAgentHistoryPath,
   agentsDir,
 } from "./paths.js";
 
@@ -143,11 +145,13 @@ interface ProjectJson {
   lastUsedAt?: string;
   defaultEngine: string;
   lastConversationId?: string;
+  instructions?: string;
 }
 
 type ManagedArtifactEvent =
   | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string } }
-  | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string };
+  | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
+  | { type: "deleted"; artifactId: string; at: string; reason: string };
 
 interface DataDirectoryOwnership {
   path: string;
@@ -1134,12 +1138,14 @@ export class AgentStore {
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
     const current = this.getProject(id);
     if (!current) return undefined;
-    const label = input.label.trim();
+    const label = (input.label ?? current.label).trim();
     if (!label) throw new Error("project label is required");
-    const record: ProjectJson = { ...current, label };
+    const instructions = (input.instructions ?? current.instructions ?? "").slice(0, 100_000);
+    const { instructions: _previousInstructions, ...projectWithoutInstructions } = current;
+    const record: ProjectJson = { ...projectWithoutInstructions, label, ...(instructions ? { instructions } : {}) };
     writeJson(projectJsonPath(this.dataDir, id), record);
     this.db.update(projects).set({ label }).where(eq(projects.id, id)).run();
-    return { ...current, label };
+    return { ...projectWithoutInstructions, label, ...(instructions ? { instructions } : {}) };
   }
 
   /** Permanently remove the canonical project tree and every rebuildable
@@ -1230,6 +1236,7 @@ export class AgentStore {
         lastUsedAt: r.lastUsedAt ?? undefined,
         defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
         lastConversationId: r.lastConversationId ?? undefined,
+        ...this.projectInstructions(r.id),
       }));
   }
 
@@ -1244,7 +1251,17 @@ export class AgentStore {
       lastUsedAt: r.lastUsedAt ?? undefined,
       defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
       lastConversationId: r.lastConversationId ?? undefined,
+      ...this.projectInstructions(r.id),
     };
+  }
+
+  private projectInstructions(id: string): Pick<ProjectDto, "instructions"> {
+    try {
+      const value = readJson<ProjectJson>(projectJsonPath(this.dataDir, id)).instructions;
+      return value ? { instructions: value } : {};
+    } catch {
+      return {};
+    }
   }
 
   markProjectUsed(projectId: string, conversationId?: string): ProjectDto | undefined {
@@ -1676,6 +1693,25 @@ export class AgentStore {
 
   getAgent(id: string): AgentDto | undefined {
     return this.rowToAgentDto(id);
+  }
+
+  setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
+    const agent = this.getAgent(agentId);
+    if (!agent) throw new Error("agent not found");
+    const bounded = messages.map((message) => ({
+      role: message.role,
+      text: message.text.slice(0, 100_000),
+      ...(message.createdAt ? { createdAt: message.createdAt } : {}),
+    }));
+    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages: bounded });
+  }
+
+  getImportedHistory(agentId: string): { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[] } | undefined {
+    const agent = this.getAgent(agentId);
+    if (!agent) return undefined;
+    const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
+    if (!existsSync(file)) return undefined;
+    return readJson(file);
   }
 
   listAgentSubtree(id: string): AgentDto[] {
@@ -2492,10 +2528,10 @@ export class AgentStore {
       `managed artifacts for project ${projectId}`,
     )) {
       if (event.type === "created") resolved.set(event.artifact.id, event.artifact);
-      else {
+      else if (event.type === "visibility") {
         const current = resolved.get(event.artifactId);
         if (current) resolved.set(event.artifactId, { ...current, visibility: event.visibility, pinned: event.pinned });
-      }
+      } else resolved.delete(event.artifactId);
     }
     return [...resolved.values()].map((artifact) => {
       const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
@@ -2510,6 +2546,14 @@ export class AgentStore {
   recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
     if (!this.getProject(artifact.projectId)) throw new Error("artifact project not found");
     appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [{ type: "created", artifact } satisfies ManagedArtifactEvent]);
+  }
+
+  deleteProjectArtifact(projectId: string, artifactIdValue: string, reason: string): boolean {
+    if (!this.getProjectArtifact(projectId, artifactIdValue)) return false;
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), [{
+      type: "deleted", artifactId: artifactIdValue, at: new Date().toISOString(), reason: reason.slice(0, 240),
+    } satisfies ManagedArtifactEvent]);
+    return true;
   }
 
   updateProjectArtifactVisibility(
@@ -2931,6 +2975,11 @@ export class AgentStore {
     const state: AgentState = {};
     if (row.stateBranch) state.branch = row.stateBranch;
     if (row.stateCommit) state.commit = row.stateCommit;
+    let imported: { source: string; messages: PortableAgentHistoryMessageDto[] } | undefined;
+    try {
+      const file = importedAgentHistoryPath(this.dataDir, row.projectId, row.id);
+      if (existsSync(file)) imported = readJson(file);
+    } catch { /* malformed optional import history stays out of runtime metadata */ }
     return {
       id: row.id,
       projectId: row.projectId,
@@ -2951,6 +3000,7 @@ export class AgentStore {
       spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
       spawnPrompt: row.spawnPrompt ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as AgentDto["presetSnapshot"] : undefined,
+      ...(imported ? { importedHistoryCount: imported.messages.length, importedFrom: imported.source } : {}),
     };
   }
 

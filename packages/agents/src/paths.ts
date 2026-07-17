@@ -114,6 +114,10 @@ export function agentJsonPath(
   return path.join(agentDir(dataDir, projectId, agentId), "agent.json");
 }
 
+export function importedAgentHistoryPath(dataDir: string, projectId: string, agentId: string): string {
+  return path.join(agentDir(dataDir, projectId, agentId), "imported-history.json");
+}
+
 export function eventsPath(
   dataDir: string,
   projectId: string,

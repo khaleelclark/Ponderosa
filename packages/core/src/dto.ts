@@ -20,6 +20,8 @@ export interface ProjectDto {
   defaultEngine: EngineId;
   /** Most recently opened non-deleted Project chat. */
   lastConversationId?: string;
+  /** Project-wide operator rules injected after global rules and before Agent instructions. */
+  instructions?: string;
 }
 
 export interface AgentPresetDto {
@@ -71,7 +73,18 @@ export interface WorkspacePreferencesDto {
   sidebarWidth: number;
   notifications: NotificationPreferencesDto;
   fontFamily: "inter" | "system" | "sans";
+  /** Operator-controlled global runtime switches. Missing engines default to enabled. */
+  providerAvailability: Record<string, boolean>;
+  /** Ponderosa-managed rules supplied to every Agent. */
+  globalInstructions: string;
+  profile: OperatorProfileDto;
   updatedAt: string;
+}
+
+export interface OperatorProfileDto {
+  displayName: string;
+  handle: string;
+  avatarId: string;
 }
 
 export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "updatedAt">>;
@@ -123,15 +136,55 @@ export interface GenerateConversationTitleResponse {
 
 export interface WorkspaceNotificationDto {
   id: string;
-  projectId: string;
+  projectId?: string;
   conversationId?: string;
   communicationEventId?: string;
-  kind: Exclude<NotificationPreference, "none"> | "collaboration";
+  kind: Exclude<NotificationPreference, "none"> | "collaboration" | "operational" | "decision";
+  category?: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
+  severity?: "info" | "attention" | "urgent";
+  status?: "open" | "resolved" | "dismissed";
+  /** Stable key used to converge repeated reports of the same operational problem. */
+  dedupeKey?: string;
+  action?: { kind: "open_settings" | "open_project" | "open_conversation" | "open_agent" | "open_decision"; targetId?: string };
   title: string;
   body: string;
   createdAt: string;
   readAt?: string;
+  resolvedAt?: string;
+  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status">;
 }
+
+export type DecisionMode = "approval" | "choice" | "text";
+export interface DecisionOptionDto { id: string; label: string; description?: string }
+export interface DecisionDto {
+  id: string;
+  projectId: string;
+  conversationId?: string;
+  agentId: string;
+  runId: string;
+  mode: DecisionMode;
+  question: string;
+  context?: string;
+  options: DecisionOptionDto[];
+  allowOther: boolean;
+  blocking: boolean;
+  status: "pending" | "resolved" | "cancelled";
+  response?: { optionId?: string; text?: string; respondedAt: string };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateDecisionRequest {
+  idempotencyKey: string;
+  mode: DecisionMode;
+  question: string;
+  context?: string;
+  options?: DecisionOptionDto[];
+  allowOther?: boolean;
+  blocking?: boolean;
+}
+
+export interface ResolveDecisionRequest { optionId?: string; text?: string }
 
 export type WorkspaceEvent =
   | { type: "preferences_updated"; preferences: WorkspacePreferencesDto }
@@ -184,7 +237,8 @@ export interface WorkspaceStreamStatusDto {
 
 /** PATCH /api/projects/:id body. Project working folders are immutable after creation. */
 export interface UpdateProjectRequest {
-  label: string;
+  label?: string;
+  instructions?: string;
 }
 
 export interface ProjectFolderOptionDto {
@@ -479,6 +533,17 @@ export type ConversationChannel = "main" | "collaboration";
 export interface CollaborationViewDto {
   messages: ConversationMessageDto[];
   agents: AgentDto[];
+  operations?: TeamOperationalEventDto[];
+}
+
+export interface TeamOperationalEventDto {
+  id: string;
+  kind: "run" | "activation" | "request" | "join" | "trigger" | "decision" | "organization";
+  state: string;
+  text: string;
+  agentIds: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** GET /api/conversations/:id response. */
@@ -635,7 +700,53 @@ export interface AgentDto {
   spawnPrompt?: string;
   /** Immutable-at-spawn preset provenance and guidance snapshot. */
   presetSnapshot?: Pick<AgentPresetDto, "id" | "name" | "description" | "guidance" | "engine" | "model" | "effort">;
+  importedHistoryCount?: number;
+  importedFrom?: string;
 }
+
+export type AgentExportMode = "template" | "context" | "full";
+export interface PortableAgentHistoryMessageDto { role: "user" | "assistant" | "system"; text: string; createdAt?: string }
+export interface PortableArtifactDto {
+  ref: string;
+  kind: ArtifactKind;
+  path: string;
+  summary?: string;
+  createdAt: string;
+  mediaType?: string;
+  visibility?: "project" | "published";
+  pinned?: boolean;
+  sourcePath?: string;
+  dataBase64: string;
+}
+export interface PortableAgentNodeDto {
+  ref: string;
+  title: string;
+  engine: string;
+  model?: string;
+  effort?: string;
+  initialInstructions?: string;
+  managerRef?: string;
+  history?: PortableAgentHistoryMessageDto[];
+  artifacts?: PortableArtifactDto[];
+  triggers?: Array<Omit<CreateTriggerRequest, "conversationId"> & { enabled: false }>;
+}
+export interface AgentPortablePackageDto {
+  schema: "ponderosa.agent-package.v1";
+  mode: AgentExportMode;
+  kind: "agent" | "organization";
+  exportedAt: string;
+  sourceLabel: string;
+  /** Historical provenance only. Destination Project rules remain authoritative. */
+  sourceProjectInstructions?: string;
+  rootRef: string;
+  agents: PortableAgentNodeDto[];
+}
+export interface ImportAgentPackageRequest {
+  package: AgentPortablePackageDto;
+  conversationId: string;
+  engineMapping: Record<string, string>;
+}
+export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
 
 export interface AgentRoleProfile {
   role: string;
@@ -759,6 +870,9 @@ export interface TriggerDefinitionDto {
   enabled: boolean;
   /** V3.2 runs with the Agent's full local authority. */
   fullAccess: true;
+  /** Optional limit on automatic root Runs for the current period. Undefined is unlimited. */
+  runBudget?: TriggerRunBudgetDto;
+  budgetState?: TriggerRunBudgetStateDto;
   nextFireAt?: string;
   lastFiredAt?: string;
   webhookPath?: string;
@@ -774,6 +888,7 @@ export interface CreateTriggerRequest {
   sourceKind: TriggerSourceKind;
   sourceConfig: TriggerSourceConfig;
   enabled?: boolean;
+  runBudget?: TriggerRunBudgetDto;
 }
 
 export interface UpdateTriggerRequest {
@@ -781,7 +896,20 @@ export interface UpdateTriggerRequest {
   instructions?: string;
   sourceConfig?: TriggerSourceConfig;
   enabled?: boolean;
+  runBudget?: TriggerRunBudgetDto | null;
 }
+
+export type TriggerBudgetPeriod = "day" | "week" | "month" | "lifetime";
+export interface TriggerRunBudgetDto { limit: number; period: TriggerBudgetPeriod }
+export interface TriggerRunBudgetStateDto {
+  used: number;
+  allowance: number;
+  periodStartedAt: string;
+  periodEndsAt?: string;
+  held: boolean;
+}
+
+export interface AllowTriggerRunsRequest { additionalRuns: number }
 
 export interface CreateTriggerResponse {
   trigger: TriggerDefinitionDto;
@@ -1332,6 +1460,8 @@ export interface EngineDto {
   modelCatalogKnown?: boolean;
   /** The adapter is configured on this Ponderosa host. */
   configured: true;
+  /** Global operator switch. Disabled engines retain queued work but cannot lease it. */
+  enabled?: boolean;
   /** Subscription credentials are present; this does not prove entitlement. */
   authenticated: boolean;
   authDetail?: string;

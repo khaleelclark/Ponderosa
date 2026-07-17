@@ -161,6 +161,55 @@ export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
   },
 };
 
+/** First-order operator Decision. It pauses only the Agent's next dependent
+ * action; it does not pretend the host sandbox structurally forbids the work. */
+export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_decision",
+  description: "Ask the user for one durable Decision. Use approval for permission, choice for Agent-defined options, or text for an open answer. Every approval/choice includes a Something else path. Set blocking true only when no safe independent work remains; end the turn after creating a blocking Decision. Structural deletion, re-parenting, or promotion must use a Decision before the management action.",
+  inputSchema: {
+    type: "object", additionalProperties: false,
+    required: ["idempotencyKey", "mode", "question"],
+    properties: {
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+      mode: { type: "string", enum: ["approval", "choice", "text"] },
+      question: { type: "string", minLength: 1, maxLength: 1000 },
+      context: { type: "string", maxLength: 4000 },
+      options: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["id", "label"], properties: { id: { type: "string", minLength: 1, maxLength: 80 }, label: { type: "string", minLength: 1, maxLength: 120 }, description: { type: "string", maxLength: 400 } } } },
+      allowOther: { type: "boolean", description: "Defaults true and cannot be disabled for approval or choice." },
+      blocking: { type: "boolean", description: "Defaults true." },
+    },
+  },
+};
+
+export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_manage",
+  description: "Safely inspect or manage your visible Ponderosa descendant organization. Call describe to discover scope, plan with a complete operation list, then apply the returned planId. Creating/renaming Agents and stopping descendants may be autonomous. delete_agent and set_manager require a resolved approval Decision ID. Plans are exact, scoped to this Run, idempotent, and audited; this never manages provider-native helpers or arbitrary Projects.",
+  inputSchema: {
+    type: "object", additionalProperties: false, required: ["action"],
+    properties: {
+      action: { type: "string", enum: ["describe", "plan", "apply"] },
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+      planId: { type: "string", minLength: 1, maxLength: 200 },
+      operations: { type: "array", minItems: 1, maxItems: 100, items: {
+        type: "object", additionalProperties: false, required: ["kind"],
+        properties: {
+          kind: { type: "string", enum: ["create_agent", "rename_agent", "stop_agent", "delete_agent", "set_manager"] },
+          ref: { type: "string", maxLength: 100 },
+          targetAgentId: { type: "string", maxLength: 200 },
+          parentRef: { type: "string", maxLength: 200 },
+          managerAgentId: { type: ["string", "null"] },
+          title: { type: "string", maxLength: 80 },
+          engine: { type: "string" },
+          model: { type: "string" },
+          effort: { type: "string" },
+          instructions: { type: "string", maxLength: 4000 },
+          decisionId: { type: "string", maxLength: 200 },
+        },
+      } },
+    },
+  },
+};
+
 /** Engine-agnostic, host-owned browser tools. These are execution capabilities,
  * not Communication V3 tools, and are authorized only during their owning Run.
  * An operator may explicitly route them to the Project browser for that Run. */
