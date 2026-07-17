@@ -7,8 +7,9 @@
 //   /projects
 //   /agents
 //
-// Only a lightweight UI preference (last selected project) is persisted locally;
-// all real data still comes from the server.
+// Lightweight navigation preferences (the last selected project and open
+// workspace-tab routes) are persisted locally; all real data still comes from
+// the server.
 
 import { useCallback, useEffect, useState } from "react";
 

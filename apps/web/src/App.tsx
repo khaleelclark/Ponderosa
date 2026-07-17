@@ -37,6 +37,7 @@ import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
 import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { AllAgentsView, AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
@@ -56,6 +57,17 @@ import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWe
 import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
 import { engineIsAvailable } from "./conversationEngine";
+import {
+  WORKSPACE_TABS_STORAGE_KEY,
+  closeWorkspaceTab,
+  mostRecentWorkspaceTab,
+  openWorkspaceTab,
+  removeProjectWorkspaceTabs,
+  removeWorkspaceRoute,
+  restoreWorkspaceTabs,
+  serializeWorkspaceTabs,
+  workspaceTabKey,
+} from "./workspaceTabs";
 
 export default function App({
   colorMode,
@@ -67,6 +79,13 @@ export default function App({
   const queryClient = useQueryClient();
   useWorkspaceStream();
   const { route, navigate } = useRoute();
+  const [workspaceTabs, setWorkspaceTabs] = useState(() => {
+    try {
+      return restoreWorkspaceTabs(window.localStorage.getItem(WORKSPACE_TABS_STORAGE_KEY));
+    } catch {
+      return [];
+    }
+  });
   const projectsQuery = useProjects();
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
@@ -111,6 +130,27 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
+
+  useEffect(() => {
+    setWorkspaceTabs((current) => openWorkspaceTab(current, route));
+  }, [route]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(WORKSPACE_TABS_STORAGE_KEY, serializeWorkspaceTabs(workspaceTabs));
+    } catch {
+      // Tabs remain available for this session when storage is unavailable.
+    }
+  }, [workspaceTabs]);
+
+  useEffect(() => {
+    if (!projectsQuery.isSuccess) return;
+    const projectIds = new Set(projects.map((project) => project.id));
+    setWorkspaceTabs((current) => {
+      const next = removeProjectWorkspaceTabs(current, projectIds);
+      return next.length === current.length ? current : next;
+    });
+  }, [projectsQuery.isSuccess, projectsQuery.data]);
 
   useEffect(() => {
     if (route.kind !== "conversation") return;
@@ -219,6 +259,8 @@ export default function App({
     mutationFn: () => api.deleteProject(settingsProjectId!),
     onSuccess: () => {
       const next = nextProjectAfterDelete(projects, settingsProjectId!);
+      const survivingProjectIds = new Set(projects.filter((project) => project.id !== settingsProjectId).map((project) => project.id));
+      setWorkspaceTabs((current) => removeProjectWorkspaceTabs(current, survivingProjectIds));
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       setDeleteConfirmationOpen(false);
       setProjectSettingsOpen(false);
@@ -239,6 +281,7 @@ export default function App({
   const deleteSidebarConversation = useMutation({
     mutationFn: (conversation: ConversationDto) => api.deleteConversation(conversation.id),
     onSuccess: (_deleted, conversation) => {
+      setWorkspaceTabs((current) => removeWorkspaceRoute(current, { kind: "conversation", projectId: conversation.projectId, conversationId: conversation.id }));
       void queryClient.invalidateQueries({ queryKey: ["conversations", conversation.projectId] });
       setSidebarConversationAction(undefined);
       if (route.kind === "conversation" && route.conversationId === conversation.id) {
@@ -280,6 +323,16 @@ export default function App({
   }, []);
 
   const goHome = (next: Route) => navigate(next);
+  const closeWorkspaceView = (key: string) => {
+    const remaining = closeWorkspaceTab(workspaceTabs, key);
+    setWorkspaceTabs(remaining);
+    if (workspaceTabKey(route) === key) {
+      navigate(mostRecentWorkspaceTab(remaining)?.route ?? { kind: "home" });
+    }
+  };
+  const removeWorkspaceView = (removedRoute: Route) => {
+    setWorkspaceTabs((current) => removeWorkspaceRoute(current, removedRoute));
+  };
   const openSettings = () => {
     setGlobalInstructionsDraft(preferences.globalInstructions);
     setProfileNameDraft(preferences.profile.displayName);
@@ -355,7 +408,9 @@ export default function App({
             onOpenSettings={openSettings}
           />
         </Box>
-      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
+      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
+        <WorkspaceTabs tabs={workspaceTabs} projects={projects} route={route} navigate={goHome} onClose={closeWorkspaceView} />
+        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
             <Alert
@@ -402,10 +457,12 @@ export default function App({
             route={route}
             engines={engines}
             navigate={goHome}
+            onResourceDeleted={removeWorkspaceView}
           />
         ) : (
           <Box />
         )}
+        </Box>
       </Box>
       </Box>
 
