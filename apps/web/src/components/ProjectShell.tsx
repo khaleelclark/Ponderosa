@@ -16,7 +16,6 @@ import { AgentsTab } from "./AgentsTab";
 import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { Sidebar } from "./Sidebar";
-import { WorkspaceTabs } from "./WorkspaceTabs";
 
 interface AgentDialogState {
   open: boolean;
@@ -33,11 +32,13 @@ export function ProjectShell({
   route,
   engines,
   navigate,
+  onResourceDeleted,
 }: {
   projectId: string;
   route: Route;
   engines: EngineDto[];
   navigate(route: Route, options?: { replace?: boolean }): void;
+  onResourceDeleted?(route: Route): void;
 }): JSX.Element {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
@@ -223,7 +224,10 @@ export function ProjectShell({
         onOpenReview={openAgentReview}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={openNewAgentFromMaster}
-        onDeleted={() => navigate({ kind: "agents", projectId })}
+        onDeleted={() => {
+          onResourceDeleted?.({ kind: "conversation", projectId, conversationId: route.conversationId });
+          navigate({ kind: "agents", projectId });
+        }}
       />
     );
   } else if (route.kind === "agent") {
@@ -243,7 +247,10 @@ export function ProjectShell({
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenMaster={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
         onNewSubagent={openNewSubagent}
-        onDeleted={() => navigate({ kind: "agents", projectId })}
+        onDeleted={() => {
+          onResourceDeleted?.({ kind: "agent", projectId, agentId: route.agentId });
+          navigate({ kind: "agents", projectId });
+        }}
       />
     );
   } else if (route.kind === "agents") {
@@ -319,8 +326,7 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
-      <WorkspaceTabs projectId={projectId} route={route} conversations={conversations} agents={agents} navigate={navigate} />
+    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
       <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
       {dialogs}
     </Box>
