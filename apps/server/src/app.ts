@@ -3854,7 +3854,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           runAuthorization: runAuthorization(capability!),
           requests: [{ requestId, recipientAgentId: child.id, lifetime: request.body.lifetime!, payload: {
             text, requesterRunId: capability!.runId, managedAgentOpening: true,
-          } }],
+          }, ...(capability!.defaultReply ? { replyAuthority: capability!.defaultReply } : {}) }],
           ...(request.body.awaitResult === false ? {} : { join: {
             id: `managed:${child.id}:join`, mode: "all" as const,
             continuationRequestIds: coordinationV3.requestIdsAttachedToRun(capability!.runId, manager!.id)
@@ -4112,6 +4112,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           recipientAgentId: candidate.recipientAgentId,
           lifetime: candidate.lifetime,
           payload: { text: candidate.text, requesterRunId: capability.runId, ...(completionMode ? { completionMode } : {}) },
+          ...(capability.defaultReply ? { replyAuthority: capability.defaultReply } : {}),
         })),
         ...(join ? { join: {
           ...(join.id?.trim() ? { id: join.id.trim() } : {}),
@@ -7599,6 +7600,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           : [];
       });
       const hasOneCanonicalReplySource = new Set(activationCommunicationEventIds).size === 1;
+      const inheritedReplyAuthorities: Array<NonNullable<AgentMessageCapability["defaultReply"]>> =
+        manifestActivationPayloads.flatMap(({ payload }) => {
+          if (!payload || typeof payload !== "object") return [];
+          const authority = (payload as { replyAuthority?: unknown }).replyAuthority;
+          if (!authority || typeof authority !== "object") return [];
+          const candidate = authority as { intent?: unknown; recipientAgentIds?: unknown };
+          const rawRecipients = candidate.recipientAgentIds;
+          const recipients = Array.isArray(rawRecipients)
+            ? rawRecipients.filter((agentId): agentId is string => typeof agentId === "string")
+            : [];
+          if (!(candidate.intent === "broadcast" || candidate.intent === "direct_to_user" || candidate.intent === "collaboration") ||
+              (rawRecipients !== undefined && (!Array.isArray(rawRecipients) || recipients.length !== rawRecipients.length)) ||
+              (candidate.intent === "collaboration" ? recipients.length === 0 : recipients.length > 0) ||
+              new Set(recipients).size !== recipients.length || recipients.some((agentId) => !agentId.trim())) return [];
+          return [{
+            intent: candidate.intent,
+            ...(recipients.length > 0 ? { recipientAgentIds: [...recipients].sort() } : {}),
+          }] satisfies Array<NonNullable<AgentMessageCapability["defaultReply"]>>;
+        });
       const contextMessages = [...roomMessages, ...initialBroadcastContext];
       const contextCommunicationEventIds = contextMessages.flatMap((message) =>
         message.communicationEventId ? [message.communicationEventId] : []);
@@ -7755,6 +7775,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ownershipState: "running",
       };
       claimActiveRun(agent.id, activeRun);
+      const immediateDefaultReply = hasOneCanonicalReplySource && sharedTaskTurn
+        ? { intent: "broadcast" as const }
+        : hasOneCanonicalReplySource && directUserTaskTurn
+          ? { intent: "direct_to_user" as const }
+          : hasOneCanonicalReplySource && communication?.intent === "collaboration" && communication.sender.kind === "agent" &&
+              coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
+            ? { intent: "collaboration" as const, recipientAgentIds: [communication.sender.agentId] }
+            : undefined;
+      const replyAuthorities = [...(immediateDefaultReply ? [immediateDefaultReply] : []), ...inheritedReplyAuthorities];
+      const distinctReplyAuthorities = [...new Map(replyAuthorities.map((authority) => [JSON.stringify(authority), authority])).values()];
+      const defaultReply = distinctReplyAuthorities.length === 1 ? distinctReplyAuthorities[0] : undefined;
       agentMessageCapabilities.set(messageCapability, {
         agentId: agent.id,
         conversationId: routingConversationId,
@@ -7764,14 +7795,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
-        ...(hasOneCanonicalReplySource && sharedTaskTurn
-          ? { defaultReply: { intent: "broadcast" as const } }
-          : hasOneCanonicalReplySource && directUserTaskTurn
-            ? { defaultReply: { intent: "direct_to_user" as const } }
-            : hasOneCanonicalReplySource && communication?.intent === "collaboration" && communication.sender.kind === "agent" &&
-                coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
-              ? { defaultReply: { intent: "collaboration" as const, recipientAgentIds: [communication.sender.agentId] } }
-              : {}),
+        ...(defaultReply ? { defaultReply } : {}),
       });
 
       void (async () => {

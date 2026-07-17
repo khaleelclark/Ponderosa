@@ -11,6 +11,7 @@ import {
   type CoordinationActorClass,
   type CoordinationJoinMode,
   type CoordinationJoinWakePolicy,
+  type CoordinationReplyAuthority,
   type CoordinationJoinState,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
@@ -72,6 +73,7 @@ interface RequestRow {
   deadline_at: string | null;
   open_question_update_id: string | null;
   payload_json: string;
+  reply_authority_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -127,6 +129,8 @@ export interface CoordinateV3Input {
     lifetime: RequestLifetime;
     communicationEventId?: string;
     payload?: unknown;
+    /** Server-derived canonical reply route inherited by requester continuations. */
+    replyAuthority?: CoordinationReplyAuthority;
   }>;
   join?: {
     id?: string;
@@ -992,17 +996,35 @@ export class CoordinationV3Store {
         this.requireAgent(input.projectId, request.recipientAgentId);
         if (input.conversationId) this.requireConversationMember(input.conversationId, request.recipientAgentId);
         this.validateLifetime(request.lifetime, now);
+        const replyAuthority = request.replyAuthority ? {
+          intent: request.replyAuthority.intent,
+          ...(request.replyAuthority.recipientAgentIds
+            ? { recipientAgentIds: [...request.replyAuthority.recipientAgentIds].sort() }
+            : {}),
+        } : undefined;
+        if (replyAuthority) {
+          const recipients = replyAuthority.recipientAgentIds ?? [];
+          if (!(replyAuthority.intent === "broadcast" || replyAuthority.intent === "direct_to_user" ||
+              replyAuthority.intent === "collaboration") ||
+              (replyAuthority.intent === "collaboration" ? recipients.length === 0 : recipients.length > 0) ||
+              new Set(recipients).size !== recipients.length ||
+              recipients.some((agentId) => typeof agentId !== "string" || !agentId.trim())) {
+            throw new Error("request reply authority is invalid");
+          }
+        }
         const requestId = request.requestId ?? randomUUID();
         this.sqlite.prepare(`
           INSERT INTO coordination_requests (
             id, project_id, conversation_id, requester_agent_id, recipient_agent_id,
-            communication_event_id, payload_json, state, version, lifetime_kind, deadline_at,
+            communication_event_id, payload_json, reply_authority_json,
+            state, version, lifetime_kind, deadline_at,
             created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?)
         `).run(
           requestId, input.projectId, input.conversationId ?? null, input.requesterAgentId ?? null,
           request.recipientAgentId, request.communicationEventId ?? null,
           stableJson(request.payload ?? null),
+          replyAuthority ? stableJson(replyAuthority) : null,
           request.lifetime.kind,
           request.lifetime.kind === "deadline" ? request.lifetime.at : null,
           now, now,
@@ -3687,6 +3709,9 @@ export class CoordinationV3Store {
     }
     const requestPayload = JSON.parse(request.payload_json) as { completionMode?: unknown } | null;
     const recordOnly = requestPayload?.completionMode === "record";
+    const replyAuthority = request.reply_authority_json
+      ? JSON.parse(request.reply_authority_json) as CoordinationReplyAuthority
+      : undefined;
     if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && !recordOnly && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
@@ -3694,7 +3719,10 @@ export class CoordinationV3Store {
         kind: "coordination_outcome",
         priority: nextState === "completed" ? PRIORITY.satisfied : PRIORITY.actionable,
         dedupeKey: `request:${request.id}:terminal`,
-        payload: { requestId: request.id, state: nextState, update: updatePayload ?? null },
+        payload: {
+          requestId: request.id, state: nextState, update: updatePayload ?? null,
+          ...(replyAuthority ? { replyAuthority } : {}),
+        },
         sourceKind: "request", sourceId: request.id, now,
       });
     }
@@ -3751,6 +3779,7 @@ export class CoordinationV3Store {
   ): void {
     const outcomes = this.sqlite.prepare(`
       SELECT r.id AS request_id, r.state, r.payload_json AS request_payload_json,
+        r.reply_authority_json,
         u.id AS update_id, u.kind AS update_kind,
         u.payload_json AS update_payload_json, u.created_at AS update_created_at
       FROM coordination_join_members m
@@ -3763,6 +3792,7 @@ export class CoordinationV3Store {
       request_id: string;
       state: CoordinationRequestState;
       request_payload_json: string;
+      reply_authority_json: string | null;
       update_id: string | null;
       update_kind: CoordinationRequestUpdateKind | null;
       update_payload_json: string | null;
@@ -3777,6 +3807,11 @@ export class CoordinationV3Store {
       };
     });
     const terminalCount = outcomes.filter((outcome) => TERMINAL_REQUEST_STATES.has(outcome.state)).length;
+    const replyAuthorityJson = outcomes.map((outcome) => outcome.reply_authority_json);
+    const inheritedReplyAuthority = replyAuthorityJson.length > 0 && replyAuthorityJson.every((value) => value !== null) &&
+      new Set(replyAuthorityJson).size === 1
+      ? JSON.parse(replyAuthorityJson[0]!) as CoordinationReplyAuthority
+      : undefined;
     const visibleOutcomes = progressRequestId
       ? outcomes.filter((outcome) => outcome.request_id === progressRequestId)
       : outcomes;
@@ -3799,6 +3834,7 @@ export class CoordinationV3Store {
         state,
         wakePolicy: join.wake_policy,
         progress,
+        ...(inheritedReplyAuthority ? { replyAuthority: inheritedReplyAuthority } : {}),
         outcomes: visibleOutcomes.map((outcome) => ({
           requestId: outcome.request_id,
           state: outcome.state,

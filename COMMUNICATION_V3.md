@@ -165,6 +165,13 @@ It moves from `open` to exactly one of `satisfied`, `impossible`, `expired`, or
 owner. A join cancelled by its owner closes without creating a redundant
 activation.
 
+The server records the requester's canonical reply route on every outbound
+Request. Only outcome and Join Activations back to that requester inherit the
+route, so `ponderosa_message({text})` remains valid in progress and terminal
+continuations without granting the recipient authority to reply to the
+requester's user. Aggregate Join members must agree on one non-null route or
+the resumed Run requires explicit routing.
+
 When a request recipient creates a join while handling that request, the join
 durably records the inbound request as its continuation. Creating the join
 moves that request to `waiting_dependency`; completing the current Run does not

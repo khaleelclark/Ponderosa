@@ -3830,6 +3830,60 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("preserves an inherited user reply route across a callback continuation", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    const project = store.createProject({ label: "Continuation reply", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const worker = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    await app.inject({
+      method: "POST", url: `/api/agents/${manager.id}/messages`,
+      payload: { text: "Ask the worker", sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const opening = persistent.openedOptions[0]!;
+    const delegated = await opening.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: worker.id, text: "Return the answer", completionMode: "callback" },
+    });
+    expect(delegated.success, delegated.text).toBe(true);
+    persistent.completeTurn(0);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const workerRuntime = persistent.openedOptions[1]!;
+    const unauthorizedReply = await workerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_message", arguments: { text: "This must not inherit the manager's user route" },
+    });
+    expect(unauthorizedReply.success).toBe(false);
+    expect(unauthorizedReply.text).toContain("no unambiguous reply route");
+    const completed = await workerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Worker answer" },
+    });
+    expect(completed.success, completed.text).toBe(true);
+    persistent.completeTurn(1);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    const continuation = persistent.openedOptions[2]!;
+    expect(continuation.agentId).toBe(manager.id);
+    const reply = await continuation.handleDynamicToolCall!({
+      name: "ponderosa_message", arguments: { text: "Final answer to the user" },
+    });
+    expect(reply.success, reply.text).toBe(true);
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      intent: "user_dm", text: "Final answer to the user",
+      sender: { kind: "agent", agentId: manager.id, executionId: expect.any(String) },
+      audience: { kind: "user_agent", userId: "local-operator", agentId: manager.id },
+    }));
+    persistent.completeTurn(2);
+    await app.close();
+  });
+
   it("creates one streaming aggregate Join for common fan-out and validates explicit completion modes", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];

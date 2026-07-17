@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@ponderosa/core";
-import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, reconcileProviderRequestUsage, subtractUsage } from "../src/codex-app-server.js";
+import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, reconcileProviderRequestUsage, subtractUsage, sumProviderRequestUsage } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
@@ -53,6 +53,13 @@ describe("Codex app-server persistent runtime", () => {
       { totalTokens: 26, inputTokens: 18, cachedInputTokens: 4, outputTokens: 8 },
       requests,
     )).toBeUndefined();
+  });
+  it("derives an exact aggregate from complete per-request checkpoints", () => {
+    expect(sumProviderRequestUsage([
+      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
+      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 },
+    ])).toEqual({ totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 });
+    expect(sumProviderRequestUsage([{ totalTokens: 7, inputTokens: 5 }])).toBeUndefined();
   });
   it("separates completed response blocks in Work log output", () => {
     const completed = (id: string, text: string) => mapCodexAppServerNotification({
@@ -107,6 +114,35 @@ describe("Codex app-server persistent runtime", () => {
         ],
       },
     ]);
+    await session.close();
+  });
+
+  it("costs the first resumed turn from per-request checkpoints when no cumulative baseline is replayed", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "ponderosa-thread", cwd: here, history: [], resumeSessionId: "codex-thread-v1",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 50,
+    });
+    const events: AgentEvent[] = [];
+    const collecting = (async () => {
+      for await (const event of session.events) {
+        events.push(event);
+        if (event.type === "turn_done") return;
+      }
+    })();
+    await session.startTurn({ prompt: "resumed work", kind: "user_message" });
+    await session.steer({ prompt: "finish resumed work", kind: "user_message" });
+    await collecting;
+    expect(events.at(-1)).toEqual({
+      type: "turn_done",
+      usage: { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 },
+      providerRequestUsage: [
+        { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
+        { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 },
+      ],
+    });
     await session.close();
   });
 

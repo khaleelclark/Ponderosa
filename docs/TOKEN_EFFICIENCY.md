@@ -8,7 +8,7 @@ Optimization starts with provider-measured usage, not estimates derived from vis
 
 - Store input, cached-input, cache-write, output, reasoning, and total tokens independently when the provider exposes them.
 - Store the engine, requested model, and effort on every run so usage remains attributable after agent settings change.
-- Prefer absolute provider thread totals and derive a run delta from the prior absolute checkpoint. Preserve separately reported per-request snapshots as pricing detail, but never add them to the absolute thread total.
+- Prefer absolute provider thread totals and derive a run delta from the prior absolute checkpoint. If a resumed Codex thread does not replay that baseline, derive the Run aggregate only from complete, deduplicated per-request checkpoints that reconcile exactly. Preserve those snapshots as pricing detail, but never add them to an available absolute thread total.
 - Mark unreported runs and unknown price profiles explicitly. Never silently price unknown usage at zero.
 - Display cost only as a dated, projected API-equivalent list-price estimate. Subscription usage, provider discounts, tool fees, and infrastructure cost are different things.
 
@@ -57,16 +57,17 @@ durable Join supporting:
 
 Creating coordination atomically records each stable recipient Request and an
 optional `all`, `any`, or `quorum` Join. Request and Join deadlines are
-independent. Recipient terminal updates are canonical handoffs; the Join
-activates its owner exactly once when satisfied, impossible, or expired. Human
-and urgent Activations do not cancel open Joins. Explicit queued human turns
-remain FIFO one-per-Run boundaries, while passive progress and duplicate audit
-copies do not wake a provider.
+independent. Recipient terminal updates are canonical handoffs. Common fan-out
+uses `each_result`, which wakes the manager once for each newly available result
+while preserving the open parent workflow; `final_only` is available when one
+terminal synthesis is preferable. Human and urgent Activations do not cancel
+open Joins. Explicit queued human turns remain FIFO one-per-Run boundaries,
+while passive progress and duplicate audit copies do not wake a provider.
 
-This lets a manager park after delegating, accumulate progress without running
-for each message, and synthesize once. SQLite owns the restart-safe Request,
-Join, Activation, Run, lease, fence, and injection state; exact provider input
-and structural wake cause remain inspectable from the Run.
+This lets a manager pipeline review or follow-up as workers finish without
+losing the aggregate completion condition. SQLite owns the restart-safe
+Request, Join, Activation, Run, lease, fence, and injection state; exact
+provider input and structural wake cause remain inspectable from the Run.
 
 ## Further strategies
 

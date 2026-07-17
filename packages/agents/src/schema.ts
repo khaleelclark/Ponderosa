@@ -157,6 +157,7 @@ export const coordinationRequests = sqliteTable("coordination_requests", {
   recipientAgentId: text("recipient_agent_id").notNull(),
   communicationEventId: text("communication_event_id"),
   payloadJson: text("payload_json").notNull(),
+  replyAuthorityJson: text("reply_authority_json"),
   state: text("state").notNull(),
   version: integer("version").notNull().default(0),
   lifetimeKind: text("lifetime_kind").notNull(),

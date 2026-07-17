@@ -547,8 +547,8 @@ describe("CoordinationV3Store transactions", () => {
     store.coordinate({
       projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
       idempotencyKey: "streaming-join", requests: [
-        { requestId: "stream-a", recipientAgentId: recipientA, lifetime: indefinite, payload: { text: "A" } },
-        { requestId: "stream-b", recipientAgentId: recipientB, lifetime: indefinite, payload: { text: "B" } },
+        { requestId: "stream-a", recipientAgentId: recipientA, lifetime: indefinite, payload: { text: "A" }, replyAuthority: { intent: "direct_to_user" } },
+        { requestId: "stream-b", recipientAgentId: recipientB, lifetime: indefinite, payload: { text: "B" }, replyAuthority: { intent: "direct_to_user" } },
       ],
       join: { id: "stream-both", mode: "all", wakePolicy: "each_result" },
     });
@@ -565,6 +565,7 @@ describe("CoordinationV3Store transactions", () => {
     `).get(requesterId) as { payload_json: string };
     expect(JSON.parse(progress.payload_json)).toMatchObject({
       joinId: "stream-both", state: "open", wakePolicy: "each_result",
+      replyAuthority: { intent: "direct_to_user" },
       progress: { terminal: 1, total: 2, remaining: 1, newlyTerminalRequestIds: ["stream-a"] },
       outcomes: [{ requestId: "stream-a", state: "completed" }],
     });
@@ -581,6 +582,11 @@ describe("CoordinationV3Store transactions", () => {
       { kind: "coordination_join_progress", count: 1 },
       { kind: "coordination_join_satisfied", count: 1 },
     ]);
+    const terminal = opened.client.prepare(`
+      SELECT payload_json FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_join_satisfied'
+    `).get(requesterId) as { payload_json: string };
+    expect(JSON.parse(terminal.payload_json)).toMatchObject({ replyAuthority: { intent: "direct_to_user" } });
   });
 
   it("records terminal record-only outcomes without waking the requester", () => {
@@ -1461,6 +1467,7 @@ describe("CoordinationV3Store scheduler", () => {
       requests: [{
         requestId: "consultation", recipientAgentId: recipientA, lifetime: indefinite,
         payload: { text: "Which response contract should I use?" },
+        replyAuthority: { intent: "direct_to_user" },
       }],
     });
     const recipientRun = store.leaseNextRun({ workerId: "worker-1" })!;
@@ -1477,6 +1484,11 @@ describe("CoordinationV3Store scheduler", () => {
       SELECT kind, state FROM agent_activations
       WHERE agent_id = ? AND kind = 'coordination_outcome'
     `).all(requesterId)).toEqual([{ kind: "coordination_outcome", state: "pending" }]);
+    const outcome = opened.client.prepare(`
+      SELECT payload_json FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_outcome'
+    `).get(requesterId) as { payload_json: string };
+    expect(JSON.parse(outcome.payload_json)).toMatchObject({ replyAuthority: { intent: "direct_to_user" } });
     expect(opened.client.prepare(`
       SELECT COUNT(*) AS count FROM coordination_request_updates
       WHERE request_id = 'consultation' AND kind = 'outcome_unknown'
