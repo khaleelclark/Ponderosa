@@ -18,6 +18,7 @@ const MIN_INTERVAL_MS = 60_000;
 const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1_000;
 const MAX_MISSED_TIMES = 10_000;
 const MAX_FILES_PER_OCCURRENCE = 500;
+const MAX_FILESYSTEM_WINDOW_MS = 60 * 60 * 1_000;
 const DEFAULT_EXCLUDES = [".git/**", "node_modules/**", ".ponderosa/**"];
 
 export function normalizeTriggerSourceConfig(
@@ -73,8 +74,8 @@ export function normalizeTriggerSourceConfig(
   const exclude = [...new Set([...DEFAULT_EXCLUDES, ...(Array.isArray(filesystem.exclude) ? filesystem.exclude : [])])];
   const quietMs = filesystem.quietMs ?? 1_000;
   const maxWindowMs = filesystem.maxWindowMs ?? 10_000;
-  if (!Number.isInteger(quietMs) || quietMs < 100 || quietMs > 10_000) throw new Error("filesystem quiet window must be between 100 and 10000 ms");
-  if (!Number.isInteger(maxWindowMs) || maxWindowMs < quietMs || maxWindowMs > 10_000) throw new Error("filesystem max window must be between quietMs and 10000 ms");
+  if (!Number.isInteger(quietMs) || quietMs < 100 || quietMs > MAX_FILESYSTEM_WINDOW_MS) throw new Error("filesystem quiet window must be between 100 and 3600000 ms");
+  if (!Number.isInteger(maxWindowMs) || maxWindowMs < quietMs || maxWindowMs > MAX_FILESYSTEM_WINDOW_MS) throw new Error("filesystem max window must be between quietMs and 3600000 ms");
   if (include.length > 100 || exclude.length > 100) throw new Error("filesystem sources support at most 100 include and 100 exclude patterns");
   for (const pattern of [...include, ...exclude]) {
     if (typeof pattern !== "string" || !pattern.trim() || pattern.length > 500 || path.isAbsolute(pattern) || pattern.includes("..")) {

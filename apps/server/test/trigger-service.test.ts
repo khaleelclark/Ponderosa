@@ -49,6 +49,12 @@ describe("V3.2 Trigger sources", () => {
     expect(normalizeTriggerSourceConfig("filesystem", {
       include: [], exclude: [], quietMs: 1_000, maxWindowMs: 10_000,
     }, now).config).toMatchObject({ include: ["**/*"], quietMs: 1_000, maxWindowMs: 10_000 });
+    expect(normalizeTriggerSourceConfig("filesystem", {
+      include: ["**/*"], exclude: [], quietMs: 5_000, maxWindowMs: 60_000,
+    }, now).config).toMatchObject({ quietMs: 5_000, maxWindowMs: 60_000 });
+    expect(() => normalizeTriggerSourceConfig("filesystem", {
+      include: ["**/*"], exclude: [], quietMs: 5_000, maxWindowMs: 3_600_001,
+    }, now)).toThrow("between quietMs and 3600000 ms");
     expect(() => normalizeTriggerSourceConfig("filesystem", {
       include: ["../secrets/**"], exclude: [], quietMs: 1_000, maxWindowMs: 10_000,
     }, now)).toThrow("relative glob patterns");
