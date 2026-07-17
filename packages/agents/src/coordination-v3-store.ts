@@ -10,6 +10,7 @@ import {
   reduceCoordinationRequest,
   type CoordinationActorClass,
   type CoordinationJoinMode,
+  type CoordinationJoinWakePolicy,
   type CoordinationJoinState,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
@@ -70,6 +71,7 @@ interface RequestRow {
   lifetime_kind: RequestLifetime["kind"];
   deadline_at: string | null;
   open_question_update_id: string | null;
+  payload_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -80,6 +82,7 @@ interface JoinRow {
   conversation_id: string | null;
   owner_agent_id: string;
   mode: CoordinationJoinMode;
+  wake_policy: CoordinationJoinWakePolicy;
   quorum: number;
   satisfying_outcomes_json: string;
   state: CoordinationJoinState;
@@ -130,6 +133,7 @@ export interface CoordinateV3Input {
     mode: CoordinationJoinMode;
     quorum?: number;
     satisfyingOutcomes?: CoordinationRequestState[];
+    wakePolicy?: CoordinationJoinWakePolicy;
     deadlineAt?: string;
     requestIds?: string[];
     /** Server-derived inbound requests that this join suspends and resumes. */
@@ -1055,6 +1059,7 @@ export class CoordinationV3Store {
         const quorum = mode === "all" ? memberRequestIds.length : mode === "any" ? 1 : input.join.quorum ?? 0;
         if (quorum < 1 || quorum > memberRequestIds.length) throw new Error("join quorum is outside request membership");
         const satisfying = input.join.satisfyingOutcomes ?? ["completed"];
+        const wakePolicy = input.join.wakePolicy ?? "final_only";
         if (satisfying.length === 0 || satisfying.some((state) => !TERMINAL_REQUEST_STATES.has(state))) {
           throw new Error("join satisfying outcomes must be terminal request states");
         }
@@ -1067,6 +1072,7 @@ export class CoordinationV3Store {
           mode,
           quorum,
           satisfyingOutcomes: [...new Set(satisfying)].sort(),
+          wakePolicy,
           deadlineAt: input.join.deadlineAt ?? null,
           continuationRequestIds: [...continuationRequestIds].sort(),
         });
@@ -1084,12 +1090,12 @@ export class CoordinationV3Store {
         }
         this.sqlite.prepare(`
           INSERT INTO coordination_joins (
-            id, project_id, conversation_id, owner_agent_id, mode, quorum,
+            id, project_id, conversation_id, owner_agent_id, mode, wake_policy, quorum,
             satisfying_outcomes_json, state, deadline_at, definition_hash,
             continuation_request_ids_json, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
         `).run(
-          joinId, input.projectId, input.conversationId ?? null, input.requesterAgentId, mode, quorum,
+          joinId, input.projectId, input.conversationId ?? null, input.requesterAgentId, mode, wakePolicy, quorum,
           stableJson([...new Set(satisfying)]), input.join.deadlineAt ?? null, definitionHash,
           stableJson(continuationRequestIds), now, now,
         );
@@ -1818,7 +1824,7 @@ export class CoordinationV3Store {
 
     const joinSelection = selection("join", "id");
     const joinRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT id, owner_agent_id, mode, quorum, satisfying_outcomes_json, state,
+      SELECT id, owner_agent_id, mode, wake_policy, quorum, satisfying_outcomes_json, state,
         deadline_at, created_at, updated_at, terminal_at
       FROM coordination_joins
       WHERE project_id = ? AND (? IS NULL OR conversation_id = ?) ${joinSelection.sql}
@@ -1827,7 +1833,7 @@ export class CoordinationV3Store {
       input.projectId, input.conversationId ?? null, input.conversationId ?? null,
       ...joinSelection.params, queryLimit,
     ) as Array<{
-      id: string; owner_agent_id: string; mode: string; quorum: number; satisfying_outcomes_json: string;
+      id: string; owner_agent_id: string; mode: string; wake_policy: CoordinationJoinWakePolicy; quorum: number; satisfying_outcomes_json: string;
       state: string; deadline_at: string | null; created_at: string; updated_at: string; terminal_at: string | null;
     }>);
     for (const row of joinRows) add({
@@ -1835,7 +1841,7 @@ export class CoordinationV3Store {
       title: "Waiting for work", summary: row.state === "open" ? "The Agent is holding until enough assigned work returns."
         : row.state === "satisfied" ? "The required results arrived." : `The wait ended ${row.state}.`,
       agentIds: [row.owner_agent_id], relatedItemIds: [],
-      ...(includeDetails ? { details: details(["Join ID", row.id], ["Mode", row.mode], ["Quorum", row.quorum],
+      ...(includeDetails ? { details: details(["Join ID", row.id], ["Mode", row.mode], ["Wake policy", row.wake_policy], ["Quorum", row.quorum],
         ["Accepted outcomes", inspectorJson(row.satisfying_outcomes_json)], ["Deadline", row.deadline_at], ["Terminal time", row.terminal_at]) } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at,
     });
@@ -2144,7 +2150,7 @@ export class CoordinationV3Store {
       state: string; version: number; deadline_at: string | null; updated_at: string;
     }>;
     const joins = this.sqlite.prepare(`
-      SELECT j.id, j.mode, j.quorum, j.state, j.deadline_at, j.updated_at,
+      SELECT j.id, j.mode, j.wake_policy, j.quorum, j.state, j.deadline_at, j.updated_at,
         COUNT(m.request_id) AS total,
         SUM(CASE WHEN r.state = 'completed' THEN 1 ELSE 0 END) AS completed
       FROM coordination_joins j
@@ -2153,7 +2159,7 @@ export class CoordinationV3Store {
       WHERE j.owner_agent_id = ?
       GROUP BY j.id ORDER BY j.updated_at DESC, j.id DESC LIMIT 100
     `).all(agentId) as Array<{
-      id: string; mode: CoordinationJoinMode; quorum: number; state: CoordinationJoinState;
+      id: string; mode: CoordinationJoinMode; wake_policy: CoordinationJoinWakePolicy; quorum: number; state: CoordinationJoinState;
       deadline_at: string | null; updated_at: string; total: number; completed: number;
     }>;
     const activations = this.sqlite.prepare(`
@@ -2183,7 +2189,7 @@ export class CoordinationV3Store {
         updatedAt: request.updated_at,
       })),
       joins: joins.map((join) => ({
-        id: join.id, mode: join.mode, quorum: join.quorum, state: join.state,
+        id: join.id, mode: join.mode, wakePolicy: join.wake_policy, quorum: join.quorum, state: join.state,
         completed: join.completed, total: join.total,
         ...(join.deadline_at ? { deadlineAt: join.deadline_at } : {}),
         updatedAt: join.updated_at,
@@ -3651,7 +3657,7 @@ export class CoordinationV3Store {
         scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
         kind: "coordination_question", priority: PRIORITY.urgent,
         dedupeKey: `request:${request.id}:question:${updateId}`,
-        payload: { requestId: request.id, questionUpdateId: updateId, update: updatePayload ?? null },
+        payload: { requestId: request.id, inReplyToUpdateId: updateId, update: updatePayload ?? null },
         sourceKind: "request_update", sourceId: updateId, now,
       });
       return;
@@ -3679,7 +3685,9 @@ export class CoordinationV3Store {
       });
       return;
     }
-    if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
+    const requestPayload = JSON.parse(request.payload_json) as { completionMode?: unknown } | null;
+    const recordOnly = requestPayload?.completionMode === "record";
+    if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && !recordOnly && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
         scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
@@ -3713,7 +3721,18 @@ export class CoordinationV3Store {
         requestIds,
         satisfyingOutcomes: JSON.parse(join.satisfying_outcomes_json) as CoordinationRequestState[],
       }, states);
-      if (next === join.state) continue;
+      if (next === join.state) {
+        const changedRequest = requestRows.find((row) => row.id === requestId);
+        if (
+          join.wake_policy === "each_result"
+          && changedRequest
+          && TERMINAL_REQUEST_STATES.has(changedRequest.state)
+          && this.agentSurvives(join.owner_agent_id)
+        ) {
+          this.createJoinActivation(join, "open", now, requestId);
+        }
+        continue;
+      }
       this.sqlite.prepare(`
         UPDATE coordination_joins SET state = ?, updated_at = ?, terminal_at = ?
         WHERE id = ? AND state = 'open'
@@ -3724,7 +3743,12 @@ export class CoordinationV3Store {
     }
   }
 
-  private createJoinActivation(join: JoinRow, state: CoordinationJoinState, now: string): void {
+  private createJoinActivation(
+    join: JoinRow,
+    state: CoordinationJoinState,
+    now: string,
+    progressRequestId?: string,
+  ): void {
     const outcomes = this.sqlite.prepare(`
       SELECT r.id AS request_id, r.state, r.payload_json AS request_payload_json,
         u.id AS update_id, u.kind AS update_kind,
@@ -3752,17 +3776,30 @@ export class CoordinationV3Store {
         request: JSON.parse(request.payload_json) as unknown,
       };
     });
+    const terminalCount = outcomes.filter((outcome) => TERMINAL_REQUEST_STATES.has(outcome.state)).length;
+    const visibleOutcomes = progressRequestId
+      ? outcomes.filter((outcome) => outcome.request_id === progressRequestId)
+      : outcomes;
+    const progress = {
+      terminal: terminalCount,
+      total: outcomes.length,
+      remaining: outcomes.length - terminalCount,
+      ...(progressRequestId ? { newlyTerminalRequestIds: [progressRequestId] } : {}),
+    };
+    const isProgress = state === "open" && Boolean(progressRequestId);
     this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
       scopeKey: this.coordinationScopeKey(join.conversation_id, join.owner_agent_id),
-      kind: `coordination_join_${state}`,
+      kind: isProgress ? "coordination_join_progress" : `coordination_join_${state}`,
       priority: state === "satisfied" ? PRIORITY.satisfied : PRIORITY.actionable,
-      dedupeKey: `join:${join.id}:terminal`,
+      dedupeKey: isProgress ? `join:${join.id}:progress:${progressRequestId}` : `join:${join.id}:terminal`,
       payload: {
         joinId: join.id,
         state,
-        outcomes: outcomes.map((outcome) => ({
+        wakePolicy: join.wake_policy,
+        progress,
+        outcomes: visibleOutcomes.map((outcome) => ({
           requestId: outcome.request_id,
           state: outcome.state,
           request: JSON.parse(outcome.request_payload_json) as unknown,
@@ -3777,7 +3814,9 @@ export class CoordinationV3Store {
         })),
         ...(continuations.length ? {
           continuations,
-          continuationInstruction: "Integrate the joined outcomes, then terminally update every nonterminal continuation request before ending this Run. Sending a message does not fulfill a correlated request.",
+          continuationInstruction: isProgress
+            ? "Act on the newly returned outcome while other aggregate work continues. Do not terminally update a continuation request while this Join remains open. When no independent work remains, end this Run to return to durable waiting."
+            : "Integrate the joined outcomes, then terminally update every nonterminal continuation request before ending this Run. Sending a message does not fulfill a correlated request.",
         } : {}),
       },
       sourceKind: "join",
@@ -4154,6 +4193,24 @@ export class CoordinationV3Store {
       WHERE attached.run_id = ?
         AND request.recipient_agent_id = run.agent_id
         AND request.state IN (${continuationPlaceholders})
+        AND NOT EXISTS (
+          SELECT 1
+          FROM coordination_joins open_join
+          JOIN json_each(open_join.continuation_request_ids_json) open_continuation
+          WHERE open_join.owner_agent_id = run.agent_id
+            AND open_join.state = 'open'
+            AND open_continuation.value = request.id
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM activation_sources terminal_source
+          JOIN agent_activations terminal_activation
+            ON terminal_activation.id = terminal_source.activation_id
+          WHERE terminal_source.source_kind = 'join'
+            AND terminal_source.source_id = join_record.id
+            AND terminal_activation.kind IN ('coordination_join_satisfied', 'coordination_join_impossible')
+            AND terminal_activation.state IN ('pending', 'retry_pending', 'leased')
+        )
     `).all(runId, ...continuationEligibleStates) as Array<{ id: string }>;
     const related = [...new Map([...rows, ...continuationRows].map((row) => [row.id, row])).values()];
     for (const row of related) this.updateRequest({

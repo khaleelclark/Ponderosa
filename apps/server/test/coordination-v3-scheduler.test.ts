@@ -245,6 +245,29 @@ describe("Communication V3 central scheduler", () => {
     expect(prompt).not.toContain("x".repeat(501));
   });
 
+  it("renders exact question correlation and intermediate Join obligations", () => {
+    const prompt = formatActivationPrompt({
+      runId: "run", projectId, agentId: agentA, scopeKey: "conversation:test", fencingToken: 1,
+      leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
+      injectionId: "injection", activationIds: ["question", "progress"],
+      activations: [
+        {
+          id: "question", kind: "coordination_question", priority: 90,
+          dispatchPolicy: "next_run", promptClass: "coordination",
+          payload: { requestId: "request", inReplyToUpdateId: "question-update" },
+        },
+        {
+          id: "progress", kind: "coordination_join_progress", priority: 70,
+          dispatchPolicy: "next_run", promptClass: "coordination",
+          payload: { joinId: "join", state: "open" },
+        },
+      ],
+    });
+    expect(prompt).toContain('inReplyToUpdateId:"question-update"');
+    expect(prompt).toContain("intermediate aggregate result");
+    expect(prompt).toContain("do not terminally update a continuation");
+  });
+
   it("waits for an in-flight drain before shutdown completes", async () => {
     store.enqueueMessageActivation({
       projectId, agentId: agentA, messageId: "shutdown", kind: "human", payload: { text: "Wake" },

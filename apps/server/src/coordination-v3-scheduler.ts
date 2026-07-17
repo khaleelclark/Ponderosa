@@ -251,6 +251,14 @@ export function formatActivationPrompt(
   let remaining = maxChars;
   const materialized = ordered.map((activation, index) => {
     const serialized = JSON.stringify(activation.payload);
+    const payload = activation.payload && typeof activation.payload === "object"
+      ? activation.payload as Record<string, unknown>
+      : {};
+    const activationInstruction = activation.kind === "coordination_join_progress"
+      ? "This is an intermediate aggregate result. Act on it now, but do not terminally update a continuation while the Join remains open; end the Run to return to durable waiting when no independent work remains."
+      : activation.kind === "coordination_question" && typeof payload.inReplyToUpdateId === "string"
+        ? `Answer this exact question with ponderosa_update_request({kind:\"answer\", text:\"<answer>\", inReplyToUpdateId:\"${payload.inReplyToUpdateId}\"}).`
+        : undefined;
     const available = Math.max(0, Math.min(maxInlineChars, remaining));
     const inline = serialized.length <= available ? serialized : serialized.slice(0, available);
     remaining -= inline.length;
@@ -262,6 +270,7 @@ export function formatActivationPrompt(
       `- priority: ${activation.priority}`,
       `- promptClass: ${activation.promptClass}`,
       `- payload: ${inline}${overflow ? "…" : ""}`,
+      ...(activationInstruction ? [`- action: ${activationInstruction}`] : []),
       ...(overflow ? [
         `- overflow: explicit (${serialized.length - inline.length} characters omitted from this prompt only)`,
         `- fullResultRef: ponderosa://activation/${activation.id}`,
@@ -279,7 +288,7 @@ export function formatActivationPrompt(
     ] : []),
     "Ordinary runtime output is only a Work log. For an uncorrelated human or Agent message, reply with ponderosa_message({text}); Ponderosa inherits the canonical route for this Run.",
     "For an inbound correlated Request, report its canonical result with ponderosa_update_request({text}), or ask its requester a blocking follow-up with ponderosa_update_request({question}). Ponderosa selects the sole attached Request and generates stable idempotency. Use advanced fields only for multiple Requests or other update kinds.",
-    "A join activation may include continuations: inbound parent requests suspended while you waited for child work. After integrating the joined outcomes, terminally update every nonterminal continuation with ponderosa_update_request before ending. ponderosa_message does not complete a correlated request.",
+    "A terminal join activation may include continuations: inbound parent requests suspended while you waited for child work. After integrating the final joined outcomes, terminally update every nonterminal continuation with ponderosa_update_request before ending. Intermediate coordination_join_progress activations preserve those continuations and return them to durable waiting when the Run ends.",
     "Recipients do not inherit a requester's hidden prompt or provider-session context. Work only from the durable request payload and referenced artifacts; ask one blocking question when required information is genuinely absent.",
     "Keep bounded work bounded: inspect only what the request needs, verify once, publish one terminal result after work and edits are complete, then stop.",
     "For an outbound request, do not repeat or forward the recipient's update; consume its outcome directly. Only the requester or user may answer, cancel, or supersede it.",

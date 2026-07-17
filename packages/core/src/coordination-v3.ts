@@ -145,6 +145,7 @@ export function reduceCoordinationRequest(
 }
 
 export type CoordinationJoinMode = "all" | "any" | "quorum";
+export type CoordinationJoinWakePolicy = "each_result" | "final_only";
 export type CoordinationJoinState = "open" | "satisfied" | "impossible" | "expired" | "cancelled";
 
 export interface CoordinationJoinSnapshot {

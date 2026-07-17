@@ -188,6 +188,7 @@ export const coordinationJoins = sqliteTable("coordination_joins", {
   conversationId: text("conversation_id"),
   ownerAgentId: text("owner_agent_id").notNull(),
   mode: text("mode").notNull(),
+  wakePolicy: text("wake_policy").notNull().default("final_only"),
   quorum: integer("quorum").notNull(),
   satisfyingOutcomesJson: text("satisfying_outcomes_json").notNull(),
   state: text("state").notNull(),

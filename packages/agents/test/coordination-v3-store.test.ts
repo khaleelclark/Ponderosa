@@ -525,6 +525,8 @@ describe("CoordinationV3Store transactions", () => {
     `).get(requesterId) as { payload_json: string };
     expect(JSON.parse(joinActivation.payload_json)).toEqual({
       joinId: "both",
+      wakePolicy: "final_only",
+      progress: { terminal: 2, total: 2, remaining: 0 },
       outcomes: [
         { requestId: "a", state: "completed", request: null, update: {
           id: "done-a", kind: "completed", payload: null, createdAt: expect.any(String),
@@ -539,6 +541,65 @@ describe("CoordinationV3Store transactions", () => {
       requestId: "b", updateId: "done-b", kind: "completed",
       actor: { kind: "agent", id: recipientB }, payload: { text: "B finished the review." },
     }).replayed).toBe(true);
+  });
+
+  it("streams aggregate join progress once per terminal member before one final wake", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "streaming-join", requests: [
+        { requestId: "stream-a", recipientAgentId: recipientA, lifetime: indefinite, payload: { text: "A" } },
+        { requestId: "stream-b", recipientAgentId: recipientB, lifetime: indefinite, payload: { text: "B" } },
+      ],
+      join: { id: "stream-both", mode: "all", wakePolicy: "each_result" },
+    });
+
+    store.updateRequest({
+      requestId: "stream-a", updateId: "stream-a-done", kind: "completed",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "A done" },
+    });
+    expect(opened.client.prepare("SELECT state, wake_policy FROM coordination_joins WHERE id = 'stream-both'").get())
+      .toEqual({ state: "open", wake_policy: "each_result" });
+    const progress = opened.client.prepare(`
+      SELECT payload_json FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_join_progress'
+    `).get(requesterId) as { payload_json: string };
+    expect(JSON.parse(progress.payload_json)).toMatchObject({
+      joinId: "stream-both", state: "open", wakePolicy: "each_result",
+      progress: { terminal: 1, total: 2, remaining: 1, newlyTerminalRequestIds: ["stream-a"] },
+      outcomes: [{ requestId: "stream-a", state: "completed" }],
+    });
+
+    store.updateRequest({
+      requestId: "stream-b", updateId: "stream-b-done", kind: "completed",
+      actor: { kind: "agent", id: recipientB }, payload: { text: "B done" },
+    });
+    expect(opened.client.prepare(`
+      SELECT kind, COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind LIKE 'coordination_join_%'
+      GROUP BY kind ORDER BY kind
+    `).all(requesterId)).toEqual([
+      { kind: "coordination_join_progress", count: 1 },
+      { kind: "coordination_join_satisfied", count: 1 },
+    ]);
+  });
+
+  it("records terminal record-only outcomes without waking the requester", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "record-only", requests: [{
+        requestId: "record-only", recipientAgentId: recipientA, lifetime: indefinite,
+        payload: { text: "Background inventory", completionMode: "record" },
+      }],
+    });
+    store.updateRequest({
+      requestId: "record-only", updateId: "record-only-done", kind: "completed",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Inventory saved" },
+    });
+    expect(store.getRequest("record-only")).toMatchObject({ state: "completed" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_outcome'
+    `).get(requesterId)).toEqual({ count: 0 });
   });
 
   it("keeps request deadlines independent from join deadlines", () => {
@@ -595,6 +656,64 @@ describe("CoordinationV3Store transactions", () => {
 });
 
 describe("CoordinationV3Store scheduler", () => {
+  it("preserves a parent continuation across intermediate aggregate progress Runs", () => {
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "stream-parent", requests: [
+        { requestId: "stream-parent", recipientAgentId: recipientA, lifetime: indefinite },
+      ],
+    });
+    const parentRun = store.leaseNextRun({ workerId: "parent" })!;
+    acknowledgeLease(parentRun);
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: recipientA,
+      actorScope: `agent:${recipientA}:run:${parentRun.runId}`,
+      idempotencyKey: "stream-children", requests: [
+        { requestId: "stream-child-a", recipientAgentId: recipientB, lifetime: indefinite },
+        { requestId: "stream-child-b", recipientAgentId: requesterId, lifetime: indefinite },
+      ],
+      join: {
+        id: "stream-children", mode: "all", wakePolicy: "each_result",
+        continuationRequestIds: ["stream-parent"],
+      },
+    });
+    store.completeRun(parentRun.runId, parentRun.fencingToken);
+
+    const childOne = store.leaseNextRun({ workerId: "child-one" })!;
+    const childTwo = store.leaseNextRun({ workerId: "child-two" })!;
+    acknowledgeLease(childOne);
+    acknowledgeLease(childTwo);
+    const firstRequest = store.requestIdsAttachedToRun(childOne.runId, childOne.agentId)[0]!;
+    store.updateRequest({
+      requestId: firstRequest, updateId: `${firstRequest}:done`, kind: "completed",
+      actor: { kind: "agent", id: childOne.agentId }, payload: { text: "first" },
+    });
+    store.completeRun(childOne.runId, childOne.fencingToken);
+
+    const progressRun = store.leaseNextRun({ workerId: "parent-progress" })!;
+    expect(progressRun.agentId).toBe(recipientA);
+    expect(progressRun.activations.map((activation) => activation.kind)).toEqual(["coordination_join_progress"]);
+    acknowledgeLease(progressRun);
+    const secondRequest = store.requestIdsAttachedToRun(childTwo.runId, childTwo.agentId)[0]!;
+    store.updateRequest({
+      requestId: secondRequest, updateId: `${secondRequest}:done`, kind: "completed",
+      actor: { kind: "agent", id: childTwo.agentId }, payload: { text: "second" },
+    });
+    store.completeRun(childTwo.runId, childTwo.fencingToken);
+    // The final wake may arrive while the parent is still handling an earlier
+    // progress wake. Ending that progress Run must not strand the parent.
+    store.completeRun(progressRun.runId, progressRun.fencingToken);
+    expect(store.getRequest("stream-parent")).toMatchObject({ state: "waiting_dependency" });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates
+      WHERE request_id = 'stream-parent' AND kind = 'outcome_unknown'
+    `).get()).toEqual({ count: 0 });
+
+    const finalRun = store.leaseNextRun({ workerId: "parent-final" })!;
+    expect(finalRun.agentId).toBe(recipientA);
+    expect(finalRun.activations.map((activation) => activation.kind)).toEqual(["coordination_join_satisfied"]);
+  });
+
   it("suspends and reattaches an inbound request across a nested join", () => {
     store.coordinate({
       projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
