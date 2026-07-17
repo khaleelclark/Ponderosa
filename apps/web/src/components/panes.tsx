@@ -742,7 +742,7 @@ export function ChatPane({
           if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
-      sx={{ p: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(820px, 100%)", alignSelf: "center" } }}
+      sx={{ px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(1120px, 100%)", alignSelf: "center" } }}
     >
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
@@ -765,15 +765,15 @@ export function ChatPane({
           tabIndex={-1}
           sx={{
             alignSelf: "center",
-            width: "min(820px, 100%)",
+            width: "min(1120px, 100%)",
             maxWidth: "100%",
             minWidth: 0,
             py: { xs: 0.75, sm: 1 },
           }}
         >
           <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
-            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: "action.selected", color: "primary.light", border: 1, borderColor: "divider", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-            <Box sx={{ minWidth: 0, width: fromUser ? "min(72%, 620px)" : "min(100%, 740px)" }}>
+            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#22312B" : "#F1EEE5", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+            <Box sx={{ minWidth: 0, width: fromUser ? "min(78%, 780px)" : "min(100%, 960px)" }}>
               {!fromUser ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
                 <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
                 <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
@@ -785,10 +785,9 @@ export function ChatPane({
                   px: fromUser ? { xs: 1.25, sm: 1.5 } : 0,
                   py: fromUser ? { xs: 1, sm: 1.15 } : 0,
                   borderRadius: 2,
-                  bgcolor: fromUser ? "action.hover" : "transparent",
+                  bgcolor: fromUser ? (theme) => theme.palette.mode === "dark" ? "#24352E" : "#F1EEE5" : "transparent",
                   color: "text.primary",
-                  border: 1,
-                  borderColor: fromUser ? "divider" : "transparent",
+                  border: 0,
                 }}
               >
             {fromUser ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name="You" /></Box> : null}
@@ -2032,7 +2031,7 @@ export function Composer({
         border: 1,
         borderColor: "divider",
         borderRadius: { xs: 2, sm: 2.25 },
-        width: { xs: "calc(100% - 16px)", sm: "min(880px, calc(100% - 24px))" },
+        width: { xs: "calc(100% - 16px)", sm: "calc(100% - 32px)", md: "min(1180px, calc(100% - 48px))", xl: "min(1240px, calc(100% - 64px))" },
         mx: "auto",
         mt: { xs: 0.75, sm: 1 },
         mb: { xs: 1, sm: 1.5 },
@@ -2043,7 +2042,7 @@ export function Composer({
         px: { xs: 1, sm: 1.5 },
         pt: { xs: 1, sm: 1.25 },
         pb: "max(10px, env(safe-area-inset-bottom))",
-        boxShadow: "0 12px 34px rgba(0,0,0,.18)",
+        boxShadow: (theme) => theme.palette.mode === "dark" ? "0 10px 30px rgba(3,8,6,.18)" : "0 10px 30px rgba(33,45,38,.09)",
       }}
     >
       {guidance ? (

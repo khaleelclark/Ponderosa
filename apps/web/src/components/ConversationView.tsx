@@ -141,11 +141,11 @@ export function ConversationMessage({
       className="chat-message"
       aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
-      sx={{ alignSelf: "center", width: "min(820px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
+      sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
-        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: "action.selected", color: "primary.light", border: 1, borderColor: "divider", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-        <Box sx={{ minWidth: 0, width: fromManager ? "min(72%, 620px)" : "min(100%, 740px)" }}>
+        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#22312B" : "#F1EEE5", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+        <Box sx={{ minWidth: 0, width: fromManager ? "min(78%, 780px)" : "min(100%, 960px)" }}>
           {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
             <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
             <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
@@ -164,10 +164,9 @@ export function ConversationMessage({
               px: fromManager ? { xs: 1.25, sm: 1.5 } : 0,
               py: fromManager ? { xs: 1, sm: 1.15 } : 0,
               borderRadius: 2,
-              bgcolor: fromManager ? "action.hover" : "transparent",
+              bgcolor: fromManager ? (theme) => theme.palette.mode === "dark" ? "#24352E" : "#F1EEE5" : "transparent",
               color: "text.primary",
-              border: 1,
-              borderColor: fromManager ? "divider" : "transparent",
+              border: 0,
             }}
           >
         {fromManager && message.role === "user" ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={operatorProfile?.displayName ?? "You"} /></Box> : null}
@@ -841,8 +840,8 @@ export function ConversationView({
           />
         </Stack>
         <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
-          <Button color="inherit" aria-pressed={activeView === "main"} aria-label="Switch to project chat" onClick={() => { clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: activeView === "main" ? "primary.light" : "text.secondary", "&::after": activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
-          <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "primary.light" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
+          <Button color="inherit" aria-pressed={activeView === "main"} aria-label="Switch to project chat" onClick={() => { clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: activeView === "main" ? "text.primary" : "text.secondary", "&::after": activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
+          <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
           <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => setAgentsOpen(true)} aria-haspopup="dialog" aria-expanded={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ px: 1.5, color: "text.secondary" }}>Agents</Button>
         </Stack>
       </Box>
@@ -867,7 +866,7 @@ export function ConversationView({
           }}
           sx={{ height: "100%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
         >
-        <Box data-chat-column sx={{ width: "min(900px, 100%)", mx: "auto", p: { xs: 1, sm: 1.5 }, pb: 3 }}>
+        <Box data-chat-column sx={{ width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
           </Alert> : null}

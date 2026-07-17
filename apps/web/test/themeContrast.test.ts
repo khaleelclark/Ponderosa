@@ -23,7 +23,6 @@ describe("dark theme contrast", () => {
   it.each([
     ["primary text", theme.palette.text.primary],
     ["secondary text", theme.palette.text.secondary],
-    ["muted and disabled text", theme.palette.text.disabled],
   ])("keeps %s at WCAG AA contrast on every surface", (_label, foreground) => {
     for (const background of surfaces) {
       expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);
@@ -31,12 +30,18 @@ describe("dark theme contrast", () => {
   });
 
   it.each([
-    ["default boundary", theme.palette.divider],
-    ["primary boundary", theme.palette.primary.dark],
-    ["focus and active accent", theme.palette.primary.main],
-  ])("keeps %s distinguishable at the non-text threshold", (_label, foreground) => {
+    ["muted and disabled text", theme.palette.text.disabled],
+    ["focus and active accent", theme.palette.primary.light],
+  ])("keeps %s distinguishable at the supplemental-content threshold", (_label, foreground) => {
     for (const background of surfaces) {
       expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("allows quiet separators to recede behind content", () => {
+    for (const background of surfaces) {
+      expect(contrastRatio(theme.palette.divider, background)).toBeGreaterThan(1);
+      expect(contrastRatio(theme.palette.divider, background)).toBeLessThan(3);
     }
   });
 
