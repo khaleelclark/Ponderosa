@@ -199,9 +199,9 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
               }}
               sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}
             >
-              <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "primary.light", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
+              <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "secondary.main", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
               <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="overline" color="primary.light" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
+                <Typography variant="overline" color="secondary.main" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
                 <Typography variant="subtitle2" noWrap>{conversation?.title ?? (group.projectId ? "Project notifications" : "Operations")}</Typography>
               </Stack>
               {groupUnread ? <Badge color="primary" badgeContent={groupUnread} sx={{ mr: 1 }} /> : null}
