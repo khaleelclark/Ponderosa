@@ -25,6 +25,11 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
   request IDs, and a reason to run is an Activation. A human or urgent activation
   never implicitly cancels an existing Join. Behavior is never inferred from
   message text.
+- The common provider reply may omit routing fields only when the owning Run has
+  one canonical incoming Communication. The server inherits its audience,
+  Project-chat scope, and visibility from that Activation. It never infers them
+  from prose, rendered handles, provider memory, or the initiating UI surface;
+  absent or conflicting authority fails closed and requires an explicit intent.
 - Sent collaboration is auditable in the author's Agent chat as well as each
   recipient's Agent chat.
 - Completed ordinary output belongs to the originating Run and appears in Work

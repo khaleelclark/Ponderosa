@@ -92,10 +92,13 @@ pay-per-token provider API keys.
    begin with a new provider session and an empty Direct Agent history regardless
    of display-name reuse; deleted-room events are inert and fail closed.
 
-   A plain Project-chat request starts shared work. The responsible agent must use
-   an explicit Broadcast for a completed answer or result, an explicit Direct
-   Message for a question or private manager update, and explicit Collaboration
-   for agent recipients. Its ordinary runtime response is not communication.
+   A plain Project-chat request starts shared work. For the common response path,
+   the responsible agent calls `ponderosa_message({text})`; the server inherits
+   Broadcast versus private user scope only from the canonical incoming
+   Activation. Explicit Broadcast, Direct Message, and Collaboration fields are
+   reserved for a separate/advanced communication or an ambiguous Run. Routing
+   is never inferred from prose, handles, provider memory, or UI location. Its
+   ordinary runtime response is not communication.
 
    A fresh provider session must receive the bounded canonical history selected
    for that turn even when the adapter uses a persistent transport. Generated
@@ -106,6 +109,10 @@ pay-per-token provider API keys.
    Every provider turn records the exact submitted text, its SHA-256 hash, and a
    structured source manifest. The manifest is the default inspection surface;
    exact text is sensitive and remains behind an explicit operator action.
+   Prompt sections must declare whether they are authoritative policy/identity,
+   action-required work, relevant bounded history, or on-demand references.
+   Do not flatten full Team rosters or unrelated Project-chat histories into a
+   fresh session. Retrieve them through Run-scoped capabilities when needed.
 
 6. **Project chat stays human-facing.** It is the user's conversation and the
    project's curated shared timeline. Do not dump collaboration traffic, tool

@@ -100,6 +100,14 @@ evidence known only to remain in a continued provider session. Unsent queued
 messages and unrelated artifacts appear in neither category, and historical
 manifest records remain readable after the schema evolves.
 
+The default provider context is deliberately shaped into four inspectable
+classes: authoritative identity and policy, action-required current work,
+relevant bounded history, and on-demand references. Policy is versioned and sent
+once per provider-session epoch. Full Team rosters and older scoped history are
+retrieved through Run-bound capabilities instead of being serialized into every
+prompt. Ponderosa records exactly what it submitted and never claims visibility
+into additional opaque context retained by Codex or Claude.
+
 Workspace and Project rules have explicit precedence and are stored by
 Ponderosa. Global provider switches hold queued work without sacrificing Runs.
 Provider denial remains a separate durable availability fact. The operator has

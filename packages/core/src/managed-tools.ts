@@ -13,20 +13,26 @@ const REQUEST_LIFETIME_SCHEMA = {
   ],
 } as const;
 
-/** Communication V3 provider surface. Keep this to three tools: coordination
- * is asynchronous by default and an optional join is part of the same call. */
+/** Communication V3 provider surface. Keep this to three tools: the common
+ * delegation waits through an atomic Join, while the advanced form controls
+ * asynchronous requests and optional joins explicitly. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Create correlated requests with {idempotencyKey, requests:[{recipientAgentId,text,lifetime}], optional join}; immutably join previously created owned requests with {idempotencyKey, requests:[], join:{mode,requestIds}}; or inspect overflow activation IDs. Each request text must be self-contained because recipients do not inherit your hidden prompt: include exact constraints, values, artifact paths, and requested output. Do not use recipient/objective/context fields. Every new request needs an explicit lifetime. A successful result containing joinId means the join already exists; do not call coordinate again for it.",
+  description: "Delegate common tracked work with {recipientAgentId,text}; Ponderosa supplies stable idempotency, an indefinite lifetime, and (unless awaitResult:false) an all-results Join. The text must be self-contained because the recipient does not inherit your hidden prompt. Use the advanced requests/join form only for fan-out, deadlines, quorum/any joins, background requests, recovery, or inspection. A returned joinId already exists; do not create it again.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     oneOf: [
-      { required: ["idempotencyKey", "requests"] },
+      { required: ["recipientAgentId", "text"] },
+      { required: ["requests"] },
       { required: ["inspectActivationIds"] },
     ],
     properties: {
-      idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for the common delegation form." },
+      recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Common delegation recipient stable Agent ID." },
+      text: { type: "string", minLength: 1, maxLength: 4000, description: "Common self-contained assignment, question, or consultation." },
+      awaitResult: { type: "boolean", description: "Common delegation defaults true and creates an all-results Join. Set false only for background work." },
+      deadlineAt: { type: "string", description: "Optional common-request deadline. Omit for an indefinite lifetime." },
       requests: {
         type: "array", minItems: 0, maxItems: 100,
         description: "New requests. Use an empty array only when join.requestIds names existing requests owned by you.",
@@ -70,23 +76,24 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Append one authorized, idempotent update to a correlated request. A terminal update is the canonical final handoff: completed, blocked, or failed requires a self-contained text result and replaces a separate ordinary report/message. Omit requestId when the current run has exactly one attached correlated request; Ponderosa resolves it authoritatively. Supply the exact requestId when the run contains multiple attached requests. A requester may also cancel or supersede an exact outbound background request it owns from a later authoritative Run; no other historical Request mutation is allowed. A recipient answers the request itself with completed (including when the request text is a consultation question). question means the recipient is asking the original requester for missing information. answer is only the original requester replying to that question and must reference the question updateId.",
+  description: "Report the canonical result of the current correlated Request with {text}, or ask its requester a blocking follow-up with {question}. Ponderosa resolves the sole attached Request, generates stable idempotency, and defaults text to completed. Add kind only for progress, waiting, blocked/failed, answer, cancellation, or supersession. Supply requestId only when the Run has multiple attached Requests or when mutating an exact authorized historical outbound Request.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["updateId", "kind"],
+    anyOf: [{ required: ["text"] }, { required: ["question"] }, { required: ["kind"] }],
     properties: {
       requestId: {
         type: "string", minLength: 1, maxLength: 200,
         description: "Optional when exactly one correlated request is attached to this run. Required, and matched exactly, when multiple requests are attached.",
       },
-      updateId: { type: "string", minLength: 1, maxLength: 200 },
+      updateId: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable update ID for the common report form." },
       kind: {
         type: "string",
         enum: ["progress", "waiting_dependency", "dependency_resolved", "question", "answer", "completed", "blocked", "failed", "cancelled", "superseded"],
         description: "Use completed for the recipient's result/reply. Use question only for a recipient's blocking follow-up; use answer only for the original requester's correlated response.",
       },
       text: { type: "string", maxLength: 4000 },
+      question: { type: "string", minLength: 1, maxLength: 4000, description: "Common blocking follow-up to the original requester; maps to a correlated question update." },
       inReplyToUpdateId: { type: "string", minLength: 1, maxLength: 200 },
     },
   },
@@ -94,11 +101,11 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Send an uncorrelated Ponderosa message with exactly {intent,text,idempotencyKey}. intent is exactly broadcast, direct_to_user, or collaboration; never use intent:user_dm or a direct_to_user boolean. collaboration additionally requires recipientAgentIds as an array, even for one recipient; never use singular recipientAgentId. Use coordinate, not message, when work needs a tracked outcome. After terminally updating a correlated request, an ordinary message to its requester is a passive audit copy; use urgency:urgent only for a material correction that truly requires action.",
+  description: "Reply to the current uncorrelated activation with {text}. Ponderosa inherits the audience, conversation, visibility, and stable idempotency when there is one unambiguous reply target. Use explicit intent only to publish a separate organizational Broadcast, contact different Agents, or resolve an ambiguous/non-message activation. Use coordinate for tracked work and update_request for a correlated result.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["intent", "text", "idempotencyKey"],
+    required: ["text"],
     properties: {
       intent: {
         type: "string", enum: ["broadcast", "direct_to_user", "collaboration"],
@@ -114,7 +121,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         description: "Required for collaboration. Always an array, including one recipient.",
       },
       urgency: { type: "string", enum: ["ordinary", "urgent"] },
-      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Stable key for this logical message and its exact retries." },
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for an inferred reply." },
       document: {
         type: "object", additionalProperties: false, required: ["title", "content"],
         properties: {
@@ -165,10 +172,10 @@ export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
  * action; it does not pretend the host sandbox structurally forbids the work. */
 export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_decision",
-  description: "Ask the user for one durable Decision. Use approval for permission, choice for Agent-defined options, or text for an open answer. Every approval/choice includes a Something else path. Set blocking true only when no safe independent work remains; end the turn after creating a blocking Decision. Structural deletion, re-parenting, or promotion must use a Decision before the management action.",
+  description: "Ask the user one durable question with {question}. Ponderosa derives stable idempotency and defaults to an open text answer; providing options defaults to choice. Use mode:approval for permission. Every approval/choice includes a Something else path. Set blocking false when safe independent work remains. Structural deletion, re-parenting, or promotion must use a Decision first.",
   inputSchema: {
     type: "object", additionalProperties: false,
-    required: ["idempotencyKey", "mode", "question"],
+    required: ["question"],
     properties: {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
       mode: { type: "string", enum: ["approval", "choice", "text"] },

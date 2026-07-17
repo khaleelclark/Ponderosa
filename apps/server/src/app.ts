@@ -60,6 +60,7 @@ import type {
   AgentStreamEvent,
   SendAgentMessageRequest,
   AgentDto,
+  MessageDto,
   MessageReferenceDto,
   RuntimeSession,
   UpdateAgentOrganizationRequest,
@@ -448,6 +449,13 @@ interface AgentMessageCapability {
   mentionTrail: string[];
   /** Completed Broadcasts answering a plain shared Master request render as ordinary chat prose. */
   plainSharedReply?: boolean;
+  /** Canonical reply route inferred from the Activation that owns this Run. */
+  defaultReply?: {
+    intent: "broadcast" | "direct_to_user" | "collaboration";
+    recipientAgentIds?: string[];
+  };
+  /** One material inferred reply is allowed; exact retries replay it. */
+  inferredReplyFingerprint?: string;
 }
 
 interface InboundMessageContext {
@@ -467,6 +475,10 @@ const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
 const MAX_ATTACHMENTS_PER_MESSAGE = 4;
+
+function derivedRunActionKey(runId: string, action: string, payload: unknown): string {
+  return `auto:${createHash("sha256").update(`${runId}\0${action}\0${JSON.stringify(payload)}`).digest("hex")}`;
+}
 
 function secretEqual(provided: string | undefined, expected: string): boolean {
   if (provided === undefined) return false;
@@ -551,7 +563,7 @@ function inboundContext(
 
 function messageContextPrompt(context: InboundMessageContext): string[] {
   return [
-    "Incoming message metadata:",
+    "[ROUTING · CURRENT TURN | AUTHORITATIVE]",
     `- channel: ${context.channel}`,
     `- author: ${context.author}`,
     `- tagged agents: ${context.mentionedAgents.join(", ") || "none"}`,
@@ -592,6 +604,14 @@ export function boundedSeedHistory<T extends { text: string }>(
   return selected.reverse();
 }
 
+function contextSection(
+  name: string,
+  priority: "AUTHORITATIVE" | "ACTION REQUIRED" | "RELEVANT BACKGROUND" | "ON-DEMAND REFERENCE",
+  lines: string[],
+): string {
+  return [`[${name} | ${priority}]`, ...lines].join("\n");
+}
+
 /**
  * Bind every turn to one canonical agent/execution identity. Runtime sessions
  * may be resumed and display names may be reused, so neither provider memory
@@ -601,37 +621,30 @@ export function runtimeIdentityPrompt(
   agent: Pick<AgentDto, "id" | "title" | "projectId">,
   executionId: string,
 ): string {
-  return [
-    "Canonical Ponderosa runtime identity (authoritative for this turn):",
+  return contextSection("IDENTITY · CURRENT RUN", "AUTHORITATIVE", [
     `- your agent id: ${agent.id}`,
     `- your display name: ${agent.title}`,
     `- your project id: ${agent.projectId}`,
     `- your execution id: ${executionId}`,
     `You are exactly ${agent.title} (${agent.id}). Never claim another visible agent's name or identity.`,
     "Visible-agent metadata describes possible recipients, not alternate identities for you.",
-  ].join("\n");
+  ]);
 }
 
 function communicationV3Prompt(): string[] {
   return [
-    "Communication V3 separates messages, correlated requests, joins, activations, and runs.",
-    "Your ordinary runtime response is Work log only. Explicitly use ponderosa_message when a user, agent, or the organization needs uncorrelated information.",
-    "Use ponderosa_coordinate for tracked work or consultation. In every request JSON object, include lifetime: {kind: \"indefinite\"} unless it has a real deadline, in which case use {kind: \"deadline\", at: <ISO timestamp>}.",
-    "Every coordination request must be self-contained. The recipient receives the request text and durable activation payload, not your hidden prompt or provider-session context. Include exact constraints, values, artifact paths, and the requested output; never refer only to \"the constraints above\" or similar missing context.",
-    "A coordination request does not make you wait. Add the optional join only when your next action depends on all, any, or a quorum of the request outcomes.",
-    "Prefer creating related requests and their join in one coordinate call. If valid requests were already created separately, recover without duplicating them by calling coordinate with a new idempotencyKey, requests: [], and join: {mode, requestIds: [their returned IDs]}.",
-    "When a successful coordinate result contains joinId, that join already exists. Do not create or recover it again; end the turn if no other action remains.",
-    "If an activation contains fullResultRef, call ponderosa_coordinate with inspectActivationIds containing those activation IDs to retrieve the complete durable payload.",
-    "Use ponderosa_update_request for progress, temporary waiting_dependency, dependency_resolved, one blocking question, a correlated answer, or a terminal outcome. When this run has exactly one attached correlated request, omit requestId so Ponderosa resolves it from authoritative run state; provide an exact requestId only when multiple requests are attached. As a request recipient, reply to the request itself with completed—even when its text is a consultation question. Use question only to ask the original requester for missing information; answer is only the original requester replying to that question and references the question updateId.",
-    "A terminal request update is a commit point: finish the request's edits and final checks first; afterward, do not change request-owned work or send a duplicate follow-up message because the requester receives the outcome through its join.",
-    "An ordinary message to that requester after your terminal update is retained as a passive audit copy and does not wake them. If you discover a genuinely material correction that requires action, send it with urgency urgent; do not use urgency to repeat or embellish the committed result.",
-    "Questions use a stable updateId; answers must reference it with inReplyToUpdateId. blocked is terminal; waiting_dependency is temporary.",
-    "A human message, question, or urgent event never cancels your existing joins. Handle the activation and return to waiting when a join remains unresolved.",
-    "Keep bounded work context-bounded: inspect only necessary resources with targeted queries and bounded ranges; never load an entire large artifact or unbounded log/diff when a focused view will do. Avoid rereading unchanged material, run final verification once, then publish the terminal update and stop.",
-    "Do not poll, sleep, send acknowledgments, or create progress-only wakeups. End the turn after creating a join when no other action remains.",
-    "Only these three communication tools exist: ponderosa_coordinate, ponderosa_update_request, and ponderosa_message. ponderosa_decision is a separate operator-attention capability, not a message.",
+    "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
+    "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
+    "Common delegation: ponderosa_coordinate({recipientAgentId,text}). It creates one tracked Request and, by default, a Join that wakes you with the outcome.",
+    "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
+    "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
+    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
+    "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
+    "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
+    "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
+    "Full older context, live Team identities, and overflow Activation payloads are retrievable from their run-scoped Ponderosa references.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
-    'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" using the Bearer token.',
+    'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" and older scoped messages with GET "$PONDEROSA_AGENT_CONTEXT_URL" using the Bearer token.',
   ];
 }
 
@@ -665,37 +678,30 @@ function normalizedRuntimeSelection(adapter: Adapter, model?: string, effort?: s
 }
 
 function sharedRequestCompletionPrompt(): string {
-  return [
-    "Required completion contract for this Project-chat request:",
-    "- Before this run ends, send exactly one broadcast containing the final answer, completed result, or material blocker for the user.",
-    "- The user cannot see your ordinary runtime response; it is audit-only Work log output.",
-    "- Do not finish with only ordinary response text. Do not broadcast an acknowledgment or promise to act.",
-    "- Use this exact completion action, replacing <final answer> with your concise result:",
-    '  Call ponderosa_message with {"intent":"broadcast","text":"<final answer>","idempotencyKey":"stable-completion-key"}.',
-  ].join("\n");
+  return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
+    "Before this Run ends, call ponderosa_message({text: \"<final answer>\"}) exactly once with the completed result or material blocker.",
+    "Ponderosa will publish this shared Project-chat reply as a Broadcast. Ordinary runtime output remains Work log only.",
+  ]);
 }
 
 function directUserRequestCompletionPrompt(): string {
-  return [
-    "Required completion contract for this private user-to-agent request:",
-    "- Before this run ends, send exactly one direct_to_user message containing the answer, completed result, question, or material blocker for the user.",
-    "- Do not Broadcast this private reply. Broadcast is only for a separate durable organizational update you intentionally choose to make.",
-    "- The user cannot see your ordinary runtime response; it is audit-only Work log output.",
-    '- Call ponderosa_message with {"intent":"direct_to_user","text":"<reply>","idempotencyKey":"stable-reply-key"}.',
-  ].join("\n");
+  return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
+    "Before this Run ends, call ponderosa_message({text: \"<reply>\"}) exactly once with the answer, question, completed result, or material blocker.",
+    "Ponderosa will keep this reply private to the user and this Agent. Ordinary runtime output remains Work log only.",
+  ]);
 }
 
 function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
-  return [
-    "Current Team Directory (structured stable identities; use agentId for routing):",
-    ...directory.agents.map((agent) => JSON.stringify(agent)),
-  ].join("\n");
+  return contextSection("TEAM DIRECTORY", "ON-DEMAND REFERENCE", [
+    `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
+    'Fetch current identities, reporting lines, and status only when needed from "$PONDEROSA_AGENT_DIRECTORY_URL".',
+  ]);
 }
 
 function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], agents: AgentDto[]): string {
   const names = new Map(agents.map((agent) => [agent.id, agent.title]));
   return [
-    "Shared Broadcast context from Project chat (organizational knowledge; supplied independently of private chat):",
+    "[SHARED PROJECT HISTORY | RELEVANT BACKGROUND]",
     ...(messages.length ? messages.map((message) => {
       const author = message.authorAgentId ? names.get(message.authorAgentId) ?? "Agent" : "User";
       return `${author}: ${message.text}`;
@@ -705,9 +711,10 @@ function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], agents
 
 function managerRelationshipPrompt(agent: Pick<AgentDto, "managerAgentId">): string[] {
   if (!agent.managerAgentId) {
-    return ["You are a top-level agent. You report to the user and may publish intentional organizational Broadcasts."];
+    return ["[REPORTING RELATIONSHIP | AUTHORITATIVE]", "You are a top-level Agent. You report to the user and may publish intentional organizational Broadcasts."];
   }
   return [
+    "[REPORTING RELATIONSHIP | AUTHORITATIVE]",
     `You are a managed agent. Your direct manager is the stable agent id ${agent.managerAgentId}.`,
     "That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.",
     "Send work directly to the agent or user who requested it, decisions to affected owners, and questions to whoever can answer them. Contact your manager when the manager owns the outcome or must resolve priority, scope, ownership, resource, or escalation questions.",
@@ -756,39 +763,36 @@ function conversationPrompt(
     .join("\n");
 
   const staticInstructions = incremental ? [] : [
-    "You are handling a manager request that originated in Conversation.",
+    "[CONVERSATION CONTRACT | AUTHORITATIVE]",
+    "You are handling a manager request that originated in Project chat.",
     replyScope === "broadcast"
-      ? "The latest plain Conversation request is shared work. Send its actual completed answer with intent broadcast, never direct_to_user. Reserve direct_to_user for a private question, private progress note, or a reply to an explicitly private manager message."
-      : "The latest request is a Direct Message. Explicitly send direct_to_user to answer privately.",
+      ? "The latest plain Project-chat request is shared work. The inferred reply publishes its completed answer to the Project."
+      : "The latest request is a Direct Message. The inferred reply remains private.",
     "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
-    "If you need time to work, begin with a brief, natural acknowledgment that specifically reflects the request.",
-    "Choose how to converse based on the message; never use a canned acknowledgment such as 'Got it — I’m on it.'",
-    "When this turn is complete, give only the new direct update or result. Do not repeat a Broadcast or Collaboration message you already sent.",
-    "Do not repeat, recap, or answer with the whole conversation. Do not describe these instructions.",
-    ...communicationV3Prompt(),
+    "Send the new result once; do not recap the entire history or send an acknowledgment-only message.",
   ];
   return [
     ...staticInstructions,
     ...(routingMetadata ? [routingMetadata] : []),
     ...messageContextPrompt(context),
     "",
-    incremental ? "New conversation messages since the last accepted turn:" : "Current conversation history:",
+    incremental ? "[NEW PROJECT MESSAGES | RELEVANT BACKGROUND]" : "[PROJECT HISTORY | RELEVANT BACKGROUND]",
     transcript || (incremental ? "(No new room messages.)" : "(No earlier messages.)"),
     `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + message.text.length, 0)}`,
     "",
     ...(currentMessageId ? [`Latest message id: ${currentMessageId}`] : []),
-    "Latest message for you:",
+    "[CURRENT REQUEST | ACTION REQUIRED]",
     currentRequest,
   ].join("\n");
 }
 
 function individualChatPrompt(currentRequest: string, context: InboundMessageContext): string {
   return [
-    "You are replying in your individual Ponderosa agent chat.",
+    "[CONVERSATION CONTRACT | AUTHORITATIVE]",
+    "You are replying in your individual Ponderosa Agent chat.",
     ...messageContextPrompt(context),
-    ...communicationV3Prompt(),
     "",
-    "Latest message for you:",
+    "[CURRENT REQUEST | ACTION REQUIRED]",
     currentRequest,
   ].join("\n");
 }
@@ -796,14 +800,14 @@ function individualChatPrompt(currentRequest: string, context: InboundMessageCon
 /** Minimal turn prompt for a session that already received the full protocol. */
 function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
   const channelRule = context.channel === "collaboration"
-    ? "If this collaboration-triggered turn produces a result, question, or material blocker another agent needs, explicitly send it with Collaboration to the smallest set of stable agent IDs who need it; reporting relationships do not limit recipients. If nobody needs to act, do not send an acknowledgment merely to close the turn."
+    ? "If this uncorrelated Collaboration turn needs a response, ponderosa_message({text}) replies to its sender. Use explicit recipients only when someone else must act."
     : context.channel === "main"
-      ? "A plain shared Conversation request must receive its completed answer through broadcast, not direct_to_user. Use direct_to_user only for a private question or progress note."
-      : "Explicitly use direct_to_user when the manager should receive an answer.";
+      ? "ponderosa_message({text}) inherits whether this Project-chat request is shared or private."
+      : "ponderosa_message({text}) replies privately to the user when this activation has an unambiguous user origin.";
   return [
     ...messageContextPrompt(context),
     channelRule,
-    "Latest message for you:",
+    "[CURRENT REQUEST | ACTION REQUIRED]",
     currentRequest,
   ].join("\n");
 }
@@ -3005,7 +3009,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -3420,29 +3424,49 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const body = request.body && typeof request.body === "object" && !Array.isArray(request.body) ? request.body as Record<string, unknown> : {};
     const unknown = Object.keys(body).filter((key) => !["idempotencyKey", "mode", "question", "context", "options", "allowOther", "blocking"].includes(key));
     if (unknown.length) return reply.code(400).send({ error: `unknown Decision field(s): ${unknown.join(", ")}` });
-    if (typeof body.idempotencyKey !== "string" || !body.idempotencyKey.trim() || typeof body.question !== "string" || !body.question.trim() || !["approval", "choice", "text"].includes(String(body.mode))) {
-      return reply.code(400).send({ error: "Decision requires idempotencyKey, mode, and question" });
+    if (body.idempotencyKey !== undefined && (typeof body.idempotencyKey !== "string" || !body.idempotencyKey.trim() || body.idempotencyKey.trim().length > 200)) {
+      return reply.code(400).send({ error: "Decision idempotencyKey must be a non-empty string of at most 200 characters" });
+    }
+    if (typeof body.question !== "string" || !body.question.trim()) {
+      return reply.code(400).send({ error: "Decision requires question" });
     }
     const options = Array.isArray(body.options) ? body.options : [];
-    if (body.mode === "choice" && options.length === 0) return reply.code(400).send({ error: "choice Decisions require options" });
-    if (body.mode === "approval" && options.length === 0) options.push({ id: "approve", label: "Approve" }, { id: "do_not_approve", label: "Do not approve" });
-    if (body.mode === "approval" && !options.some((option) => (option as { id?: unknown })?.id === "approve")) return reply.code(400).send({ error: "approval Decisions require a canonical approve option" });
-    if (body.mode === "text" && options.length) return reply.code(400).send({ error: "text Decisions do not use options" });
+    const mode = body.mode === undefined ? (options.length ? "choice" : "text") : String(body.mode);
+    if (!["approval", "choice", "text"].includes(mode)) return reply.code(400).send({ error: "Decision mode must be approval, choice, or text" });
+    if (mode === "choice" && options.length === 0) return reply.code(400).send({ error: "choice Decisions require options" });
+    if (mode === "approval" && options.length === 0) options.push({ id: "approve", label: "Approve" }, { id: "do_not_approve", label: "Do not approve" });
+    if (mode === "approval" && !options.some((option) => (option as { id?: unknown })?.id === "approve")) return reply.code(400).send({ error: "approval Decisions require a canonical approve option" });
+    if (mode === "text" && options.length) return reply.code(400).send({ error: "text Decisions do not use options" });
     if (options.length > 8 || options.some((option) => !option || typeof option !== "object" || typeof (option as { id?: unknown }).id !== "string" || typeof (option as { label?: unknown }).label !== "string")) {
       return reply.code(400).send({ error: "Decision options require id and label and are limited to 8" });
     }
     if (new Set(options.map((option) => (option as { id: string }).id)).size !== options.length) return reply.code(400).send({ error: "Decision option IDs must be unique" });
+    const question = body.question.trim().slice(0, 1_000);
+    const decisionContext = typeof body.context === "string" && body.context.trim() ? body.context.trim().slice(0, 4_000) : undefined;
+    const normalizedOptions = options.map((option) => ({
+      id: String((option as { id: string }).id).slice(0, 80),
+      label: String((option as { label: string }).label).slice(0, 120),
+      ...(typeof (option as { description?: unknown }).description === "string"
+        ? { description: String((option as { description: string }).description).slice(0, 400) }
+        : {}),
+    }));
+    const idempotencyKey = typeof body.idempotencyKey === "string"
+      ? body.idempotencyKey.trim()
+      : derivedRunActionKey(capability.runId, "ask", {
+          mode, question, context: decisionContext ?? null, options: normalizedOptions,
+          allowOther: true, blocking: body.blocking !== false,
+        });
     const cursor = workspace.cursor();
     const decision = workspace.createDecision({
-      idempotencyKey: body.idempotencyKey,
+      idempotencyKey,
       projectId: agent.projectId,
       ...(active.conversationId ? { conversationId: active.conversationId } : {}),
       agentId: agent.id,
       runId: active.runId,
-      mode: body.mode as "approval" | "choice" | "text",
-      question: body.question.trim().slice(0, 1_000),
-      ...(typeof body.context === "string" && body.context.trim() ? { context: body.context.trim().slice(0, 4_000) } : {}),
-      options: options.map((option) => ({ id: String((option as { id: string }).id).slice(0, 80), label: String((option as { label: string }).label).slice(0, 120), ...(typeof (option as { description?: unknown }).description === "string" ? { description: String((option as { description: string }).description).slice(0, 400) } : {}) })),
+      mode: mode as "approval" | "choice" | "text",
+      question,
+      ...(decisionContext ? { context: decisionContext } : {}),
+      options: normalizedOptions,
       allowOther: true,
       blocking: body.blocking !== false,
     });
@@ -3704,6 +3728,65 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return entry ?? reply.code(404).send({ error: "agent not found in this Team Chat" });
   });
 
+  app.get<{ Querystring: { before?: string; limit?: string } }>("/api/agent-context", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const agent = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !agent) {
+      return reply.code(401).send({ error: "invalid or expired agent context capability" });
+    }
+    const rawLimit = request.query.limit === undefined ? 20 : Number(request.query.limit);
+    if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) {
+      return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
+    }
+    const beforeMs = request.query.before === undefined ? Number.POSITIVE_INFINITY : Date.parse(request.query.before);
+    if (Number.isNaN(beforeMs)) return reply.code(400).send({ error: "before must be an ISO timestamp" });
+
+    const scopedAgentMessages = agentMessages(agent.id).filter((message) =>
+      capability.conversationId
+        ? message.conversationId === capability.conversationId
+        : message.conversationId === undefined,
+    );
+    const sharedMessages = capability.conversationId
+      ? organizationalMasterMessages(
+          store.getConversationMessages(capability.conversationId, "main"),
+          store.readCommunicationEvents(agent.projectId),
+          agent.projectId,
+          agent.id,
+          store.listAgents(agent.projectId),
+        ).map((message) => ({
+          id: message.id,
+          communicationEventId: message.communicationEventId,
+          conversationId: message.conversationId,
+          agentId: agent.id,
+          seq: 0,
+          role: message.role === "assistant" ? "assistant" as const : "user" as const,
+          text: message.text,
+          createdAt: message.createdAt,
+          authorAgentId: message.authorAgentId,
+          attachments: message.attachments,
+        }))
+      : [];
+    const deduped = new Map<string, MessageDto>();
+    for (const message of [...scopedAgentMessages, ...sharedMessages]) {
+      const key = message.communicationEventId ?? `${message.createdAt}\0${message.role}\0${message.text}`;
+      if (!deduped.has(key)) deduped.set(key, message);
+    }
+    const newest = [...deduped.values()]
+      .filter((message) => Date.parse(message.createdAt) < beforeMs)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, rawLimit);
+    const messages = newest.reverse();
+    return {
+      scope: capability.conversationId
+        ? { kind: "project_chat", conversationId: capability.conversationId }
+        : { kind: "agent_private" },
+      messages,
+      ...(messages.length === rawLimit ? { nextBefore: messages[0]!.createdAt } : {}),
+    };
+  });
+
   app.post<{
     Body: { idempotencyKey?: string; title?: string; engine?: string; model?: string; effort?: string; text?: string; lifetime?: RequestLifetime; awaitResult?: boolean };
   }>("/api/agent-spawn", async (request, reply) => {
@@ -3790,6 +3873,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.post<{
     Body: {
       idempotencyKey?: string;
+      recipientAgentId?: string;
+      text?: string;
+      awaitResult?: boolean;
+      deadlineAt?: string;
       requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
       join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[] };
       inspectActivationIds?: string[];
@@ -3805,7 +3892,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
-      !["idempotencyKey", "requests", "join", "inspectActivationIds"].includes(key));
+      !["idempotencyKey", "recipientAgentId", "text", "awaitResult", "deadlineAt", "requests", "join", "inspectActivationIds"].includes(key));
     if (unknownTopLevel.length) {
       return reply.code(400).send({ error: `unknown coordinate field(s): ${unknownTopLevel.join(", ")}` });
     }
@@ -3814,6 +3901,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     if (body.idempotencyKey !== undefined && typeof body.idempotencyKey !== "string") {
       return reply.code(400).send({ error: "idempotencyKey must be a string" });
+    }
+    const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.awaitResult !== undefined || body.deadlineAt !== undefined;
+    if (shorthand && (body.requests !== undefined || body.join !== undefined || body.inspectActivationIds !== undefined)) {
+      return reply.code(400).send({ error: "recipientAgentId/text shorthand cannot be combined with requests, join, or inspectActivationIds" });
+    }
+    if (shorthand && (typeof body.recipientAgentId !== "string" || typeof body.text !== "string" ||
+        (body.awaitResult !== undefined && typeof body.awaitResult !== "boolean") ||
+        (body.deadlineAt !== undefined && typeof body.deadlineAt !== "string"))) {
+      return reply.code(400).send({ error: "coordinate shorthand requires string recipientAgentId and text; awaitResult is boolean and deadlineAt is an ISO timestamp" });
     }
     for (const candidate of body.requests ?? []) {
       if (!candidate || typeof candidate !== "object") {
@@ -3873,9 +3969,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       return { activations: payloads };
     }
-    const idempotencyKey = request.body?.idempotencyKey?.trim();
-    const requests = request.body?.requests ?? [];
-    const existingJoinRequestIds = request.body?.join?.requestIds ?? [];
+    const requests = shorthand ? [{
+      recipientAgentId: body.recipientAgentId,
+      text: body.text,
+      lifetime: body.deadlineAt?.trim()
+        ? { kind: "deadline" as const, at: body.deadlineAt.trim() }
+        : { kind: "indefinite" as const },
+    }] : body.requests ?? [];
+    const join = shorthand
+      ? (body.awaitResult === false ? undefined : { mode: "all" as const })
+      : body.join;
+    const existingJoinRequestIds = join?.requestIds ?? [];
+    const idempotencyKey = body.idempotencyKey?.trim() || (shorthand
+      ? derivedRunActionKey(capability.runId, "delegate", {
+          recipientAgentId: body.recipientAgentId!.trim(),
+          text: body.text!.trim(),
+          awaitResult: body.awaitResult !== false,
+          deadlineAt: body.deadlineAt?.trim() || null,
+        })
+      : undefined);
     if (!idempotencyKey || idempotencyKey.length > 200 || requests.length > 100 ||
         (requests.length === 0 && existingJoinRequestIds.length === 0)) {
       return reply.code(400).send({ error: "idempotencyKey and at least one new request or existing join request ID are required" });
@@ -3902,7 +4014,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         lifetime: candidate.lifetime,
       });
     }
-    if (request.body.join && !(request.body.join.mode === "all" || request.body.join.mode === "any" || request.body.join.mode === "quorum")) {
+    if (join && !(join.mode === "all" || join.mode === "any" || join.mode === "quorum")) {
       return reply.code(400).send({ error: "join mode must be all, any, or quorum" });
     }
     if (existingJoinRequestIds.length > 100 || new Set(existingJoinRequestIds).size !== existingJoinRequestIds.length ||
@@ -3911,7 +4023,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     let result;
     try {
-      const continuationRequestIds = request.body.join
+      const continuationRequestIds = join
         ? coordinationV3.requestIdsAttachedToRun(capability.runId, author.id).filter((requestId) => {
             const attached = coordinationV3.getRequest(requestId);
             return attached?.recipientAgentId === author.id && !TERMINAL_REQUEST_STATES.has(attached.state);
@@ -3930,12 +4042,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           lifetime: candidate.lifetime,
           payload: { text: candidate.text, requesterRunId: capability.runId },
         })),
-        ...(request.body.join ? { join: {
-          ...(request.body.join.id?.trim() ? { id: request.body.join.id.trim() } : {}),
-          mode: request.body.join.mode!,
-          ...(request.body.join.quorum !== undefined ? { quorum: request.body.join.quorum } : {}),
-          ...(request.body.join.deadlineAt?.trim() ? { deadlineAt: request.body.join.deadlineAt.trim() } : {}),
-          ...(request.body.join.satisfyingOutcomes ? { satisfyingOutcomes: request.body.join.satisfyingOutcomes } : {}),
+        ...(join ? { join: {
+          ...(join.id?.trim() ? { id: join.id.trim() } : {}),
+          mode: join.mode!,
+          ...(join.quorum !== undefined ? { quorum: join.quorum } : {}),
+          ...(join.deadlineAt?.trim() ? { deadlineAt: join.deadlineAt.trim() } : {}),
+          ...(join.satisfyingOutcomes ? { satisfyingOutcomes: join.satisfyingOutcomes } : {}),
           ...(existingJoinRequestIds.length ? { requestIds: existingJoinRequestIds.map((requestId) => requestId.trim()) } : {}),
           ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
         } } : {}),
@@ -3987,7 +4099,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.post<{
-    Body: { requestId?: string; updateId?: string; kind?: CoordinationRequestUpdateKind; text?: string; inReplyToUpdateId?: string };
+    Body: { requestId?: string; updateId?: string; kind?: CoordinationRequestUpdateKind; text?: string; question?: string; inReplyToUpdateId?: string };
   }>("/api/agent-request-updates", async (request, reply) => {
     if (!coordinationV3) return reply.code(404).send({ error: "Communication V3 is not enabled" });
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -4002,16 +4114,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       capability.agentId,
     );
     const requestId = suppliedRequestId ?? (attachedRequestIds.length === 1 ? attachedRequestIds[0] : undefined);
-    const updateId = request.body?.updateId?.trim();
-    const kind = request.body?.kind;
-    if (!updateId || !kind) return reply.code(400).send({ error: "updateId and kind are required" });
+    const question = request.body?.question?.trim();
+    if (question && (request.body?.text !== undefined || request.body?.kind !== undefined)) {
+      return reply.code(400).send({ error: "question shorthand cannot be combined with text or kind" });
+    }
+    const kind = question ? "question" : request.body?.kind ?? (request.body?.text?.trim() ? "completed" : undefined);
+    if (!kind) return reply.code(400).send({ error: "request update requires text, question, or an explicit kind" });
     if (!requestId) return reply.code(400).send({
       error: attachedRequestIds.length === 0
         ? "requestId is required because the current run has no attached correlated request"
         : "requestId is required because the current run has multiple attached correlated requests",
       currentRequestIds: attachedRequestIds,
     });
-    const handoffText = request.body.text?.trim() ?? "";
+    const handoffText = question ?? request.body.text?.trim() ?? "";
     if (kind && (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind) && !handoffText) {
       return reply.code(400).send({ error: "terminal request updates require a canonical final handoff in text" });
     }
@@ -4021,6 +4136,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       hint: attachedRequestIds.length === 1
         ? "Retry without requestId to target the current run's attached request"
         : "Retry with one exact currentRequestId",
+    });
+    const updateId = request.body?.updateId?.trim() || derivedRunActionKey(capability.runId, "report", {
+      requestId,
+      kind,
+      text: handoffText,
+      inReplyToUpdateId: request.body.inReplyToUpdateId?.trim() || null,
     });
     try {
       const result = coordinationV3.updateRequest({
@@ -4052,14 +4173,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
-    const intent = request.body?.intent;
+    const inferredReply = request.body?.intent === undefined;
+    const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
     const text = request.body?.text?.trim();
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
-    if (!(["broadcast", "direct_to_user", "collaboration"] as const).includes(intent)) {
+    if (!candidateIntent || !(["broadcast", "direct_to_user", "collaboration"] as const).includes(candidateIntent)) {
       return reply.code(400).send({
-        error: 'ponderosa_message requires an intent property equal to "broadcast", "direct_to_user", or "collaboration"; do not use intent:"user_dm" or direct_to_user:true',
+        error: 'this Run has no unambiguous reply route; use intent "broadcast", "direct_to_user", or "collaboration" explicitly',
       });
     }
+    const intent: "broadcast" | "direct_to_user" | "collaboration" = candidateIntent;
     if (v3Urgency !== undefined && v3Urgency !== "ordinary" && v3Urgency !== "urgent") {
       return reply.code(400).send({ error: "urgency must be ordinary or urgent" });
     }
@@ -4086,7 +4209,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     let citations: VerifiedCitationDto[];
     try { citations = normalizeExternalCitations(request.body?.citations); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid citations" }); }
-    const idempotencyKey = request.body?.idempotencyKey?.trim();
+    const inferredRecipientAgentIds = intent === "collaboration"
+      ? [...new Set(request.body?.recipientAgentIds ?? capability.defaultReply?.recipientAgentIds ?? [])]
+      : [];
+    const inferredReplyFingerprint = inferredReply
+      ? createHash("sha256").update(JSON.stringify({ intent, text, recipientAgentIds: inferredRecipientAgentIds, document: requestedDocument ?? null, citations })).digest("hex")
+      : undefined;
+    if (inferredReplyFingerprint && capability.inferredReplyFingerprint && capability.inferredReplyFingerprint !== inferredReplyFingerprint) {
+      return reply.code(409).send({ error: "this Run already published its inferred reply; use an explicit advanced communication only if additional material communication is required" });
+    }
+    const idempotencyKey = request.body?.idempotencyKey?.trim() || (inferredReplyFingerprint
+      ? derivedRunActionKey(capability.runId, "reply", { fingerprint: inferredReplyFingerprint })
+      : undefined);
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const receiptKey = idempotencyKey ? `${capability.runId}:${intent}:${idempotencyKey}` : undefined;
     const communicationEventId = receiptKey
@@ -4111,7 +4245,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(409).send({ error: "agent is no longer available" });
     }
     const ordinaryCollaborationRecipients = intent === "collaboration"
-      ? [...new Set(request.body.recipientAgentIds ?? [])]
+      ? inferredRecipientAgentIds
       : [];
     if (intent === "collaboration" && v3Urgency !== "urgent") {
       if (/^(thanks|thank you|got it|acknowledged|noted|sounds good|already complete)[.!\s]*$/i.test(scopedText)) {
@@ -4124,6 +4258,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       authorAgentId: capability.agentId, executionId: capability.runId,
       createdAt: new Date().toISOString(),
     } : undefined;
+    if (inferredReplyFingerprint) capability.inferredReplyFingerprint = inferredReplyFingerprint;
 
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
@@ -4190,7 +4325,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     let renderedText = scopedText;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration") {
-      const recipientAgentIds = request.body.recipientAgentIds;
+      const recipientAgentIds = inferredRecipientAgentIds;
       if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length === 0) {
         return reply.code(400).send({ error: "collaboration requires at least one recipientAgentId" });
       }
@@ -7076,6 +7211,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         artifact.kind === "generated_file" && !projectArtifacts.some((candidate) => candidate.id === artifact.id)
       );
       const allGeneratedArtifacts = [...projectArtifacts, ...legacyAgentArtifacts];
+      const routingConversationId = sourceConversationId ?? agent.conversationId;
       const contextArtifacts = allGeneratedArtifacts.filter((artifact) =>
         artifact.kind === "generated_file" && (artifact.pinned || artifact.visibility === "published")
       );
@@ -7103,6 +7239,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }),
         ...agentMessages(agent.id)
         .filter((message) => {
+          // Fresh sessions receive only this Project chat's private/audit
+          // history. Other chat histories remain durable and retrievable through
+          // the run-scoped context capability instead of arriving flattened.
+          if (routingConversationId && message.conversationId !== routingConversationId) return false;
+          if (!routingConversationId && message.conversationId !== undefined) return false;
           // The current authored message is already represented by the durable
           // Activation. Do not pay for it a second time in seeded history.
           if (communicationEventId && message.communicationEventId === communicationEventId) return false;
@@ -7181,7 +7322,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       // Project-chat turns receive the user-facing conversation. Collaboration context is
       // assembled only after the collaboration endpoint successfully tagged this
       // particular linked agent.
-      const routingConversationId = sourceConversationId ?? agent.conversationId;
       const conversation = routingConversationId
         ? conversationDetail(routingConversationId)
         : undefined;
@@ -7189,7 +7329,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ? "main"
           : "individual";
       const contextAgents = conversation?.agents ?? [agent];
-      const sourceAuthor = "Manager";
+      const sourceAuthor = communication?.sender.kind === "agent"
+        ? store.getAgent(communication.sender.agentId)?.title ?? communication.sender.agentId
+        : "Manager";
       const context = inboundContext(sourceChannel, sourceAuthor, text, contextAgents, agent.id);
       const cursorChannel = sourceChannel === "main" ? sourceChannel : undefined;
       const cursorConversationId = cursorChannel ? routingConversationId : undefined;
@@ -7201,7 +7343,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             `- channel: ${cursorChannel}`,
             `- primary room: ${agent.conversationId ?? "none"}`,
             `- room memberships: ${agent.conversationIds.join(", ") || "none"}`,
-            `- visible agents: ${contextAgents.map((candidate) => `${candidate.title} (${candidate.id})`).join(", ") || "none"}`,
+            '- live teammate identities are available from "$PONDEROSA_AGENT_DIRECTORY_URL" only when needed',
           ].join("\n")
         : undefined;
       const routingHash = createHash("sha256").update(routingMetadata ?? "").digest("hex");
@@ -7297,26 +7439,31 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const completionContract = sharedTaskTurn
         ? sharedRequestCompletionPrompt()
         : directUserTaskTurn ? directUserRequestCompletionPrompt() : "";
-      const stableDirectory = directoryForTurn.agents.map(({ status: _status, currentActivity: _activity, ...entry }) => entry);
       const workspacePreferences = workspace.getPreferences();
       const globalInstructions = workspacePreferences.globalInstructions.trim();
       const operatorProfile = workspacePreferences.profile;
       const projectInstructions = project.instructions?.trim() ?? "";
-      const managedRules = [
+      const managedRules = contextSection("POLICY · SESSION SNAPSHOT", "AUTHORITATIVE", [
         "Ponderosa instruction precedence: runtime identity, security, communication, and capability rules are authoritative; then global rules; then Project rules; then Agent preset guidance; then the current work request.",
         `The local operator is ${operatorProfile.displayName} and their stable Ponderosa handle is #${operatorProfile.handle}. Address them as ${operatorProfile.displayName} unless they ask otherwise.`,
         ...(globalInstructions ? [`Global operator rules:\n${globalInstructions}`] : []),
         ...(projectInstructions ? [`Project rules:\n${projectInstructions}`] : []),
-      ].join("\n\n");
-      const organizationEnvelopeHash = createHash("sha256").update(JSON.stringify({ stableDirectory, globalInstructions, projectInstructions, operatorProfile })).digest("hex");
+        "",
+        ...communicationV3Prompt(),
+      ]);
+      const policySnapshotHash = createHash("sha256").update(JSON.stringify({
+        contract: "context-and-coordination-v3.4",
+        globalInstructions,
+        projectInstructions,
+        operatorProfile,
+      })).digest("hex");
       const previousOrganizationEnvelope = organizationEnvelopeStates.get(agent.id);
-      const fullSessionEnvelope = `${teamDirectoryPrompt(directoryForTurn)}\n\n${communicationV3Prompt().join("\n")}\n\n${managedRules}\n\n`;
-      // A retained provider session already has this stable organization
-      // envelope. Repeat it only for a new/rolled-over session, after a server
-      // restart or warm eviction, or when roster/roles/reporting lines changed.
-      // Live status remains available through PONDEROSA_AGENT_DIRECTORY_URL.
+      const fullSessionEnvelope = `${managedRules}\n\n`;
+      // A retained provider session already has this versioned policy snapshot.
+      // Team membership and activity are live run-scoped references, not policy,
+      // so roster churn does not resend or subtly fork the authority block.
       const sessionEnvelope = resumeSessionId && previousOrganizationEnvelope?.sessionId === resumeSessionId &&
-        previousOrganizationEnvelope.hash === organizationEnvelopeHash ? "" : fullSessionEnvelope;
+        previousOrganizationEnvelope.hash === policySnapshotHash ? "" : fullSessionEnvelope;
       // Scheduler metadata restores the primary authored request above. A
       // single Activation therefore must not be serialized into the prompt a
       // second time. A coalesced Run still receives its remaining sources as
@@ -7325,7 +7472,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const coalescedActivationContext = internalV3Dispatch && text !== v3ActivationPrompt && additionalActivationIndex >= 0
         ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
         : "";
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\nThe live team directory and current activity are available from PONDEROSA_AGENT_DIRECTORY_URL when routing or discovery requires them.${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
+      const teamDirectoryReference = teamDirectoryPrompt(directoryForTurn);
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
       // session and therefore must restore the envelope even if the first
@@ -7359,6 +7507,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ? [(communication as { eventId: string }).eventId]
           : [];
       });
+      const hasOneCanonicalReplySource = new Set(activationCommunicationEventIds).size === 1;
       const contextMessages = [...roomMessages, ...initialBroadcastContext];
       const contextCommunicationEventIds = contextMessages.flatMap((message) =>
         message.communicationEventId ? [message.communicationEventId] : []);
@@ -7370,11 +7519,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const submittedHistory = resumeSessionId ? [] : history;
       const manifestArtifactIds = [...new Set([...submittedHistory, ...contextMessages].flatMap((message) =>
         message.attachments?.flatMap((item) => "artifactId" in item && item.artifactId ? [item.artifactId] : []) ?? []))];
-      const teamDirectoryDelivery = sessionEnvelope ? "submitted" as const : "retained_session" as const;
+      const policyDelivery = sessionEnvelope ? "submitted" as const : "retained_session" as const;
       const providerInputManifest = {
-        schemaVersion: 2 as const,
+        schemaVersion: 3 as const,
         historyMessageCount: submittedHistory.length + contextMessages.length,
-        retainedSessionSourceCount: teamDirectoryDelivery === "retained_session" ? 1 : 0,
+        retainedSessionSourceCount: policyDelivery === "retained_session" ? 1 : 0,
         activationIds: manifestActivationIds,
         triggerOccurrenceIds: manifestTriggerOccurrences.map((occurrence) => occurrence.id),
         communicationEventIds: manifestCommunicationEventIds,
@@ -7384,10 +7533,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         sources: [
           { kind: "identity" as const, ref: agent.id, delivery: "submitted" as const },
           {
+            kind: "policy" as const,
+            ref: "ponderosa-policy:context-and-coordination-v3.4",
+            hash: policySnapshotHash,
+            delivery: policyDelivery,
+          },
+          {
             kind: "team_directory" as const,
             ref: routingConversationId ?? agent.projectId,
-            hash: organizationEnvelopeHash,
-            delivery: teamDirectoryDelivery,
+            hash: createHash("sha256").update(teamDirectoryReference).digest("hex"),
+            delivery: "submitted" as const,
           },
           ...submittedHistory.map((message, index) => ({
             kind: "history_message" as const, ref: `${index}:${message.role}`,
@@ -7512,6 +7667,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
+        ...(hasOneCanonicalReplySource && sharedTaskTurn
+          ? { defaultReply: { intent: "broadcast" as const } }
+          : hasOneCanonicalReplySource && directUserTaskTurn
+            ? { defaultReply: { intent: "direct_to_user" as const } }
+            : hasOneCanonicalReplySource && communication?.intent === "collaboration" && communication.sender.kind === "agent" &&
+                coordinationV3.requestIdsAttachedToRun(runId, agent.id).length === 0
+              ? { defaultReply: { intent: "collaboration" as const, recipientAgentIds: [communication.sender.agentId] } }
+              : {}),
       });
 
       void (async () => {
@@ -7529,6 +7692,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
             PONDEROSA_DOCUMENT_URL: agentMessageUrl.replace(/\/api\/agent-messages$/, "/api/agent-documents"),
             PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
+            PONDEROSA_AGENT_CONTEXT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-context`,
             PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
             PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
             PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
@@ -7791,7 +7955,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             const acceptedSessionId = !runError ? store.resumeSessionId(agent.id) : undefined;
             if (acceptedSessionId) organizationEnvelopeStates.set(agent.id, {
               sessionId: acceptedSessionId,
-              hash: organizationEnvelopeHash,
+              hash: policySnapshotHash,
             });
             if (runError && !schedulerCancelled) {
               if (classifyProviderFailure(runError) === "authentication") {

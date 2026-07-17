@@ -78,8 +78,8 @@ describe("Communication V3 central scheduler", () => {
       } }],
     });
     expect(prompt).toContain("For an outbound request, do not repeat or forward the recipient's update");
-    expect(prompt).toContain("If the request itself asks for information or consultation, send that reply as completed");
-    expect(prompt).toContain("send exactly one terminal request update only after all work and edits are complete");
+    expect(prompt).toContain("report its canonical result");
+    expect(prompt).toContain("publish one terminal result after work and edits are complete");
     expect(prompt).toContain('"requestId":"request"');
   });
 

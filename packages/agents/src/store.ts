@@ -892,7 +892,9 @@ export class AgentStore {
         const latestRevision = targetRevisions.at(-1);
         const renderedText = message.renderedText ?? event.text;
         return [{
-          eventId: event.eventId, surface, projectionKey, messageId: message.messageId,
+          eventId: event.eventId,
+          ...(event.conversationId ? { conversationId: event.conversationId } : {}),
+          surface, projectionKey, messageId: message.messageId,
           role: canonicalRole,
           text: latestRevision ? revisedRenderedText(renderedText, event.text, latestRevision.text) : renderedText,
           createdAt: message.createdAt,
@@ -2039,6 +2041,7 @@ export class AgentStore {
         return [{
           id: message.messageId,
           communicationEventId: message.eventId,
+          ...(message.conversationId ? { conversationId: message.conversationId } : {}),
           agentId,
           seq: message.sequence,
           role: message.role,

@@ -2126,11 +2126,20 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: `/api/agent-directory/${child.id}`, headers: { authorization: `Bearer ${token}` } })).json())
       .toMatchObject({ agentId: child.id, managerAgentId: parent.id });
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DIRECTORY_URL).toContain("/api/agent-directory");
-    expect(adapter.seeds[0]!.prompt).toContain("Current Team Directory");
-    expect(adapter.seeds[0]!.prompt).toContain(`\"agentId\":\"${child.id}\"`);
+    expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_CONTEXT_URL).toContain("/api/agent-context");
+    expect(adapter.seeds[0]!.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).not.toContain(`\"agentId\":\"${child.id}\"`);
+    expect(adapter.seeds[0]!.prompt.match(/Common reply: ponderosa_message/g)).toHaveLength(1);
+    const context = await app.inject({ method: "GET", url: "/api/agent-context?limit=10", headers: { authorization: `Bearer ${token}` } });
+    expect(context.statusCode).toBe(200);
+    expect(context.json()).toMatchObject({
+      scope: { kind: "project_chat", conversationId: room.id },
+      messages: expect.arrayContaining([expect.objectContaining({ text: "Start", conversationId: room.id })]),
+    });
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/team-directory` })).statusCode).toBe(200);
     await cancelAndWait(app, parent.id);
     expect((await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/agent-context", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
     await app.close();
   });
 
@@ -2555,7 +2564,7 @@ describe("server chunk F", () => {
     expect(prompt).toContain(`Your direct manager is the stable agent id ${manager.id}`);
     expect(prompt).toContain("That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.");
     expect(prompt).toContain("You may collaborate directly with any relevant agent in the project");
-    expect(prompt).toContain("Communication V3 separates messages, correlated requests, joins, activations, and runs.");
+    expect(prompt).toContain("Common delegation: ponderosa_coordinate({recipientAgentId,text})");
     expect(prompt).toContain("Investigate the usability risk and report to your manager.");
     expect(prompt).not.toContain("Required completion contract for this private user-to-agent request");
     await app.close();
@@ -3023,8 +3032,8 @@ describe("server chunk F", () => {
       payload: { text: "third" },
     });
     await waitForRun(agent.id, 3);
-    expect(adapter.continues[1]?.prompt).toContain("Current Team Directory");
-    expect(adapter.continues[1]?.prompt).toContain("New Specialist");
+    expect(adapter.continues[1]?.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
+    expect(adapter.continues[1]?.prompt).not.toContain("New Specialist");
     await app.close();
   });
 
@@ -3048,7 +3057,7 @@ describe("server chunk F", () => {
 
     expect(adapter.continues).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(2);
-    expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
+    expect(adapter.continues[0]?.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
     expect(store.readEvents(agent.id).some((item) =>
       item.event.type === "error" && item.event.message.includes("pre-sampling compact"),
     )).toBe(false);
@@ -3139,9 +3148,9 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
 
     expect(adapter.seeds[0]?.prompt).toContain("The latest request is a Direct Message");
-    expect(adapter.seeds[0]?.prompt).toContain("Do not poll, sleep, send acknowledgments, or create progress-only wakeups.");
+    expect(adapter.seeds[0]?.prompt).toContain("Do not poll or sleep.");
     expect(adapter.seeds[0]?.prompt).toContain("Manager: Ship the API change.");
-    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nShip the API change.");
+    expect(adapter.seeds[0]?.prompt).toContain("[CURRENT REQUEST | ACTION REQUIRED]\nShip the API change.");
     expect(adapter.seeds[0]?.prompt).toContain("- channel: main");
     expect(adapter.seeds[0]?.prompt).toContain("- author: Manager");
     expect(adapter.seeds[0]?.prompt).toContain("- you were tagged: no");
@@ -3158,10 +3167,10 @@ describe("server chunk F", () => {
     expect(adapter.continues[0]?.prompt).toContain("Manager: #Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).not.toContain("Communication scope is immutable");
     expect(adapter.continues[0]?.prompt).not.toContain("PONDEROSA_DELEGATION_URL");
-    expect(adapter.continues[0]?.prompt).not.toContain("Current Team Directory");
+    expect(adapter.continues[0]?.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
     expect(adapter.continues[0]?.prompt).not.toContain("managed-agent creation bridge");
     expect(adapter.continues[0]?.prompt).toContain("Context injection accounting: room_messages=1; room_characters=20");
-    expect(adapter.continues[0]?.prompt).toContain("Latest message for you:\n#Aspen Is it tested?");
+    expect(adapter.continues[0]?.prompt).toContain("[CURRENT REQUEST | ACTION REQUIRED]\n#Aspen Is it tested?");
     expect(adapter.continues[0]?.prompt).toContain("- tagged agents: #Aspen");
     expect(adapter.continues[0]?.prompt).toContain("- you were tagged: yes");
     expect(store.getConversationMessages(master.id)).not.toEqual(
@@ -3266,12 +3275,13 @@ describe("server chunk F", () => {
     appendBroadcast(store, project.id, second.id, "second-room secret");
     const agent = store.createAgent(project.id, { title: "Rooms", engine: "codex", conversationId: first.id });
     store.updateAgentConversationMemberships(agent.id, { conversationIds: [first.id, second.id], primaryConversationId: first.id });
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first", sourceChannel: "main", sourceConversationId: first.id } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "FIRST-ROOM-PRIVATE-REQUEST", sourceChannel: "main", sourceConversationId: first.id } });
     await waitForRun(agent.id);
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "second", sourceChannel: "main", sourceConversationId: second.id } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "SECOND-ROOM-PRIVATE-REQUEST", sourceChannel: "main", sourceConversationId: second.id } });
     await waitForRun(agent.id, 2);
     expect(adapter.seeds[1]?.prompt).toContain("second-room secret");
     expect(adapter.seeds[1]?.prompt).not.toContain("first-room secret");
+    expect(adapter.seeds[1]?.prompt).not.toContain("FIRST-ROOM-PRIVATE-REQUEST");
     expect(adapter.seeds[1]?.resumeSessionId).toBeUndefined();
     await app.close();
   });
@@ -3289,7 +3299,7 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
     const run = store.getRuns(agent.id)[0]!;
     const input = store.getProviderInput(run.id, true)!;
-    expect(input.sourceManifest.schemaVersion).toBe(2);
+    expect(input.sourceManifest.schemaVersion).toBe(3);
     expect(input.exactPrompt).toContain("NEBULA-683 shared decision");
     expect(input.sourceManifest.historyMessageCount).toBeGreaterThan(0);
     expect(input.sourceManifest.communicationEventIds).toContain(broadcast.communicationEventId);
@@ -3319,11 +3329,11 @@ describe("server chunk F", () => {
     const input = store.getProviderInput(secondRun.id, true)!;
     expect(input.exactPrompt).toContain("SECOND-LINEAGE-ITEM");
     expect(input.exactPrompt).not.toContain("FIRST-LINEAGE-ITEM");
-    expect(input.sourceManifest.schemaVersion).toBe(2);
-    if (input.sourceManifest.schemaVersion !== 2) throw new Error("expected V2 manifest");
+    expect(input.sourceManifest.schemaVersion).toBe(3);
+    if (input.sourceManifest.schemaVersion !== 3) throw new Error("expected V3 manifest");
     expect(input.sourceManifest.sources.filter((source) => source.kind === "history_message")).toEqual([]);
     expect(input.sourceManifest.sources).toContainEqual(expect.objectContaining({
-      kind: "team_directory", delivery: "retained_session",
+      kind: "policy", delivery: "retained_session",
     }));
     expect(input.sourceManifest.retainedSessionSourceCount).toBe(1);
     await app.close();
@@ -3369,9 +3379,9 @@ describe("server chunk F", () => {
     const agent = response.json<{ id: string }>();
     await waitForRun(agent.id);
     expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain("Latest message for you:\nCheck the first-run path.");
-    expect(adapter.seeds[0]?.prompt).toContain("Required completion contract for this Project-chat request:");
-    expect(adapter.seeds[0]?.prompt).toContain('"intent":"broadcast"');
+    expect(adapter.seeds[0]?.prompt).toContain("[CURRENT REQUEST | ACTION REQUIRED]\nCheck the first-run path.");
+    expect(adapter.seeds[0]?.prompt).toContain("[RESPONSE CONTRACT | ACTION REQUIRED]");
+    expect(adapter.seeds[0]?.prompt).toContain("ponderosa_message({text:");
     const shared = store.getConversationMessages(master.id).find((message) => message.text === "Check the first-run path.");
     expect(shared).toMatchObject({ role: "user", communicationEventId: expect.any(String) });
     const eventId = shared!.communicationEventId!;
@@ -3437,7 +3447,7 @@ describe("server chunk F", () => {
     expect(response.statusCode).toBe(200);
     await waitForRun(yosemite.id);
     expect(adapter.seeds).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain("Communication V3 separates messages, correlated requests, joins, activations, and runs.");
+    expect(adapter.seeds[0]?.prompt).toContain("Common reply: ponderosa_message({text})");
     expect(adapter.seeds[0]?.prompt).toContain("#Yosemite can you review this?");
     expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ surface: "direct_agent_audit", projectionKey: yosemite.id }),
@@ -3470,7 +3480,7 @@ describe("server chunk F", () => {
 
     expect(response.statusCode).toBe(200);
     await waitForRun(wrangell.id);
-    expect(adapter.seeds[0]?.prompt).toContain("Communication V3 separates messages, correlated requests, joins, activations, and runs.");
+    expect(adapter.seeds[0]?.prompt).toContain("Common reply: ponderosa_message({text})");
     expect(adapter.seeds[0]?.prompt).toContain("#Wrangell-St-Elias can you review this?");
     expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ surface: "direct_agent_audit", projectionKey: wrangell.id }),
@@ -3542,7 +3552,7 @@ describe("server chunk F", () => {
     const prompt = adapter.seeds[0]?.prompt ?? "";
     expect(prompt).not.toContain("Private review notes that should not reach an agent yet.");
     expect(prompt).toContain("#Yosemite Please review the private notes.");
-    expect(prompt).toContain("Shared Broadcast context from Project chat");
+    expect(prompt).toContain("[SHARED PROJECT HISTORY | RELEVANT BACKGROUND]");
     expect(prompt).toContain("Main-chat-only deployment plan.");
     expect(store.getConversationMessages(master.id)).toEqual(
       expect.arrayContaining([expect.objectContaining({ text: "Main-chat-only deployment plan." })]),
@@ -3585,7 +3595,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("continues casual conversation through explicit broadcasts without inheriting ordinary output", async () => {
+  it("inherits shared and private reply routes without exposing ordinary output", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Casual conversation", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Trip planning" });
@@ -3596,9 +3606,20 @@ describe("server chunk F", () => {
         method: "POST",
         url: "/api/agent-messages",
         headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: { intent: "broadcast", text: "Here are three trip options" },
+        payload: { text: "Here are three trip options" },
       });
       expect(response.statusCode, response.body).toBe(200);
+      expect((await app.inject({
+        method: "POST", url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { text: "Here are three trip options" },
+      })).json()).toMatchObject({ replayed: true });
+      const secondMaterialReply = await app.inject({
+        method: "POST", url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { text: "A different second answer" },
+      });
+      expect(secondMaterialReply.statusCode).toBe(409);
     };
 
     const opening = await app.inject({
@@ -3614,11 +3635,11 @@ describe("server chunk F", () => {
     await waitForRun(first.id);
 
     const openingPrompt = adapter.seeds.find((turn) => turn.agentId === first.id)?.prompt ?? "";
-    expect(openingPrompt).toContain("Send its actual completed answer with intent broadcast, never direct_to_user");
-    expect(openingPrompt).toContain("Required completion contract for this Project-chat request:");
-    expect(openingPrompt).toContain("The user cannot see your ordinary runtime response");
+    expect(openingPrompt).toContain("Ponderosa will publish this shared Project-chat reply as a Broadcast");
+    expect(openingPrompt).toContain("[RESPONSE CONTRACT | ACTION REQUIRED]");
+    expect(openingPrompt).toContain("Ordinary runtime output remains Work log only");
     expect(openingPrompt).toContain("ponderosa_message");
-    expect(openingPrompt).toContain('"intent":"broadcast"');
+    expect(openingPrompt).toContain("ponderosa_message({text:");
     expect(store.getConversationMessages(master.id)).toContainEqual(
       expect.objectContaining({ role: "assistant", text: "Here are three trip options", authorAgentId: first.id }),
     );
@@ -3626,6 +3647,15 @@ describe("server chunk F", () => {
 
     const privateAgent = store.createAgent(project.id, { title: "Private", engine: "codex", conversationId: master.id });
     adapter.responseText = "Private implementation detail";
+    adapter.beforeResponse = async (opts) => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { text: "Private implementation detail" },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+    };
     const privateTurn = await app.inject({
       method: "POST", url: `/api/agents/${privateAgent.id}/messages`,
       payload: { text: "Inspect a private issue", sourceChannel: "main", sourceConversationId: master.id },
@@ -3633,9 +3663,14 @@ describe("server chunk F", () => {
     expect(privateTurn.statusCode, privateTurn.body).toBe(202);
     await waitForRun(privateAgent.id);
     const privatePrompt = adapter.seeds.find((turn) => turn.agentId === privateAgent.id)?.prompt ?? "";
-    expect(privatePrompt).toContain("Required completion contract for this private user-to-agent request:");
-    expect(privatePrompt).toContain('"intent":"direct_to_user"');
-    expect(privatePrompt).not.toContain("Required completion contract for this Project-chat request:");
+    expect(privatePrompt).toContain("Ponderosa will keep this reply private to the user and this Agent");
+    expect(privatePrompt).toContain("ponderosa_message({text:");
+    expect(privatePrompt).not.toContain("publish this shared Project-chat reply as a Broadcast");
+    expect(store.getConversationMessages(master.id).some((message) => message.text === "Private implementation detail")).toBe(false);
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      intent: "user_dm", text: "Private implementation detail",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: privateAgent.id },
+    }));
 
     const next = store.createAgent(project.id, { title: "Next", engine: "codex", conversationId: master.id });
     adapter.responseText = "Let's continue";
@@ -3660,6 +3695,85 @@ describe("server chunk F", () => {
     expect(store.getAgentDetail(privateAgent.id)?.runOutput).toEqual([
       expect.objectContaining({ text: "Private implementation detail", completed: true }),
     ]);
+    await app.close();
+  });
+
+  it("supports concise delegate, report, ask, and fail-closed reply contracts", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Facade", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Facade team" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${requester.id}/messages`,
+      payload: { text: "Delegate this", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const requesterRuntime = persistent.openedOptions[0]!;
+    const delegated = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate", arguments: { recipientAgentId: recipient.id, text: "Return the facade result." },
+    });
+    expect(delegated.success, delegated.text).toBe(true);
+    const delegation = JSON.parse(delegated.text) as { requestIds: string[]; joinId: string; replayed: boolean };
+    expect(delegation).toMatchObject({ requestIds: [expect.any(String)], joinId: expect.any(String), replayed: false });
+    expect(store.sqlite.prepare("SELECT lifetime_kind, deadline_at FROM coordination_requests WHERE id = ?").get(delegation.requestIds[0]!))
+      .toEqual({ lifetime_kind: "indefinite", deadline_at: null });
+    const replay = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate", arguments: { recipientAgentId: recipient.id, text: "Return the facade result." },
+    });
+    expect(JSON.parse(replay.text)).toMatchObject({ requestIds: delegation.requestIds, joinId: delegation.joinId, replayed: true });
+
+    persistent.completeTurn(0);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const recipientRuntime = persistent.openedOptions[1]!;
+    const ambiguousReply = await recipientRuntime.handleDynamicToolCall!({ name: "ponderosa_message", arguments: { text: "Wrong channel" } });
+    expect(ambiguousReply.success).toBe(false);
+    expect(JSON.parse(ambiguousReply.text)).toMatchObject({ error: expect.stringContaining("no unambiguous reply route") });
+    const question = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { question: "Which output format should I use?" },
+    });
+    expect(question.success, question.text).toBe(true);
+    expect(JSON.parse(question.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "awaiting_answer" });
+    const questionUpdate = store.sqlite.prepare(`
+      SELECT id, kind FROM coordination_request_updates
+      WHERE request_id = ? ORDER BY created_at DESC LIMIT 1
+    `).get(delegation.requestIds[0]!) as { id: string; kind: string };
+    expect(questionUpdate.kind).toBe("question");
+    persistent.completeTurn(1);
+    await vi.waitFor(() => expect(persistent.starts.length).toBeGreaterThanOrEqual(3));
+    const requesterQuestionRuntime = persistent.openedOptions.filter((options) => options.agentId === requester.id).at(-1)!;
+    const answer = await requesterQuestionRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { kind: "answer", text: "Use Markdown.", inReplyToUpdateId: questionUpdate.id },
+    });
+    expect(answer.success, answer.text).toBe(true);
+    persistent.completeTurn(persistent.openedOptions.lastIndexOf(requesterQuestionRuntime));
+    await vi.waitFor(() => expect(persistent.starts.length).toBeGreaterThanOrEqual(4));
+    const resumedRecipientRuntime = persistent.openedOptions.filter((options) => options.agentId === recipient.id).at(-1)!;
+    const report = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
+    });
+    expect(report.success, report.text).toBe(true);
+    expect(JSON.parse(report.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
+    const reportReplay = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
+    });
+    expect(JSON.parse(reportReplay.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
+    const asked = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_decision", arguments: { question: "What should happen next?" },
+    });
+    expect(asked.success, asked.text).toBe(true);
+    expect(JSON.parse(asked.text)).toMatchObject({ mode: "text", question: "What should happen next?" });
+    const askedReplay = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_decision", arguments: { question: "What should happen next?" },
+    });
+    expect(JSON.parse(askedReplay.text)).toMatchObject({ id: JSON.parse(asked.text).id });
     await app.close();
   });
 
@@ -3690,8 +3804,8 @@ describe("server chunk F", () => {
       "ponderosa_coordinate", "ponderosa_update_request", "ponderosa_message",
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
-    expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.required)
-      .toEqual(["updateId", "kind"]);
+    expect(requesterRuntime.dynamicTools?.find((tool) => tool.name === "ponderosa_update_request")?.inputSchema.anyOf)
+      .toEqual([{ required: ["text"] }, { required: ["question"] }, { required: ["kind"] }]);
     expect(requesterRuntime.dynamicTools?.some((tool) => tool.name.includes("wait") || tool.name.includes("spawn"))).toBe(false);
 
     const invalidDeadline = await requesterRuntime.handleDynamicToolCall!({
