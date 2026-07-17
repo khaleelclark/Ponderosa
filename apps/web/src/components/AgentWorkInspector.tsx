@@ -39,6 +39,43 @@ function itemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): 
     || item.recordId === bareId || item.referenceIds.includes(bareId);
 }
 
+export function AgentWorkTechnicalDetails({
+  projectId,
+  conversationId,
+  item,
+}: {
+  projectId: string;
+  conversationId?: string;
+  item: AgentWorkItemDto;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const query = useQuery({
+    queryKey: ["agent-work", projectId, conversationId ?? "", "detail", item.id],
+    queryFn: () => api.getAgentWorkItemDetails(projectId, item.kind, item.recordId, { conversationId }),
+    enabled: expanded && item.details === undefined,
+    staleTime: 15_000,
+  });
+  const details = item.details ?? query.data?.details;
+  return <Box
+    component="details"
+    onToggle={(event) => setExpanded(event.currentTarget.open)}
+    sx={{ mt: 0.75, "& > summary": { cursor: "pointer" } }}
+  >
+    <Typography component="summary" variant="caption" color="text.secondary">Technical details</Typography>
+    {query.isLoading ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mt: 0.75 }}>
+      <CircularProgress size={14} /><Typography variant="caption">Loading technical details…</Typography>
+    </Stack> : null}
+    {query.isError ? <Alert severity="error" sx={{ mt: 0.75 }}>Technical details could not be loaded.</Alert> : null}
+    {details ? <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+      {details.length === 0 ? <Typography variant="caption" color="text.secondary">No technical fields were recorded.</Typography> : null}
+      {details.map((detail) => <Box key={`${detail.label}:${detail.value}`}>
+        <Typography variant="caption" sx={{ fontWeight: 700 }}>{detail.label}</Typography>
+        <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace" }}>{detail.value}</Typography>
+      </Box>)}
+    </Stack> : null}
+  </Box>;
+}
+
 export function AgentWorkInspector({
   open,
   projectId,
@@ -114,7 +151,7 @@ export function AgentWorkInspector({
         {query.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading Agent work…</Typography></Stack> : null}
         {query.isError ? <Alert severity="error">{query.error instanceof Error ? query.error.message : "Agent work could not be loaded."}</Alert> : null}
         {query.data?.truncated ? <Alert severity="info" sx={{ mb: 1 }}>
-          Showing the newest connected work. Some older records are outside this view’s safety limit.
+          Showing a bounded connected history. Some records are outside this view’s safety limit.
         </Alert> : null}
         {query.data && query.data.traces.length === 0 ? <Alert severity="info">No coordinated Agent work has been recorded in this scope yet.</Alert> : null}
         <Stack spacing={1}>
@@ -152,15 +189,7 @@ export function AgentWorkInspector({
                       </Stack>
                       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{item.summary}</Typography>
                       <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
-                      <Box component="details" sx={{ mt: 0.75, "& > summary": { cursor: "pointer" } }}>
-                        <Typography component="summary" variant="caption" color="text.secondary">Technical details</Typography>
-                        <Stack spacing={0.5} sx={{ mt: 0.75 }}>
-                          {item.details.map((detail) => <Box key={`${detail.label}:${detail.value}`}>
-                            <Typography variant="caption" sx={{ fontWeight: 700 }}>{detail.label}</Typography>
-                            <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace" }}>{detail.value}</Typography>
-                          </Box>)}
-                        </Stack>
-                      </Box>
+                      <AgentWorkTechnicalDetails projectId={projectId} conversationId={conversationId} item={item} />
                     </Box>;
                   })}
                 </Stack>

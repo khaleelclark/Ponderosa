@@ -96,13 +96,50 @@ export function workspaceReconnectRequiresRefresh(
   return status.reset || Boolean(previousInstance && previousInstance !== status.instanceId) || cursor > status.cursor;
 }
 
+/** Coalesces a burst of coordination events into one refetch per affected
+ * Project. A global invalidation supersedes narrower pending work. */
+export function createAgentWorkInvalidator(
+  queryClient: Pick<QueryClient, "invalidateQueries">,
+  delayMs = 350,
+): { schedule(projectId?: string): void; flush(): void; dispose(): void } {
+  const projectIds = new Set<string>();
+  let invalidateAll = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (invalidateAll) void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
+    else for (const projectId of projectIds) void queryClient.invalidateQueries({ queryKey: ["agent-work", projectId] });
+    invalidateAll = false;
+    projectIds.clear();
+  };
+  return {
+    schedule(projectId) {
+      if (projectId) projectIds.add(projectId);
+      else invalidateAll = true;
+      // A fixed window prevents sustained coordination traffic from pushing
+      // refresh forever into the future.
+      timer ??= setTimeout(flush, delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      invalidateAll = false;
+      projectIds.clear();
+    },
+  };
+}
+
 /** One authoritative live stream invalidates only caches affected by each event. */
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
   const cursor = useRef(initialCursor());
 
   useEffect(() => {
+    const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
     const invalidateAll = () => {
+      agentWorkInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
       void queryClient.invalidateQueries({ queryKey: ["agents"] });
@@ -142,13 +179,14 @@ export function useWorkspaceStream(): void {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["conversation"] });
         void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
-        void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
+        agentWorkInvalidator.schedule(event.projectId);
       }
+      else if (event.type === "coordination_changed") agentWorkInvalidator.schedule(event.projectId);
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: ["triggers", event.agentId] });
         void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences", event.triggerId] });
         void queryClient.invalidateQueries({ queryKey: ["agent-trigger-occurrences", event.agentId] });
-        void queryClient.invalidateQueries({ queryKey: ["agent-work", event.projectId] });
+        agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
@@ -159,7 +197,7 @@ export function useWorkspaceStream(): void {
           void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });
           void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
-          void queryClient.invalidateQueries({ queryKey: ["agent-work", event.projectId] });
+          agentWorkInvalidator.schedule(event.projectId);
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
           void queryClient.invalidateQueries({ queryKey: ["workspace-status", event.projectId] });
@@ -173,7 +211,7 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: ["notifications"] });
-        void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
+        agentWorkInvalidator.schedule();
       }
     };
     const subscription = api.subscribeWorkspace(cursor.current, {
@@ -215,6 +253,7 @@ export function useWorkspaceStream(): void {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("storage", onStorage);
       refreshChannel?.close();
+      agentWorkInvalidator.dispose();
     };
   }, [queryClient]);
 }

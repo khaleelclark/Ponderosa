@@ -24,6 +24,7 @@ import type {
   TriggerDefinitionDto,
   TriggerOccurrenceDto,
   AgentWorkInspectorDto,
+  AgentWorkItemDetailsDto,
 } from "@ponderosa/core";
 import type { PonderosaApi, StreamHandlers, StreamSubscription } from "./types";
 
@@ -471,6 +472,15 @@ export const mockApi: PonderosaApi = {
       agents: projectAgents.map((agent) => ({ id: agent.id, title: agent.title })),
       traces: [],
       items: [],
+    };
+    return delay(detail);
+  },
+  getAgentWorkItemDetails(projectId, kind, recordId) {
+    const detail: AgentWorkItemDetailsDto = {
+      projectId,
+      itemId: `${kind}:${recordId}`,
+      recordId,
+      details: [],
     };
     return delay(detail);
   },

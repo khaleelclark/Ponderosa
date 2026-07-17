@@ -143,6 +143,11 @@ export const realApi: PonderosaApi = {
       limit: filter.limit === undefined ? undefined : String(filter.limit),
     })}`);
   },
+  getAgentWorkItemDetails(projectId, kind, recordId, filter = {}) {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work/items/${encodeURIComponent(kind)}/${encodeURIComponent(recordId)}${toQuery({
+      conversationId: filter.conversationId,
+    })}`);
+  },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto) {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
