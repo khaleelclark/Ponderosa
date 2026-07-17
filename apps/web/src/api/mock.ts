@@ -68,7 +68,7 @@ const triggerOccurrences = new Map<string, TriggerOccurrenceDto[]>();
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
 const uploadedAttachments = new Map<string, import("@ponderosa/core").ImageAttachmentDto>();
-let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", providerAvailability: {}, globalInstructions: "", profile: { displayName: "Patrick", handle: "patrick", avatarId: "default-user" }, updatedAt: now };
+let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", providerAvailability: {}, globalInstructions: "", profile: { displayName: "Patrick", handle: "patrick", avatarId: "default-user" }, updatedAt: now };
 
 const agents: AgentDto[] = [
   {

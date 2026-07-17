@@ -46,6 +46,7 @@ export interface PushDeliveryRecord {
 const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   projectSort: "last_used",
   projectOrder: [],
+  starredProjectIds: [],
   sidebarCollapsed: false,
   sidebarWidth: 288,
   notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
@@ -89,6 +90,7 @@ export class WorkspaceStore {
       ...record.event.preferences,
       notifications: normalizeNotifications(record.event.preferences.notifications),
       projectOrder: record.event.preferences.projectOrder ?? [],
+      starredProjectIds: record.event.preferences.starredProjectIds ?? [],
       providerAvailability: record.event.preferences.providerAvailability ?? {},
       globalInstructions: record.event.preferences.globalInstructions ?? "",
       profile: normalizeProfile(record.event.preferences.profile),
@@ -197,6 +199,7 @@ export class WorkspaceStore {
       ...patch,
       notifications,
       projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
+      starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
       globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
       profile: patch.profile ? normalizeProfile(patch.profile) : this.preferences.profile,

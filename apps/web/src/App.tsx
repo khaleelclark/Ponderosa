@@ -308,7 +308,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
@@ -340,6 +340,10 @@ export default function App({
     if (workspaceTabKey(route) === key) {
       navigate(mostRecentWorkspaceTab(remaining)?.route ?? { kind: "home" });
     }
+  };
+  const closeAllWorkspaceViews = () => {
+    setWorkspaceTabs([]);
+    navigate({ kind: "home" });
   };
   const removeWorkspaceView = (removedRoute: Route) => {
     setWorkspaceTabs((current) => removeWorkspaceRoute(current, removedRoute));
@@ -407,11 +411,13 @@ export default function App({
         <Box sx={{ display: { xs: "none", md: "block" }, minHeight: 0 }}>
           <WorkspaceSidebar
             projects={projects}
+            preferences={preferences}
             route={route}
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
+            onPreferences={savePreferences}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
             onSearch={() => setGlobalSearchOpen(true)}
@@ -420,7 +426,7 @@ export default function App({
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
-        <WorkspaceTabs tabs={workspaceTabs} projects={projects} route={route} navigate={goHome} onClose={closeWorkspaceView} />
+        <WorkspaceTabs tabs={workspaceTabs} projects={projects} route={route} navigate={goHome} onClose={closeWorkspaceView} onCloseAll={closeAllWorkspaceViews} />
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
@@ -479,11 +485,13 @@ export default function App({
         <WorkspaceSidebar
           drawer
           projects={projects}
+          preferences={preferences}
           route={route}
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
           onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
+          onPreferences={savePreferences}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
           onSearch={() => { setMobileNavOpen(false); setGlobalSearchOpen(true); }}

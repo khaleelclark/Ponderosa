@@ -4,9 +4,10 @@ import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import { Box, ButtonBase, IconButton, Stack, Tooltip, Typography } from "@mui/material";
+import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
+import { useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import { routeProjectId } from "../routing";
@@ -21,13 +22,15 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   return <FolderOutlinedIcon fontSize="small" />;
 }
 
-export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
+export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onCloseAll }: {
   tabs: WorkspaceTabState[];
   projects: ProjectDto[];
   route: Route;
   navigate(route: Route): void;
   onClose(key: string): void;
+  onCloseAll(): void;
 }): JSX.Element {
+  const [contextMenu, setContextMenu] = useState<{ anchor: HTMLElement; key: string; label: string }>();
   const projectIds = [...new Set(tabs.map((tab) => tab.route.projectId))];
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
@@ -50,9 +53,9 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
   const activeKey = workspaceTabKey(route);
   const activeProjectId = routeProjectId(route);
 
-  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, minHeight: { md: 56 }, borderBottom: { md: 1 }, borderColor: "divider", bgcolor: "background.default", alignItems: "stretch" }}>
-    <Stack direction="row" className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, overflowX: "auto", alignItems: "stretch" }}>
-      <ButtonBase onClick={() => navigate({ kind: "home" })} aria-current={route.kind === "home" ? "page" : undefined} sx={{ position: "relative", minWidth: 112, px: 1.5, gap: 1, borderRight: 1, borderColor: "divider", color: route.kind === "home" ? "text.primary" : "text.secondary", justifyContent: "flex-start", "&::after": route.kind === "home" ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>
+  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, minHeight: { md: 64 }, px: 1, bgcolor: "background.default", alignItems: "stretch", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
+    <Stack direction="row" className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, gap: .35, overflowX: "auto", alignItems: "center" }}>
+      <ButtonBase onClick={() => navigate({ kind: "home" })} aria-current={route.kind === "home" ? "page" : undefined} sx={{ position: "relative", minWidth: 112, height: 48, px: 1.5, gap: 1, border: 1, borderColor: route.kind === "home" ? "primary.main" : "divider", borderRadius: 1.25, bgcolor: route.kind === "home" ? "action.selected" : "background.paper", color: route.kind === "home" ? "text.primary" : "text.secondary", justifyContent: "flex-start", "&::after": route.kind === "home" ? { content: '""', position: "absolute", left: 12, right: 12, bottom: -1, height: 2, bgcolor: "primary.light" } : undefined }}>
         <HomeOutlinedIcon fontSize="small" />
         <Typography variant="body2" fontWeight={route.kind === "home" ? 750 : 500}>Home</Typography>
       </ButtonBase>
@@ -68,7 +71,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
             : tab.route.kind === "agents" ? "Agents" : "Project files";
         const selected = tab.key === activeKey;
         const projectLabel = project?.label ?? "Unavailable project";
-        return <Box key={tab.key} sx={{ position: "relative", minWidth: 168, maxWidth: 240, display: "flex", alignItems: "stretch", borderRight: 1, borderColor: "divider", color: selected ? "text.primary" : "text.secondary", "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>
+        return <Box key={tab.key} data-tab-key={tab.key} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }} sx={{ position: "relative", minWidth: 168, maxWidth: 240, height: 48, display: "flex", alignItems: "stretch", border: 1, borderColor: selected ? "primary.main" : "divider", borderRadius: 1.25, overflow: "hidden", bgcolor: selected ? "action.selected" : "background.paper", color: selected ? "text.primary" : "text.secondary", "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: -1, height: 2, bgcolor: "primary.light" } : undefined }}>
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={600}>
             <ButtonBase onClick={() => navigate(tab.route)} aria-label={`Open ${label} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{ minWidth: 0, flex: 1, px: 1.25, gap: 1, justifyContent: "flex-start" }}>
               <TabIcon kind={tab.route.kind} />
@@ -78,12 +81,16 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
               </Box>
             </ButtonBase>
           </Tooltip>
-          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 32, borderRadius: 0, color: "text.secondary", opacity: .85, "&:hover": { color: "text.primary", opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 30, borderRadius: 0, color: "text.secondary", opacity: .85, "&:hover": { color: "text.primary", opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
         </Box>;
       })}
     </Stack>
-    <Box sx={{ px: 1.25, display: "flex", alignItems: "center", borderLeft: 1, borderColor: "divider" }}>
+    <Box sx={{ pl: 1.25, display: "flex", alignItems: "center" }}>
       {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project" /> : <TokenUsageButton scope="overall" label="Overall" />}
     </Box>
+    {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
+      <MenuItem onClick={() => { onClose(contextMenu.key); setContextMenu(undefined); }}>Close {contextMenu.label}</MenuItem>
+      <MenuItem onClick={() => { onCloseAll(); setContextMenu(undefined); }}>Close all tabs</MenuItem>
+    </Menu> : null}
   </Stack>;
 }
