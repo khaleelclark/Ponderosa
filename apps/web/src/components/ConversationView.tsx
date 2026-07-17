@@ -154,7 +154,7 @@ export function ConversationMessage({
               size="small"
               aria-label={`Open agent ${senderName}`}
               onClick={() => onOpenAgent(message.authorAgentId!)}
-              sx={{ color: "text.secondary", width: 28, height: 28, opacity: 0.72 }}
+              sx={{ color: "text.secondary", width: 28, height: 28, opacity: 0.88, "&:hover": { color: "text.primary", opacity: 1 } }}
             ><OpenInNewIcon sx={{ fontSize: 16 }} /></IconButton></Tooltip> : null}
           </Stack> : null}
           {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}

@@ -78,7 +78,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose }: {
               </Box>
             </ButtonBase>
           </Tooltip>
-          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 32, borderRadius: 0, opacity: .55, "&:hover": { opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 32, borderRadius: 0, color: "text.secondary", opacity: .85, "&:hover": { color: "text.primary", opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
         </Box>;
       })}
     </Stack>
