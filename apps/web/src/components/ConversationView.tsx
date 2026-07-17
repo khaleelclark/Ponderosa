@@ -4,7 +4,6 @@ import QuickreplyIcon from "@mui/icons-material/Quickreply";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
@@ -822,58 +821,24 @@ export function ConversationView({
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={0.5}
           useFlexGap
-          sx={{ alignItems: "center", minWidth: 0, flexWrap: { xs: "wrap", sm: "nowrap" } }}
+          sx={{ alignItems: "center", minWidth: 0 }}
         >
-          <Box sx={{ minWidth: 0, flex: 1, flexBasis: { xs: "100%", sm: "auto" } }}>
-            <Typography variant="h6" noWrap>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="h5" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>
-            <Typography variant="body2" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" } }}>
-              Shared work and durable team updates
-            </Typography>
           </Box>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<GroupsOutlinedIcon />}
-            onClick={() => setAgentsOpen(true)}
-            aria-haspopup="dialog"
-            aria-expanded={agentsOpen}
-            aria-label={`View ${agents.length} agents`}
-            sx={{ minHeight: compactViewport ? 44 : undefined }}
-          >
-            <Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Agents </Box>({agents.length})
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<TimelineIcon />}
+          <Tooltip title="Agent work"><IconButton
             onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
             aria-haspopup="dialog"
             aria-expanded={agentWorkOpen}
-            sx={{ minHeight: compactViewport ? 44 : undefined }}
-          >
-            Agent work
-          </Button>
-          <Button
-            variant={activeView === "collaboration" ? "contained" : "outlined"}
-            size="small"
-            startIcon={<ForumOutlinedIcon />}
-            onClick={() => {
-              clearReply();
-              setActiveView((current) => current === "main" ? "collaboration" : "main");
-            }}
-            aria-pressed={activeView === "collaboration"}
-            aria-label={activeView === "collaboration" ? "Switch to project chat" : "Switch to team chat"}
-            sx={{ minHeight: compactViewport ? 44 : undefined }}
-          >
-            {activeView === "collaboration" ? "Project chat" : "Team chat"}
-          </Button>
+            aria-label="Open Agent work"
+          ><TimelineIcon /></IconButton></Tooltip>
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team" : "Project"} chat actions`}
             transcriptMarkdown={transcriptMarkdown}
@@ -904,6 +869,11 @@ export function ConversationView({
               },
             ]}
           />
+        </Stack>
+        <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
+          <Button color="inherit" aria-pressed={activeView === "main"} aria-label="Switch to project chat" onClick={() => { clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: activeView === "main" ? "primary.light" : "text.secondary", "&::after": activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
+          <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "primary.light" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => setAgentsOpen(true)} aria-haspopup="dialog" aria-expanded={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ px: 1.5, color: "text.secondary" }}>Agents</Button>
         </Stack>
       </Box>
 

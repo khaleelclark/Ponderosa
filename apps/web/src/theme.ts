@@ -22,17 +22,19 @@ export function createPonderosaTheme(mode: ColorMode) {
     palette: {
       mode,
       primary: {
-        main: mode === "dark" ? "#79c4b2" : "#245c53",
-        dark: mode === "dark" ? "#3c8f7e" : "#173f39",
-        light: mode === "dark" ? "#b4e1d5" : "#5f8f85",
+        main: mode === "dark" ? "#79c9a5" : "#245c53",
+        dark: mode === "dark" ? "#315f52" : "#173f39",
+        light: mode === "dark" ? "#9fdfbd" : "#5f8f85",
       },
       secondary: {
         main: mode === "dark" ? "#f0ad8b" : "#8f4b2e",
       },
       background: {
-        default: mode === "dark" ? "#121816" : "#f6f7f4",
-        paper: mode === "dark" ? "#1a2320" : "#ffffff",
+        default: mode === "dark" ? "#071619" : "#f6f7f4",
+        paper: mode === "dark" ? "#0f2023" : "#ffffff",
       },
+      divider: mode === "dark" ? "#24393b" : "rgba(0,0,0,.12)",
+      text: mode === "dark" ? { primary: "#edf4f1", secondary: "#91a39e", disabled: "#63736f" } : undefined,
       success: {
         main: mode === "dark" ? "#75c990" : "#277a46",
       },
@@ -44,7 +46,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
     },
     shape: {
-      borderRadius: 8,
+      borderRadius: 6,
     },
     typography: {
       fontFamily:
@@ -60,6 +62,13 @@ export function createPonderosaTheme(mode: ColorMode) {
       body2: { fontSize: 13, lineHeight: "19px" },
     },
     components: {
+      MuiCssBaseline: {
+        styleOverrides: {
+          body: {
+            backgroundImage: mode === "dark" ? "radial-gradient(circle at 55% 15%, rgba(42, 88, 77, .08), transparent 32%)" : "none",
+          },
+        },
+      },
       MuiButtonBase: {
         defaultProps: {
           disableRipple: true,
@@ -69,7 +78,18 @@ export function createPonderosaTheme(mode: ColorMode) {
         styleOverrides: {
           root: {
             minHeight: 44,
+            borderRadius: 6,
           },
+        },
+      },
+      MuiPaper: {
+        styleOverrides: {
+          root: { backgroundImage: "none" },
+        },
+      },
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: mode === "dark" ? { backgroundColor: "rgba(255,255,255,.025)", "& fieldset": { borderColor: "#294043" }, "&:hover fieldset": { borderColor: "#45605e" } } : {},
         },
       },
       MuiIconButton: {

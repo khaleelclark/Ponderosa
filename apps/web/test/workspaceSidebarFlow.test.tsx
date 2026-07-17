@@ -20,7 +20,7 @@ const agents: AgentDto[] = [
 describe("responsive workspace sidebar flow", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps one project/chat scroller, project-qualified recents, and persistent global agent navigation", async () => {
+  it("keeps one project-scoped chat navigator and persistent global destinations", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     projects.forEach((project, index) => {
       client.setQueryData(["conversations", project.id], [conversations[index]]);
@@ -44,19 +44,17 @@ describe("responsive workspace sidebar flow", () => {
 
     expect(view.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "workspace-navigation-scroll")).toHaveLength(1);
     const rendered = JSON.stringify(view.toJSON());
-    expect(rendered).toContain("Current project");
-    expect(rendered).toContain("Recent chats");
+    expect(rendered).toContain("All Projects");
+    expect(rendered).toContain("Search Project Chats");
     expect(rendered).toContain("Website");
-    expect(rendered).toContain("1 running");
+    expect(rendered).toContain("Release");
 
-    act(() => view.root.findByProps({ "aria-label": "View all projects" }).props.onClick());
+    act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
-    act(() => view.root.findByProps({ "aria-label": "View all agents across projects" }).props.onClick());
+    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "allAgents" });
 
-    act(() => view.root.findByProps({ "aria-label": "Collapse sidebar" }).props.onClick());
-    expect(view.root.findByProps({ "data-sidebar-state": "collapsed" })).toBeTruthy();
-    expect(view.root.findByProps({ "aria-label": "View all agents, 1 running, 1 unread" })).toBeTruthy();
+    expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();
     client.clear();
   });

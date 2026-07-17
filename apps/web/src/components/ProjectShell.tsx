@@ -16,6 +16,7 @@ import { AgentsTab } from "./AgentsTab";
 import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { Sidebar } from "./Sidebar";
+import { WorkspaceTabs } from "./WorkspaceTabs";
 
 interface AgentDialogState {
   open: boolean;
@@ -318,7 +319,8 @@ export function ProjectShell({
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
+    <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <WorkspaceTabs projectId={projectId} route={route} conversations={conversations} agents={agents} navigate={navigate} />
       <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
       {dialogs}
     </Box>

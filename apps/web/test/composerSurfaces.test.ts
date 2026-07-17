@@ -27,7 +27,7 @@ describe("composer surface ownership", () => {
   });
 
   it("floats the shared composer above the viewport edge", () => {
-    expect(panes).toContain('width: { xs: "calc(100% - 16px)", sm: "min(780px, calc(100% - 24px))" }');
+    expect(panes).toContain('width: { xs: "calc(100% - 16px)", sm: "min(880px, calc(100% - 24px))" }');
     expect(panes).toContain("mb: { xs: 1, sm: 1.5 }");
     expect(panes).not.toContain('position: "sticky",\n        bottom: 0');
   });

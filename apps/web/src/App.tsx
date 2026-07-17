@@ -156,7 +156,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (route.kind === "projects" || route.kind === "allAgents") return;
+    if (route.kind === "home" || route.kind === "projects" || route.kind === "allAgents") return;
     if (["conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
@@ -280,6 +280,13 @@ export default function App({
   }, []);
 
   const goHome = (next: Route) => navigate(next);
+  const openSettings = () => {
+    setGlobalInstructionsDraft(preferences.globalInstructions);
+    setProfileNameDraft(preferences.profile.displayName);
+    setProfileHandleDraft(preferences.profile.handle);
+    setProfileAvatarDraft(preferences.profile.avatarId);
+    setNotificationSettingsOpen(true);
+  };
 
   return (
     <ProjectBrowserContext.Provider value={{ projectId: selectedProjectId, open: openProjectBrowser }}>
@@ -293,11 +300,11 @@ export default function App({
         overflow: "hidden",
         display: "grid",
         gridTemplateColumns: "minmax(0, 1fr)",
-        gridTemplateRows: "auto minmax(0, 1fr)",
+        gridTemplateRows: { xs: "auto minmax(0, 1fr)", md: "minmax(0, 1fr)" },
         bgcolor: "background.default",
       }}
     >
-      <AppBar position="static" color="inherit" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
+      <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.5 }}><MenuIcon /></IconButton>
           <Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 28, height: 28, mr: 1 }} />
@@ -328,13 +335,7 @@ export default function App({
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
           </Box>
-          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={() => {
-            setGlobalInstructionsDraft(preferences.globalInstructions);
-            setProfileNameDraft(preferences.profile.displayName);
-            setProfileHandleDraft(preferences.profile.handle);
-            setProfileAvatarDraft(preferences.profile.avatarId);
-            setNotificationSettingsOpen(true);
-          }} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
+          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
       </AppBar>
 
@@ -349,6 +350,9 @@ export default function App({
             onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
+            onSearch={() => setGlobalSearchOpen(true)}
+            onOpenNotifications={() => setNotificationPanelOpen(true)}
+            onOpenSettings={openSettings}
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
@@ -381,7 +385,7 @@ export default function App({
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
             </Stack>
           </Box>
-        ) : route.kind === "projects" ? (
+        ) : route.kind === "projects" || route.kind === "home" ? (
           <AllProjectsView
             projects={projects}
             preferences={preferences}
@@ -416,6 +420,9 @@ export default function App({
           onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
+          onSearch={() => { setMobileNavOpen(false); setGlobalSearchOpen(true); }}
+          onOpenNotifications={() => { setMobileNavOpen(false); setNotificationPanelOpen(true); }}
+          onOpenSettings={() => { setMobileNavOpen(false); openSettings(); }}
         />
       </Drawer>
 

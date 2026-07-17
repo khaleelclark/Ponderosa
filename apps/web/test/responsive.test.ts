@@ -35,22 +35,22 @@ describe("responsive compact controls", () => {
     expect(app.match(/<WorkspaceSidebar/g)).toHaveLength(2);
     expect(app).toContain('width: "min(88vw, 360px)"');
     expect(app).toContain("setMobileNavOpen(false); goHome(next)");
-    expect(sidebar).toContain('aria-label="Recent chats across projects"');
-    expect(sidebar).toContain('aria-label="View all agents across projects"');
+    expect(sidebar).toContain('aria-label="Primary navigation"');
+    expect(sidebar).toContain('placeholder="Search Project Chats"');
     expect(sidebar).toContain("drawer?: boolean");
-    expect(sidebar).toContain('minWidth: 44, minHeight: 44');
-    expect(sidebar).toContain('aria-label={`Actions for ${displayTitle}`}');
+    expect(sidebar).toContain('width: 48');
+    expect(sidebar).toContain('onContextMenu={(event)');
     expect(app).toContain('onRenameConversation={(conversation) => { setMobileNavOpen(false);');
     expect(app).toContain('onDeleteConversation={(conversation) => { setMobileNavOpen(false);');
     expect(sidebar).not.toContain("<Dialog");
     expect(sidebar).not.toContain("maxHeight: \"34%\"");
   });
 
-  it("keeps sidebar presentation state device-local while semantic navigation stays server-backed", () => {
-    expect(sidebar).toContain('collapsed: "ponderosa.sidebar.collapsed"');
-    expect(sidebar).toContain('width: "ponderosa.sidebar.width"');
-    expect(sidebar).toContain('agentsExpanded: "ponderosa.sidebar.agentsExpanded"');
-    expect(sidebar).toContain("window.localStorage.setItem(key, value)");
+  it("keeps navigation semantic while the spine and one-level panel remain stable", () => {
+    expect(sidebar).toContain("SIDEBAR_RAIL_WIDTH");
+    expect(sidebar).toContain("SIDEBAR_PANEL_WIDTH");
+    expect(sidebar).toContain('insideProject ? chatsPanel : projectsPanel');
+    expect(sidebar).not.toContain("localStorage");
     expect(sidebar).not.toContain("updateWorkspacePreferences");
     expect(sidebar).not.toContain("preferences.sidebarWidth");
     expect(app).toContain("onPreferences={savePreferences}");
