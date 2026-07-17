@@ -168,7 +168,7 @@ export function WorkspaceSidebar({
       minHeight: 0,
       borderRight: 1,
       borderColor: "divider",
-      bgcolor: "#061416",
+      bgcolor: "#091510",
       display: "grid",
       gridTemplateRows: "auto minmax(0, 1fr) auto",
       justifyItems: "center",
@@ -176,7 +176,7 @@ export function WorkspaceSidebar({
     }}
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
-      <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/icon.svg" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 1.25 }} /></Tooltip>
+      <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 1.25, borderRadius: 1.25 }} /></Tooltip>
       <RailButton label="Home" selected={route.kind === "home"} onClick={() => onNavigate({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
       <RailButton label="Projects" selected={route.kind === "projects" || insideProject} onClick={() => onNavigate({ kind: "projects" })}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={route.kind === "allAgents" || route.kind === "agents" || route.kind === "agent"} badge={counts.running || undefined} onClick={() => onNavigate({ kind: "allAgents" })}><PersonOutlineIcon /></RailButton>
@@ -185,7 +185,7 @@ export function WorkspaceSidebar({
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
       <RailButton label="Settings" onClick={() => onOpenSettings?.()}><SettingsOutlinedIcon /></RailButton>
-      <Tooltip title="Operator profile" placement="right"><Box sx={{ position: "relative", width: 42, height: 42, borderRadius: "50%", border: 1, borderColor: "divider", display: "grid", placeItems: "center", fontSize: 13 }}>KC<Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: "2px solid #061416" }} /></Box></Tooltip>
+      <Tooltip title="Operator profile" placement="right"><Box sx={{ position: "relative", width: 42, height: 42, borderRadius: "50%", border: 1, borderColor: "divider", display: "grid", placeItems: "center", fontSize: 13 }}>KC<Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: "2px solid #091510" }} /></Box></Tooltip>
     </Stack>
   </Box>;
 
@@ -202,7 +202,7 @@ export function WorkspaceSidebar({
       onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") onSearch?.(); }}
     /></Box>
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
-      {featured ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Starred</Typography><List disablePadding sx={{ mt: .5 }}><ListItemButton selected={featured.project.id === selectedProjectId} onClick={() => openProject(featured)} sx={{ borderRadius: 1.25, border: 1, borderColor: "primary.dark", bgcolor: "rgba(121,196,178,.08)" }}><ListItemIcon sx={{ minWidth: 38 }}><Box component="img" src="/icons/icon.svg" alt="" sx={{ width: 28, height: 28 }} /></ListItemIcon><ListItemText primary={featured.project.label} secondary={`${featured.conversations.filter((item) => !item.archived).length} active chats`} primaryTypographyProps={{ fontWeight: 750 }} /></ListItemButton></List></Box> : null}
+      {featured ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Starred</Typography><List disablePadding sx={{ mt: .5 }}><ListItemButton selected={featured.project.id === selectedProjectId} onClick={() => openProject(featured)} sx={{ borderRadius: 1.25, border: 1, borderColor: "primary.dark", bgcolor: "rgba(155,200,173,.10)" }}><ListItemIcon sx={{ minWidth: 38 }}><Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 28, height: 28, borderRadius: 0.75 }} /></ListItemIcon><ListItemText primary={featured.project.label} secondary={`${featured.conversations.filter((item) => !item.archived).length} active chats`} primaryTypographyProps={{ fontWeight: 750 }} /></ListItemButton></List></Box> : null}
       <Box component="section"><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>All projects</Typography><List disablePadding sx={{ mt: .5 }}>{remaining.map((snapshot) => <ListItemButton key={snapshot.project.id} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1, px: 1, minHeight: 48 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} primaryTypographyProps={{ noWrap: true }} /><Typography variant="caption" color="text.secondary">{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton>)}</List></Box>
       {projectList.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No projects match “{filter.trim()}”.</Typography> : null}
     </Box>

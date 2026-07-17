@@ -9,12 +9,12 @@ export default defineConfig({
       htmlTags: {
         themeColor: true,
         icon: [
-          { href: "/icons/icon.svg", type: "image/svg+xml", sizes: "any" },
-          { href: "/icons/maskable-icon.svg", type: "image/svg+xml", sizes: "any" },
+          { href: "/icons/app-icon.png", type: "image/png", sizes: "512x512" },
+          { href: "/icons/maskable-icon.png", type: "image/png", sizes: "512x512" },
         ],
         appleTouchIcon: {
-          href: "/icons/maskable-icon.svg",
-          sizes: "any",
+          href: "/icons/app-icon.png",
+          sizes: "512x512",
         },
       },
       webAppManifest: {
@@ -27,19 +27,19 @@ export default defineConfig({
           scope: "/",
           display: "standalone",
           orientation: "portrait",
-          background_color: "#f6f7f4",
-          theme_color: "#245c53",
+          background_color: "#faf6f3",
+          theme_color: "#20382b",
           icons: [
             {
-              src: "/icons/icon.svg",
-              sizes: "any",
-              type: "image/svg+xml",
+              src: "/icons/app-icon.png",
+              sizes: "512x512",
+              type: "image/png",
               purpose: "any",
             },
             {
-              src: "/icons/maskable-icon.svg",
-              sizes: "any",
-              type: "image/svg+xml",
+              src: "/icons/maskable-icon.png",
+              sizes: "512x512",
+              type: "image/png",
               purpose: "maskable",
             },
           ],
@@ -56,7 +56,7 @@ export default defineConfig({
       sw: {
         mode: "generateSw",
         includeWebAppManifestIcons: true,
-        include: ["**/*.{js,css,html,webmanifest,svg}"],
+        include: ["**/*.{js,css,html,webmanifest,svg,png}"],
         workboxOptions: {
           cleanupOutdatedCaches: true,
           navigateFallback: "/index.html",
