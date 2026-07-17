@@ -2128,6 +2128,8 @@ describe("server chunk F", () => {
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DIRECTORY_URL).toContain("/api/agent-directory");
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_CONTEXT_URL).toContain("/api/agent-context");
     expect(adapter.seeds[0]!.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).not.toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).not.toContain("PONDEROSA_AGENT_CONTEXT_URL");
     expect(adapter.seeds[0]!.prompt).not.toContain(`\"agentId\":\"${child.id}\"`);
     expect(adapter.seeds[0]!.prompt.match(/Common reply: ponderosa_message/g)).toHaveLength(1);
     const context = await app.inject({ method: "GET", url: "/api/agent-context?limit=10", headers: { authorization: `Bearer ${token}` } });
@@ -2140,6 +2142,56 @@ describe("server chunk F", () => {
     await cancelAndWait(app, parent.id);
     expect((await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: "/api/agent-context", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("advertises older scoped context only when bounded provider input omitted it", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Bounded context reference", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Historian", engine: "codex" });
+    store.setImportedHistory(agent.id, "portable-agent-package", [{
+      role: "system",
+      text: "IMPORTED-EFFECTIVE-HISTORY",
+      createdAt: "2026-07-16T23:59:59.000Z",
+    }]);
+    for (let index = 0; index < 41; index += 1) {
+      const communicationEventId = randomUUID();
+      store.appendCommunicationEvent({
+        eventId: communicationEventId,
+        schemaVersion: 2,
+        projectId: project.id,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+        text: `historical-${index}`,
+        createdAt: new Date(Date.UTC(2026, 6, 17, 0, 0, index)).toISOString(),
+      });
+      store.appendEvent(agent.id, { type: "user_message", text: `historical-${index}`, communicationEventId });
+    }
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Use history if needed" } });
+    await waitForSeedCount(1);
+
+    expect(adapter.seeds[0]!.prompt).toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).toContain("PONDEROSA_AGENT_CONTEXT_URL");
+    const run = store.getRuns(agent.id).at(-1);
+    const providerInput = run ? store.getProviderInput(run.id, true) : undefined;
+    expect(providerInput?.sourceManifest.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "context_reference", ref: agent.id, delivery: "submitted" }),
+    ]));
+    const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    const retrieved = await app.inject({
+      method: "GET",
+      url: "/api/agent-context?limit=50",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(retrieved.statusCode).toBe(200);
+    expect(retrieved.json<{ messages: Array<{ text: string }> }>().messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: "[Imported private context]\nIMPORTED-EFFECTIVE-HISTORY" }),
+    ]));
+
+    await cancelAndWait(app, agent.id);
     await app.close();
   });
 

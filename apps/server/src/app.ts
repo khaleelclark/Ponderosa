@@ -642,9 +642,10 @@ function communicationV3Prompt(): string[] {
     "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
-    "Full older context, live Team identities, and overflow Activation payloads are retrievable from their run-scoped Ponderosa references.",
+    "Live Team identities and overflow Activation payloads are retrievable from their run-scoped Ponderosa references.",
+    "When bounded context omits older scoped material, the current Run receives a separate on-demand reference for it.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
-    'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" and older scoped messages with GET "$PONDEROSA_AGENT_CONTEXT_URL" using the Bearer token.',
+    'Discover stable teammate IDs with GET "$PONDEROSA_AGENT_DIRECTORY_URL" using the Bearer token.',
   ];
 }
 
@@ -696,6 +697,18 @@ function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
     `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
     'Fetch current identities, reporting lines, and status only when needed from "$PONDEROSA_AGENT_DIRECTORY_URL".',
   ]);
+}
+
+function olderContextPrompt(): string {
+  return contextSection("OLDER SCOPED CONTEXT", "ON-DEMAND REFERENCE", [
+    "Earlier messages in this Agent's current scoped history were omitted from the bounded provider input.",
+    'Fetch them only if the current request needs that history with GET "$PONDEROSA_AGENT_CONTEXT_URL" using the Bearer token.',
+  ]);
+}
+
+function boundedHistoryOmitted<T extends { text: string }>(source: T[], selected: T[]): boolean {
+  if (source.length !== selected.length) return true;
+  return source.some((message, index) => message.text !== selected[index]?.text);
 }
 
 function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], agents: AgentDto[]): string {
@@ -3748,6 +3761,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? message.conversationId === capability.conversationId
         : message.conversationId === undefined,
     );
+    const importedHistory = store.getImportedHistory(agent.id);
+    const importedMessages: MessageDto[] = (importedHistory?.messages ?? []).map((message, index) => ({
+      id: `imported:${agent.id}:${index}`,
+      agentId: agent.id,
+      seq: -(index + 1),
+      role: message.role === "assistant" ? "assistant" : "user",
+      text: message.role === "system" ? `[Imported private context]\n${message.text}` : message.text,
+      createdAt: message.createdAt ?? importedHistory!.importedAt,
+    }));
     const sharedMessages = capability.conversationId
       ? organizationalMasterMessages(
           store.getConversationMessages(capability.conversationId, "main"),
@@ -3769,7 +3791,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }))
       : [];
     const deduped = new Map<string, MessageDto>();
-    for (const message of [...scopedAgentMessages, ...sharedMessages]) {
+    for (const message of [...importedMessages, ...scopedAgentMessages, ...sharedMessages]) {
       const key = message.communicationEventId ?? `${message.createdAt}\0${message.role}\0${message.text}`;
       if (!deduped.has(key)) deduped.set(key, message);
     }
@@ -7410,6 +7432,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const initialBroadcastContext = broadcastIncremental
         ? allBroadcastMessages.slice(previousBroadcastCursor?.lastMessageId ? previousBroadcastIndex + 1 : 0)
         : boundedSeedHistory(allBroadcastMessages);
+      const hasOmittedScopedContext = (
+        (!resumeSessionId && boundedHistoryOmitted(fullHistory, history)) ||
+        (!incremental && boundedHistoryOmitted(allRoomMessages, roomMessages)) ||
+        (!broadcastIncremental && boundedHistoryOmitted(allBroadcastMessages, initialBroadcastContext))
+      );
       const changedRoutingMetadata = !previousCursor || previousCursor.routingHash !== routingHash
         ? routingMetadata
         : undefined;
@@ -7473,7 +7500,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
         : "";
       const teamDirectoryReference = teamDirectoryPrompt(directoryForTurn);
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
+      const olderContextReference = hasOmittedScopedContext ? olderContextPrompt() : "";
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
       // session and therefore must restore the envelope even if the first
@@ -7544,6 +7572,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             hash: createHash("sha256").update(teamDirectoryReference).digest("hex"),
             delivery: "submitted" as const,
           },
+          ...(olderContextReference ? [{
+            kind: "context_reference" as const,
+            ref: routingConversationId ?? agent.id,
+            hash: createHash("sha256").update(olderContextReference).digest("hex"),
+            delivery: "submitted" as const,
+          }] : []),
           ...submittedHistory.map((message, index) => ({
             kind: "history_message" as const, ref: `${index}:${message.role}`,
             delivery: "submitted" as const,
