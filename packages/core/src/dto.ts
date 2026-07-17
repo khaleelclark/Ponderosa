@@ -1032,6 +1032,8 @@ export type AgentRunWakeCause =
   | "project_request"
   | "direct_message"
   | "collaboration"
+  | "trigger"
+  | "decision"
   | "managed_failure";
 
 /** One canonical execution of an Agent. */

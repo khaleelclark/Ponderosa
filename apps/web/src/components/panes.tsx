@@ -313,6 +313,8 @@ function wakeCauseLabel(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
     case "project_request": return "Project request";
     case "direct_message": return "Direct message";
     case "collaboration": return "Collaboration";
+    case "trigger": return "Trigger";
+    case "decision": return "Decision response";
     case "managed_failure": return "Managed-agent failure";
   }
 }

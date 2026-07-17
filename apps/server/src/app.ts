@@ -93,6 +93,7 @@ import type {
   UpdateTriggerRequest,
   TriggerDefinitionDto,
   TriggerOccurrenceDto,
+  TriggerScheduleConfig,
   TriggerSourceConfig,
   TriggerSourceKind,
   AgentPortablePackageDto,
@@ -6119,7 +6120,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {
     const root = store.getAgent(request.params.id);
     if (!root) return reply.code(404).send({ error: "agent not found" });
-    const mode: AgentExportMode = ["template", "context", "full"].includes(request.query.mode ?? "") ? request.query.mode! : "full";
+    const requestedMode: AgentExportMode = ["template", "context", "full"].includes(request.query.mode ?? "") ? request.query.mode! : "full";
+    // Context packages were an early V3.3 spelling of a full portable Agent.
+    // Keep the query compatible while converging all non-template exports on
+    // the complete history/artifact/Trigger contract.
+    const mode: AgentExportMode = requestedMode === "context" ? "full" : requestedMode;
     const nodes = request.query.organization === "true" ? store.listAgentSubtree(root.id) : [root];
     const included = new Set(nodes.map((agent) => agent.id));
     const project = store.getProject(root.projectId)!;
@@ -6178,7 +6183,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       kind: nodes.length === 1 ? "agent" : "organization",
       exportedAt: new Date().toISOString(),
       sourceLabel: `${project.label} / ${root.title}`,
-      ...(project.instructions ? { sourceProjectInstructions: project.instructions } : {}),
+      ...(mode === "full" && project.instructions ? { sourceProjectInstructions: project.instructions } : {}),
       rootRef: root.id,
       agents,
     };
@@ -6262,7 +6267,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return rewritten;
         };
         const importedHistory = [
-          ...(body.package.sourceProjectInstructions ? [{ role: "system" as const, text: `Historical source Project rules (destination rules are authoritative):\n${body.package.sourceProjectInstructions}`, createdAt: body.package.exportedAt }] : []),
           ...(node.initialInstructions ? [{ role: "system" as const, text: `Imported initial instructions:\n${node.initialInstructions}`, createdAt: body.package.exportedAt }] : []),
           ...(node.history ?? []),
         ].map((message) => ({ ...message, text: rewriteArtifactRefs(message.text) }));
@@ -6273,7 +6277,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       if (body.package.mode === "full") for (const node of body.package.agents) for (const importedTrigger of node.triggers ?? []) {
         const agent = created.get(node.ref)!;
-        const normalized = normalizeTriggerSourceConfig(importedTrigger.sourceKind, importedTrigger.sourceConfig);
+        const importedSchedule = importedTrigger.sourceKind === "schedule"
+          ? importedTrigger.sourceConfig as TriggerScheduleConfig
+          : undefined;
+        const importedOneTimeSchedule = importedSchedule?.scheduleKind === "once";
+        const importedValidationTime = importedOneTimeSchedule
+          ? new Date(Date.parse(importedSchedule.at) - 1)
+          : new Date();
+        const normalized = normalizeTriggerSourceConfig(
+          importedTrigger.sourceKind,
+          importedTrigger.sourceConfig,
+          importedValidationTime,
+        );
         const webhookSecret = importedTrigger.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
         coordinationV3.createTriggerDefinition({
           projectId: project.id,
@@ -6285,7 +6300,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           sourceConfig: normalized.config,
           enabled: false,
           runBudget: importedTrigger.runBudget,
-          nextFireAt: normalized.nextFireAt,
+          nextFireAt: importedOneTimeSchedule ? undefined : normalized.nextFireAt,
           secretCiphertext: webhookSecret?.ciphertext,
           secretFingerprint: webhookSecret?.fingerprint,
         });
@@ -7075,6 +7090,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const stored = coordinationV3.getTriggerOccurrence(occurrence.id);
         return stored ? [stored] : [];
       });
+      const activationWakeCause = manifestTriggerOccurrences.length
+        ? "trigger" as const
+        : manifestActivationPayloads.some(({ payload }) => Boolean(
+            payload && typeof payload === "object" && "decision" in payload,
+          ))
+          ? "decision" as const
+          : undefined;
       const activationCommunicationEventIds = manifestActivationPayloads.flatMap(({ payload }) => {
         if (!payload || typeof payload !== "object") return [];
         const communication = (payload as { communication?: unknown }).communication;
@@ -7208,11 +7230,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const trackedV3FencingToken = internalV3Dispatch ? v3FencingToken : undefined;
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
-        wakeCause: sharedTaskTurn
+        wakeCause: activationWakeCause ?? (sharedTaskTurn
           ? "project_request"
           : directUserTaskTurn
             ? "direct_message"
-              : "collaboration",
+              : "collaboration"),
         ...(effectiveModel ? { model: effectiveModel } : {}),
         ...(effectiveEffort ? { effort: effectiveEffort } : {}),
       });

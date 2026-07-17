@@ -101,6 +101,12 @@ describe("WorkspaceStore canonical replay", () => {
       mode: "approval", question: "Publish the release?", options: [{ id: "approve", label: "Approve" }, { id: "do_not_approve", label: "Do not approve" }],
       allowOther: true, blocking: true,
     });
+    const decisionNotification = store.createNotification({
+      projectId: "project", conversationId: "chat", kind: "decision", category: "decision", severity: "urgent", status: "open",
+      dedupeKey: `decision:${decision.id}`, title: "Agent needs a decision", body: decision.question,
+      action: { kind: "open_decision", targetId: decision.id },
+      decision: { id: decision.id, mode: decision.mode, options: decision.options, allowOther: decision.allowOther, status: decision.status },
+    });
     expect(store.createDecision({
       idempotencyKey: "publish-v1", projectId: "project", conversationId: "chat", agentId: "agent", runId: "run",
       mode: "approval", question: "Changed retry", options: [], allowOther: true, blocking: true,
@@ -111,6 +117,7 @@ describe("WorkspaceStore canonical replay", () => {
     });
     expect(store.cancelDecisionsForAgent("deleted-agent")).toEqual([expect.objectContaining({ id: abandoned.id, status: "cancelled" })]);
     store.resolveDecision(decision.id, { optionId: "approve", respondedAt: "2026-07-16T00:00:00.000Z" });
+    expect(store.getNotification(decisionNotification.id)?.decision?.status).toBe("resolved");
     store.setNotificationStatus(notification.id, "resolved");
 
     const restarted = new WorkspaceStore(dir);
@@ -120,6 +127,7 @@ describe("WorkspaceStore canonical replay", () => {
       profile: { displayName: "Patrick", handle: "patrick", avatarId: "pine" },
     });
     expect(restarted.getDecision(decision.id)).toMatchObject({ status: "resolved", response: { optionId: "approve" } });
+    expect(restarted.getNotification(decisionNotification.id)?.decision?.status).toBe("resolved");
     expect(restarted.getDecision(abandoned.id)).toMatchObject({ status: "cancelled" });
     expect(restarted.getNotification(notification.id)).toMatchObject({ status: "resolved", severity: "urgent" });
   });

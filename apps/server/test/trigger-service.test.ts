@@ -120,6 +120,41 @@ describe("V3.2 Trigger sources", () => {
     }
   });
 
+  it("runs a one-time occurrence after atomically disabling its completed schedule", async () => {
+    const now = new Date("2026-07-16T12:00:01.000Z");
+    const context = setup(now);
+    try {
+      const trigger = context.coordination.createTriggerDefinition({
+        id: "schedule-once", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Once", instructions: "Publish the one-time report",
+        sourceKind: "schedule",
+        sourceConfig: { scheduleKind: "once", at: "2026-07-16T12:00:00.000Z" },
+        nextFireAt: "2026-07-16T12:00:00.000Z",
+      });
+      await context.service.processDueSchedules();
+      expect(context.coordination.getTriggerDefinition(trigger.id)).toMatchObject({
+        enabled: false,
+        lastFiredAt: "2026-07-16T12:00:00.000Z",
+      });
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(1);
+
+      const lease = context.coordination.leaseNextRun({ workerId: "scheduler", now: now.toISOString() })!;
+      expect(lease.activations).toHaveLength(1);
+      context.coordination.preparePromptInjection({
+        injectionId: lease.injectionId, runId: lease.runId,
+        fencingToken: lease.fencingToken, prompt: "one-time work",
+      });
+      context.coordination.markRunStarted(lease.runId, lease.fencingToken, now.toISOString());
+      expect(() => context.coordination.markPromptSubmitted({
+        injectionId: lease.injectionId, runId: lease.runId,
+        fencingToken: lease.fencingToken, now: now.toISOString(),
+      })).not.toThrow();
+      expect(context.coordination.schedulerMetrics()).toMatchObject({ activeRuns: 1, failedRuns: 0 });
+    } finally {
+      context.agents.close();
+    }
+  });
+
   it("shares one Project watcher while routing metadata to each matching Trigger", async () => {
     const now = new Date("2026-07-16T12:00:00.000Z");
     const context = setup(now);

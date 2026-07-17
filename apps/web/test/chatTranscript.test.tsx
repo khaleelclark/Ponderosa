@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildMarkdownTranscript, downloadMarkdownTranscript, transcriptFileName } from "../src/chatTranscript";
-import { CHAT_TRANSCRIPT_ACTION_LABELS, ChatOverflowMenu } from "../src/components/ChatOverflowMenu";
+import { CHAT_EXPORT_ACTION_LABELS, ChatOverflowMenu } from "../src/components/ChatOverflowMenu";
 
 const attachment: ImageAttachmentDto = {
   id: "asset-1",
@@ -92,15 +92,17 @@ describe("chat transcript export", () => {
     expect(revoke).toHaveBeenCalledWith("blob:transcript");
   });
 
-  it("exposes one compact accessible menu with both transcript operations", () => {
+  it("exposes matching Copy and Download menus with a chat transcript option", () => {
     const html = renderToStaticMarkup(<ChatOverflowMenu
       actions={[{ label: "Rename", onSelect: vi.fn() }]}
+      copyActions={[{ label: "Full Agent", onSelect: vi.fn() }]}
+      downloadActions={[{ label: "Full Agent", onSelect: vi.fn() }]}
       transcriptMarkdown="# Chat\n"
       transcriptFileName="chat.md"
     />);
     expect(html).toContain('aria-label="Chat actions"');
     expect(html).toContain('aria-haspopup="menu"');
-    expect(CHAT_TRANSCRIPT_ACTION_LABELS).toEqual(["Copy transcript", "Download transcript"]);
+    expect(CHAT_EXPORT_ACTION_LABELS).toEqual(["Copy", "Download", "Chat transcript"]);
   });
 
   it("keeps setup and mutations in menus and replaces the subagent prompt card with lineage", () => {
@@ -110,9 +112,14 @@ describe("chat transcript export", () => {
     expect(agentDetail).toContain('detailsLabel="Run setup"');
     expect(agentDetail).toContain('label: "Assign chats"');
     expect(agentDetail).toContain('label: "Create agent"');
+    expect(agentDetail).toContain('label: "Full Agent"');
+    expect(agentDetail).toContain('label: "Full organization"');
+    expect(agentDetail).not.toContain("Copy Agent context");
+    expect(agentDetail).toContain('label: "Import Agent or organization…"');
     expect(agentDetail).toContain("Created by");
     expect(agentDetail).not.toContain("Original message");
     expect(conversation).toContain('label: "Create agent"');
+    expect(conversation).toContain('label: "Import Agent or organization…"');
     expect(conversation).toContain("ChatOverflowMenu");
   });
 });

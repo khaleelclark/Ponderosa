@@ -119,6 +119,9 @@ replace the latest event, silently discard intermediate events, steer an active
 Run, or mix definitions. Filesystem sources bundle paths and event metadata
 without automatically injecting file contents. Missed schedules recover as one
 occurrence rather than a Run per interval.
+Trigger definitions are authoritative scheduler state and survive ordinary
+daemon restarts. A one-time schedule disables itself only after durably creating
+its occurrence; that already-authorized occurrence remains eligible to execute.
 
 Each Trigger may optionally limit root outside-activation Runs by day, week,
 month, or lifetime. Unlimited is the default. A batch costs one unit; work the
@@ -191,10 +194,12 @@ autonomous. Deletion and reporting-line changes require a durable user Decision.
 Decisions support approval, Agent-defined choices, and free text, appear in the
 relevant chats and Needs attention, and preserve the operator's response.
 
-Agents and descendant organizations can be copied or imported as template,
-context, or full portable JSON. Imports require explicit engine mapping, keep
+Agents and descendant organizations can be copied or downloaded as either a
+template or full portable JSON. Imports accept a selected file or pasted JSON,
+require explicit engine mapping, keep
 old messages as private historical context, disable imported Triggers with new
-secrets, and treat destination rules as authoritative. Project-owned managed
+secrets, and treat destination rules as authoritative. Source Project rules are
+retained only as package provenance and never enter provider context. Project-owned managed
 artifacts survive Agent deletion and travel with full packages within the
 documented package-size boundary.
 

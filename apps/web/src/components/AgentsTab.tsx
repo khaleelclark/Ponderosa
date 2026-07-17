@@ -27,10 +27,11 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import { agentRoleProfile } from "@ponderosa/core";
-import type { AgentPortablePackageDto, ConversationDto, AgentDetailDto, AgentDto, EngineDto } from "@ponderosa/core";
+import type { ConversationDto, AgentDetailDto, AgentDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { ImportAgentDialog } from "./ImportAgentDialog";
 import {
   agentActivity,
   agentDescendants,
@@ -73,26 +74,6 @@ export function AgentsTab({
   const [deleteAllOpen, setDeleteAllOpen] = useState(false);
   const [deleteAllConfirmation, setDeleteAllConfirmation] = useState("");
   const [importOpen, setImportOpen] = useState(false);
-  const [importJson, setImportJson] = useState("");
-  const [importConversationId, setImportConversationId] = useState("");
-  const [engineMapping, setEngineMapping] = useState<Record<string, string>>({});
-  const [importError, setImportError] = useState<string>();
-
-  let parsedPackage: AgentPortablePackageDto | undefined;
-  try {
-    const value = JSON.parse(importJson || "null") as AgentPortablePackageDto;
-    if (value?.schema === "ponderosa.agent-package.v1" && Array.isArray(value.agents)) parsedPackage = value;
-  } catch { /* editor displays the parse state below */ }
-  const sourceEngines = [...new Set(parsedPackage?.agents.map((node) => node.engine) ?? [])];
-  const importAgents = useMutation({
-    mutationFn: () => api.importAgents(projectId, { package: parsedPackage!, conversationId: importConversationId, engineMapping }),
-    onSuccess: (result) => {
-      setImportOpen(false); setImportJson(""); setEngineMapping({}); setImportError(undefined);
-      void queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
-      onOpenAgent(result.rootAgentId);
-    },
-    onError: (error) => setImportError(error instanceof Error ? error.message : "Import failed"),
-  });
 
   const deleteAgent = useMutation({
     mutationFn: (agentId: string) => api.deleteAgent(agentId),
@@ -174,24 +155,22 @@ export function AgentsTab({
         </Typography>
         <Button variant="outlined" size="small" disabled={activeAgentIds.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop all</Button>
         <Button color="error" variant="outlined" size="small" disabled={agents.length === 0 || activeAgentIds.length > 0} onClick={() => setDeleteAllOpen(true)}>Delete all</Button>
-        <Button variant="outlined" size="small" onClick={() => { setImportConversationId(conversations[0]?.id ?? ""); setImportOpen(true); }}>Import JSON</Button>
+        <Button variant="outlined" size="small" onClick={() => setImportOpen(true)}>Import Agent or organization</Button>
         <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
         </Button>
       </Stack>
       {bulkError ? <Alert severity="warning" sx={{ mx: 2, mt: 1 }}>{bulkError}</Alert> : null}
 
-      <Dialog open={importOpen} onClose={() => setImportOpen(false)} fullWidth maxWidth="md">
-        <DialogTitle>Import Agent or organization</DialogTitle>
-        <DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
-          <Alert severity="info">Imported history remains private historical context and does not appear as new chat messages. Triggers import disabled with new secrets.</Alert>
-          <TextField label="Ponderosa JSON" value={importJson} onChange={(event) => { setImportJson(event.target.value); setEngineMapping({}); setImportError(undefined); }} multiline minRows={10} error={Boolean(importJson && !parsedPackage)} helperText={importJson && !parsedPackage ? "Paste a ponderosa.agent-package.v1 document." : parsedPackage ? `${parsedPackage.agents.length} Agent${parsedPackage.agents.length === 1 ? "" : "s"} · ${parsedPackage.mode}` : "Copy an Agent or organization from its menu, then paste it here."} />
-          <FormControl fullWidth><InputLabel id="import-chat-label">Destination Project chat</InputLabel><Select labelId="import-chat-label" label="Destination Project chat" value={importConversationId} onChange={(event) => setImportConversationId(event.target.value)}>{conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}</Select></FormControl>
-          {sourceEngines.map((source) => <FormControl key={source} fullWidth><InputLabel id={`engine-map-${source}`}>Map {source}</InputLabel><Select labelId={`engine-map-${source}`} label={`Map ${source}`} value={engineMapping[source] ?? ""} onChange={(event) => setEngineMapping((current) => ({ ...current, [source]: event.target.value }))}>{engines.map((engine) => <MenuItem key={engine.id} value={engine.id}>{engine.displayName}{engine.enabled === false ? " — disabled" : ""}</MenuItem>)}</Select></FormControl>)}
-          {importError ? <Alert severity="error">{importError}</Alert> : null}
-        </Stack></DialogContent>
-        <DialogActions><Button onClick={() => setImportOpen(false)}>Cancel</Button><Button variant="contained" disabled={!parsedPackage || !importConversationId || sourceEngines.some((source) => !engineMapping[source]) || importAgents.isPending} onClick={() => importAgents.mutate()}>{importAgents.isPending ? "Importing…" : "Import"}</Button></DialogActions>
-      </Dialog>
+      <ImportAgentDialog
+        open={importOpen}
+        projectId={projectId}
+        engines={engines}
+        conversations={conversations}
+        initialConversationId={conversations[0]?.id}
+        onClose={() => setImportOpen(false)}
+        onImported={onOpenAgent}
+      />
 
       <Stack
         direction={{ xs: "column", sm: "row" }}
