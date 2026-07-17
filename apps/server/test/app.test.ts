@@ -3576,8 +3576,8 @@ describe("server chunk F", () => {
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({
       dataDir, store, engines, logger: false,
-      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
-      executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
     });
     const project = store.createProject({ label: "V3", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
@@ -3637,7 +3637,9 @@ describe("server chunk F", () => {
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
     const recipientRuntime = persistent.openedOptions[1]!;
     await vi.waitFor(() => expect(persistent.starts.some((turn) => turn.prompt.includes("review-request"))).toBe(true));
-    await sleep(140);
+    // Prove the scheduler renews an active provider Run beyond two lease
+    // periods without relying on sub-100 ms runner scheduling.
+    await sleep(2_100);
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running')
     `).get()).toEqual({ count: 1 });
@@ -3847,8 +3849,8 @@ describe("server chunk F", () => {
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({
       dataDir, store, engines, logger: false,
-      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 60 },
-      executionLeaseScheduling: { leaseMs: 180, heartbeatMs: 20 },
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
     });
     const project = store.createProject({ label: "V3 nested", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
@@ -5264,6 +5266,124 @@ describe("server chunk F", () => {
     expect(promoted.statusCode).toBe(200);
     expect(promoted.json()).not.toHaveProperty("managerAgentId");
     expect(store.readAgentOrganizationEvents(project.id)).toHaveLength(3);
+    await app.close();
+  });
+});
+
+describe("V3.3 Decisions, management, and portability", () => {
+  it("scopes describe/plan/apply to descendants and requires an approved Decision for deletion", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 4 } });
+    const project = store.createProject({ label: "Management", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Team" });
+    const owner = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${owner.id}/messages`,
+      payload: { text: "Organize the team", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    expect(runtime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["ponderosa_decision", "ponderosa_manage"]));
+
+    const described = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "describe" } });
+    expect(described.success, described.text).toBe(true);
+    expect(JSON.parse(described.text)).toMatchObject({ descendants: [expect.objectContaining({ agentId: child.id })] });
+    const escaped = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "escape", operations: [{ kind: "rename_agent", targetAgentId: outsider.id, title: "Nope" }] },
+    });
+    expect(escaped.success).toBe(false);
+
+    const planned = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "autonomous", operations: [
+        { kind: "rename_agent", targetAgentId: child.id, title: "Renamed child" },
+        { kind: "create_agent", ref: "reviewer", parentRef: child.id, title: "Reviewer", engine: "codex", instructions: "Review independently." },
+      ] },
+    });
+    expect(planned.success, planned.text).toBe(true);
+    const planId = JSON.parse(planned.text).planId as string;
+    const applied = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId } });
+    expect(applied.success, applied.text).toBe(true);
+    expect(store.getAgent(child.id)?.title).toBe("Renamed child");
+    const reviewer = store.listAgents(project.id).find((agent) => agent.title === "Reviewer")!;
+    expect(reviewer.managerAgentId).toBe(child.id);
+    expect(store.getImportedHistory(reviewer.id)?.messages[0]?.text).toBe("Review independently.");
+    expect(JSON.parse((await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId } })).text)).toMatchObject({ replayed: true });
+
+    const unapprovedDelete = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "delete-no-decision", operations: [{ kind: "delete_agent", targetAgentId: reviewer.id }] },
+    });
+    expect(unapprovedDelete.success).toBe(false);
+    const asked = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_decision",
+      arguments: { idempotencyKey: "delete-reviewer", mode: "approval", question: "Delete Reviewer?", blocking: true },
+    });
+    expect(asked.success, asked.text).toBe(true);
+    const decisionId = JSON.parse(asked.text).id as string;
+    persistent.completeSteers = false;
+    expect((await app.inject({ method: "POST", url: `/api/decisions/${decisionId}/respond`, payload: { optionId: "approve" } })).statusCode).toBe(200);
+    await vi.waitFor(() => expect(persistent.steers).toHaveLength(1));
+    const deletePlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "delete-approved", operations: [{ kind: "delete_agent", targetAgentId: reviewer.id, decisionId }] },
+    });
+    expect(deletePlan.success, deletePlan.text).toBe(true);
+    const deleted = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(deletePlan.text).planId } });
+    expect(deleted.success, deleted.text).toBe(true);
+    expect(store.getAgent(reviewer.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("exports and imports private context, source rules, and generated artifacts with collision-safe references", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Portable", hostPath: repoDir });
+    store.updateProject(project.id, { instructions: "Destination-safe Project rule" });
+    const sourceChat = store.createConversation(project.id, { title: "Source" });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const source = store.createAgent(project.id, { title: "Portable Agent", engine: "codex", conversationId: sourceChat.id });
+    const artifactId = randomUUID();
+    const bytes = Buffer.from("portable artifact bytes");
+    const artifactFile = managedArtifactContentPath(dataDir, project.id, artifactId);
+    mkdirSync(path.dirname(artifactFile), { recursive: true });
+    writeFileSync(artifactFile, bytes);
+    store.recordProjectArtifact({
+      id: artifactId, projectId: project.id, agentId: source.id, originAgentId: source.id,
+      kind: "generated_file", path: `generated/${artifactId}.txt`, summary: "result.txt", createdAt: "2026-07-16T00:00:00.000Z",
+      mediaType: "text/plain", visibility: "project", pinned: false, size: bytes.length,
+    });
+    store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
+    const exported = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=full` });
+    expect(exported.statusCode, exported.body).toBe(200);
+    expect(exported.json()).toMatchObject({
+      sourceProjectInstructions: "Destination-safe Project rule",
+      agents: [{ artifacts: [{ ref: artifactId, dataBase64: bytes.toString("base64") }] }],
+    });
+    const imported = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/import-agents`,
+      payload: { package: exported.json(), conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+    });
+    expect(imported.statusCode, imported.body).toBe(201);
+    const importedAgentId = imported.json<{ rootAgentId: string }>().rootAgentId;
+    const importedArtifacts = store.getProjectArtifacts(project.id).filter((artifact) => artifact.originAgentId === importedAgentId);
+    expect(importedArtifacts).toHaveLength(1);
+    expect(importedArtifacts[0]!.id).not.toBe(artifactId);
+    expect(readFileSync(managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id))).toEqual(bytes);
+    expect(store.getImportedHistory(importedAgentId)?.messages.map((message) => message.text).join("\n")).toContain(importedArtifacts[0]!.id);
+    expect(store.getImportedHistory(importedAgentId)?.messages[0]?.text).toContain("Historical source Project rules");
+    adapter.mode = "hang";
+    expect((await app.inject({ method: "POST", url: `/api/agents/${importedAgentId}/messages`, payload: { text: "Inspect imported state" } })).statusCode).toBe(202);
+    await waitForSeedCount(1);
+    expect(adapter.seeds[0]!.history?.flatMap((message) => message.attachments ?? [])).toContainEqual(expect.objectContaining({
+      artifactId: importedArtifacts[0]!.id,
+      localPath: managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id),
+      available: true,
+    }));
+    await app.inject({ method: "POST", url: `/api/agents/${importedAgentId}/cancel`, payload: { idempotencyKey: "stop-import-inspection" } });
     await app.close();
   });
 });

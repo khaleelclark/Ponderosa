@@ -1330,7 +1330,8 @@ describe("project lifecycle", () => {
 
   it("renames canonically and rebuilds the renamed projection", () => {
     const project = store.createProject({ label: "Before", hostPath: "/repo" });
-    expect(store.updateProject(project.id, { label: "After" })?.label).toBe("After");
+    expect(store.updateProject(project.id, { label: "After", instructions: "Project rule" })).toMatchObject({ label: "After", instructions: "Project rule" });
+    expect(store.updateProject(project.id, { instructions: "" })).not.toHaveProperty("instructions");
     expect(JSON.parse(readFileSync(projectJsonPath(dir, project.id), "utf8"))).toMatchObject({ label: "After", hostPath: "/repo" });
     store.rebuildProjections();
     expect(store.getProject(project.id)?.label).toBe("After");

@@ -3,8 +3,10 @@ import { realApi } from "./real";
 import type { PonderosaApi } from "./types";
 
 function getApiMode(): "mock" | "real" {
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
-  const mode = env?.PUBLIC_PONDEROSA_API_MODE ?? env?.VITE_PONDEROSA_API_MODE;
+  // Rsbuild only replaces statically-addressed import.meta.env fields. Keeping
+  // this access explicit prevents mock development builds from silently
+  // falling through to the real API client.
+  const mode = import.meta.env.PUBLIC_PONDEROSA_API_MODE;
   return mode === "mock" ? "mock" : "real";
 }
 

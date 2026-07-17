@@ -41,7 +41,7 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { agentDescendants, agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
@@ -224,6 +224,15 @@ export function AgentDetail({
   }, [focusMessageId, tab, agentQuery.data?.messages]);
 
   const detail = agentQuery.data;
+  const decisionsQuery = useQuery({ queryKey: ["decisions", "agent", agentId], queryFn: () => api.listDecisions({ agentId, status: "pending" }) });
+  const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
+  const respondDecision = useMutation({
+    mutationFn: ({ id, optionId, text }: { id: string; optionId?: string; text?: string }) => api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["decisions", "agent", agentId] });
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    },
+  });
   const engine =
     engines.find((candidate) => candidate.id === detail?.agent.activeEngine) ?? engines[0];
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
@@ -291,6 +300,19 @@ export function AgentDetail({
     const idempotencyKey = stopRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     stopRequestId.current = idempotencyKey;
     return cancelRun.mutateAsync({ idempotencyKey });
+  };
+  const copyAgentPackage = async (mode: "template" | "context" | "full", organization = false) => {
+    const portable = await api.exportAgent(agentId, mode, organization);
+    await navigator.clipboard.writeText(JSON.stringify(portable, null, 2));
+    setQueuedMessageNotice(`${organization ? "Organization" : "Agent"} ${mode} JSON copied.`);
+  };
+  const quickCopyIntoHomeChat = async () => {
+    if (!detail?.agent.conversationId) return;
+    const portable = await api.exportAgent(agentId, "context", false);
+    const engineMapping = Object.fromEntries([...new Set(portable.agents.map((node) => node.engine))].map((engineId) => [engineId, engineId]));
+    const imported = await api.importAgents(detail.agent.projectId, { package: portable, conversationId: detail.agent.conversationId, engineMapping });
+    await queryClient.invalidateQueries({ queryKey: ["agents", detail.agent.projectId] });
+    onOpenAgent(imported.rootAgentId);
   };
 
   const deleteAgent = useMutation({
@@ -497,14 +519,14 @@ export function AgentDetail({
     };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ minHeight: 0, overflow: "auto" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} operatorProfile={preferencesQuery.data?.profile} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
       idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
     }).then(() => {
       void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
-    })} onReply={setReplyTo} />,
+    })} onReply={setReplyTo} /></Box>,
     runOutput: <WorkLogPane
       entries={detail.runOutput}
       onOpenFile={(file: ResponseFileActivityDto) => {
@@ -665,6 +687,13 @@ export function AgentDetail({
                   setMembershipOpen(true);
                 },
               },
+              { label: "Copy full Agent JSON", onSelect: () => void copyAgentPackage("full") },
+              { label: "Copy Agent template", onSelect: () => void copyAgentPackage("template") },
+              { label: "Copy Agent context", onSelect: () => void copyAgentPackage("context") },
+              { label: "Copy organization JSON", onSelect: () => void copyAgentPackage("full", true) },
+              { label: "Copy organization template", onSelect: () => void copyAgentPackage("template", true) },
+              { label: "Copy organization context", onSelect: () => void copyAgentPackage("context", true) },
+              ...(detail.agent.conversationId ? [{ label: "Quick copy into home chat", onSelect: () => void quickCopyIntoHomeChat() }] : []),
               {
                 label: "Reports to",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,

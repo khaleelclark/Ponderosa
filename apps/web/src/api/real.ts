@@ -28,6 +28,8 @@ import type {
   PutConversationDraftRequest,
   GenerateConversationTitleResponse,
   WorkspaceNotificationDto,
+  DecisionDto,
+  ResolveDecisionRequest,
   WorkspaceEventEnvelope,
   HostFolderBrowseDto,
   UpdateProjectRequest,
@@ -48,6 +50,10 @@ import type {
   BrowserOperatorInputRequest,
   ProjectBrowserSessionDto,
   ProjectBrowserControlRequest,
+  AgentPortablePackageDto,
+  AgentExportMode,
+  ImportAgentPackageRequest,
+  ImportAgentPackageResponse,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
@@ -208,6 +214,9 @@ export const realApi: PonderosaApi = {
   async clearConversationNotifications(conversationId) { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
   async markAllNotificationsRead() { await requestJson("/api/notifications/read", { method: "POST" }); },
   async clearAllNotifications() { await requestJson("/api/notifications", { method: "DELETE" }); },
+  setNotificationStatus(notificationId, status) { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
+  listDecisions(filter = {}) { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
+  respondDecision(decisionId, request) { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
   getWebPushStatus(deviceId) { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
   async upsertWebPushSubscription(subscription) {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(subscription.deviceId)}`, { method: "PUT", body: JSON.stringify(subscription) });
@@ -311,6 +320,12 @@ export const realApi: PonderosaApi = {
   getAgent(agentId) {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}`);
   },
+  exportAgent(agentId, mode, organization = false) {
+    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
+  },
+  importAgents(projectId, request) {
+    return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, { method: "POST", body: JSON.stringify(request satisfies ImportAgentPackageRequest) });
+  },
   listTriggers(agentId) {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
   },
@@ -326,6 +341,9 @@ export const realApi: PonderosaApi = {
   rotateTriggerSecret(triggerId) {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/rotate-secret`, { method: "POST" });
   },
+  allowTriggerRuns(triggerId, additionalRuns) {
+    return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/allow-runs`, { method: "POST", body: JSON.stringify({ additionalRuns }) });
+  },
   listTriggerOccurrences(triggerId, limit = 100) {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/occurrences?limit=${encodeURIComponent(String(limit))}`);
   },
@@ -334,6 +352,9 @@ export const realApi: PonderosaApi = {
   },
   listEngines() {
     return requestJson<EngineDto[]>("/api/engines");
+  },
+  updateEngine(engineId, request) {
+    return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}`, { method: "PATCH", body: JSON.stringify(request) });
   },
   recheckEngine(engineId) {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}/recheck`, { method: "POST" });

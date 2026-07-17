@@ -143,9 +143,9 @@ export function pushPayload(notification: WorkspaceNotificationDto): Record<stri
     body: notification.body,
     projectId: notification.projectId,
     conversationId: notification.conversationId,
-    url: notification.conversationId
+    url: notification.projectId && notification.conversationId
       ? `/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(notification.conversationId)}${message}`
-      : `/projects/${encodeURIComponent(notification.projectId)}`,
+      : notification.projectId ? `/projects/${encodeURIComponent(notification.projectId)}` : "/",
   };
 }
 

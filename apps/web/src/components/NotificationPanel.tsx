@@ -6,6 +6,7 @@ import {
   Badge,
   Box,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -27,7 +28,7 @@ import { announceWorkspaceRefresh } from "../hooks/useWorkspaceStream";
 
 export interface NotificationGroup {
   key: string;
-  projectId: string;
+  projectId?: string;
   conversationId?: string;
   items: WorkspaceNotificationDto[];
 }
@@ -35,10 +36,10 @@ export interface NotificationGroup {
 export function groupNotificationsByChat(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
   const groups = new Map<string, NotificationGroup>();
   for (const item of notifications) {
-    const key = `${item.projectId}\u0000${item.conversationId ?? "project"}`;
+    const key = `${item.projectId ?? "workspace"}\u0000${item.conversationId ?? "project"}`;
     const current = groups.get(key) ?? {
       key,
-      projectId: item.projectId,
+      ...(item.projectId ? { projectId: item.projectId } : {}),
       ...(item.conversationId ? { conversationId: item.conversationId } : {}),
       items: [],
     };
@@ -60,17 +61,19 @@ function notificationTime(value: string): string {
     : date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export function NotificationPanel({ open, projects, notifications, onClose, onNavigate }: {
+export function NotificationPanel({ open, projects, notifications, onClose, onNavigate, onOpenSettings }: {
   open: boolean;
   projects: ProjectDto[];
   notifications: WorkspaceNotificationDto[];
   onClose(): void;
   onNavigate(route: Route): void;
+  onOpenSettings?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<"read" | "clear">();
   const [error, setError] = useState<string>();
-  const projectIds = useMemo(() => [...new Set(notifications.map((item) => item.projectId))], [notifications]);
+  const [respondingDecisionId, setRespondingDecisionId] = useState<string>();
+  const projectIds = useMemo(() => [...new Set(notifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [notifications]);
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
       queryKey: ["conversations", projectId],
@@ -85,6 +88,12 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const unreadCount = notifications.filter((item) => !item.readAt).length;
 
   const navigateToNotification = (item: WorkspaceNotificationDto) => {
+    if (item.action?.kind === "open_settings") {
+      onClose();
+      onOpenSettings?.();
+      return;
+    }
+    if (!item.projectId) return;
     onClose();
     if (item.conversationId) {
       onNavigate({
@@ -96,6 +105,30 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       return;
     }
     onNavigate({ kind: "project", projectId: item.projectId });
+  };
+
+  const setStatus = async (item: WorkspaceNotificationDto, status: "resolved" | "dismissed") => {
+    setError(undefined);
+    try {
+      await api.setNotificationStatus(item.id, status);
+      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Notification could not be updated.");
+    }
+  };
+  const respondDecision = async (item: WorkspaceNotificationDto, optionId?: string, text?: string) => {
+    if (!item.decision) return;
+    setRespondingDecisionId(item.decision.id);
+    setError(undefined);
+    try {
+      await api.respondDecision(item.decision.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) });
+      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      await queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Decision response could not be sent.");
+    } finally {
+      setRespondingDecisionId(undefined);
+    }
   };
 
   const markAllRead = async () => {
@@ -159,13 +192,13 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
               onClick={() => {
                 if (!group.conversationId) return;
                 onClose();
-                onNavigate({ kind: "conversation", projectId: group.projectId, conversationId: group.conversationId });
+                if (group.projectId) onNavigate({ kind: "conversation", projectId: group.projectId, conversationId: group.conversationId });
               }}
               sx={{ justifyContent: "flex-start", px: 1.5, py: 1, textAlign: "left", borderRadius: 0 }}
             >
               <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="subtitle2" noWrap>{conversation?.title ?? "Project notifications"}</Typography>
-                <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Unknown project"}</Typography>
+                <Typography variant="subtitle2" noWrap>{conversation?.title ?? (group.projectId ? "Project notifications" : "Ponderosa operations")}</Typography>
+                <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Across all Projects")}</Typography>
               </Box>
               {groupUnread ? <Badge color="primary" badgeContent={groupUnread} sx={{ mr: 1 }} /> : null}
             </Button>
@@ -174,8 +207,11 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                 <ListItemButton selected={!item.readAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, py: 1 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: item.readAt ? "transparent" : "primary.main", flex: "0 0 auto" }} />
                   <ListItemText
-                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0 }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography><Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
-                    secondary={item.body}
+                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Needs attention"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
+                    secondary={<Stack spacing={0.5}><Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+                      {item.decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondingDecisionId === item.decision!.id} onClick={(event) => { event.stopPropagation(); void respondDecision(item, option.id); }}>{option.label}</Button>)}
+                      {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondingDecisionId === item.decision.id} onClick={(event) => { event.stopPropagation(); const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (answer?.trim()) void respondDecision(item, undefined, answer.trim()); }}>{item.decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}
+                    </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}</Stack>}
                     secondaryTypographyProps={{ sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
                   />
                 </ListItemButton>

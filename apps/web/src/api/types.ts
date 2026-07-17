@@ -43,6 +43,8 @@ import type {
   PutConversationDraftRequest,
   GenerateConversationTitleResponse,
   WorkspaceNotificationDto,
+  DecisionDto,
+  ResolveDecisionRequest,
   WorkspaceEventEnvelope,
   WorkspaceStreamStatusDto,
   HostFolderBrowseDto,
@@ -72,6 +74,10 @@ import type {
   CreateTriggerRequest,
   CreateTriggerResponse,
   UpdateTriggerRequest,
+  AgentPortablePackageDto,
+  AgentExportMode,
+  ImportAgentPackageRequest,
+  ImportAgentPackageResponse,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -143,6 +149,9 @@ export interface PonderosaApi {
   clearConversationNotifications(conversationId: string): Promise<void>;
   markAllNotificationsRead(): Promise<void>;
   clearAllNotifications(): Promise<void>;
+  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto>;
+  listDecisions(filter?: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] }): Promise<DecisionDto[]>;
+  respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto>;
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto>;
   upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void>;
   deleteWebPushSubscription(deviceId: string): Promise<void>;
@@ -167,14 +176,18 @@ export interface PonderosaApi {
   updateAgentOrganization(agentId: string, request: UpdateAgentOrganizationRequest): Promise<AgentDto>;
   deleteAgent(agentId: string): Promise<void>;
   getAgent(agentId: string): Promise<AgentDetailDto>;
+  exportAgent(agentId: string, mode: AgentExportMode, organization?: boolean): Promise<AgentPortablePackageDto>;
+  importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse>;
   listTriggers(agentId: string): Promise<TriggerDefinitionDto[]>;
   createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse>;
   updateTrigger(triggerId: string, request: UpdateTriggerRequest): Promise<TriggerDefinitionDto>;
   deleteTrigger(triggerId: string): Promise<void>;
   rotateTriggerSecret(triggerId: string): Promise<CreateTriggerResponse>;
+  allowTriggerRuns(triggerId: string, additionalRuns: number): Promise<TriggerDefinitionDto>;
   listTriggerOccurrences(triggerId: string, limit?: number): Promise<TriggerOccurrenceDto[]>;
   listAgentTriggerOccurrences(agentId: string, limit?: number): Promise<TriggerOccurrenceDto[]>;
   listEngines(): Promise<EngineDto[]>;
+  updateEngine(engineId: string, request: { enabled: boolean }): Promise<EngineDto>;
   recheckEngine(engineId: string): Promise<EngineDto>;
   getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]>;
   getFiles(projectId: string, path?: string): Promise<FilesResponse>;

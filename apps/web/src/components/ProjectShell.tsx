@@ -249,6 +249,8 @@ export function ProjectShell({
     main = (
       <AgentsTab
         agents={agents}
+        projectId={projectId}
+        engines={engines}
         conversations={conversations}
         statusByAgentId={statusByAgentId}
         detailByAgentId={detailByAgentId}

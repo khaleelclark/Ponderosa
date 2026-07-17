@@ -36,7 +36,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -107,6 +107,7 @@ export function ConversationMessage({
   onEdit,
   projectId,
   activeRunId,
+  operatorProfile,
 }: {
   message: ConversationMessageDto;
   conversation: "main" | "collaboration";
@@ -122,6 +123,7 @@ export function ConversationMessage({
   onEdit?: (message: ConversationMessageDto) => void;
   projectId: string;
   activeRunId?: string;
+  operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
   const showUserLabel = fromManager && message.role === "user";
@@ -136,13 +138,13 @@ export function ConversationMessage({
       id={`master-message-${message.id}`}
       component="article"
       className="chat-message"
-      aria-label={`${fromManager ? "You" : agentTitle(message.authorAgentId)} message`}
+      aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
       sx={{ alignSelf: "center", width: "min(760px, 100%)", maxWidth: "100%", minWidth: 0 }}
     >
       <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", minWidth: 0 }}>
         <Box sx={{ flex: 1, minWidth: 0, px: showUserLabel ? 0 : { xs: 1, sm: 1.5 } }}>
-          {showUserLabel ? <UserMessageLabel /> : <MessageSenderLabel name={fromManager ? "You" : agentTitle(message.authorAgentId)} />}
+          {showUserLabel ? <UserMessageLabel profile={operatorProfile} /> : <MessageSenderLabel name={fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} />}
         </Box>
         {message.authorAgentId ? (
           <IconButton
@@ -167,7 +169,7 @@ export function ConversationMessage({
           borderColor: "transparent",
         }}
       >
-        {fromManager ? <MessageSenderLabel name="You" /> : null}
+        {fromManager ? <MessageSenderLabel name={operatorProfile?.displayName ?? "You"} /> : null}
         {message.replyTo ? (
           <Box component="button" aria-label="Go to replied-to message" onClick={() => {
             const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
@@ -269,6 +271,16 @@ export function ConversationView({
     queryKey: ["queued-messages", conversationId],
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
+  const decisionsQuery = useQuery({ queryKey: ["decisions", "conversation", conversationId], queryFn: () => api.listDecisions({ conversationId, status: "pending" }) });
+  const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
+  const respondDecision = useMutation({
+    mutationFn: ({ id, optionId, text }: { id: string; optionId?: string; text?: string }) => api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["decisions", "conversation", conversationId] });
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
+    },
+  });
   const [activeView, setActiveView] = useState<"main" | "collaboration">(() =>
     readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main",
   );
@@ -340,6 +352,7 @@ export function ConversationView({
   const messages = compactDefined(detailQuery.data?.messages ?? []);
   const agents = compactDefined(detailQuery.data?.agents ?? []);
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
+  const operationalEvents = compactDefined(collaborationQuery.data?.operations ?? []).slice(-150);
   useEffect(() => {
     if (!focusMessageId || focusedMessage.current === focusMessageId) return;
     if (activeView !== "main") {
@@ -925,9 +938,24 @@ export function ConversationView({
               ))}
             </Stack>
           ) : null}
+          {(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"} sx={{ mb: 1.5 }}>
+            <Typography variant="subtitle2">{agentTitle(decision.agentId)} needs your decision</Typography>
+            <Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography>
+            <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+              {decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}
+              {(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}
+            </Stack>
+          </Alert>)}
 
           <Stack spacing={1} sx={{ mb: 2 }}>
-            {(activeView === "collaboration" ? collaborationMessages : messages).length === 0 ? (
+            {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
+              {operationalEvents.map((event) => <Box key={event.id} sx={{ display: "flex", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover" }}>
+                <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
+                <Typography variant="body2" sx={{ flex: 1 }}>{event.text}</Typography>
+                <Typography variant="caption" color="text.secondary">{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
+              </Box>)}
+            </Stack> : null}
+            {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 {activeView === "collaboration"
                   ? "No agent-to-agent messages yet."
@@ -941,6 +969,7 @@ export function ConversationView({
                 conversation={activeView}
                 projectId={conversation.projectId}
                 activeRunId={message.authorAgentId ? healthByAgentId.get(message.authorAgentId)?.runtimeActivity?.executionId : undefined}
+                operatorProfile={preferencesQuery.data?.profile}
                 agentTitle={agentTitle}
                 agentIdForHandle={agentIdForHandle}
                 compactViewport={compactViewport}

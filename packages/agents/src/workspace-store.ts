@@ -3,6 +3,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, wr
 import { dirname } from "node:path";
 import type {
   ConversationDraftDto,
+  DecisionDto,
   ConversationDraftConflictDto,
   ConversationDraftConflictListDto,
   UpdateWorkspacePreferencesRequest,
@@ -25,6 +26,8 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "notifications_read"; conversationId: string; readAt: string }
     | { kind: "notifications_read_all"; readAt: string }
     | { kind: "notifications_cleared"; notificationIds: string[] }
+    | { kind: "notification_status"; notificationId: string; status: "resolved" | "dismissed"; at: string }
+    | { kind: "decision"; decision: DecisionDto; idempotencyKey: string }
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
 };
@@ -47,6 +50,9 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   sidebarWidth: 288,
   notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
   fontFamily: "inter",
+  providerAvailability: {},
+  globalInstructions: "",
+  profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
   updatedAt: new Date(0).toISOString(),
 };
 
@@ -58,6 +64,8 @@ export class WorkspaceStore {
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
+  private readonly decisions = new Map<string, DecisionDto>();
+  private readonly decisionIdempotency = new Map<string, string>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private preferences = DEFAULT_PREFERENCES;
@@ -81,6 +89,9 @@ export class WorkspaceStore {
       ...record.event.preferences,
       notifications: normalizeNotifications(record.event.preferences.notifications),
       projectOrder: record.event.preferences.projectOrder ?? [],
+      providerAvailability: record.event.preferences.providerAvailability ?? {},
+      globalInstructions: record.event.preferences.globalInstructions ?? "",
+      profile: normalizeProfile(record.event.preferences.profile),
     };
     if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
@@ -125,6 +136,19 @@ export class WorkspaceStore {
         }
       }
     }
+    if (record.mutation?.kind === "notification_status") {
+      const current = this.notifications.get(record.mutation.notificationId);
+      if (current) this.notifications.set(current.id, {
+        ...current,
+        status: record.mutation.status,
+        resolvedAt: record.mutation.at,
+        readAt: current.readAt ?? record.mutation.at,
+      });
+    }
+    if (record.mutation?.kind === "decision") {
+      this.decisions.set(record.mutation.decision.id, record.mutation.decision);
+      this.decisionIdempotency.set(record.mutation.idempotencyKey, record.mutation.decision.id);
+    }
     if (record.mutation?.kind === "push_subscription") {
       for (const replacedDeviceId of record.mutation.replacedDeviceIds ?? []) this.pushSubscriptions.delete(replacedDeviceId);
       if (record.mutation.subscription) this.pushSubscriptions.set(record.mutation.deviceId, record.mutation.subscription);
@@ -166,6 +190,9 @@ export class WorkspaceStore {
       ...patch,
       notifications,
       projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
+      providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
+      globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
+      profile: patch.profile ? normalizeProfile(patch.profile) : this.preferences.profile,
       sidebarWidth: Math.max(220, Math.min(520, Math.round(patch.sidebarWidth ?? this.preferences.sidebarWidth))),
       updatedAt: new Date().toISOString(),
     };
@@ -211,7 +238,18 @@ export class WorkspaceStore {
       const existing = [...this.notifications.values()].find((item) => item.communicationEventId === input.communicationEventId);
       if (existing) return existing;
     }
-    const notification = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
+    if (input.dedupeKey) {
+      const existing = [...this.notifications.values()].find((item) => item.dedupeKey === input.dedupeKey && (item.status ?? "open") === "open");
+      if (existing) return existing;
+    }
+    const notification = {
+      category: input.kind === "operational" ? "system" as const : "communication" as const,
+      severity: "info" as const,
+      status: "open" as const,
+      ...input,
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
     const pushTargets = queueWebPush
       ? [...this.pushSubscriptions.values()].map(({ deviceId, updatedAt }) => ({ deviceId, subscriptionUpdatedAt: updatedAt }))
       : undefined;
@@ -285,6 +323,74 @@ export class WorkspaceStore {
 
   getNotification(notificationId: string): WorkspaceNotificationDto | undefined {
     return this.notifications.get(notificationId);
+  }
+
+  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): WorkspaceNotificationDto | undefined {
+    const current = this.notifications.get(notificationId);
+    if (!current || (current.status ?? "open") !== "open") return current;
+    const at = new Date().toISOString();
+    this.append(
+      { type: "notification_changed", notificationId, conversationId: current.conversationId, action: "read" },
+      { kind: "notification_status", notificationId, status, at },
+    );
+    return this.notifications.get(notificationId);
+  }
+
+  createDecision(input: Omit<DecisionDto, "id" | "status" | "createdAt" | "updatedAt"> & { idempotencyKey: string }): DecisionDto {
+    const key = `${input.agentId}\u0000${input.idempotencyKey}`;
+    const existingId = this.decisionIdempotency.get(key);
+    if (existingId) return this.decisions.get(existingId)!;
+    const now = new Date().toISOString();
+    const decision: DecisionDto = {
+      ...input,
+      id: randomUUID(),
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const { idempotencyKey: _idempotencyKey, ...stored } = decision as DecisionDto & { idempotencyKey?: string };
+    this.append(
+      { type: "notification_changed", action: "created", conversationId: decision.conversationId },
+      { kind: "decision", decision: stored, idempotencyKey: key },
+    );
+    return stored;
+  }
+
+  listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): DecisionDto[] {
+    return [...this.decisions.values()].filter((decision) =>
+      (!filter.projectId || decision.projectId === filter.projectId) &&
+      (!filter.conversationId || decision.conversationId === filter.conversationId) &&
+      (!filter.agentId || decision.agentId === filter.agentId) &&
+      (!filter.status || decision.status === filter.status))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  getDecision(id: string): DecisionDto | undefined { return this.decisions.get(id); }
+
+  resolveDecision(id: string, response: NonNullable<DecisionDto["response"]>): DecisionDto | undefined {
+    const current = this.decisions.get(id);
+    if (!current || current.status !== "pending") return current;
+    const next: DecisionDto = { ...current, status: "resolved", response, updatedAt: response.respondedAt };
+    const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
+    this.append(
+      { type: "notification_changed", action: "read", conversationId: current.conversationId },
+      { kind: "decision", decision: next, idempotencyKey: key },
+    );
+    return next;
+  }
+
+  cancelDecisionsForAgent(agentId: string, at = new Date().toISOString()): DecisionDto[] {
+    const cancelled: DecisionDto[] = [];
+    for (const current of this.listDecisions({ agentId, status: "pending" })) {
+      const next: DecisionDto = { ...current, status: "cancelled", updatedAt: at };
+      const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === current.id)?.[0] ?? `decision:${current.id}`;
+      this.append(
+        { type: "notification_changed", action: "read", conversationId: current.conversationId },
+        { kind: "decision", decision: next, idempotencyKey: key },
+      );
+      cancelled.push(next);
+    }
+    return cancelled;
   }
 
   duePushDeliveries(now = new Date()): Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> {
@@ -367,4 +473,13 @@ function normalizeNotifications(input: unknown): NotificationPreferencesDto {
     broadcasts: legacy === "broadcasts" || legacy === "all_messages",
     allMessages: legacy === "all_messages",
   };
+}
+
+function normalizeProfile(input: unknown): WorkspacePreferencesDto["profile"] {
+  const value = input && typeof input === "object" ? input as Partial<WorkspacePreferencesDto["profile"]> : {};
+  const displayName = typeof value.displayName === "string" && value.displayName.trim() ? value.displayName.trim().slice(0, 80) : "User";
+  const rawHandle = typeof value.handle === "string" ? value.handle.trim().replace(/^#/, "").toLowerCase() : "operator";
+  const handle = /^[a-z][a-z0-9_-]{1,31}$/.test(rawHandle) && !["broadcast", "everyone", "user"].includes(rawHandle) ? rawHandle : "operator";
+  const avatarId = typeof value.avatarId === "string" && /^[a-z0-9_-]{1,64}$/i.test(value.avatarId) ? value.avatarId : "default-user";
+  return { displayName, handle, avatarId };
 }

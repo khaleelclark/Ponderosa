@@ -25,7 +25,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDto, CreateTriggerRequest, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
+import type { AgentDto, CreateTriggerRequest, TriggerBudgetPeriod, TriggerDefinitionDto, TriggerOccurrenceDto, TriggerSourceConfig, TriggerSourceKind } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -110,6 +110,9 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
   const [exclude, setExclude] = useState(".git/**\nnode_modules/**\n.ponderosa/**");
   const [quietSeconds, setQuietSeconds] = useState("1");
   const [maxWindowSeconds, setMaxWindowSeconds] = useState("10");
+  const [budgetEnabled, setBudgetEnabled] = useState(false);
+  const [budgetLimit, setBudgetLimit] = useState("10");
+  const [budgetPeriod, setBudgetPeriod] = useState<TriggerBudgetPeriod>("month");
   const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
   const sourceConfigurationInvalid = sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max);
 
@@ -144,6 +147,9 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     setScheduleKind("interval");
     setOnceAt(localFuture());
     setIntervalMinutes("60");
+    setBudgetEnabled(false);
+    setBudgetLimit("10");
+    setBudgetPeriod("month");
   };
 
   const openEditor = (trigger: TriggerDefinitionDto): void => {
@@ -152,6 +158,9 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
     setInstructions(trigger.instructions);
     setConversationId(trigger.conversationId);
     setSourceKind(trigger.sourceKind);
+    setBudgetEnabled(Boolean(trigger.runBudget));
+    setBudgetLimit(String(trigger.runBudget?.limit ?? 10));
+    setBudgetPeriod(trigger.runBudget?.period ?? "month");
     if (trigger.sourceKind === "schedule") {
       const config = trigger.sourceConfig as Extract<CreateTriggerRequest["sourceConfig"], { scheduleKind: string }>;
       setScheduleKind(config.scheduleKind);
@@ -170,7 +179,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
 
   const create = useMutation({
     mutationFn: async () => {
-      return api.createTrigger(agent.id, { conversationId, name, instructions, sourceKind, sourceConfig: sourceConfig() });
+      return api.createTrigger(agent.id, { conversationId, name, instructions, sourceKind, sourceConfig: sourceConfig(), ...(budgetEnabled ? { runBudget: { limit: Number(budgetLimit), period: budgetPeriod } } : {}) });
     },
     onSuccess: (response) => {
       void queryClient.invalidateQueries({ queryKey });
@@ -188,6 +197,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
         name,
         instructions,
         ...(changed ? { sourceConfig: changed } : {}),
+        runBudget: budgetEnabled ? { limit: Number(budgetLimit), period: budgetPeriod } : null,
       });
     },
     onSuccess: () => {
@@ -210,6 +220,10 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
       void queryClient.invalidateQueries({ queryKey });
       if (response.webhookSecret) setSecret({ trigger: response.trigger, value: response.webhookSecret });
     },
+  });
+  const allowRuns = useMutation({
+    mutationFn: ({ trigger, additionalRuns }: { trigger: TriggerDefinitionDto; additionalRuns: number }) => api.allowTriggerRuns(trigger.id, additionalRuns),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey }),
   });
   const occurrences = useQuery({
     queryKey: ["trigger-occurrences", expandedId],
@@ -248,6 +262,7 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
             <Typography variant="subtitle1" sx={{ fontWeight: 700, flex: 1 }}>{trigger.name}</Typography>
             <Chip size="small" label={trigger.sourceKind} />
             <Chip size="small" color={trigger.enabled ? "success" : "default"} label={trigger.enabled ? "Enabled" : "Disabled"} />
+            {trigger.runBudget && trigger.budgetState ? <Chip size="small" color={trigger.budgetState.held ? "warning" : "default"} label={`${trigger.budgetState.used}/${trigger.runBudget.limit + trigger.budgetState.allowance} automatic Runs · ${trigger.runBudget.period}`} /> : <Chip size="small" label="Unlimited Runs" />}
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
@@ -258,6 +273,13 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
           <FormControlLabel control={<Switch checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "On" : "Off"} />
           <Button size="small" onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide history" : "History"}</Button>
           <Button size="small" onClick={() => openEditor(trigger)}>Edit</Button>
+          {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => {
+            const value = window.prompt("How many additional automatic Runs should this Trigger receive for the current period?", "5");
+            if (value === null) return;
+            const additionalRuns = Number(value);
+            if (!Number.isSafeInteger(additionalRuns) || additionalRuns < 1) return window.alert("Enter a positive whole number.");
+            allowRuns.mutate({ trigger, additionalRuns });
+          }}>Allow more Runs</Button> : null}
           {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => {
             if (window.confirm("Rotate this webhook secret? Existing senders will stop working immediately.")) rotate.mutate(trigger);
           }}>Rotate secret</Button> : null}
@@ -299,10 +321,12 @@ export function TriggersPane({ agent }: { agent: AgentDto }): JSX.Element {
           </> : null}
           {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
           {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
+          <FormControlLabel control={<Switch checked={budgetEnabled} onChange={(_, checked) => setBudgetEnabled(checked)} />} label={budgetEnabled ? "Limit automatic Runs" : "Automatic Runs are unlimited"} />
+          {budgetEnabled ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Run limit" type="number" value={budgetLimit} onChange={(event) => setBudgetLimit(event.target.value)} inputProps={{ min: 1, max: 1_000_000 }} /><FormControl fullWidth><InputLabel id="trigger-budget-period-label">Reset</InputLabel><Select labelId="trigger-budget-period-label" label="Reset" value={budgetPeriod} onChange={(event) => setBudgetPeriod(event.target.value as TriggerBudgetPeriod)}><MenuItem value="day">Daily</MenuItem><MenuItem value="week">Weekly</MenuItem><MenuItem value="month">Monthly</MenuItem><MenuItem value="lifetime">Never</MenuItem></Select></FormControl></Stack> : null}
           {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save changes" : "Create Trigger"}</Button></DialogActions>
+      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save changes" : "Create Trigger"}</Button></DialogActions>
     </Dialog>
 
     <Dialog open={Boolean(secret)} onClose={() => setSecret(undefined)} fullWidth maxWidth="sm">

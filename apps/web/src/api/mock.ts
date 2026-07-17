@@ -66,7 +66,7 @@ const triggerOccurrences = new Map<string, TriggerOccurrenceDto[]>();
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
 const uploadedAttachments = new Map<string, import("@ponderosa/core").ImageAttachmentDto>();
-let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", updatedAt: now };
+let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", providerAvailability: {}, globalInstructions: "", profile: { displayName: "Patrick", handle: "patrick", avatarId: "default-user" }, updatedAt: now };
 
 const agents: AgentDto[] = [
   {
@@ -347,7 +347,8 @@ export const mockApi: PonderosaApi = {
   updateProject(projectId, patch) {
     const project = projects.find((item) => item.id === projectId);
     if (!project) return Promise.reject(new Error("Project not found"));
-    project.label = patch.label;
+    if (patch.label !== undefined) project.label = patch.label;
+    if (patch.instructions !== undefined) project.instructions = patch.instructions || undefined;
     return delay(project);
   },
   deleteProject(projectId) {
@@ -524,6 +525,9 @@ export const mockApi: PonderosaApi = {
   clearConversationNotifications() { return delay(undefined); },
   markAllNotificationsRead() { return delay(undefined); },
   clearAllNotifications() { return delay(undefined); },
+  setNotificationStatus(notificationId, status) { return delay({ id: notificationId, kind: "operational", title: "Notification", body: "", category: "system", severity: "info", status, createdAt: now, resolvedAt: new Date().toISOString() }); },
+  listDecisions() { return delay([]); },
+  respondDecision(decisionId, request) { return delay({ id: decisionId, projectId: "ponderosa", conversationId: "master-release", agentId: "agent-auth", runId: "run", mode: "choice", question: "Decision", options: [], allowOther: true, blocking: true, status: "resolved", response: { ...request, respondedAt: new Date().toISOString() }, createdAt: now, updatedAt: new Date().toISOString() }); },
   getWebPushStatus() { return delay({ configured: false, configuration: "missing" as const, detail: "Run host setup.", setupCommand: "pnpm --filter @ponderosa/server push:configure" }); },
   upsertWebPushSubscription() { return delay(undefined); },
   deleteWebPushSubscription() { return delay(undefined); },
@@ -699,6 +703,11 @@ export const mockApi: PonderosaApi = {
       state: agent.state,
     });
   },
+  exportAgent(agentId, mode, organization = false) {
+    const agent = agents.find((candidate) => candidate.id === agentId)!;
+    return delay({ schema: "ponderosa.agent-package.v1", mode, kind: organization ? "organization" : "agent", exportedAt: new Date().toISOString(), sourceLabel: agent.title, rootRef: agent.id, agents: [{ ref: agent.id, title: agent.title, engine: agent.activeEngine }] });
+  },
+  importAgents(_projectId, request) { return delay({ rootAgentId: request.package.rootRef, agentIds: request.package.agents.map((node) => node.ref) }); },
   listTriggers(agentId) {
     return delay(triggers.filter((trigger) => trigger.agentId === agentId));
   },
@@ -731,6 +740,12 @@ export const mockApi: PonderosaApi = {
     const trigger = triggers.find((candidate) => candidate.id === triggerId);
     return trigger ? delay({ trigger, webhookSecret: "rotated-demo-secret" }) : Promise.reject(new Error("Trigger not found"));
   },
+  allowTriggerRuns(triggerId, additionalRuns) {
+    const trigger = triggers.find((candidate) => candidate.id === triggerId);
+    if (!trigger || !trigger.budgetState) return Promise.reject(new Error("Trigger budget not found"));
+    trigger.budgetState = { ...trigger.budgetState, allowance: trigger.budgetState.allowance + additionalRuns, held: false };
+    return delay(trigger);
+  },
   listTriggerOccurrences(triggerId) {
     return delay(triggerOccurrences.get(triggerId) ?? []);
   },
@@ -739,6 +754,12 @@ export const mockApi: PonderosaApi = {
   },
   listEngines() {
     return delay(engines);
+  },
+  updateEngine(engineId, request) {
+    const engine = engines.find((candidate) => candidate.id === engineId);
+    if (!engine) return Promise.reject(new Error("unknown engine"));
+    Object.assign(engine, { enabled: request.enabled, available: request.enabled && engine.authenticated });
+    return delay(engine);
   },
   recheckEngine(engineId) {
     const engine = engines.find((candidate) => candidate.id === engineId);

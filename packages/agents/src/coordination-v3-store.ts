@@ -20,9 +20,21 @@ import {
   type TriggerOccurrenceDto,
   type TriggerSourceConfig,
   type TriggerSourceKind,
+  type TriggerRunBudgetDto,
 } from "@ponderosa/core";
 
 type Actor = { kind: "agent" | "user" | "system" | "supervisor"; id?: string };
+
+function triggerBudgetEndsAt(period: TriggerRunBudgetDto["period"], startedAt: string): string | undefined {
+  if (period === "lifetime") return undefined;
+  const start = new Date(startedAt);
+  if (period === "month") {
+    start.setUTCMonth(start.getUTCMonth() + 1);
+    return start.toISOString();
+  }
+  start.setUTCDate(start.getUTCDate() + (period === "week" ? 7 : 1));
+  return start.toISOString();
+}
 
 export interface RunAuthorizationV3 {
   runId: string;
@@ -315,6 +327,11 @@ interface TriggerDefinitionRow {
   source_kind: TriggerSourceKind;
   source_config_json: string;
   enabled: number;
+  run_budget_limit: number | null;
+  run_budget_period: TriggerRunBudgetDto["period"] | null;
+  run_budget_used: number;
+  run_budget_allowance: number;
+  run_budget_period_started_at: string | null;
   next_fire_at: string | null;
   last_fired_at: string | null;
   secret_ciphertext: string | null;
@@ -341,6 +358,7 @@ export interface CreateTriggerDefinitionInput {
   sourceKind: TriggerSourceKind;
   sourceConfig: TriggerSourceConfig;
   enabled?: boolean;
+  runBudget?: TriggerRunBudgetDto;
   nextFireAt?: string;
   secretCiphertext?: string;
   secretFingerprint?: string;
@@ -352,6 +370,7 @@ export interface UpdateTriggerDefinitionInput {
   instructions?: string;
   sourceConfig?: TriggerSourceConfig;
   enabled?: boolean;
+  runBudget?: TriggerRunBudgetDto | null;
   nextFireAt?: string | null;
   secretCiphertext?: string;
   secretFingerprint?: string;
@@ -1109,6 +1128,7 @@ export class CoordinationV3Store {
     const instructions = input.instructions.trim();
     if (!name || name.length > 120) throw new Error("trigger name must be between 1 and 120 characters");
     if (!instructions || instructions.length > 20_000) throw new Error("trigger instructions must be between 1 and 20000 characters");
+    this.validateTriggerRunBudget(input.runBudget);
     const now = input.now ?? new Date().toISOString();
     const id = input.id ?? randomUUID();
     return this.sqlite.transaction(() => {
@@ -1128,12 +1148,14 @@ export class CoordinationV3Store {
         INSERT INTO trigger_definitions (
           id, project_id, conversation_id, agent_id, name, instructions,
           source_kind, source_config_json, enabled, next_fire_at,
+          run_budget_limit, run_budget_period, run_budget_used, run_budget_allowance, run_budget_period_started_at,
           secret_ciphertext, secret_fingerprint, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
       `).run(
         id, input.projectId, input.conversationId, input.agentId, name, instructions,
         input.sourceKind, stableJson(input.sourceConfig), input.enabled === false ? 0 : 1,
-        input.nextFireAt ?? null, input.secretCiphertext ?? null, input.secretFingerprint ?? null,
+        input.nextFireAt ?? null, input.runBudget?.limit ?? null, input.runBudget?.period ?? null,
+        input.runBudget ? now : null, input.secretCiphertext ?? null, input.secretFingerprint ?? null,
         now, now,
       );
       return this.getTriggerDefinition(id)!;
@@ -1157,6 +1179,22 @@ export class CoordinationV3Store {
     return this.triggerDefinitionRow(id)?.secret_ciphertext ?? undefined;
   }
 
+  allowTriggerRuns(id: string, additionalRuns: number, now = new Date().toISOString()): TriggerDefinitionDto | undefined {
+    if (!Number.isSafeInteger(additionalRuns) || additionalRuns < 1 || additionalRuns > 1_000_000) {
+      throw new Error("additionalRuns must be an integer between 1 and 1000000");
+    }
+    return this.sqlite.transaction(() => {
+      this.resetExpiredTriggerBudgets(now);
+      const row = this.triggerDefinitionRow(id);
+      if (!row) return undefined;
+      if (row.run_budget_limit === null) throw new Error("this Trigger has no Run budget");
+      this.sqlite.prepare(`
+        UPDATE trigger_definitions SET run_budget_allowance = run_budget_allowance + ?, updated_at = ? WHERE id = ?
+      `).run(additionalRuns, now, id);
+      return this.getTriggerDefinition(id);
+    })();
+  }
+
   updateTriggerDefinition(id: string, input: UpdateTriggerDefinitionInput): TriggerDefinitionDto | undefined {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
@@ -1166,10 +1204,12 @@ export class CoordinationV3Store {
       const instructions = input.instructions === undefined ? row.instructions : input.instructions.trim();
       if (!name || name.length > 120) throw new Error("trigger name must be between 1 and 120 characters");
       if (!instructions || instructions.length > 20_000) throw new Error("trigger instructions must be between 1 and 20000 characters");
+      if (input.runBudget !== undefined && input.runBudget !== null) this.validateTriggerRunBudget(input.runBudget);
       const nextFireAt = input.nextFireAt === undefined ? row.next_fire_at : input.nextFireAt;
       this.sqlite.prepare(`
         UPDATE trigger_definitions
         SET name = ?, instructions = ?, source_config_json = ?, enabled = ?, next_fire_at = ?,
+            run_budget_limit = ?, run_budget_period = ?, run_budget_used = ?, run_budget_allowance = ?, run_budget_period_started_at = ?,
             secret_ciphertext = ?, secret_fingerprint = ?, updated_at = ?
         WHERE id = ?
       `).run(
@@ -1177,6 +1217,11 @@ export class CoordinationV3Store {
         input.sourceConfig === undefined ? row.source_config_json : stableJson(input.sourceConfig),
         input.enabled === undefined ? row.enabled : input.enabled ? 1 : 0,
         nextFireAt,
+        input.runBudget === undefined ? row.run_budget_limit : input.runBudget?.limit ?? null,
+        input.runBudget === undefined ? row.run_budget_period : input.runBudget?.period ?? null,
+        input.runBudget === undefined ? row.run_budget_used : 0,
+        input.runBudget === undefined ? row.run_budget_allowance : 0,
+        input.runBudget === undefined ? row.run_budget_period_started_at : input.runBudget ? now : null,
         input.secretCiphertext ?? row.secret_ciphertext,
         input.secretFingerprint ?? row.secret_fingerprint,
         now, id,
@@ -2017,11 +2062,19 @@ export class CoordinationV3Store {
       : "";
     return this.sqlite.transaction(() => {
       this.recoverExpiredUninjectedRuns(now);
+      this.resetExpiredTriggerBudgets(now);
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
           ${excludedClause}
+          AND NOT EXISTS (
+            SELECT 1 FROM trigger_occurrences occurrence
+            JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
+            WHERE occurrence.activation_id = a.id
+              AND definition.run_budget_limit IS NOT NULL
+              AND definition.run_budget_used >= definition.run_budget_limit + definition.run_budget_allowance
+          )
           AND NOT EXISTS (
             SELECT 1 FROM scheduler_runs r
             WHERE r.agent_id = a.agent_id AND r.status IN ('leased', 'running')
@@ -2080,6 +2133,14 @@ export class CoordinationV3Store {
                 : triggerId(activation) === undefined))
             .slice(0, limit);
       if (activations.length === 0) return undefined;
+      if (candidateTriggerId) {
+        const charged = this.sqlite.prepare(`
+          UPDATE trigger_definitions
+          SET run_budget_used = run_budget_used + 1, updated_at = ?
+          WHERE id = ? AND (run_budget_limit IS NULL OR run_budget_used < run_budget_limit + run_budget_allowance)
+        `).run(now, candidateTriggerId).changes;
+        if (charged !== 1) return undefined;
+      }
       const fencingToken = this.nextFence(candidate.agent_id);
       const runId = randomUUID();
       const injectionId = randomUUID();
@@ -3307,6 +3368,11 @@ export class CoordinationV3Store {
   }
 
   private triggerDefinitionDto(row: TriggerDefinitionRow): TriggerDefinitionDto {
+    const runBudget = row.run_budget_limit !== null && row.run_budget_period
+      ? { limit: row.run_budget_limit, period: row.run_budget_period }
+      : undefined;
+    const periodStartedAt = row.run_budget_period_started_at ?? row.created_at;
+    const periodEndsAt = runBudget ? triggerBudgetEndsAt(runBudget.period, periodStartedAt) : undefined;
     return {
       id: row.id,
       projectId: row.project_id,
@@ -3318,6 +3384,16 @@ export class CoordinationV3Store {
       sourceConfig: JSON.parse(row.source_config_json) as TriggerSourceConfig,
       enabled: Boolean(row.enabled),
       fullAccess: true,
+      ...(runBudget ? {
+        runBudget,
+        budgetState: {
+          used: row.run_budget_used,
+          allowance: row.run_budget_allowance,
+          periodStartedAt,
+          ...(periodEndsAt ? { periodEndsAt } : {}),
+          held: row.run_budget_used >= row.run_budget_limit! + row.run_budget_allowance,
+        },
+      } : {}),
       ...(row.next_fire_at ? { nextFireAt: row.next_fire_at } : {}),
       ...(row.last_fired_at ? { lastFiredAt: row.last_fired_at } : {}),
       ...(row.source_kind === "webhook" ? { webhookPath: `/api/trigger-webhooks/${row.id}` } : {}),
@@ -3325,6 +3401,33 @@ export class CoordinationV3Store {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  private validateTriggerRunBudget(budget: TriggerRunBudgetDto | undefined): void {
+    if (!budget) return;
+    if (!Number.isSafeInteger(budget.limit) || budget.limit < 1 || budget.limit > 1_000_000) {
+      throw new Error("Trigger Run budget limit must be an integer between 1 and 1000000");
+    }
+    if (!["day", "week", "month", "lifetime"].includes(budget.period)) {
+      throw new Error("Trigger Run budget period must be day, week, month, or lifetime");
+    }
+  }
+
+  private resetExpiredTriggerBudgets(now: string): void {
+    const rows = this.sqlite.prepare(`
+      SELECT * FROM trigger_definitions
+      WHERE run_budget_limit IS NOT NULL AND run_budget_period != 'lifetime'
+    `).all() as TriggerDefinitionRow[];
+    for (const row of rows) {
+      const startedAt = row.run_budget_period_started_at ?? row.created_at;
+      const endsAt = row.run_budget_period ? triggerBudgetEndsAt(row.run_budget_period, startedAt) : undefined;
+      if (!endsAt || endsAt > now) continue;
+      this.sqlite.prepare(`
+        UPDATE trigger_definitions
+        SET run_budget_used = 0, run_budget_allowance = 0, run_budget_period_started_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(now, now, row.id);
+    }
   }
 
   private cancelPendingTriggerWork(triggerId: string, reason: string, now: string): void {

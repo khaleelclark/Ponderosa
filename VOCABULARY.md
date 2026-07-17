@@ -17,6 +17,9 @@ objects with different identity, audience, or lifetime must not share a noun.
 | User-authored automatic action | Trigger | `TriggerDefinition` | Durable schedule, signed webhook, or Project-folder watcher owned by one Agent in one Project chat. |
 | One normalized outside event | Trigger occurrence | `TriggerOccurrence` | Immutable, deduplicated payload and provenance that creates exactly one queued Activation. |
 | One runtime activation | Run | `AgentRun` / `Execution` | Bounded agent activation ending in completion, failure, cancellation, or suspension. |
+| Operator input requested by an Agent | Decision | `Decision` | Durable approval, bounded choice, or text question with one canonical response. |
+| Outside-activation safety control | Trigger Run budget | `TriggerRunBudget` | Optional count of root Trigger Runs in a day, week, month, or lifetime period. |
+| Actionable operator alert | Needs attention | `WorkspaceNotification` | Durable, deduplicated info/attention/urgent condition with resolution state and optional action. |
 | Provider-side continuity | Model session (diagnostics only) | `ProviderSession` | Optional Codex/Claude context continued across runs for exactly one agent. |
 | Explicit authored communication | Message | `Communication` / `Message` | Immutable content, author, audience, provenance, and project-chat association. |
 | Routing operation | Send; Queued, Delivered, Started | `MessageDispatch` | Durably materializes one message in its authorized views and creates zero or more recipient deliveries. |
@@ -38,6 +41,10 @@ objects with different identity, audience, or lifetime must not share a noun.
 - Use **Trigger** for the durable automation definition and **Trigger
   occurrence** for one source event. Neither is a Run, message, or provider
   session.
+- Use **Decision** for a durable operator question. It is not a provider tool
+  prompt, a delivery receipt, or proof that the host sandbox blocked an action.
+- Use **Trigger Run budget** only for the root outside activation count. Never
+  describe child Runs, continuations, or general chat use as spending it.
 - Use **Message** for authored semantic content, **Dispatch** for routing,
   **Delivery** for recipient queue state, and **RunTrigger** for activation.
 - Use **Work log** for execution-local output. Do not imply that Ponderosa

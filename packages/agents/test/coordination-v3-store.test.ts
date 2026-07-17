@@ -1365,6 +1365,33 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 1 });
   });
 
+  it("charges one budget unit per external Trigger Run, holds queued work, and resumes after allowance", () => {
+    store.createTriggerDefinition({
+      id: "budgeted", projectId, conversationId, agentId: recipientA,
+      name: "Budgeted", instructions: "Handle every outside event.", sourceKind: "webhook",
+      sourceConfig: { replayWindowSeconds: 300 }, runBudget: { limit: 1, period: "lifetime" },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    for (const [index, at] of ["2026-07-15T00:00:00.100Z", "2026-07-15T00:00:00.200Z"].entries()) {
+      store.recordTriggerOccurrence({
+        triggerId: "budgeted", occurrenceKey: `batch-${index}`, payload: { index }, provenance: { source: "test" }, now: at,
+      });
+    }
+    const batched = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:01.000Z" })!;
+    expect(batched.activations).toHaveLength(2);
+    expect(store.getTriggerDefinition("budgeted")).toMatchObject({ budgetState: { used: 1, allowance: 0, held: true } });
+    acknowledgeLease(batched);
+    store.completeRun(batched.runId, batched.fencingToken, "2026-07-15T00:00:02.000Z");
+    store.recordTriggerOccurrence({
+      triggerId: "budgeted", occurrenceKey: "held", payload: { index: 3 }, provenance: { source: "test" }, now: "2026-07-15T00:00:03.000Z",
+    });
+    expect(store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:04.000Z" })).toBeUndefined();
+    expect(store.allowTriggerRuns("budgeted", 2, "2026-07-15T00:00:05.000Z")).toMatchObject({ budgetState: { allowance: 2, held: false } });
+    const resumed = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:06.000Z" })!;
+    expect(resumed.activations).toHaveLength(1);
+    expect(store.getTriggerDefinition("budgeted")).toMatchObject({ budgetState: { used: 2, allowance: 2, held: false } });
+  });
+
   it("bounds trigger backpressure, retries, and pending intake", () => {
     store = new CoordinationV3Store(opened.client, {
       maxPendingActivationsPerAgent: 1,

@@ -48,6 +48,7 @@ export class CoordinationV3Scheduler {
       dispatchSteering?: (lease: SteeringLease, prompt: string) => Promise<CoordinationV3DispatchResult>;
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
       onMessageDeliveryChanged?: (agentId: string) => void;
+      onRunLeased?: (lease: SchedulerLease) => void;
       /** Keep durable work queued while its provider is known unavailable. */
       blockedAgentIds?: () => readonly string[];
     },
@@ -164,6 +165,7 @@ export class CoordinationV3Scheduler {
           excludedAgentIds: this.options.blockedAgentIds?.(),
         });
         if (!lease) break;
+        this.options.onRunLeased?.(lease);
         dispatched += 1;
         this.metrics.claimedRuns += 1;
         const started = (this.options.now ?? Date.now)();
