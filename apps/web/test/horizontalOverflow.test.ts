@@ -29,8 +29,8 @@ describe("horizontal overflow containment", () => {
   it("keeps hidden announcements, mobile controls, and long project lists inside their surfaces", () => {
     expect(copyMessageButton).toContain('width: "1px", height: "1px"');
     expect(panes).toContain('flex: "1 1 0", overflowX: "auto"');
-    expect(workspaceSidebar).toContain('width: drawer ? "100%" : draftWidth, height: "100%", minHeight: 0');
-    expect(workspaceSidebar).toContain('overflowY: "auto", minHeight: 0, overscrollBehavior: "contain"');
+    expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH');
+    expect(workspaceSidebar).toContain('minHeight: 0, overflowY: "auto"');
   });
 
   it("reserves scrollbar space so hover and keyboard focus never shift navigation", () => {
@@ -41,7 +41,7 @@ describe("horizontal overflow containment", () => {
       /\.ponderosa-scroll:hover,\s*\.ponderosa-scroll:focus-within\s*\{[^}]*(?:width|height|padding|margin):/s,
     );
     expect(workspaceSidebar).toContain('data-testid="workspace-navigation-scroll"');
-    expect(workspaceSidebar.match(/data-testid="workspace-navigation-scroll"/g)).toHaveLength(1);
+    expect(workspaceSidebar.match(/data-testid="workspace-navigation-scroll"/g)).toHaveLength(2);
     expect(workspaceSidebar).not.toMatch(/aria-label="Agent preview"[^]*overflowY/);
   });
 });

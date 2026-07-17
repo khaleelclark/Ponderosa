@@ -3,6 +3,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   Box,
+  Chip,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -106,6 +107,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<"all" | "projects" | "threads" | "agents" | "files">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
@@ -122,6 +124,12 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     refetchOnReconnect: true,
   });
   const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
+  const visibleResults = useMemo(() => (search.data?.results ?? []).filter((result) => {
+    if (scope === "all") return true;
+    if (scope === "threads") return result.chat.kind === "conversation";
+    if (scope === "agents") return result.chat.kind === "agent";
+    return false;
+  }), [scope, search.data]);
   const chooseResult = (result: GlobalChatSearchResultDto) => {
     onSelect({ projectId: result.project.id, chat: result.chat, messageId: result.messageId });
     onClose();
@@ -131,32 +139,32 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     onClose();
   };
 
-  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" fullScreen={fullScreen} aria-labelledby="global-chat-search-title">
-    <DialogTitle id="global-chat-search-title" sx={{ pb: 1, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper" }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-        <Typography variant="h6" component="span" sx={{ flex: 1 }}>Search chats</Typography>
-        <IconButton aria-label="Close chat search" onClick={onClose}><CloseIcon /></IconButton>
-      </Stack>
-    </DialogTitle>
-    <DialogContent sx={{ px: { xs: 1.5, sm: 2.5 }, pb: 2 }}>
+  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
+    <DialogTitle id="global-chat-search-title" sx={{ p: 0, position: "sticky", top: 0, zIndex: 2, bgcolor: "background.paper", borderBottom: 1, borderColor: "divider" }}>
       <TextField
-        autoFocus
-        fullWidth
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder="Search messages across every project"
-        inputProps={{ maxLength: 200, "aria-label": "Search all chat messages" }}
-        InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
-        sx={{ mb: 1.5 }}
-      />
+          autoFocus
+          fullWidth
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search Ponderosa"
+          inputProps={{ maxLength: 200, "aria-label": "Search Ponderosa" }}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box component="kbd" sx={{ px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
+          variant="standard"
+          sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
+        />
+    </DialogTitle>
+    <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
+      <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+        {(["all", "projects", "threads", "agents", "files"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+      </Stack>
       {search.isFetching ? <LinearProgress aria-label="Searching chats" sx={{ mb: 1 }} /> : null}
       {search.isError ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
       {debouncedQuery ? <>
-        <Typography variant="overline" color="text.secondary">Results</Typography>
+        <Typography variant="overline" color="text.secondary">{scope === "all" ? "Results" : scope}</Typography>
         <List disablePadding aria-label="Global chat search results">
-          {(search.data?.results ?? []).map((result) => <GlobalSearchResultItem key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`} result={result} onSelect={() => chooseResult(result)} />)}
+          {visibleResults.map((result) => <GlobalSearchResultItem key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`} result={result} onSelect={() => chooseResult(result)} />)}
         </List>
-        {!search.isFetching && search.data?.results.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No messages match “{debouncedQuery}”.</Typography> : null}
+        {!search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
       </> : <Stack spacing={1.5}>
         <Box>
           <Typography variant="overline" color="text.secondary">Unread messages</Typography>
@@ -173,6 +181,7 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
         </Box>
       </Stack>}
       {search.data?.truncated ? <Alert severity="info" sx={{ mt: 1 }}>Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert> : null}
+      <Stack direction="row" spacing={2} sx={{ mt: 2, pt: 1.25, borderTop: 1, borderColor: "divider", color: "text.secondary" }}><Typography variant="caption">↑↓ Navigate</Typography><Typography variant="caption">↵ Open</Typography><Typography variant="caption">⌘↵ Open in new tab</Typography></Stack>
     </DialogContent>
   </Dialog>;
 }

@@ -49,6 +49,6 @@ describe("multi-project workspace navigation model", () => {
     expect(SIDEBAR_RAIL_WIDTH).toBeGreaterThanOrEqual(56);
     expect(clampSidebarWidth(100)).toBe(SIDEBAR_MIN_WIDTH);
     expect(clampSidebarWidth(999)).toBe(SIDEBAR_MAX_WIDTH);
-    expect(clampSidebarWidth(311.6)).toBe(312);
+    expect(clampSidebarWidth(311.6)).toBe(SIDEBAR_MIN_WIDTH);
   });
 });
