@@ -43,9 +43,9 @@ describe("composer surface ownership", () => {
 
   it("keeps the active-turn actions explicit and presents chat as an open transcript", () => {
     expect(panes).toContain('aria-label="Steer active response"');
-    expect(panes).toContain('showTimestamp={false}');
+    expect(panes).toContain('showTimestamp={fromUser}');
     expect(conversation).toContain('justifyContent: fromManager ? "flex-end" : "flex-start"');
     expect(conversation).toContain('width: fromManager ? "min(72%, 620px)" : "min(100%, 740px)"');
-    expect(conversation).toContain('showTimestamp={false}');
+    expect(conversation).toContain('showTimestamp={fromManager}');
   });
 });

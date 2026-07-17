@@ -53,6 +53,8 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
     act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "allAgents" });
+    act(() => view.root.findByProps({ "aria-label": "Open project files" }).props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();

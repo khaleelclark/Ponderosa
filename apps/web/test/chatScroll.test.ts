@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 import {
   individualChatSenderLabel,
   isLongChatMessage,
   isChatNearBottom,
   replyFallbackText,
   revealChatScrollbar,
+  ScrollToLatestButton,
   scrollChatToBottom,
 } from "../src/components/panes";
 
@@ -25,6 +28,11 @@ describe("scrollChatToBottom", () => {
 
   it("stops following messages when the reader scrolls up", () => {
     expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 400 })).toBe(false);
+  });
+
+  it("offers an explicit return to the latest message only after scrolling away", () => {
+    expect(renderToStaticMarkup(createElement(ScrollToLatestButton, { visible: true, onClick: vi.fn() }))).toContain('aria-label="Jump to latest message"');
+    expect(renderToStaticMarkup(createElement(ScrollToLatestButton, { visible: false, onClick: vi.fn() }))).toBe("");
   });
 });
 

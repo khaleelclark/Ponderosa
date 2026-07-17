@@ -47,7 +47,7 @@ import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, 
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
-import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
@@ -141,7 +141,7 @@ export function ConversationMessage({
       className="chat-message"
       aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
-      sx={{ alignSelf: "center", width: "min(820px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 1, sm: 1.5 } }}
+      sx={{ alignSelf: "center", width: "min(820px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
         {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: "action.selected", color: "primary.light", border: 1, borderColor: "divider", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
@@ -218,8 +218,7 @@ export function ConversationMessage({
         <MessageReactions reactions={message.reactions} />
         {message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus receipts={message.deliveryReceipts} recipientName={(agentId) => agentTitle(agentId)} /> : null}
           </Box>
-          {fromManager ? <Box sx={{ mt: 0.5, color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact /></Box> : null}
-          <MessageActionsAndTimestamp showTimestamp={false} value={message.createdAt} actions={conversation === "main" ? <>
+          <MessageActionsAndTimestamp showTimestamp={fromManager} value={message.createdAt} actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
@@ -299,18 +298,6 @@ export function ConversationView({
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
-
-  useEffect(() => {
-    if (!focusMessageId) return;
-    const message = detailQuery.data?.messages.find((candidate) => candidate.communicationEventId === focusMessageId);
-    if (!message) return;
-    const frame = window.requestAnimationFrame(() => {
-      const target = document.getElementById(`master-message-${message.id}`);
-      target?.scrollIntoView({ behavior: "smooth", block: "center" });
-      target?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [detailQuery.data?.messages, focusMessageId]);
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
   const [stoppedNotice, setStoppedNotice] = useState<string>();
@@ -318,6 +305,7 @@ export function ConversationView({
   const stopOperationRequestId = useRef<string>();
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const clearReply = () => {
     if (directReplyRequestId && directReplyTargetId) {
       const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
@@ -371,6 +359,7 @@ export function ConversationView({
     const target = document.getElementById(`master-message-${projectedId}`);
     if (!target) return;
     shouldFollowNewMessages.current = false;
+    setShowScrollToLatest(true);
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     focusedMessage.current = focusMessageId;
@@ -387,12 +376,15 @@ export function ConversationView({
       if (chatScrollRef.current && saved !== undefined) {
         chatScrollRef.current.scrollTop = saved;
         shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
+        setShowScrollToLatest(!shouldFollowNewMessages.current);
         return;
       }
       shouldFollowNewMessages.current = true;
+      setShowScrollToLatest(false);
     }
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
+      setShowScrollToLatest(false);
     }
   }, [conversationId, activeView, messages, collaborationMessages]);
 
@@ -855,24 +847,26 @@ export function ConversationView({
         </Stack>
       </Box>
 
-      <Box
-        ref={chatScrollRef}
-        className="chat-scroll-region"
-        role="region"
-        aria-label={activeView === "collaboration" ? "Team chat messages" : "Project chat messages"}
-        tabIndex={0}
-        onScroll={(event) => {
-          revealChatScrollbar(event.currentTarget);
-          if (chatScrollRef.current) {
-            shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
-            writeChatState(
-              chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
-              String(chatScrollRef.current.scrollTop),
-            );
-          }
-        }}
-        sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
-      >
+      <Box sx={{ position: "relative", minHeight: 0, minWidth: 0 }}>
+        <Box
+          ref={chatScrollRef}
+          className="chat-scroll-region"
+          role="region"
+          aria-label={activeView === "collaboration" ? "Team chat messages" : "Project chat messages"}
+          tabIndex={0}
+          onScroll={(event) => {
+            revealChatScrollbar(event.currentTarget);
+            if (chatScrollRef.current) {
+              shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
+              setShowScrollToLatest(!shouldFollowNewMessages.current);
+              writeChatState(
+                chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
+                String(chatScrollRef.current.scrollTop),
+              );
+            }
+          }}
+          sx={{ height: "100%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
+        >
         <Box data-chat-column sx={{ width: "min(900px, 100%)", mx: "auto", p: { xs: 1, sm: 1.5 }, pb: 3 }}>
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
@@ -972,6 +966,16 @@ export function ConversationView({
           </Stack>
 
         </Box>
+        </Box>
+        <ScrollToLatestButton
+          visible={showScrollToLatest}
+          onClick={() => {
+            if (!chatScrollRef.current) return;
+            shouldFollowNewMessages.current = true;
+            scrollChatToBottom(chatScrollRef.current);
+            setShowScrollToLatest(false);
+          }}
+        />
       </Box>
 
       <Drawer
