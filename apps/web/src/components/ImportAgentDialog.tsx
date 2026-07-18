@@ -2,11 +2,13 @@ import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
   Alert,
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   MenuItem,
   Select,
@@ -44,11 +46,13 @@ export function ImportAgentDialog({
   const [fileName, setFileName] = useState<string>();
   const [conversationId, setConversationId] = useState("");
   const [engineMapping, setEngineMapping] = useState<Record<string, string>>({});
+  const [acknowledgeElevatedPermissions, setAcknowledgeElevatedPermissions] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     if (!open) return;
     setConversationId(initialConversationId ?? conversations[0]?.id ?? "");
+    setAcknowledgeElevatedPermissions(false);
     setError(undefined);
   }, [conversations, initialConversationId, open]);
 
@@ -60,13 +64,26 @@ export function ImportAgentDialog({
       return undefined;
     }
   }, [importJson]);
+  const invalidPermissionShape = Boolean(parsedPackage?.agents.some((node) => {
+    const permissions = node.managementPermissions as unknown;
+    return !permissions || typeof permissions !== "object" || Array.isArray(permissions) ||
+      typeof (permissions as Record<string, unknown>).allowAutomaticDescendantDeletion !== "boolean" ||
+      typeof (permissions as Record<string, unknown>).allowAutomaticDescendantReorganization !== "boolean";
+  }));
+  const elevatedAgents = invalidPermissionShape ? [] : parsedPackage?.agents.filter((node) =>
+    node.managementPermissions.allowAutomaticDescendantDeletion ||
+    node.managementPermissions.allowAutomaticDescendantReorganization) ?? [];
   const sourceEngines = [...new Set(parsedPackage?.agents.map((node) => node.engine) ?? [])];
   const importAgents = useMutation({
-    mutationFn: () => api.importAgents(projectId, { package: parsedPackage!, conversationId, engineMapping }),
+    mutationFn: () => api.importAgents(projectId, {
+      package: parsedPackage!, conversationId, engineMapping,
+      ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
+    }),
     onSuccess: (result) => {
       setImportJson("");
       setFileName(undefined);
       setEngineMapping({});
+      setAcknowledgeElevatedPermissions(false);
       setError(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
       onClose();
@@ -83,6 +100,7 @@ export function ImportAgentDialog({
       setImportJson(await file.text());
       setFileName(file.name);
       setEngineMapping({});
+      setAcknowledgeElevatedPermissions(false);
       setError(undefined);
     } catch {
       setError("Ponderosa could not read that file.");
@@ -107,7 +125,7 @@ export function ImportAgentDialog({
       <TextField
         label="Ponderosa JSON"
         value={importJson}
-        onChange={(event) => { setImportJson(event.target.value); setFileName(undefined); setEngineMapping({}); setError(undefined); }}
+        onChange={(event) => { setImportJson(event.target.value); setFileName(undefined); setEngineMapping({}); setAcknowledgeElevatedPermissions(false); setError(undefined); }}
         multiline
         minRows={10}
         error={Boolean(importJson && !parsedPackage)}
@@ -129,11 +147,23 @@ export function ImportAgentDialog({
           {engines.map((engine) => <MenuItem key={engine.id} value={engine.id}>{engine.displayName}{engine.enabled === false ? " — disabled" : ""}</MenuItem>)}
         </Select>
       </FormControl>)}
+      {invalidPermissionShape ? <Alert severity="error">
+        This package has invalid management permissions. Both permission values must be true or false booleans.
+      </Alert> : null}
+      {elevatedAgents.length > 0 ? <Alert severity="warning">
+        <Typography variant="body2" sx={{ mb: 1 }}>
+          {elevatedAgents.length} imported Agent{elevatedAgents.length === 1 ? "" : "s"} will be allowed to autonomously delete descendants or rearrange their organization.
+        </Typography>
+        <FormControlLabel
+          control={<Checkbox checked={acknowledgeElevatedPermissions} onChange={(event) => setAcknowledgeElevatedPermissions(event.target.checked)} />}
+          label="Import these elevated management permissions"
+        />
+      </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
     </Stack></DialogContent>
     <DialogActions>
       <Button onClick={onClose}>Cancel</Button>
-      <Button variant="contained" disabled={!parsedPackage || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || importAgents.isPending} onClick={() => importAgents.mutate()}>
+      <Button variant="contained" disabled={!parsedPackage || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => importAgents.mutate()}>
         {importAgents.isPending ? "Importing…" : "Import"}
       </Button>
     </DialogActions>

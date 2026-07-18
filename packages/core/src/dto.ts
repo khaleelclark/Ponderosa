@@ -170,6 +170,16 @@ export interface DecisionDto {
   options: DecisionOptionDto[];
   allowOther: boolean;
   blocking: boolean;
+  /** Server-owned destructive authorization scope. Provider-authored Decisions
+   * never populate this field. */
+  approvalScope?: {
+    kind: "agent_management";
+    planId: string;
+    operationKinds: Array<"delete_agent" | "set_manager">;
+    targetAgentIds: string[];
+    previewHash?: string;
+    scopeHash: string;
+  };
   status: "pending" | "resolved" | "cancelled";
   response?: { optionId?: string; text?: string; respondedAt: string };
   createdAt: string;
@@ -700,6 +710,8 @@ export interface CancelQueuedMessageResponse {
 }
 
 export interface CancelAgentRunRequest {
+  /** Exact Run observed by the caller. A successor Run is never cancelled. */
+  targetRunId: string;
   /** Stable across retries so a repeated stop cannot append another lifecycle event. */
   idempotencyKey: string;
 }
@@ -814,6 +826,8 @@ export interface ImportAgentPackageRequest {
   package: AgentPortablePackageDto;
   conversationId: string;
   engineMapping: Record<string, string>;
+  /** Required when any imported Agent receives autonomous destructive authority. */
+  acknowledgeElevatedManagementPermissions?: boolean;
 }
 export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
 
@@ -933,6 +947,9 @@ export interface CommitAgentDeletionRequest {
 export interface CommitAgentDeletionResponse {
   deleted: true;
   deletedAgentIds: string[];
+  deletionReceiptId: string;
+  cleanupPending: boolean;
+  replayed?: boolean;
 }
 
 // ─── Triggers (Communication V3.2) ─────────────────────────────────────────

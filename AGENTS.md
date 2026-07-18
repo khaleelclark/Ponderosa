@@ -264,22 +264,31 @@ Ordinary runtime output → execution-scoped Work log
 - Deleting a manager recursively deletes its remaining descendants. The UI must
   confirm the server's exact cascade and commit every selected subtree in one
   transaction; a changed spawn or reporting edge returns `409` and deletes
-  nothing. Promotion or detachment is always an explicit user action performed
-  before deletion. A user may separately enable per-Agent authority to cancel
+  nothing. Once deletion commits, a durable receipt makes retries report success
+  while filesystem/runtime cleanup completes idempotently; cleanup failure must
+  never make a committed deletion look rolled back. Promotion or detachment is
+  always an explicit user action performed before deletion. A user may separately enable per-Agent authority to cancel
   and delete descendant branches or rearrange reporting lines inside that
   Agent's existing subtree without another Decision. Those settings default off,
   persist through full/template portability, never inherit automatically, and
   never authorize cross-Project movement, self/ancestor mutation, promotion, or
-  detachment. Organization changes never rewrite creator, communication, or
-  execution history.
+  detachment. When a setting is off, Ponderosa—not the provider—creates one
+  single-use approval bound to the exact Run, Project chat, operation kind,
+  targets, plan, and deletion preview. Apply revalidates current permissions,
+  approval scope, and current subtree authority inside the mutation transaction.
+  Imported elevated permissions require exact booleans and explicit user
+  acknowledgement. Organization changes never rewrite creator, communication,
+  or execution history.
 - Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
-- Explicit user cancellation is terminal for the active Run and its claimed
-  activation. It immediately fences execution, revokes runtime capabilities,
-  interrupts the provider, and must never requeue or respawn the
-  same Activation; later queued work remains eligible to run. Genuine runtime
-  failures may retain their separate bounded retry policy.
+- Explicit user cancellation targets the exact Run ID the caller observed and is
+  terminal only for that Run and its claimed activation. A delayed or retried
+  stop must return a conflict rather than cancel a successor Run. An accepted
+  cancellation immediately fences execution, revokes runtime capabilities,
+  interrupts the provider, and must never requeue or respawn the same
+  Activation; later queued work remains eligible to run. Genuine runtime failures
+  may retain their separate bounded retry policy.
 - Collaboration rejects exact replay within bounded recent causal lineage, and
   coalesced Activations preserve every constituent lineage. Do not add
   an arbitrary total-handoff or topology cap without an observed product need;

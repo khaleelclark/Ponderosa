@@ -156,6 +156,35 @@ describe("Communication V3 agent deletion", () => {
     }
   });
 
+  it("terminalizes outbound Requests when their requester is deleted", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-v3-delete-requester-"));
+    directories.push(directory);
+    const agents = new AgentStore(directory);
+    try {
+      const project = agents.createProject({ label: "Delete requester", hostPath: "/repo" });
+      const requester = agents.createAgent(project.id, { title: "Requester", engine: "codex" });
+      const recipient = agents.createAgent(project.id, { title: "Recipient", engine: "codex" });
+      const coordination = new CoordinationV3Store(agents.sqlite);
+      coordination.coordinate({
+        projectId: project.id,
+        requesterAgentId: requester.id,
+        actorScope: `agent:${requester.id}`,
+        idempotencyKey: "outbound-delete",
+        requests: [{ requestId: "orphanable-outbound", recipientAgentId: recipient.id, lifetime: { kind: "indefinite" } }],
+      });
+
+      expect(agents.deleteAgent(requester.id, (agentId) => coordination.handleAgentDeletion(agentId))).toBe(true);
+      expect(agents.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'orphanable-outbound'").get())
+        .toEqual({ state: "cancelled" });
+      expect(agents.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM agent_activations
+        WHERE agent_id = ? AND kind = 'coordination_cancelled' AND state = 'pending'
+      `).get(recipient.id)).toEqual({ count: 1 });
+    } finally {
+      agents.close();
+    }
+  });
+
   it("rolls back coordination changes when the surrounding deletion transaction fails", () => {
     const directory = mkdtempSync(join(tmpdir(), "ponderosa-v3-delete-rollback-"));
     directories.push(directory);

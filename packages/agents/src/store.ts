@@ -118,6 +118,8 @@ import {
   workItems,
   agents,
   agentDeletionTombstones,
+  agentDeletionReceipts,
+  agentManagementApprovals,
   agentConversationMemberships,
 } from "./schema.js";
 import {
@@ -294,8 +296,58 @@ interface MessageDispatchRecord {
 }
 
 function writeJson(file: string, data: unknown): void {
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(data, null, 2) + "\n", "utf8");
+  const directory = dirname(file);
+  mkdirSync(directory, { recursive: true });
+  const temporary = join(directory, `.${randomUUID()}.json.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
+    const descriptor = openSync(temporary, "r");
+    try { fsyncSync(descriptor); }
+    finally { closeSync(descriptor); }
+    renameSync(temporary, file);
+    fsyncDirectory(directory);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+function requireManagementPermissions(value: unknown): AgentDto["managementPermissions"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("management permissions must be an object");
+  const permissions = value as Record<string, unknown>;
+  if (typeof permissions.allowAutomaticDescendantDeletion !== "boolean" ||
+      typeof permissions.allowAutomaticDescendantReorganization !== "boolean") {
+    throw new Error("management permissions must contain exact boolean values");
+  }
+  return {
+    allowAutomaticDescendantDeletion: permissions.allowAutomaticDescendantDeletion,
+    allowAutomaticDescendantReorganization: permissions.allowAutomaticDescendantReorganization,
+  };
+}
+
+export interface AgentDeletionReceipt {
+  id: string;
+  projectId: string;
+  previewHash: string;
+  rootAgentIds: string[];
+  deletedAgentIds: string[];
+  storageCleanupCompleted: boolean;
+  serverCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface AgentManagementAuthorization {
+  planId: string;
+  projectId: string;
+  conversationId: string;
+  ownerAgentId: string;
+  runId: string;
+  scopeHash: string;
+  permission: "deletion" | "reorganization";
+  approvalDecisionId?: string;
 }
 
 function readJson<T>(file: string): T {
@@ -1210,6 +1262,9 @@ export class AgentStore {
         this.client.prepare(`DELETE FROM agent_conversation_memberships WHERE agent_id IN (SELECT id FROM agents WHERE project_id = ?)`)
           .run(id);
         this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM agent_management_approvals WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM agent_deletion_tombstones WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM agent_deletion_receipts WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agents WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
@@ -1659,10 +1714,9 @@ export class AgentStore {
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
     const model = preset?.model ?? input.model;
     const effort = preset?.effort ?? input.effort;
-    const managementPermissions: AgentDto["managementPermissions"] = {
-      allowAutomaticDescendantDeletion: input.managementPermissions?.allowAutomaticDescendantDeletion ?? false,
-      allowAutomaticDescendantReorganization: input.managementPermissions?.allowAutomaticDescendantReorganization ?? false,
-    };
+    const managementPermissions = input.managementPermissions
+      ? requireManagementPermissions(input.managementPermissions)
+      : { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false };
     const record: AgentJson = {
       id,
       projectId,
@@ -1774,22 +1828,170 @@ export class AgentStore {
     return ordered;
   }
 
+  createAgentManagementApproval(input: {
+    decisionId: string;
+    planId: string;
+    projectId: string;
+    conversationId: string;
+    ownerAgentId: string;
+    runId: string;
+    scopeHash: string;
+  }): void {
+    const now = new Date().toISOString();
+    this.client.prepare(`
+      INSERT INTO agent_management_approvals (
+        decision_id, plan_id, project_id, conversation_id, owner_agent_id,
+        run_id, scope_hash, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(
+      input.decisionId, input.planId, input.projectId, input.conversationId,
+      input.ownerAgentId, input.runId, input.scopeHash, now,
+    );
+  }
+
+  resolveAgentManagementApproval(decisionId: string, approved: boolean, at = new Date().toISOString()): boolean {
+    return this.client.transaction(() => {
+      const row = this.client.prepare(`
+        SELECT status FROM agent_management_approvals WHERE decision_id = ?
+      `).get(decisionId) as { status: string } | undefined;
+      if (!row) return false;
+      const desired = approved ? "approved" : "denied";
+      if (row.status === desired) return true;
+      if (row.status !== "pending") throw new Error("management approval is already terminal");
+      this.client.prepare(`
+        UPDATE agent_management_approvals SET status = ?, resolved_at = ? WHERE decision_id = ?
+      `).run(desired, at, decisionId);
+      return true;
+    })();
+  }
+
+  /** Revalidate current owner authority and consume one exact approval in the
+   * same SQLite transaction as the caller's destructive projection mutation. */
+  authorizeAgentManagementPlan(
+    authorization: AgentManagementAuthorization,
+    targetAgentIds: readonly string[],
+    consumeApproval = true,
+  ): void {
+    const owner = this.getAgent(authorization.ownerAgentId);
+    if (!owner || owner.projectId !== authorization.projectId || owner.archived) {
+      throw new Error("management owner is no longer active in this Project");
+    }
+    const descendants = new Set(this.listAgentSubtree(owner.id).slice(1).map((agent) => agent.id));
+    if (targetAgentIds.some((id) => !descendants.has(id))) {
+      throw new Error("management authority changed; a target is no longer inside the owner's subtree");
+    }
+    const permissionEnabled = authorization.permission === "deletion"
+      ? owner.managementPermissions.allowAutomaticDescendantDeletion
+      : owner.managementPermissions.allowAutomaticDescendantReorganization;
+    if (!authorization.approvalDecisionId) {
+      if (!permissionEnabled) throw new Error(`automatic descendant ${authorization.permission} permission was revoked`);
+      return;
+    }
+    const approval = this.client.prepare(`
+      SELECT plan_id, project_id, conversation_id, owner_agent_id, run_id,
+             scope_hash, status
+      FROM agent_management_approvals WHERE decision_id = ?
+    `).get(authorization.approvalDecisionId) as {
+      plan_id: string; project_id: string; conversation_id: string;
+      owner_agent_id: string; run_id: string; scope_hash: string; status: string;
+    } | undefined;
+    if (!approval || approval.plan_id !== authorization.planId ||
+        approval.project_id !== authorization.projectId ||
+        approval.conversation_id !== authorization.conversationId ||
+        approval.owner_agent_id !== authorization.ownerAgentId ||
+        approval.run_id !== authorization.runId ||
+        approval.scope_hash !== authorization.scopeHash) {
+      throw new Error("management approval does not match this exact plan and Run");
+    }
+    if (approval.status !== "approved") throw new Error("management approval is not approved or was already consumed");
+    if (!consumeApproval) return;
+    const consumedAt = new Date().toISOString();
+    const consumed = this.client.prepare(`
+      UPDATE agent_management_approvals
+      SET status = 'consumed', consumed_at = ?
+      WHERE decision_id = ? AND status = 'approved'
+    `).run(consumedAt, authorization.approvalDecisionId);
+    if (consumed.changes !== 1) throw new Error("management approval was already consumed");
+  }
+
+  getAgentDeletionReceiptByPreviewHash(previewHash: string): AgentDeletionReceipt | undefined {
+    const row = this.client.prepare(`SELECT * FROM agent_deletion_receipts WHERE preview_hash = ?`).get(previewHash) as {
+      id: string; project_id: string; preview_hash: string; root_agent_ids_json: string;
+      deleted_agent_ids_json: string; storage_cleanup_completed: number; server_cleanup_completed: number;
+      last_error: string | null; created_at: string; updated_at: string; completed_at: string | null;
+    } | undefined;
+    return row ? {
+      id: row.id,
+      projectId: row.project_id,
+      previewHash: row.preview_hash,
+      rootAgentIds: JSON.parse(row.root_agent_ids_json) as string[],
+      deletedAgentIds: JSON.parse(row.deleted_agent_ids_json) as string[],
+      storageCleanupCompleted: row.storage_cleanup_completed === 1,
+      serverCleanupCompleted: row.server_cleanup_completed === 1,
+      ...(row.last_error ? { lastError: row.last_error } : {}),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+    } : undefined;
+  }
+
+  listPendingAgentDeletionReceipts(): AgentDeletionReceipt[] {
+    const hashes = this.client.prepare(`
+      SELECT preview_hash FROM agent_deletion_receipts
+      WHERE storage_cleanup_completed = 0 OR server_cleanup_completed = 0
+      ORDER BY created_at
+    `).all() as Array<{ preview_hash: string }>;
+    return hashes.flatMap(({ preview_hash }) => {
+      const receipt = this.getAgentDeletionReceiptByPreviewHash(preview_hash);
+      return receipt ? [receipt] : [];
+    });
+  }
+
+  recordAgentDeletionCleanupError(receiptId: string, error: string): void {
+    this.client.prepare(`
+      UPDATE agent_deletion_receipts SET last_error = ?, updated_at = ? WHERE id = ?
+    `).run(error.slice(0, 4_000), new Date().toISOString(), receiptId);
+  }
+
+  markAgentDeletionServerCleanupComplete(receiptId: string): void {
+    const now = new Date().toISOString();
+    this.client.prepare(`
+      UPDATE agent_deletion_receipts
+      SET server_cleanup_completed = 1, last_error = NULL, updated_at = ?,
+          completed_at = CASE WHEN storage_cleanup_completed = 1 THEN ? ELSE completed_at END
+      WHERE id = ?
+    `).run(now, now, receiptId);
+  }
+
   updateAgent(id: string, patch: UpdateAgentRequest): AgentDto | undefined {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
     if (!row) return undefined;
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
-    const managementPermissions: AgentDto["managementPermissions"] = patch.managementPermissions ?? {
-      allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,
-      allowAutomaticDescendantReorganization: row.allowAutomaticDescendantReorganization === 1,
-    };
+    const managementPermissions = patch.managementPermissions
+      ? requireManagementPermissions(patch.managementPermissions)
+      : {
+          allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,
+          allowAutomaticDescendantReorganization: row.allowAutomaticDescendantReorganization === 1,
+        };
     if (archived && row.archived !== 1) {
       for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
         this.updateAgentOrganization(child.id, { managerAgentId: null });
       }
       if (this.getAgent(id)?.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: null });
     }
+    // Canonical metadata is crash-safe and durable before its rebuildable
+    // SQLite projection changes. A crash can therefore never resurrect a
+    // permission that the operator just revoked.
+    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
+    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
+      ...json,
+      title,
+      archived,
+      managementPermissions,
+      updatedAt: now,
+    });
     this.db
       .update(agents)
       .set({
@@ -1801,15 +2003,6 @@ export class AgentStore {
       })
       .where(eq(agents.id, id))
       .run();
-    // Keep the on-disk metadata (source of truth for these fields) in sync.
-    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
-    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
-      ...json,
-      title,
-      archived,
-      managementPermissions,
-      updatedAt: now,
-    });
     return this.rowToAgentDto(id);
   }
 
@@ -1844,6 +2037,57 @@ export class AgentStore {
       updatedAt: event.createdAt,
     }).where(eq(agents.id, id)).run();
     return this.getAgent(id);
+  }
+
+  applyAuthorizedAgentReorganization(
+    authorization: AgentManagementAuthorization,
+    operations: ReadonlyArray<{ targetAgentId: string; managerAgentId: string }>,
+  ): string[] {
+    return this.client.transaction(() => {
+      this.authorizeAgentManagementPlan(
+        authorization,
+        [...new Set(operations.map((operation) => operation.targetAgentId))],
+      );
+      const projectAgents = this.listAgents(authorization.projectId);
+      const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
+      const managerById = new Map(projectAgents.map((agent) => [agent.id, agent.managerAgentId]));
+      const currentDescendants = new Set(this.listAgentSubtree(authorization.ownerAgentId).slice(1).map((agent) => agent.id));
+      for (const operation of operations) {
+        const target = byId.get(operation.targetAgentId);
+        const manager = byId.get(operation.managerAgentId);
+        if (!target || !manager || target.archived || manager.archived) throw new Error("reorganization Agents must remain active");
+        if (manager.id !== authorization.ownerAgentId && !currentDescendants.has(manager.id)) {
+          throw new Error("management authority changed; a new manager is no longer inside the owner's subtree");
+        }
+        if (target.id === authorization.ownerAgentId || target.id === manager.id) throw new Error("reorganization cannot move the owner or create a self-cycle");
+        managerById.set(target.id, manager.id);
+        const visited = new Set<string>([target.id]);
+        let cursor: string | undefined = manager.id;
+        while (cursor) {
+          if (visited.has(cursor)) throw new Error("organizational parent would create a cycle");
+          visited.add(cursor);
+          cursor = managerById.get(cursor);
+        }
+      }
+      const createdAt = new Date().toISOString();
+      const eventsToAppend: AgentOrganizationEvent[] = operations
+        .filter((operation) => managerById.get(operation.targetAgentId) !== byId.get(operation.targetAgentId)?.managerAgentId)
+        .map((operation) => ({
+          eventId: randomUUID(),
+          type: "manager_changed",
+          projectId: authorization.projectId,
+          agentId: operation.targetAgentId,
+          managerAgentId: operation.managerAgentId,
+          createdAt,
+        }));
+      if (eventsToAppend.length > 0) {
+        appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, authorization.projectId), eventsToAppend);
+        for (const event of eventsToAppend) this.client.prepare(`
+          UPDATE agents SET manager_agent_id = ?, updated_at = ? WHERE id = ?
+        `).run(event.managerAgentId, event.createdAt, event.agentId);
+      }
+      return [...new Set(operations.map((operation) => operation.targetAgentId))];
+    })();
   }
 
   readAgentOrganizationEvents(projectId: string): AgentOrganizationEvent[] {
@@ -1934,6 +2178,7 @@ export class AgentStore {
     rootAgentIds: string[],
     expectedPreviewHash: string,
     beforeProjectionDelete?: (agentId: string) => void,
+    authorization?: AgentManagementAuthorization,
   ): AgentDeletionPreviewDto {
     let committedPreview: AgentDeletionPreviewDto | undefined;
     const stagedDirectories = new Map<string, { canonical: string; tombstone: string; tombstoneName: string }>();
@@ -1941,6 +2186,9 @@ export class AgentStore {
       this.db.transaction((tx) => {
         const current = this.previewAgentDeletion(rootAgentIds);
         if (current.previewHash !== expectedPreviewHash) throw new AgentDeletionConflictError(current);
+        if (authorization) {
+          this.authorizeAgentManagementPlan(authorization, current.affectedAgents.map((agent) => agent.id));
+        }
         committedPreview = current;
         for (const agent of current.affectedAgents) {
           const canonical = agentDir(this.dataDir, current.projectId, agent.id);
@@ -1954,6 +2202,18 @@ export class AgentStore {
         // before commit and let startup either finish or restore it.
         fsyncDirectory(agentsDir(this.dataDir, current.projectId));
         const createdAt = new Date().toISOString();
+        const receiptId = `agent-deletion-${current.previewHash}`;
+        tx.insert(agentDeletionReceipts).values({
+          id: receiptId,
+          projectId: current.projectId,
+          previewHash: current.previewHash,
+          rootAgentIdsJson: JSON.stringify(current.rootAgentIds),
+          deletedAgentIdsJson: JSON.stringify(current.affectedAgents.map((agent) => agent.id)),
+          storageCleanupCompleted: 0,
+          serverCleanupCompleted: 0,
+          createdAt,
+          updatedAt: createdAt,
+        }).run();
         for (const [agentId, staged] of stagedDirectories) tx.insert(agentDeletionTombstones).values({
           agentId,
           projectId: current.projectId,
@@ -1984,20 +2244,45 @@ export class AgentStore {
       }
       throw error;
     }
-    for (const [agentId, { tombstone }] of stagedDirectories) {
-      rmSync(tombstone, { recursive: true, force: true });
+    // The irreversible SQLite commit already succeeded. Storage cleanup is an
+    // idempotent receipt-backed follow-up and must never turn success into an
+    // HTTP failure.
+    const receipt = this.getAgentDeletionReceiptByPreviewHash(expectedPreviewHash)!;
+    try { this.finishAgentDeletionStorageCleanup(receipt); }
+    catch (error) {
+      this.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "Agent storage cleanup failed");
+    }
+    return committedPreview!;
+  }
+
+  finishAgentDeletionStorageCleanup(receipt: AgentDeletionReceipt): void {
+    if (receipt.storageCleanupCompleted) return;
+    const touchedDirectories = new Set<string>();
+    for (const agentId of receipt.deletedAgentIds) {
+      const row = this.client.prepare(`
+        SELECT project_id, tombstone_name FROM agent_deletion_tombstones WHERE agent_id = ?
+      `).get(agentId) as { project_id: string; tombstone_name: string } | undefined;
+      if (row) {
+        const directory = agentsDir(this.dataDir, row.project_id);
+        rmSync(join(directory, row.tombstone_name), { recursive: true, force: true });
+        touchedDirectories.add(directory);
+      }
       this.logs.delete(agentId);
       this.states.delete(agentId);
     }
-    for (const directory of new Set([...stagedDirectories.values()].map(({ canonical }) => dirname(canonical)))) {
-      if (existsSync(directory)) fsyncDirectory(directory);
-    }
+    for (const directory of touchedDirectories) if (existsSync(directory)) fsyncDirectory(directory);
     this.db.transaction((tx) => {
-      for (const agentId of stagedDirectories.keys()) {
+      for (const agentId of receipt.deletedAgentIds) {
         tx.delete(agentDeletionTombstones).where(eq(agentDeletionTombstones.agentId, agentId)).run();
       }
+      const now = new Date().toISOString();
+      tx.update(agentDeletionReceipts).set({
+        storageCleanupCompleted: 1,
+        lastError: null,
+        updatedAt: now,
+        completedAt: receipt.serverCleanupCompleted ? now : null,
+      }).where(eq(agentDeletionReceipts.id, receipt.id)).run();
     });
-    return committedPreview!;
   }
 
   /** Internal exact-current deletion convenience for rollback and fixtures. */
@@ -2844,7 +3129,16 @@ export class AgentStore {
       }
     }
     for (const directory of touchedDirectories) fsyncDirectory(directory);
-    this.db.delete(agentDeletionTombstones).run();
+    this.db.transaction((tx) => {
+      tx.delete(agentDeletionTombstones).run();
+      const now = new Date().toISOString();
+      this.client.prepare(`
+        UPDATE agent_deletion_receipts
+        SET storage_cleanup_completed = 1, last_error = NULL, updated_at = ?,
+            completed_at = CASE WHEN server_cleanup_completed = 1 THEN ? ELSE completed_at END
+        WHERE storage_cleanup_completed = 0
+      `).run(now, now);
+    });
   }
 
   rebuildProjections(): void {

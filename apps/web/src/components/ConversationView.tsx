@@ -723,14 +723,20 @@ export function ConversationView({
 
   const operationRunning = Boolean(activeOperation && (busy || activeOperation.state === "running"));
   const stopOperation = async () => {
-    const agentIds = activeOperation?.agentIds ?? [];
-    if (agentIds.length === 0) return;
-    const names = agentIds.map((id) => agentTitle(id)).join(", ");
-    if (agentIds.length > 1 && !window.confirm(`Stop this operation tree (${names})? Partial output will remain visible.`)) return;
+    const targets = (activeOperation?.agentIds ?? []).flatMap((agentId) => {
+      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
+      return runId ? [{ agentId, runId }] : [];
+    });
+    if (targets.length === 0) return;
+    const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
+    if (targets.length > 1 && !window.confirm(`Stop this operation tree (${names})? Partial output will remain visible.`)) return;
     setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
     const requestId = stopOperationRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     stopOperationRequestId.current = requestId;
-    await Promise.allSettled(agentIds.map((agentId) => api.cancelRun(agentId, requestId)));
+    await Promise.allSettled(targets.map(({ agentId, runId }) => api.cancelRun(agentId, {
+      targetRunId: runId,
+      idempotencyKey: `${requestId}:${runId}`,
+    })));
     stopOperationRequestId.current = undefined;
     setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
     invalidate();

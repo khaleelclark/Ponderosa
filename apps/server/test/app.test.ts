@@ -16,6 +16,12 @@ import type { BrowserDriver } from "../src/browser-session-manager.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function activeRunCancellationPayload(store: AgentStore, agentId: string, idempotencyKey: string) {
+  const targetRunId = new CoordinationV3Store(store.sqlite).agentSnapshot(agentId).activeRun?.id;
+  expect(targetRunId, `expected Agent ${agentId} to have an active Run`).toBeTruthy();
+  return { targetRunId: targetRunId!, idempotencyKey };
+}
+
 async function deleteAgentsWithServerPreview(
   app: ReturnType<typeof createServer>,
   projectId: string,
@@ -157,7 +163,10 @@ describe("localhost link preview registration", () => {
     for (const url of ["http://localhost/no-port", "https://localhost:5173/", "http://192.168.1.5:5173/", "file:///etc/passwd", "http://user:pass@localhost:5173/"]) {
       expect((await app.inject({ method: "POST", url: "/api/link-previews", headers, payload: { url, ...scope } })).statusCode).toBe(400);
     }
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`, headers,
+      payload: activeRunCancellationPayload(store, agent.id, "preview-stop"),
+    })).statusCode).toBe(200);
     for (let attempt = 0; attempt < 80; attempt += 1) {
       const afterCancel = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health`, headers });
       if (!afterCancel.json<{ agents: Array<{ runtimeActivity?: unknown }> }>().agents[0]?.runtimeActivity) break;
@@ -426,7 +435,10 @@ describe("localhost link preview registration", () => {
 
     const secondClosed = new Promise<number>((resolve) => second.once("close", resolve));
     const replacementClosed = new Promise<number>((resolve) => replacement.once("close", resolve));
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`, headers,
+      payload: activeRunCancellationPayload(store, agent.id, "proxy-stop"),
+    })).statusCode).toBe(200);
     expect([1001, 1008]).toContain(await secondClosed);
     expect([1001, 1008]).toContain(await replacementClosed);
     await Promise.all([openEventsTeardown, openStreamTeardown]);
@@ -1502,7 +1514,10 @@ describe("interactive browser API", () => {
     expect(screenshot).toMatchObject({ mediaType: "image/png", previewUrl: expect.any(String) });
     expect((await app.inject({ method: "GET", url: screenshot.previewUrl!, headers: operator })).rawPayload).toEqual(png);
 
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, headers: operator, payload: { idempotencyKey: "browser-stop" } });
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`, headers: operator,
+      payload: activeRunCancellationPayload(store, agent.id, "browser-stop"),
+    });
     await expect.poll(async () => (await app.inject({ method: "GET", url: root, headers: operator })).statusCode).toBe(404);
     expect(store.readEvents(agent.id)).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ type: "browser_session", status: "closed" }) }));
     await app.close();
@@ -1541,7 +1556,10 @@ describe("interactive browser API", () => {
     expect(navigated.statusCode).toBe(200);
     expect(navigated.json()).toMatchObject({ session: { projectId: project.id, url: "https://example.com/borrowed" } });
 
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "release-project-browser" } });
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: activeRunCancellationPayload(store, agent.id, "release-project-browser"),
+    });
     await expect.poll(async () => (await app.inject({ method: "GET", url: root })).json().controlOwner).toBe("operator");
     const idempotentReclaim = await app.inject({
       method: "PUT", url: `${root}/control`, payload: { owner: "operator", expectedControlEpoch: 1 },
@@ -1691,11 +1709,22 @@ describe("token usage API", () => {
 
 describe("idempotent runtime controls", () => {
   it("replays a stop receipt without appending a second cancellation", async () => {
-    const { app, project, agent } = await createProjectAndAgent();
-    const first = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-retry" } });
-    const second = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-retry" } });
-    expect(first.json()).toEqual({ cancelled: false, replayed: false });
-    expect(second.json()).toEqual({ cancelled: false, replayed: true });
+    adapter.mode = "hang";
+    const { app, agent } = await createProjectAndAgent();
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "stay active" } });
+    await waitForSeedCount(1);
+    const payload = activeRunCancellationPayload(store, agent.id, "stop-retry");
+    const stale = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: { targetRunId: "previous-run", idempotencyKey: "stale-stop" },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ cancelled: false, replayed: false, currentRunId: payload.targetRunId });
+    expect(new CoordinationV3Store(store.sqlite).agentSnapshot(agent.id).activeRun?.id).toBe(payload.targetRunId);
+    const first = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload });
+    const second = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload });
+    expect(first.json()).toEqual({ cancelled: true, replayed: false });
+    expect(second.json()).toEqual({ cancelled: true, replayed: true });
     await app.close();
   });
 });
@@ -1840,7 +1869,10 @@ describe("project lifecycle API", () => {
     expect(store.getConversationMessages(conversationId).find((message) => message.id === originalMessage.id)).toMatchObject({
       text: "Edited active request", editRevision: 1,
     });
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: { idempotencyKey: "stop-active-edit-test" } });
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: activeRunCancellationPayload(store, agent.id, "stop-active-edit-test"),
+    });
     await app.close();
   });
 
@@ -2260,10 +2292,18 @@ describe("persistent engine steering", () => {
 });
 
 async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: string): Promise<void> {
-  await app.inject({ method: "POST", url: `/api/agents/${agentId}/cancel` });
+  const agent = store.getAgent(agentId);
+  const targetRunId = new CoordinationV3Store(store.sqlite).agentSnapshot(agentId).activeRun?.id;
+  if (!targetRunId) return;
+  const payload = { targetRunId, idempotencyKey: `test-stop:${randomUUID()}` };
+  const cancelled = await app.inject({ method: "POST", url: `/api/agents/${agentId}/cancel`, payload });
+  expect([200, 409], cancelled.body).toContain(cancelled.statusCode);
   for (let i = 0; i < 80; i += 1) {
-    const response = await app.inject({ method: "POST", url: `/api/agents/${agentId}/cancel` });
-    if (!response.json<{ cancelled: boolean }>().cancelled) return;
+    if (!agent) return;
+    const health = await app.inject({ method: "GET", url: `/api/projects/${agent.projectId}/agent-health` });
+    const runtimeActivity = health.json<{ agents: Array<{ agentId: string; runtimeActivity?: { executionId: string } }> }>()
+      .agents.find((item) => item.agentId === agentId)?.runtimeActivity;
+    if (runtimeActivity?.executionId !== targetRunId) return;
     await sleep(10);
   }
   throw new Error("run did not cancel");
@@ -2404,7 +2444,10 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first prompt" } });
     await vi.waitFor(() => expect(blocked).toBe(true));
     expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "queued prompt" } })).statusCode).toBe(202);
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: true });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: activeRunCancellationPayload(store, agent.id, "fence-first-generation"),
+    })).json()).toEqual({ cancelled: true, replayed: false });
     release();
     await vi.waitFor(() => expect(adapter.seeds.length + adapter.continues.length).toBe(2));
     await waitForRun(agent.id);
@@ -2979,9 +3022,46 @@ describe("server chunk F", () => {
     expect([manager.id, child.id, outside.id, lateChild.id].every((id) => Boolean(store.getAgent(id)))).toBe(true);
 
     const deleted = await deleteAgentsWithServerPreview(app, project.id, [manager.id]);
-    expect(deleted.json()).toEqual({ deleted: true, deletedAgentIds: [manager.id] });
+    expect(deleted.json()).toMatchObject({ deleted: true, deletedAgentIds: [manager.id], cleanupPending: false });
     expect(store.getAgent(child.id)?.managerAgentId).toBe(outside.id);
     expect((await app.inject({ method: "DELETE", url: `/api/agents/${outside.id}` })).statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("returns a durable success receipt when post-commit deletion cleanup needs retry", async () => {
+    let failCleanup = true;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      agentDeletionCleanupFaults: {
+        beforeServerCleanup: () => { if (failCleanup) throw new Error("injected cleanup outage"); },
+      },
+    });
+    const project = store.createProject({ label: "Deletion receipt", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Delete once", engine: "codex" });
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, payload: { rootAgentIds: [agent.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const committed = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({ deleted: true, deletedAgentIds: [agent.id], cleanupPending: true });
+    expect(store.getAgent(agent.id)).toBeUndefined();
+    const receiptId = committed.json<{ deletionReceiptId: string }>().deletionReceiptId;
+    expect(store.sqlite.prepare(`SELECT server_cleanup_completed, last_error FROM agent_deletion_receipts WHERE id = ?`).get(receiptId)).toMatchObject({
+      server_cleanup_completed: 0,
+      last_error: "injected cleanup outage",
+    });
+
+    failCleanup = false;
+    const replay = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({
+      deleted: true, deletedAgentIds: [agent.id], deletionReceiptId: receiptId,
+      cleanupPending: false, replayed: true,
+    });
     await app.close();
   });
 
@@ -5596,8 +5676,11 @@ describe("server chunk F", () => {
     expect(concurrent.statusCode).toBe(202);
     expect(concurrent.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
-    const cancel = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` });
-    expect(cancel.json()).toEqual({ cancelled: true });
+    const cancel = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: activeRunCancellationPayload(store, agent.id, "manager-follow-up-stop"),
+    });
+    expect(cancel.json()).toEqual({ cancelled: true, replayed: false });
     await waitForRun(agent.id);
     expect(adapter.continues).toHaveLength(1);
     expect(store.getMessages(agent.id)).toEqual(
@@ -6302,7 +6385,10 @@ describe("server chunk F", () => {
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
 
     adapter.mode = "normal";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/cancel` });
+    await app.inject({
+      method: "POST", url: `/api/agents/${author.id}/cancel`,
+      payload: activeRunCancellationPayload(store, author.id, "busy-reply-stop"),
+    });
     await expect.poll(() => adapter.seeds.length + adapter.continues.length).toBe(2);
     expect([...adapter.seeds, ...adapter.continues]
       .filter((turn) => turn.agentId === author.id && turn.prompt.includes(payload.text))).toHaveLength(1);
@@ -6437,24 +6523,22 @@ describe("V3.3 Decisions, management, and portability", () => {
       name: "ponderosa_manage",
       arguments: { action: "plan", idempotencyKey: "delete-no-decision", operations: [{ kind: "delete_agent", targetAgentId: reviewer.id }] },
     });
-    expect(unapprovedDelete.success).toBe(false);
-    const asked = await runtime.handleDynamicToolCall!({
-      name: "ponderosa_decision",
-      arguments: { idempotencyKey: "delete-reviewer", mode: "approval", question: "Delete Reviewer?", blocking: true },
+    expect(unapprovedDelete.success, unapprovedDelete.text).toBe(true);
+    const unapprovedPlan = JSON.parse(unapprovedDelete.text) as { planId: string; approvalDecisionId: string };
+    const decisionId = unapprovedPlan.approvalDecisionId;
+    expect(store.sqlite.prepare(`SELECT plan_id, run_id, status FROM agent_management_approvals WHERE decision_id = ?`).get(decisionId)).toMatchObject({
+      plan_id: unapprovedPlan.planId,
+      run_id: store.getRuns(owner.id).at(-1)!.id,
+      status: "pending",
     });
-    expect(asked.success, asked.text).toBe(true);
-    const decisionId = JSON.parse(asked.text).id as string;
     persistent.completeSteers = false;
     expect((await app.inject({ method: "POST", url: `/api/decisions/${decisionId}/respond`, payload: { optionId: "approve" } })).statusCode).toBe(200);
+    expect(store.sqlite.prepare(`SELECT status FROM agent_management_approvals WHERE decision_id = ?`).get(decisionId)).toEqual({ status: "approved" });
     await vi.waitFor(() => expect(persistent.steers).toHaveLength(1));
-    const deletePlan = await runtime.handleDynamicToolCall!({
-      name: "ponderosa_manage",
-      arguments: { action: "plan", idempotencyKey: "delete-approved", operations: [{ kind: "delete_agent", targetAgentId: reviewer.id, decisionId }] },
-    });
-    expect(deletePlan.success, deletePlan.text).toBe(true);
-    const deleted = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(deletePlan.text).planId } });
+    const deleted = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: unapprovedPlan.planId } });
     expect(deleted.success, deleted.text).toBe(true);
     expect(store.getAgent(reviewer.id)).toBeUndefined();
+    expect(store.sqlite.prepare(`SELECT status FROM agent_management_approvals WHERE decision_id = ?`).get(decisionId)).toEqual({ status: "consumed" });
 
     const enabled = await app.inject({
       method: "PATCH", url: `/api/agents/${owner.id}`,
@@ -6477,12 +6561,32 @@ describe("V3.3 Decisions, management, and portability", () => {
       name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(reorganizePlan.text).planId },
     })).success).toBe(true);
     expect(store.getAgent(leaf.id)?.managerAgentId).toBe(branch.id);
+    const returnToOwnerPlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "reorganize-to-owner", operations: [
+        { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: owner.id },
+      ] },
+    });
+    expect(returnToOwnerPlan.success, returnToOwnerPlan.text).toBe(true);
+    expect((await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(returnToOwnerPlan.text).planId },
+    })).success).toBe(true);
+    expect(store.getAgent(leaf.id)?.managerAgentId).toBe(owner.id);
     expect((await runtime.handleDynamicToolCall!({
       name: "ponderosa_manage",
       arguments: { action: "plan", idempotencyKey: "no-detach", operations: [
         { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: null },
       ] },
     })).success).toBe(false);
+    const restoreBranchPlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "restore-branch", operations: [
+        { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: branch.id },
+      ] },
+    });
+    expect((await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(restoreBranchPlan.text).planId },
+    })).success).toBe(true);
 
     expect((await app.inject({
       method: "POST", url: `/api/agents/${branch.id}/messages`, payload: { text: "Keep working until cancelled" },
@@ -6504,6 +6608,85 @@ describe("V3.3 Decisions, management, and portability", () => {
     expect(store.getAgent(leaf.id)).toBeUndefined();
     expect(persistent.interrupted).toBeGreaterThanOrEqual(1);
     expect(persistent.closed).toBeGreaterThanOrEqual(1);
+    await app.close();
+  });
+
+  it("reauthorizes destructive plans at apply and rejects stale topology or unrelated approvals", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 2 } });
+    const project = store.createProject({ label: "Management authorization", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Team" });
+    const owner = store.createAgent(project.id, {
+      title: "Manager", engine: "codex", conversationId: conversation.id,
+      managementPermissions: { allowAutomaticDescendantDeletion: true, allowAutomaticDescendantReorganization: true },
+    });
+    const branch = store.createAgent(project.id, { title: "Branch", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const leaf = store.createAgent(project.id, { title: "Leaf", engine: "codex", conversationId: conversation.id, managerAgentId: branch.id });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${owner.id}/messages`,
+      payload: { text: "Manage safely", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+
+    const revocable = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "revocable-delete", operations: [{ kind: "delete_agent", targetAgentId: leaf.id }] },
+    });
+    const revocablePlanId = JSON.parse(revocable.text).planId as string;
+    store.updateAgent(owner.id, { managementPermissions: {
+      allowAutomaticDescendantDeletion: false,
+      allowAutomaticDescendantReorganization: true,
+    } });
+    const revokedApply = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: revocablePlanId } });
+    expect(revokedApply.success).toBe(false);
+    expect(revokedApply.text).toContain("permission was revoked");
+    expect(store.getAgent(leaf.id)).toBeTruthy();
+
+    store.updateAgent(owner.id, { managementPermissions: {
+      allowAutomaticDescendantDeletion: true,
+      allowAutomaticDescendantReorganization: true,
+    } });
+    const topologyPlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "ancestor-move", operations: [{ kind: "delete_agent", targetAgentId: leaf.id }] },
+    });
+    // The deletion root and its own manager edge are unchanged, so only an
+    // apply-time owner-to-target authority check catches this ancestor move.
+    store.updateAgentOrganization(branch.id, { managerAgentId: outsider.id });
+    const topologyApply = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(topologyPlan.text).planId },
+    });
+    expect(topologyApply.success).toBe(false);
+    expect(topologyApply.text).toContain("no longer inside the owner's subtree");
+    expect(store.getAgent(leaf.id)).toBeTruthy();
+
+    store.updateAgentOrganization(branch.id, { managerAgentId: owner.id });
+    store.updateAgent(owner.id, { managementPermissions: {
+      allowAutomaticDescendantDeletion: false,
+      allowAutomaticDescendantReorganization: true,
+    } });
+    const unrelated = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_decision",
+      arguments: { idempotencyKey: "unrelated", mode: "approval", question: "Approve an unrelated action?" },
+    });
+    const unrelatedDecisionId = JSON.parse(unrelated.text).id as string;
+    persistent.completeSteers = false;
+    await app.inject({ method: "POST", url: `/api/decisions/${unrelatedDecisionId}/respond`, payload: { optionId: "approve" } });
+    const scoped = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "scoped-delete", operations: [{ kind: "delete_agent", targetAgentId: leaf.id }] },
+    });
+    const scopedPlan = JSON.parse(scoped.text) as { planId: string; approvalDecisionId: string };
+    expect(scopedPlan.approvalDecisionId).not.toBe(unrelatedDecisionId);
+    const unrelatedApply = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: scopedPlan.planId } });
+    expect(unrelatedApply.success).toBe(false);
+    expect(store.getAgent(leaf.id)).toBeTruthy();
+    await app.inject({ method: "POST", url: `/api/decisions/${scopedPlan.approvalDecisionId}/respond`, payload: { optionId: "approve" } });
+    expect((await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: scopedPlan.planId } })).success).toBe(true);
+    expect(store.getAgent(leaf.id)).toBeUndefined();
     await app.close();
   });
 
@@ -6560,9 +6743,21 @@ describe("V3.3 Decisions, management, and portability", () => {
     expect(legacyContext.json()).toMatchObject({ mode: "full", agents: [{ artifacts: expect.any(Array), triggers: expect.any(Array) }] });
     const portablePackage = exported.json<AgentPortablePackageDto>();
     portablePackage.sourceProjectInstructions = "SOURCE-RULE-MUST-NOT-ENTER-PROVIDER-CONTEXT";
-    const imported = await app.inject({
+    const malformedPermissions = structuredClone(portablePackage) as AgentPortablePackageDto;
+    (malformedPermissions.agents[0]!.managementPermissions as unknown as Record<string, unknown>).allowAutomaticDescendantDeletion = "false";
+    const malformedImport = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/import-agents`,
+      payload: { package: malformedPermissions, conversationId: destinationChat.id, engineMapping: { codex: "codex" }, acknowledgeElevatedManagementPermissions: true },
+    });
+    expect(malformedImport.statusCode, malformedImport.body).toBe(400);
+    const unacknowledgedImport = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/import-agents`,
       payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+    });
+    expect(unacknowledgedImport.statusCode, unacknowledgedImport.body).toBe(409);
+    const imported = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/import-agents`,
+      payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" }, acknowledgeElevatedManagementPermissions: true },
     });
     expect(imported.statusCode, imported.body).toBe(201);
     const importedAgentId = imported.json<{ rootAgentId: string }>().rootAgentId;
@@ -6591,7 +6786,10 @@ describe("V3.3 Decisions, management, and portability", () => {
       localPath: managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id),
       available: true,
     }));
-    await app.inject({ method: "POST", url: `/api/agents/${importedAgentId}/cancel`, payload: { idempotencyKey: "stop-import-inspection" } });
+    await app.inject({
+      method: "POST", url: `/api/agents/${importedAgentId}/cancel`,
+      payload: activeRunCancellationPayload(store, importedAgentId, "stop-import-inspection"),
+    });
     await app.close();
   });
 });

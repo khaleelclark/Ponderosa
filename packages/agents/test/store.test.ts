@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -1301,6 +1301,20 @@ describe("agent organizational hierarchy", () => {
     });
     store.rebuildProjections();
     expect(store.getAgent(manager.id)?.managementPermissions).toEqual(manager.managementPermissions);
+    store.updateAgent(manager.id, { managementPermissions: {
+      allowAutomaticDescendantDeletion: false,
+      allowAutomaticDescendantReorganization: false,
+    } });
+    expect(JSON.parse(readFileSync(join(agentDir(dir, project.id, manager.id), "agent.json"), "utf8")).managementPermissions)
+      .toEqual({ allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false });
+    expect(() => store.updateAgent(manager.id, { managementPermissions: {
+      allowAutomaticDescendantDeletion: "false",
+      allowAutomaticDescendantReorganization: false,
+    } as unknown as import("@ponderosa/core").AgentManagementPermissionsDto })).toThrow("exact boolean");
+    expect(store.getAgent(manager.id)?.managementPermissions.allowAutomaticDescendantDeletion).toBe(false);
+    expect(readdirSync(agentDir(dir, project.id, manager.id)).some((name) => name.endsWith(".json.tmp"))).toBe(false);
+    store.rebuildProjections();
+    expect(store.getAgent(manager.id)?.managementPermissions.allowAutomaticDescendantDeletion).toBe(false);
   });
 
   it("rejects stale deletion previews after spawn or reparent without deleting any Agent", () => {

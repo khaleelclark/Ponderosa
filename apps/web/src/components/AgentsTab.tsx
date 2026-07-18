@@ -24,7 +24,7 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import { agentRoleProfile } from "@ponderosa/core";
-import type { ConversationDto, AgentDetailDto, AgentDto, EngineDto } from "@ponderosa/core";
+import type { ConversationDto, AgentDetailDto, AgentDto, AgentHealthDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
@@ -48,6 +48,7 @@ export function AgentsTab({
   engines,
   conversations,
   statusByAgentId,
+  healthByAgentId,
   detailByAgentId,
   onOpenAgent,
   onNewAgent,
@@ -57,6 +58,7 @@ export function AgentsTab({
   engines: EngineDto[];
   conversations: ConversationDto[];
   statusByAgentId: Map<string, AgentStatus>;
+  healthByAgentId: Map<string, AgentHealthDto>;
   detailByAgentId: Map<string, AgentDetailDto | undefined>;
   onOpenAgent(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
@@ -112,7 +114,10 @@ export function AgentsTab({
     },
     { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
-  const activeAgentIds = agents.filter((agent) => ["running", "compacting", "waiting"].includes(statusByAgentId.get(agent.id) ?? "idle")).map((agent) => agent.id);
+  const activeRunTargets = agents.flatMap((agent) => {
+    const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
+    return runId ? [{ agentId: agent.id, runId }] : [];
+  });
   const toggleSelection = (agentId: string) => setSelectedAgentIds((current) => {
     const next = new Set(current);
     if (next.has(agentId)) next.delete(agentId);
@@ -126,9 +131,12 @@ export function AgentsTab({
   };
   const stopAll = async () => {
     setStoppingAll(true); setBulkError(undefined);
-    const results = await Promise.allSettled(activeAgentIds.map((id) => api.cancelRun(id, `bulk-stop:${id}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`)));
+    const results = await Promise.allSettled(activeRunTargets.map(({ agentId, runId }) => api.cancelRun(agentId, {
+      targetRunId: runId,
+      idempotencyKey: `bulk-stop:${agentId}:${runId}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`,
+    })));
     const failed = results.filter((item) => item.status === "rejected").length;
-    if (failed) setBulkError(`${activeAgentIds.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);
+    if (failed) setBulkError(`${activeRunTargets.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);
     await queryClient.invalidateQueries({ queryKey: ["agents"] });
     setStoppingAll(false);
   };
@@ -144,7 +152,7 @@ export function AgentsTab({
         <Typography variant="h6" sx={{ flex: 1 }}>
           Agents
         </Typography>
-        <Button variant="outlined" size="small" disabled={activeAgentIds.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop all</Button>
+        <Button variant="outlined" size="small" disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop all</Button>
         {selectionMode ? <>
           <Button color="inherit" size="small" onClick={() => {
             const visibleIds = filtered.map(({ agent }) => agent.id);
