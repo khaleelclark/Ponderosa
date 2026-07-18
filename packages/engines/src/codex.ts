@@ -176,6 +176,16 @@ export class CodexAdapter implements Adapter {
     );
   }
 
+  defaultModel(): string | undefined {
+    return this.listModels().find((option) => option.id)?.id;
+  }
+
+  defaultEffort(model?: string): string | undefined {
+    const selectedModel = this.listModels().find((option) => option.id === (model ?? this.defaultModel()));
+    const efforts = this.listEfforts(selectedModel?.id);
+    return selectedModel?.defaultEffort ?? efforts.find((option) => option.id === "medium")?.id ?? efforts[0]?.id;
+  }
+
   apiPriceProfile(model?: string): ApiPriceProfile | undefined {
     return codexApiPriceProfile(model);
   }

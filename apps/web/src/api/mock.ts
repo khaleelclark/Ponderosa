@@ -68,7 +68,7 @@ const triggerOccurrences = new Map<string, TriggerOccurrenceDto[]>();
 const drafts = new Map<string, import("@ponderosa/core").ConversationDraftDto>();
 const draftAttachments = new Map<string, { dto: import("@ponderosa/core").DraftAttachmentDto; file: File }>();
 const uploadedAttachments = new Map<string, import("@ponderosa/core").ImageAttachmentDto>();
-let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", providerAvailability: {}, globalInstructions: "", profile: { displayName: "Patrick", handle: "patrick", avatarId: "default-user" }, updatedAt: now };
+let workspacePreferences: import("@ponderosa/core").WorkspacePreferencesDto = { projectSort: "last_used", projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter", providerAvailability: {}, engineDefaults: {}, globalInstructions: "", profile: { displayName: "Patrick", handle: "patrick", avatarId: "default-user" }, updatedAt: now };
 
 const agents: AgentDto[] = [
   {
@@ -234,8 +234,10 @@ const engines: EngineDto[] = [
     available: true,
     authDetail: "Subscription CLI session detected",
     models: [
-      { id: "", label: "Codex default" },
+      { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", defaultEffort: "high" },
     ],
+    defaultModel: "gpt-5.6-sol",
+    defaultEffort: "high",
     efforts: [
       { id: "medium", label: "Medium" },
       { id: "high", label: "High" },
@@ -250,11 +252,12 @@ const engines: EngineDto[] = [
     available: true,
     authDetail: "Subscription CLI session detected",
     models: [
-      { id: "", label: "Claude default" },
       { id: "opus", label: "Opus" },
       { id: "sonnet", label: "Sonnet" },
       { id: "haiku", label: "Haiku" },
     ],
+    defaultModel: "sonnet",
+    defaultEffort: "high",
     efforts: [
       { id: "low", label: "Low" },
       { id: "medium", label: "Medium" },
@@ -332,6 +335,8 @@ export const mockApi: PonderosaApi = {
       createdAt: new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       defaultEngine: request.defaultEngine,
+      defaultModel: request.defaultModel,
+      defaultEffort: request.defaultEffort,
     };
     projects.push(project);
     return delay(project);
@@ -354,6 +359,9 @@ export const mockApi: PonderosaApi = {
     if (!project) return Promise.reject(new Error("Project not found"));
     if (patch.label !== undefined) project.label = patch.label;
     if (patch.instructions !== undefined) project.instructions = patch.instructions || undefined;
+    if (patch.defaultEngine !== undefined) project.defaultEngine = patch.defaultEngine;
+    if (patch.defaultModel !== undefined) project.defaultModel = patch.defaultModel || undefined;
+    if (patch.defaultEffort !== undefined) project.defaultEffort = patch.defaultEffort || undefined;
     return delay(project);
   },
   deleteProject(projectId) {
@@ -589,6 +597,10 @@ export const mockApi: PonderosaApi = {
   },
   listQueuedConversationMessages() { return delay([]); },
   cancelQueuedConversationMessage() { return delay({ cancelled: true, replayed: false, status: "cancelled" }); },
+  listQueuedAgentMessages() { return delay([]); },
+  cancelQueuedAgentMessage() { return delay({ cancelled: true, replayed: false, status: "cancelled" }); },
+  editQueuedAgentMessage() { return delay({ edited: true, replayed: false, status: "edited" }); },
+  steerQueuedAgentMessage() { return delay({ steered: true, replayed: false, status: "steered" }); },
   letCurrentRunFinish() { return delay({ accepted: true, replayed: false, state: "waiting_for_run" }); },
   correctConversationMessage(conversationId, messageId, request) {
     const correctionMessageId = request.idempotencyKey;

@@ -27,6 +27,10 @@ import type {
   QueuedConversationMessageDto,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
+  EditQueuedMessageRequest,
+  EditQueuedMessageResponse,
+  SteerQueuedMessageRequest,
+  SteerQueuedMessageResponse,
   LetCurrentRunFinishRequest,
   LetCurrentRunFinishResponse,
   CorrectConversationMessageRequest,
@@ -171,6 +175,10 @@ export interface PonderosaApi {
   sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse>;
   listQueuedConversationMessages(conversationId: string): Promise<QueuedConversationMessageDto[]>;
   cancelQueuedConversationMessage(conversationId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse>;
+  listQueuedAgentMessages(agentId: string): Promise<QueuedConversationMessageDto[]>;
+  cancelQueuedAgentMessage(agentId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse>;
+  editQueuedAgentMessage(agentId: string, deliveryId: string, request: EditQueuedMessageRequest): Promise<EditQueuedMessageResponse>;
+  steerQueuedAgentMessage(agentId: string, deliveryId: string, request: SteerQueuedMessageRequest): Promise<SteerQueuedMessageResponse>;
   letCurrentRunFinish(injectionId: string, request: LetCurrentRunFinishRequest): Promise<LetCurrentRunFinishResponse>;
   correctConversationMessage(conversationId: string, messageId: string, request: CorrectConversationMessageRequest): Promise<CorrectConversationMessageResponse>;
   sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse>;

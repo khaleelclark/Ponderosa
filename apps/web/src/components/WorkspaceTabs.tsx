@@ -3,6 +3,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
@@ -18,6 +19,7 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   if (kind === "conversation") return <ChatBubbleOutlineIcon fontSize="small" />;
   if (kind === "agent") return <SmartToyOutlinedIcon fontSize="small" />;
   if (kind === "agents") return <GroupsOutlinedIcon fontSize="small" />;
+  if (kind === "review") return <DifferenceOutlinedIcon fontSize="small" />;
   return <FolderOutlinedIcon fontSize="small" />;
 }
 
@@ -67,11 +69,14 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
         const resources = resourcesByProject.get(tab.route.projectId);
         const conversationId = tab.route.kind === "conversation" ? tab.route.conversationId : undefined;
         const agentId = tab.route.kind === "agent" ? tab.route.agentId : undefined;
+        const reviewAgentId = tab.route.kind === "review" ? tab.route.agentId : undefined;
         const label = tab.route.kind === "conversation"
           ? resources?.conversations.find((conversation) => conversation.id === conversationId)?.title ?? "Project Chat"
           : tab.route.kind === "agent"
             ? resources?.agents.find((agent) => agent.id === agentId)?.title ?? "Agent"
-            : tab.route.kind === "agents" ? "Agents" : "Project files";
+            : tab.route.kind === "review"
+              ? tab.route.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === reviewAgentId)?.title ?? "Agent"} review`
+              : tab.route.kind === "agents" ? "Agents" : "Project files";
         const selected = tab.key === activeKey;
         const projectLabel = project?.label ?? "Unavailable project";
         return <Box

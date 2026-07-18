@@ -173,6 +173,7 @@ export function useWorkspaceStream(): void {
       } else if (event.type === "draft_changed" || event.type === "draft_conflict") void queryClient.invalidateQueries({ queryKey: ["conversation-draft", event.conversationId] });
       else if (event.type === "queued_message_changed") {
         void queryClient.invalidateQueries({ queryKey: ["queued-messages", event.conversationId] });
+        void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages"] });
         void queryClient.invalidateQueries({ queryKey: ["conversation", event.conversationId] });
       }
       else if (event.type === "message_delivery_changed") {

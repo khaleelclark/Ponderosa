@@ -34,7 +34,7 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -43,11 +43,11 @@ import { compactDefined } from "../collections";
 import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
-import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, QueuedMessageTray, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
@@ -101,6 +101,7 @@ export function ConversationMessage({
   agentIdForHandle,
   compactViewport = false,
   onOpenAgent,
+  onOpenWorkLog,
   onOpenReview,
   onOpenFileActivity,
   onReply,
@@ -117,6 +118,7 @@ export function ConversationMessage({
   agentIdForHandle(handle: string): string | undefined;
   compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
+  onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onReply(message: ConversationMessageDto): void;
@@ -189,6 +191,7 @@ export function ConversationMessage({
             return binding ? { agentId: binding.agentId, label: agentMentionHandle(agentTitle(binding.agentId)) } : undefined;
           }}
           onOpenAgent={onOpenAgent}
+          projectId={projectId}
           previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined}
         />
         {message.editedAt ? <Chip size="small" variant="outlined" label="Edited" sx={{ mt: 0.75 }} /> : null}
@@ -225,6 +228,7 @@ export function ConversationMessage({
               receipts={message.deliveryReceipts}
               recipientName={(agentId) => agentTitle(agentId)}
               onOpenAgent={onOpenAgent}
+              onOpenWorkLog={onOpenWorkLog}
             /> : undefined}
             actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
@@ -258,6 +262,7 @@ export function ConversationView({
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
+  onOpenWorkLog,
   onOpenRosterAgent,
   initialAgentsOpen = false,
   onInitialAgentsOpenConsumed,
@@ -274,6 +279,7 @@ export function ConversationView({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
+  onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
   initialAgentsOpen?: boolean;
   onInitialAgentsOpenConsumed?(): void;
@@ -291,6 +297,7 @@ export function ConversationView({
   });
   const decisionsQuery = useQuery({ queryKey: ["decisions", "conversation", conversationId], queryFn: () => api.listDecisions({ conversationId, status: "pending" }) });
   const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
+  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
   const respondDecision = useMutation({
     mutationFn: ({ id, optionId, text }: { id: string; optionId?: string; text?: string }) => api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
     onSuccess: () => {
@@ -419,13 +426,20 @@ export function ConversationView({
     if (!conversation || initializedFor.current === conversation.id) {
       return;
     }
-    const resolvedEngine = resolveConversationEngine(conversation.defaultEngine, engines);
+    if (!preferencesQuery.data || !projectsQuery.data) return;
+    const project = projectsQuery.data.find((candidate) => candidate.id === conversation.projectId);
+    const resolvedEngine = resolveConversationEngine(conversation.defaultEngine ?? project?.defaultEngine, engines);
     if (!resolvedEngine) return;
+    const selectedEngine = engines.find((candidate) => candidate.id === resolvedEngine);
+    const resolved = resolveRuntimeSelection(selectedEngine, preferencesQuery.data, project, {
+      model: conversation.defaultModel,
+      effort: conversation.defaultEffort,
+    });
     initializedFor.current = conversation.id;
     setEngine(resolvedEngine);
-    setModel(conversation.defaultModel ?? "");
-    setEffort(conversation.defaultEffort ?? "");
-  }, [conversation, engines]);
+    setModel(resolved.model);
+    setEffort(resolved.effort);
+  }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
@@ -589,6 +603,19 @@ export function ConversationView({
       void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] });
     },
   });
+  const editQueued = useMutation({
+    mutationFn: ({ deliveryId, targetAgentId, text }: { deliveryId: string; targetAgentId: string; text: string }) => api.editQueuedAgentMessage(targetAgentId, deliveryId, {
+      text,
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] }),
+  });
+  const steerQueued = useMutation({
+    mutationFn: ({ deliveryId, targetAgentId }: { deliveryId: string; targetAgentId: string }) => api.steerQueuedAgentMessage(targetAgentId, deliveryId, {
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] }),
+  });
   const correctMessage = useMutation({
     mutationFn: (message: ConversationMessageDto) => api.correctConversationMessage(conversationId, message.id, {
       text: correctionText.trim(),
@@ -683,6 +710,7 @@ export function ConversationView({
   }
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
+  const project = projectsQuery.data?.find((candidate: ProjectDto) => candidate.id === conversation.projectId);
   const composerRuntime = conversationComposerRuntime(activeEngine, engineCapabilities);
   const commands = composerRuntime.commands;
   const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
@@ -803,15 +831,17 @@ export function ConversationView({
     effort={effort}
     efforts={efforts}
     onEngineChange={(next) => {
-      setEngine(next); setModel(""); setEffort("");
-      persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: null, defaultEffort: null });
+      const nextEngine = engines.find((candidate) => candidate.id === next);
+      const resolved = resolveRuntimeSelection(nextEngine, preferencesQuery.data, project);
+      setEngine(next); setModel(resolved.model); setEffort(resolved.effort);
+      persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: resolved.model || null, defaultEffort: resolved.effort || null });
     }}
     onModelChange={(next) => {
-      const effortRemainsValid = effortSelectionIsCompatible(activeEngine, next, effort);
-      setModel(next); if (!effortRemainsValid) setEffort("");
-      persistDefaults.mutate({ defaultModel: next || null, ...(!effortRemainsValid ? { defaultEffort: null } : {}) });
+      const resolved = resolveRuntimeSelection(activeEngine, preferencesQuery.data, project, { model: next });
+      setModel(next); setEffort(resolved.effort);
+      persistDefaults.mutate({ defaultModel: next, defaultEffort: resolved.effort || null });
     }}
-    onEffortChange={(next) => { setEffort(next); persistDefaults.mutate({ defaultEffort: next || null }); }}
+    onEffortChange={(next) => { setEffort(next); persistDefaults.mutate({ defaultEffort: next }); }}
   /> : null;
 
   return (
@@ -903,26 +933,6 @@ export function ConversationView({
             </Alert>
           ) : null}
           {activeView === "main" ? <MasterRespondingIndicator agents={agents} healthByAgentId={healthByAgentId} /> : null}
-          {activeView === "main" && (queuedMessagesQuery.data?.length ?? 0) > 0 ? (
-            <Stack spacing={0.75} sx={{ mb: 1.5 }} aria-label="Queued project messages">
-              {queuedMessagesQuery.data!.map((queued) => (
-                <Box key={queued.deliveryId} sx={{ display: "flex", alignItems: "center", gap: 1, p: 1, border: 1, borderColor: "warning.light", bgcolor: "warning.50", borderRadius: 1.5 }}>
-                  <Chip size="small" color="warning" label={`Queued · ${queued.position}`} />
-                  <Typography variant="body2" noWrap sx={{ minWidth: 0, flex: 1 }}>
-                    {agentTitle(queued.targetAgentId)}: {queued.text}
-                  </Typography>
-                  <Tooltip title="Cancel queued message">
-                    <span><IconButton
-                      size="small"
-                      aria-label={`Cancel queued message for ${agentTitle(queued.targetAgentId)}`}
-                      disabled={cancelQueued.isPending}
-                      onClick={() => cancelQueued.mutate(queued.deliveryId)}
-                    ><DeleteOutlineIcon fontSize="small" /></IconButton></span>
-                  </Tooltip>
-                </Box>
-              ))}
-            </Stack>
-          ) : null}
           {(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"} sx={{ mb: 1.5 }}>
             <Typography variant="subtitle2">{agentTitle(decision.agentId)} needs your decision</Typography>
             <Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography>
@@ -965,6 +975,7 @@ export function ConversationView({
                 agentIdForHandle={agentIdForHandle}
                 compactViewport={compactViewport}
                 onOpenAgent={onOpenAgent}
+                onOpenWorkLog={onOpenWorkLog}
                 onOpenReview={onOpenReview}
                 onOpenFileActivity={onOpenFileActivity}
                 onReply={(selected) => {
@@ -1104,6 +1115,14 @@ export function ConversationView({
             Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? sendReaction.error) as Error)}
           </Alert>
         ) : null}
+        {activeView === "main" ? <QueuedMessageTray
+          messages={queuedMessagesQuery.data ?? []}
+          agentNameForId={agentTitle}
+          busy={cancelQueued.isPending || editQueued.isPending || steerQueued.isPending}
+          onSteer={(message) => steerQueued.mutateAsync({ deliveryId: message.deliveryId, targetAgentId: message.targetAgentId })}
+          onEdit={(message, text) => editQueued.mutateAsync({ deliveryId: message.deliveryId, targetAgentId: message.targetAgentId, text })}
+          onDelete={(message) => cancelQueued.mutateAsync(message.deliveryId)}
+        /> : null}
         {activeView === "main" ? <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
           conversationDraftId={conversationId}
@@ -1120,7 +1139,7 @@ export function ConversationView({
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
           placeholder={engineReady
-              ? `Describe a request — starts an agent on ${activeEngine?.displayName ?? engine}`
+              ? "Describe a request — starts a new agent"
               : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
           onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}

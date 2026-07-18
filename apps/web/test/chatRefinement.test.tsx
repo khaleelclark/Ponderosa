@@ -98,7 +98,7 @@ describe("chat interaction refinement", () => {
     const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 
     expect(panes).toContain('whiteSpace: "normal"');
-    expect(panes).toContain('"& p": { my: 0.35, whiteSpace: "pre-wrap" }');
+    expect(panes).toMatch(/"& p": \{ my: 0\.35,[^}]*whiteSpace: "pre-wrap"/);
     expect(panes).toContain('"& ul, & ol": { my: 0.45, pl: 2.75 }');
     expect(panes).toContain('"& li + li": { mt: 0.15 }');
   });

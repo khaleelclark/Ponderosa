@@ -21,7 +21,7 @@ describe("horizontal overflow containment", () => {
   });
 
   it("retains local horizontal scrolling for wide code, tables, and task output", () => {
-    expect(panes).toContain('"& pre": { my: 0.65, p: 1.1, overflowX: "auto"');
+    expect(panes).toMatch(/"& pre": \{ my: 0\.65, p: 1\.1,[^}]*overflowX: "auto"/);
     expect(panes).toContain('"& table": { display: "block", maxWidth: "100%", overflowX: "auto"');
     expect(panes).toContain('data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0');
   });
@@ -29,7 +29,7 @@ describe("horizontal overflow containment", () => {
   it("keeps hidden announcements, mobile controls, and long project lists inside their surfaces", () => {
     expect(copyMessageButton).toContain('width: "1px", height: "1px"');
     expect(panes).toContain('maxWidth: "100%", overflowX: "auto"');
-    expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH');
+    expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : `clamp(${SIDEBAR_MIN_WIDTH}px, 27vw, ${SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH}px)`');
     expect(workspaceSidebar).toContain('minHeight: 0, overflowY: "auto"');
   });
 

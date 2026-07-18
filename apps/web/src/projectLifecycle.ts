@@ -21,10 +21,14 @@ export function createProjectRequest(input: {
   existingPath: string;
   newFolderName: string;
   defaultEngine: CreateProjectRequest["defaultEngine"];
+  defaultModel?: string;
+  defaultEffort?: string;
 }): CreateProjectRequest {
   return {
     label: input.label.trim(),
     defaultEngine: input.defaultEngine,
+    ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
+    ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
     ...(input.mode === "existing"
       ? { hostPath: input.existingPath.trim() }
       : input.mode === "create"

@@ -156,6 +156,8 @@ interface ProjectJson {
   createdAt: string;
   lastUsedAt?: string;
   defaultEngine: string;
+  defaultModel?: string;
+  defaultEffort?: string;
   lastConversationId?: string;
   instructions?: string;
 }
@@ -1195,10 +1197,14 @@ export class AgentStore {
       createdAt: now,
       lastUsedAt: now,
       defaultEngine,
+      ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
+      ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
       lastConversationId: conversationId,
     };
     const conversation: ConversationJson = {
       id: conversationId, projectId: id, title: "New Chat", defaultEngine,
+      ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
+      ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
       createdAt: now, updatedAt: now, archived: false,
     };
     const stagingId = `.${id}.creating`;
@@ -1210,8 +1216,8 @@ export class AgentStore {
       mkdirSync(agentsDir(this.dataDir, stagingId), { recursive: true });
       renameSync(stagingRoot, projectDir(this.dataDir, id));
       this.db.transaction((tx) => {
-        tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: null, defaultEffort: null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
       });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
@@ -1219,7 +1225,7 @@ export class AgentStore {
       throw error;
     }
     for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
-    return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, lastConversationId: conversationId };
+    return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -1228,11 +1234,21 @@ export class AgentStore {
     const label = (input.label ?? current.label).trim();
     if (!label) throw new Error("project label is required");
     const instructions = (input.instructions ?? current.instructions ?? "").slice(0, 100_000);
+    const defaultEngine = input.defaultEngine ?? current.defaultEngine;
+    const defaultModel = input.defaultModel === null ? undefined : input.defaultModel ?? current.defaultModel;
+    const defaultEffort = input.defaultEffort === null ? undefined : input.defaultEffort ?? current.defaultEffort;
     const { instructions: _previousInstructions, ...projectWithoutInstructions } = current;
-    const record: ProjectJson = { ...projectWithoutInstructions, label, ...(instructions ? { instructions } : {}) };
+    const record: ProjectJson = {
+      ...projectWithoutInstructions,
+      label,
+      defaultEngine,
+      ...(defaultModel ? { defaultModel } : { defaultModel: undefined }),
+      ...(defaultEffort ? { defaultEffort } : { defaultEffort: undefined }),
+      ...(instructions ? { instructions } : {}),
+    };
     writeJson(projectJsonPath(this.dataDir, id), record);
-    this.db.update(projects).set({ label }).where(eq(projects.id, id)).run();
-    return { ...projectWithoutInstructions, label, ...(instructions ? { instructions } : {}) };
+    this.db.update(projects).set({ label, defaultEngine, defaultModel: defaultModel ?? null, defaultEffort: defaultEffort ?? null }).where(eq(projects.id, id)).run();
+    return { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(instructions ? { instructions } : {}) };
   }
 
   /** Permanently remove the canonical project tree and every rebuildable
@@ -1325,6 +1341,8 @@ export class AgentStore {
         createdAt: r.createdAt,
         lastUsedAt: r.lastUsedAt ?? undefined,
         defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
+        defaultModel: r.defaultModel ?? undefined,
+        defaultEffort: r.defaultEffort ?? undefined,
         lastConversationId: r.lastConversationId ?? undefined,
         ...this.projectInstructions(r.id),
       }));
@@ -1340,6 +1358,8 @@ export class AgentStore {
       createdAt: r.createdAt,
       lastUsedAt: r.lastUsedAt ?? undefined,
       defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
+      defaultModel: r.defaultModel ?? undefined,
+      defaultEffort: r.defaultEffort ?? undefined,
       lastConversationId: r.lastConversationId ?? undefined,
       ...this.projectInstructions(r.id),
     };
@@ -3183,6 +3203,8 @@ export class AgentStore {
           createdAt: p.createdAt,
           lastUsedAt: p.lastUsedAt ?? null,
           defaultEngine: p.defaultEngine ?? "codex",
+          defaultModel: p.defaultModel ?? null,
+          defaultEffort: p.defaultEffort ?? null,
           lastConversationId: p.lastConversationId ?? null,
         })
         .run();

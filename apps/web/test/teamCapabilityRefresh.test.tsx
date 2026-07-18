@@ -171,6 +171,8 @@ describe("Project composer runtime capability refresh", () => {
       defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
     });
     client.setQueryData(["engine-capabilities", projectId], discovery(capability("skill:initial", "skill", "Initial skill")));
+    client.setQueryData(["workspace-preferences"], { engineDefaults: {} });
+    client.setQueryData(["projects"], [{ id: projectId, defaultEngine: runtimeId }]);
     client.setQueryData<ConversationDetailDto>(["conversation", conversationId], {
       conversation,
       messages: [],

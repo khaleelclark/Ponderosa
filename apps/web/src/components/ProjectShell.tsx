@@ -17,6 +17,7 @@ import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, typ
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { Sidebar } from "./Sidebar";
+import { WorkspaceReviewPane } from "./panes";
 
 interface AgentDialogState {
   open: boolean;
@@ -156,14 +157,22 @@ export function ProjectShell({
   };
 
   const openAgentReview = (agentId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "review");
+    navigate({ kind: "review", projectId, agentId });
+  };
+
+  const openAgentWorkLog = (agentId: string) => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), "runOutput");
     navigate({ kind: "agent", projectId, agentId });
   };
 
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), file.artifactId ? "artifacts" : "changed_files");
-    if (file.artifactId) writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);
-    navigate({ kind: "agent", projectId, agentId });
+    if (file.artifactId) {
+      writeChatState(chatStateKey("view", `agent.${agentId}`), "artifacts");
+      writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);
+      navigate({ kind: "agent", projectId, agentId });
+    } else {
+      navigate({ kind: "review", projectId, agentId, path: file.path });
+    }
   };
 
   const openProjectArtifact = (agentId: string, artifactId: string) => {
@@ -194,7 +203,7 @@ export function ProjectShell({
   useEffect(() => {
     if (loading) return;
     const missingMaster = route.kind === "conversation" && !conversations.some((master) => master.id === route.conversationId);
-    const missingAgent = route.kind === "agent" && !agents.some((agent) => agent.id === route.agentId);
+    const missingAgent = (route.kind === "agent" || route.kind === "review") && !agents.some((agent) => agent.id === route.agentId);
     if (missingMaster || missingAgent) {
       const fallback = conversations[0];
       navigate(fallback
@@ -245,6 +254,7 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => openAgentFromConversation(agentId, false)}
+        onOpenWorkLog={openAgentWorkLog}
         onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
         initialAgentsOpen={reopenRoster}
         onInitialAgentsOpenConsumed={() => setAgentReturnContext(undefined)}
@@ -301,6 +311,10 @@ export function ProjectShell({
           : setAgentDialog({ open: true, defaultName: suggestedName() })}
       />
     );
+  } else if (route.kind === "review") {
+    const detail = detailByAgentId.get(route.agentId);
+    const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
+    main = <WorkspaceReviewPane projectId={projectId} files={detail?.changedFiles ?? []} running={running} initialPath={route.path} />;
   } else if (route.kind === "project") {
     main = <ProjectArtifactsView projectId={projectId} agents={agents} detailByAgentId={detailByAgentId} onOpenArtifact={openProjectArtifact} />;
   } else {

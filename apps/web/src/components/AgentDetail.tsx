@@ -54,8 +54,8 @@ import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { projectedMessageIdForFocus } from "../messageFocus";
 import { compactViewportQuery } from "../responsive";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible } from "../conversationEngine";
-import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection } from "../conversationEngine";
+import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, QueuedMessageTray, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
 import { TokenUsageButton } from "./TokenUsageButton";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
@@ -204,6 +204,10 @@ export function AgentDetail({
   const agentQuery = useAgent(agentId);
   const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
+  const queuedMessagesQuery = useQuery({
+    queryKey: ["queued-agent-messages", agentId],
+    queryFn: () => api.listQueuedAgentMessages(agentId),
+  });
   const [tab, setTab] = useState<AgentTab>(() => {
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     return AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat";
@@ -227,6 +231,25 @@ export function AgentDetail({
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
+  const cancelQueuedMessage = useMutation({
+    mutationFn: (deliveryId: string) => api.cancelQueuedAgentMessage(agentId, deliveryId, {
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] }),
+  });
+  const editQueuedMessage = useMutation({
+    mutationFn: ({ deliveryId, text }: { deliveryId: string; text: string }) => api.editQueuedAgentMessage(agentId, deliveryId, {
+      text,
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] }),
+  });
+  const steerQueuedMessage = useMutation({
+    mutationFn: (deliveryId: string) => api.steerQueuedAgentMessage(agentId, deliveryId, {
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] }),
+  });
 
   useEffect(() => {
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -255,6 +278,7 @@ export function AgentDetail({
   const detail = agentQuery.data;
   const decisionsQuery = useQuery({ queryKey: ["decisions", "agent", agentId], queryFn: () => api.listDecisions({ agentId, status: "pending" }) });
   const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
+  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
   const respondDecision = useMutation({
     mutationFn: ({ id, optionId, text }: { id: string; optionId?: string; text?: string }) => api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
     onSuccess: () => {
@@ -264,6 +288,8 @@ export function AgentDetail({
   });
   const engine =
     engines.find((candidate) => candidate.id === detail?.agent.activeEngine) ?? engines[0];
+  const project = projectsQuery.data?.find((candidate) => candidate.id === detail?.agent.projectId);
+  const inheritedRuntime = resolveRuntimeSelection(engine, preferencesQuery.data, project);
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = [
     { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
@@ -274,10 +300,10 @@ export function AgentDetail({
 
   const latestRun = detail?.runs.at(-1);
   const persistedModel = detail
-    ? latestRun ? latestRun.model ?? "" : detail.agent.model ?? ""
+    ? latestRun ? latestRun.model ?? inheritedRuntime.model : detail.agent.model ?? inheritedRuntime.model
     : "";
   const persistedEffort = detail
-    ? latestRun ? latestRun.effort ?? "" : detail.agent.effort ?? ""
+    ? latestRun ? latestRun.effort ?? inheritedRuntime.effort : detail.agent.effort ?? inheritedRuntime.effort
     : "";
 
   useEffect(() => {
@@ -506,7 +532,8 @@ export function AgentDetail({
     efforts={efforts}
     onModelChange={(nextModel) => {
       setModel(nextModel);
-      if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
+      const resolved = resolveRuntimeSelection(engine, preferencesQuery.data, project, { model: nextModel });
+      setEffort(resolved.effort);
     }}
     onEffortChange={setEffort}
   />;
@@ -529,6 +556,7 @@ export function AgentDetail({
               onSuccess: (response) => {
                 setReplyTo(undefined);
                 setQueuedMessageNotice(directAgentDeliveryNotice(response, activeRunDelivery));
+                void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] });
                 void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.agent.projectId] });
               },
             },
@@ -543,7 +571,7 @@ export function AgentDetail({
     };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ minHeight: 0, overflow: "auto" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
@@ -815,6 +843,13 @@ export function AgentDetail({
             {String((sendMessage.error ?? cancelRun.error) as Error)}
           </Alert>
         ) : null}
+        <QueuedMessageTray
+          messages={queuedMessagesQuery.data ?? []}
+          busy={cancelQueuedMessage.isPending || editQueuedMessage.isPending || steerQueuedMessage.isPending}
+          onSteer={(message) => steerQueuedMessage.mutateAsync(message.deliveryId)}
+          onEdit={(message, text) => editQueuedMessage.mutateAsync({ deliveryId: message.deliveryId, text })}
+          onDelete={(message) => cancelQueuedMessage.mutateAsync(message.deliveryId)}
+        />
         <Composer
           commands={commands}
           capabilities={engineIsAvailable(engine) ? engineCapability?.composerCapabilities : []}

@@ -18,6 +18,9 @@ export interface ProjectDto {
   lastUsedAt?: string;
   /** Server-authoritative default for every newly created Project chat. */
   defaultEngine: EngineId;
+  /** Optional Project override. Missing values inherit the workspace engine default. */
+  defaultModel?: string;
+  defaultEffort?: string;
   /** Most recently opened non-deleted Project chat. */
   lastConversationId?: string;
   /** Project-wide operator rules injected after global rules and before Agent instructions. */
@@ -46,6 +49,8 @@ export type UpdateAgentPresetRequest = Partial<Omit<CreateAgentPresetRequest, "e
 export interface CreateProjectRequest {
   label: string;
   defaultEngine: EngineId;
+  defaultModel?: string;
+  defaultEffort?: string;
   /** Existing absolute host folder. Omit to use a new managed empty workspace. */
   hostPath?: string;
   /** Create a named empty folder below Ponderosa's managed workspace root. */
@@ -77,6 +82,8 @@ export interface WorkspacePreferencesDto {
   fontFamily: "inter" | "system" | "sans";
   /** Operator-controlled global runtime switches. Missing engines default to enabled. */
   providerAvailability: Record<string, boolean>;
+  /** Concrete model/effort defaults chosen independently for each engine. */
+  engineDefaults?: Record<string, { model: string; effort?: string }>;
   /** Ponderosa-managed rules supplied to every Agent. */
   globalInstructions: string;
   profile: OperatorProfileDto;
@@ -205,7 +212,7 @@ export type WorkspaceEvent =
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
   | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" | "cleared" }
-  | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "cancelled" | "started" }
+  | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "started" }
   | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string }
   | { type: "coordination_changed"; projectId: string; agentId: string }
   | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
@@ -252,6 +259,10 @@ export interface WorkspaceStreamStatusDto {
 export interface UpdateProjectRequest {
   label?: string;
   instructions?: string;
+  defaultEngine?: EngineId;
+  /** Null clears the Project override and resumes inheriting the workspace default. */
+  defaultModel?: string | null;
+  defaultEffort?: string | null;
 }
 
 export interface ProjectFolderOptionDto {
@@ -709,6 +720,29 @@ export interface CancelQueuedMessageResponse {
   cancelled: boolean;
   replayed: boolean;
   status: "cancelled" | "delivery_started";
+}
+
+export interface EditQueuedMessageRequest {
+  text: string;
+  /** Stable across retries so repeated saves cannot apply conflicting edits. */
+  idempotencyKey: string;
+}
+
+export interface EditQueuedMessageResponse {
+  edited: boolean;
+  replayed: boolean;
+  status: "edited" | "delivery_started";
+}
+
+export interface SteerQueuedMessageRequest {
+  /** Stable across retries so repeated clicks cannot create extra steering work. */
+  idempotencyKey: string;
+}
+
+export interface SteerQueuedMessageResponse {
+  steered: boolean;
+  replayed: boolean;
+  status: "steered" | "delivery_started";
 }
 
 export interface CancelAgentRunRequest {
@@ -1606,6 +1640,9 @@ export interface EngineDto {
   displayName: string;
   models: ModelOption[];
   efforts: EffortOption[];
+  /** Concrete adapter-owned fallback; never the provider's opaque "default" alias. */
+  defaultModel?: string;
+  defaultEffort?: string;
   /** False when provider model metadata is temporarily unavailable. */
   modelCatalogKnown?: boolean;
   /** The adapter is configured on this Ponderosa host. */
