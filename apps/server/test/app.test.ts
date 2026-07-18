@@ -11,7 +11,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
-import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -918,6 +918,81 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("generated artifact endpoints", () => {
+  it("authorizes artifact references submitted through history and retained by the accepted provider session", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Historical artifact roots", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    const fullText = `HISTORICAL-START\n${"h".repeat(100_000)}\nHISTORICAL-END`;
+    const broadcast = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/messages`,
+      payload: { text: fullText, idempotencyKey: "historical-large-message" },
+    });
+    expect(broadcast.statusCode, broadcast.body).toBe(200);
+    const communication = store.getCommunicationEvent(
+      project.id,
+      broadcast.json<{ communicationEventId: string }>().communicationEventId,
+    )!;
+    const artifactId = communication.document?.artifactId;
+    expect(artifactId).toMatch(/^text-/);
+    if (!artifactId) throw new Error("expected historical artifact id");
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Read the historical document", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const firstRun = store.getRuns(agent.id)[0]!;
+    const firstInput = store.getProviderInput(firstRun.id, true)!;
+    expect(firstInput.exactPrompt).toContain(`ponderosa://artifact/${artifactId}`);
+    expect(firstInput.sourceManifest.artifactIds).toContain(artifactId);
+    expect(firstInput.sourceManifest.sources).toContainEqual({
+      kind: "artifact", ref: artifactId, delivery: "submitted",
+    });
+    const firstRetrieval = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_result",
+      arguments: { refs: [`ponderosa://artifact/${artifactId}`], maxBytes: 262_144 },
+    });
+    expect(firstRetrieval.success, firstRetrieval.text).toBe(true);
+    expect(JSON.parse(firstRetrieval.text)).toMatchObject({
+      items: [{ complete: true, content: fullText }],
+    });
+    persistent.completeTurn(0);
+    await vi.waitFor(() => expect(store.resumeSessionState(agent.id)).toMatchObject({
+      sessionId: "persistent-session",
+      toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+      artifactIds: expect.arrayContaining([artifactId]),
+    }));
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Retrieve it again from retained context", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(2));
+    expect(persistent.openedOptions.at(-1)?.resumeSessionId).toBe("persistent-session");
+    const secondRun = store.getRuns(agent.id)[1]!;
+    const secondInput = store.getProviderInput(secondRun.id, true)!;
+    expect(secondInput.sourceManifest.artifactIds).toContain(artifactId);
+    expect(secondInput.sourceManifest.sources).toContainEqual({
+      kind: "artifact", ref: artifactId, delivery: "retained_session",
+    });
+    const retainedRetrieval = await persistent.openedOptions.at(-1)!.handleDynamicToolCall!({
+      name: "ponderosa_result",
+      arguments: { refs: [`ponderosa://artifact/${artifactId}`], maxBytes: 262_144 },
+    });
+    expect(retainedRetrieval.success, retainedRetrieval.text).toBe(true);
+    expect(JSON.parse(retainedRetrieval.text)).toMatchObject({
+      items: [{ complete: true, content: fullText }],
+    });
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
   it("backs text above 10,000 Unicode code points with one durable user artifact", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -3566,6 +3641,10 @@ describe("server chunk F", () => {
     expect(adapter.continues[1]?.prompt).toContain("must redeliver");
 
     store.appendEvent(agent.id, { type: "session", sessionId: "sess-2" });
+    store.appendEvent(agent.id, {
+      type: "session_snapshot", sessionId: "sess-2",
+      toolContractHash: PROVIDER_TOOL_CONTRACT_HASH, artifactIds: [],
+    });
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "new epoch", sourceChannel: "main" } });
     await waitForRun(agent.id, 4);
     expect(adapter.continues[2]?.resumeSessionId).toBe("sess-2");
@@ -3644,6 +3723,46 @@ describe("server chunk F", () => {
       kind: "policy", delivery: "retained_session",
     }));
     expect(input.sourceManifest.retainedSessionSourceCount).toBe(1);
+    await app.close();
+  });
+
+  it("reseeds persisted provider sessions with missing or mismatched tool-contract hashes", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Tool contract rollover", hostPath: repoDir });
+    const legacy = store.createAgent(project.id, { title: "Legacy", engine: "codex" });
+    const mismatched = store.createAgent(project.id, { title: "Mismatched", engine: "codex" });
+    store.appendEvent(legacy.id, { type: "session", sessionId: "v341-legacy-session" });
+    store.appendEvent(mismatched.id, { type: "session", sessionId: "v342-session" });
+    store.appendEvent(mismatched.id, {
+      type: "session_snapshot",
+      sessionId: "v342-session",
+      toolContractHash: "obsolete-contract-hash",
+      artifactIds: [],
+    });
+
+    for (const [index, agent] of [legacy, mismatched].entries()) {
+      const sent = await app.inject({
+        method: "POST", url: `/api/agents/${agent.id}/messages`,
+        payload: { text: `Use current tools ${index}`, sourceChannel: "main" },
+      });
+      expect(sent.statusCode, sent.body).toBe(202);
+      await waitForRun(agent.id);
+      expect(store.readEvents(agent.id).map((entry) => entry.event)).toContainEqual({
+        type: "session_reset", reason: "tool_contract_changed",
+      });
+      expect(store.resumeSessionState(agent.id)).toEqual({
+        sessionId: "sess-1",
+        toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+        artifactIds: [],
+      });
+      const run = store.getRuns(agent.id)[0]!;
+      expect(store.getProviderInput(run.id)?.sourceManifest.providerSessionDisposition).toBe("fresh_task");
+    }
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues).toHaveLength(0);
     await app.close();
   });
 

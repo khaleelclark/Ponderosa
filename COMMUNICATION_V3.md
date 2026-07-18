@@ -373,6 +373,14 @@ re-evaluated against the current authoritative Run. Provider-visible limits are
 4 KiB minimum, 64 KiB default, 256 KiB maximum, 20 ordered references per call,
 with an opaque continuation cursor.
 
+Every accepted provider session persists the artifact roots Ponderosa submitted
+to it. A continuation may retrieve both artifacts submitted in its current Run
+and still-retained roots from that exact native session; the provider-input
+manifest distinguishes `submitted` from `retained_session`. Text references,
+document metadata, canonical Communications, Request updates, and Activation
+payloads all participate in this source graph. Invented or other-Project
+references never become reachable merely because their IDs appear in input.
+
 A Trigger occurrence grants its root Run a default Direct Message reply route
 only if that Agent chooses to call `ponderosa_message`; silent Triggers stay
 silent. Delegated children never inherit that user authority. Correlated manager
@@ -384,7 +392,10 @@ leasing while durable intake and trigger occurrence persistence remain active.
 Readiness reports `acceptingDurableIntake`, `leasingRuns`, drain state, and active
 Run count separately. Cutover waits for zero active Runs; an aborted deployment
 must explicitly resume leasing. The contract hash covers complete tool schemas,
-provider-specific definitions, and the relevant prompt contract.
+provider-specific definitions, and the relevant prompt contract. That hash is
+persisted with the accepted provider session. A missing or mismatched hash clears
+only the opaque provider cache and forces a fresh seed from canonical Ponderosa
+state before work can continue.
 
 “Coordinate and wait” is a skill/helper around `ponderosa_coordinate`, not a
 fourth runtime tool. All tool mutations commit SQLite state and an outbox record

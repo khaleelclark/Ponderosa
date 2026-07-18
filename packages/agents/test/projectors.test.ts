@@ -140,7 +140,24 @@ describe("projectEvent — routing (SPEC §5)", () => {
       sessionId: "sess-9",
     }));
     const s = ops.find((o) => o.kind === "set_session");
-    expect(s).toEqual({ kind: "set_session", sessionId: "sess-9" });
+    expect(s).toEqual({
+      kind: "set_session", sessionId: "sess-9", toolContractHash: null, artifactIds: [],
+    });
+  });
+
+  it("session_snapshot binds a provider session to its contract and retained artifact roots", () => {
+    const { ops } = projectEvent(T, initProjectionState("codex"), stored(2, {
+      type: "session_snapshot",
+      sessionId: "sess-9",
+      toolContractHash: "contract-hash",
+      artifactIds: ["artifact-b", "artifact-a", "artifact-b"],
+    }));
+    expect(ops).toContainEqual({
+      kind: "set_session",
+      sessionId: "sess-9",
+      toolContractHash: "contract-hash",
+      artifactIds: ["artifact-a", "artifact-b"],
+    });
   });
 
   it("session_reset clears the projected provider session", () => {
@@ -148,7 +165,9 @@ describe("projectEvent — routing (SPEC §5)", () => {
       type: "session_reset",
       reason: "resume_compaction_failed",
     }));
-    expect(ops).toContainEqual({ kind: "set_session", sessionId: null });
+    expect(ops).toContainEqual({
+      kind: "set_session", sessionId: null, toolContractHash: null, artifactIds: [],
+    });
   });
 
   it("terminal lifecycle closes the exact execution rather than inferring from turn_done", () => {

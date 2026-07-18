@@ -22,7 +22,17 @@ export interface UserMessageEvent {
 /** Clear a provider session while retaining the canonical agent history. */
 export interface SessionResetEvent {
   type: "session_reset";
-  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover";
+  reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed";
+}
+
+/** Durable proof of the exact provider contract and artifact roots retained by
+ * one accepted native session. A raw provider `session` event deliberately
+ * clears this snapshot until the owning Run completes successfully. */
+export interface SessionSnapshotEvent {
+  type: "session_snapshot";
+  sessionId: string;
+  toolContractHash: string;
+  artifactIds: string[];
 }
 
 /** Direct Agent audit projection of one canonical communication event. */
@@ -79,7 +89,7 @@ export interface ArtifactVisibilityEvent {
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
+export type LogEvent = UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
   AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */

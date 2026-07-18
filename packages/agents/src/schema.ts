@@ -29,6 +29,8 @@ export const agents = sqliteTable("agents", {
   model: text("model"),
   effort: text("effort"),
   activeSessionId: text("active_session_id"),
+  activeSessionContractHash: text("active_session_contract_hash"),
+  activeSessionArtifactIdsJson: text("active_session_artifact_ids_json").notNull().default("[]"),
   stateBranch: text("state_branch"),
   stateCommit: text("state_commit"),
   createdAt: text("created_at").notNull(),

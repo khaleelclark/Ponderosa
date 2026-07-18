@@ -2900,7 +2900,11 @@ export class AgentStore {
             break;
           case "set_session":
             tx.update(agents)
-              .set({ activeSessionId: op.sessionId })
+              .set({
+                activeSessionId: op.sessionId,
+                activeSessionContractHash: op.toolContractHash,
+                activeSessionArtifactIdsJson: JSON.stringify(op.artifactIds),
+              })
               .where(eq(agents.id, agentId))
               .run();
             break;
@@ -3066,17 +3070,39 @@ export class AgentStore {
     };
   }
 
-  /** The engine session id to resume for an agent (undefined if none yet). */
-  resumeSessionId(agentId: string): string | undefined {
+  /** Durable compatibility and reachability state for the accepted provider session. */
+  resumeSessionState(agentId: string): {
+    sessionId: string;
+    toolContractHash?: string;
+    artifactIds: string[];
+  } | undefined {
     const row = this.db
       .select({
         sessionId: agents.activeSessionId,
+        toolContractHash: agents.activeSessionContractHash,
+        artifactIdsJson: agents.activeSessionArtifactIdsJson,
       })
       .from(agents)
       .where(eq(agents.id, agentId))
       .get();
-    if (!row) return undefined;
-    return row.sessionId ?? undefined;
+    if (!row?.sessionId) return undefined;
+    let artifactIds: string[] = [];
+    try {
+      const parsed = JSON.parse(row.artifactIdsJson) as unknown;
+      if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) artifactIds = parsed;
+    } catch {
+      // A malformed rebuildable projection fails closed to no retained roots.
+    }
+    return {
+      sessionId: row.sessionId,
+      ...(row.toolContractHash ? { toolContractHash: row.toolContractHash } : {}),
+      artifactIds: [...new Set(artifactIds)].sort(),
+    };
+  }
+
+  /** The engine session id to resume for an agent (undefined if none yet). */
+  resumeSessionId(agentId: string): string | undefined {
+    return this.resumeSessionState(agentId)?.sessionId;
   }
 
   /**
@@ -3086,7 +3112,7 @@ export class AgentStore {
    */
   clearResumeSession(
     agentId: string,
-    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover",
+    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed",
   ): boolean {
     const row = this.db
       .select({ id: agents.id, activeSessionId: agents.activeSessionId })

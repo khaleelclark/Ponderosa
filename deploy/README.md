@@ -38,6 +38,14 @@ curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
 
 Do not leave a healthy old daemon in the drained state after an aborted deploy.
 
+### Initial upgrade from a daemon without deployment drain
+
+Older daemons cannot expose the drain endpoint retroactively. For that one
+upgrade, wait until the old daemon has zero active Runs, stop it, install the new
+revision, and start it. Pending durable work remains queued. Provider sessions
+without the current persisted tool-contract hash are intentionally reseeded on
+first use; do not edit SQLite or clear Agent history manually.
+
 ## Enable browser push notifications
 
 After the build, initialize VAPID and restart the service with one command as

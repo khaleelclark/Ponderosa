@@ -989,6 +989,26 @@ describe("AgentStore — append + projection", () => {
   it("clears only the resumable engine session for fresh-session rollover", () => {
     const { agentId } = seedAgent();
     store.appendEvent(agentId, { type: "session", sessionId: "stale-session" });
+    expect(store.resumeSessionState(agentId)).toEqual({
+      sessionId: "stale-session", artifactIds: [],
+    });
+    store.appendEvent(agentId, {
+      type: "session_snapshot",
+      sessionId: "stale-session",
+      toolContractHash: "contract-a",
+      artifactIds: ["artifact-b", "artifact-a", "artifact-b"],
+    });
+    expect(store.resumeSessionState(agentId)).toEqual({
+      sessionId: "stale-session",
+      toolContractHash: "contract-a",
+      artifactIds: ["artifact-a", "artifact-b"],
+    });
+    store.rebuildProjections();
+    expect(store.resumeSessionState(agentId)).toEqual({
+      sessionId: "stale-session",
+      toolContractHash: "contract-a",
+      artifactIds: ["artifact-a", "artifact-b"],
+    });
     const before = store.getAgent(agentId);
     const eventsBefore = store.readEvents(agentId);
 
