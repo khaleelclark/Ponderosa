@@ -472,6 +472,14 @@ interface PersistentRuntime {
   idleTimer?: NodeJS.Timeout;
 }
 
+interface PersistentRuntimeTeardown {
+  runtime: PersistentRuntime;
+  reason: string;
+  projectId?: string;
+  operation?: Promise<void>;
+  lastError?: string;
+}
+
 /**
  * Collaboration room projections are a display timeline, not an authorization
  * boundary. Runtime context must be selected from the canonical audience:
@@ -1387,7 +1395,13 @@ export function projectedRunCost(
   return { usd, components };
 }
 
-export function createServer(opts: CreateServerOptions): FastifyInstance {
+export interface PonderosaServer extends FastifyInstance {
+  /** Retry the retained provider barriers after Fastify shutdown was unable to
+   * confirm every process group. Intended for the production signal handler. */
+  retryProviderRuntimeShutdown(): Promise<void>;
+}
+
+export function createServer(opts: CreateServerOptions): PonderosaServer {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite);
   const resultCursorSecret = randomBytes(32);
@@ -1700,6 +1714,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
   let linkPreviewSweep: NodeJS.Timeout | undefined;
   const runtimeSessions = new Map<string, PersistentRuntime>();
+  // A runtime moves here before it leaves the reusable pool. Failed or
+  // in-flight termination therefore retains the only process handle and fences
+  // every replacement until the operating system confirms exit.
+  const runtimeTeardowns = new Map<string, PersistentRuntimeTeardown>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
@@ -1758,6 +1776,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     agentId: string,
     run: ActiveRun | undefined,
     runtime: PersistentRuntime | undefined,
+    reason = "provider cancellation",
+    projectId?: string,
   ): Promise<string | undefined> => {
     const session = runtime?.session ?? run?.runtimeSession;
     const handle = session ?? run?.completion;
@@ -1773,6 +1793,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return error instanceof Error ? error.message : "runtime cancellation was not acknowledged";
         }
       }
+      if (runtime) detachPersistentRuntime(agentId, runtime, reason, projectId);
       let interruptError: string | undefined;
       try {
         await awaitRuntimeTerminationOperation(session.interrupt(), `${agentId} runtime interrupt`);
@@ -1782,7 +1803,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         interruptError = error instanceof Error ? error.message : "runtime interrupt failed";
       }
       try {
-        await awaitRuntimeTerminationOperation(session.close(), `${agentId} runtime close`);
+        await awaitRuntimeTerminationOperation(
+          runtime
+            ? teardownPersistentRuntime(agentId, runtime, reason, projectId)
+            : session.close(),
+          `${agentId} runtime close`,
+        );
         return undefined;
       } catch (error) {
         const closeError = error instanceof Error ? error.message : "runtime close failed";
@@ -1815,14 +1841,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           agentMessageCapabilities.delete(run.messageCapability);
           run.controller.abort();
         }
-        const runtime = runtimeSessions.get(agentId);
-        const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
+        const runtime = persistentRuntimeForTermination(agentId);
+        const terminationError = await terminateRuntimeHandle(
+          agentId,
+          run,
+          runtime,
+          "Agent deletion",
+          receipt.projectId,
+        );
         if (terminationError) {
           // Retain both handles so the receipt sweep can retry provider
           // termination. Capabilities and output are already fenced above.
           errors.push(`${agentId}: ${terminationError}`);
         } else {
-          if (runtime) removePersistentRuntime(agentId, runtime);
           if (run && activeRuns.get(agentId) === run) activeRuns.delete(agentId);
         }
         subscribers.delete(agentId);
@@ -2227,10 +2258,87 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   }
 
-  function removePersistentRuntime(agentId: string, runtime: PersistentRuntime): void {
-    if (runtimeSessions.get(agentId) !== runtime) return;
+  const runtimeTeardownNotificationKey = (agentId: string): string => `runtime-teardown:${agentId}`;
+
+  function detachPersistentRuntime(
+    agentId: string,
+    runtime: PersistentRuntime,
+    reason: string,
+    projectId?: string,
+  ): PersistentRuntimeTeardown {
     cancelRuntimeIdleClose(runtime);
-    runtimeSessions.delete(agentId);
+    if (runtimeSessions.get(agentId) === runtime) runtimeSessions.delete(agentId);
+    const existing = runtimeTeardowns.get(agentId);
+    if (existing && existing.runtime !== runtime) {
+      throw new Error(`cannot replace ${agentId} runtime while its previous process group is not confirmed terminated`);
+    }
+    if (existing) {
+      existing.reason = reason;
+      existing.projectId ??= projectId;
+      return existing;
+    }
+    const state: PersistentRuntimeTeardown = { runtime, reason, projectId };
+    runtimeTeardowns.set(agentId, state);
+    return state;
+  }
+
+  function teardownPersistentRuntime(
+    agentId: string,
+    runtime: PersistentRuntime,
+    reason: string,
+    projectId = store.getAgent(agentId)?.projectId,
+  ): Promise<void> {
+    const state = detachPersistentRuntime(agentId, runtime, reason, projectId);
+    if (state.operation) return state.operation;
+    state.lastError = undefined;
+    const operation = Promise.resolve()
+      .then(() => runtime.session.close())
+      .then(() => {
+        if (runtimeTeardowns.get(agentId) === state) runtimeTeardowns.delete(agentId);
+        try { resolveOperationalNotification(runtimeTeardownNotificationKey(agentId)); }
+        catch { /* successful authority revocation remains authoritative */ }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        state.lastError = message;
+        try {
+          createOperationalNotification({
+            dedupeKey: runtimeTeardownNotificationKey(agentId),
+            category: "system",
+            severity: "urgent",
+            title: "Provider runtime cleanup needs attention",
+            body: `Ponderosa could not confirm that ${agentId}'s provider process group exited after ${reason}. New provider work for this Agent is blocked while cleanup retries. ${message}`.slice(0, 1_000),
+            projectId: state.projectId,
+          });
+        } catch { /* the retained process handle is the fail-closed authority */ }
+        throw error;
+      })
+      .finally(() => {
+        if (state.operation === operation) state.operation = undefined;
+      });
+    state.operation = operation;
+    return operation;
+  }
+
+  function retryPendingRuntimeTeardown(agentId: string): Promise<void> | undefined {
+    const pending = runtimeTeardowns.get(agentId);
+    return pending
+      ? teardownPersistentRuntime(agentId, pending.runtime, pending.reason, pending.projectId)
+      : undefined;
+  }
+
+  function persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined {
+    return runtimeSessions.get(agentId) ?? runtimeTeardowns.get(agentId)?.runtime;
+  }
+
+  function teardownPersistentRuntimeInBackground(
+    agentId: string,
+    runtime: PersistentRuntime,
+    reason: string,
+  ): void {
+    void teardownPersistentRuntime(agentId, runtime, reason).catch((error) => {
+      app.log.error({ err: error, agentId, reason }, "persistent runtime termination remains pending");
+    });
   }
 
   function trimIdleRuntimeSessions(): void {
@@ -2238,8 +2346,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       .filter(([agentId, runtime]) => !activeRuns.has(agentId) && runtime.idleSince !== undefined)
       .sort((left, right) => left[1].idleSince! - right[1].idleSince!);
     for (const [agentId, runtime] of idle.slice(0, Math.max(0, idle.length - runtimeMaxIdleSessions))) {
-      removePersistentRuntime(agentId, runtime);
-      void runtime.session.close().catch(() => undefined);
+      teardownPersistentRuntimeInBackground(agentId, runtime, "warm-pool eviction");
     }
   }
 
@@ -2248,8 +2355,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     runtime.idleSince = runtimeSessionNow();
     runtime.idleTimer = setRuntimeIdleTimer(() => {
       if (closed || activeRuns.has(agentId) || runtimeSessions.get(agentId) !== runtime) return;
-      removePersistentRuntime(agentId, runtime);
-      void runtime.session.close().catch(() => undefined);
+      teardownPersistentRuntimeInBackground(agentId, runtime, "idle timeout");
     }, runtimeIdleTtlMs);
     runtime.idleTimer.unref?.();
     trimIdleRuntimeSessions();
@@ -2525,10 +2631,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     publish(agentId, lifecycle);
     publishMessageDeliveryChanged(agentId);
     notifyManagerOfChildFailure(agentId, run.executionId, "execution lease expired");
-    const persistentRuntime = runtimeSessions.get(agentId);
+    const persistentRuntime = persistentRuntimeForTermination(agentId);
     if (persistentRuntime) {
-      removePersistentRuntime(agentId, persistentRuntime);
-      void persistentRuntime.session.close().catch(() => undefined);
+      teardownPersistentRuntimeInBackground(agentId, persistentRuntime, "execution lease expiry");
     }
     run.controller.abort();
     coordinationV3Scheduler?.notify();
@@ -3126,7 +3231,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         censor: "[REDACTED]",
       },
     },
-  });
+  }) as unknown as PonderosaServer;
   app.server.on("upgrade", linkPreviewUpgrade);
   const coordinationV3Scheduler = new CoordinationV3Scheduler(
     coordinationV3,
@@ -3263,10 +3368,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         agentMessageCapabilities.delete(run.messageCapability);
         scheduledSessionRollovers.delete(agentId);
         run.controller.abort();
-        const runtime = runtimeSessions.get(agentId);
+        const runtime = persistentRuntimeForTermination(agentId);
         const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
         if (terminationError) return { accepted: false, retryable: true, error: terminationError };
-        if (runtime) removePersistentRuntime(agentId, runtime);
         if (activeRuns.get(agentId) === run) activeRuns.delete(agentId);
         return { accepted: true };
       },
@@ -3670,6 +3774,35 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     app.server.closeAllConnections();
   });
 
+  let providerRuntimeShutdownFinalized = false;
+  const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
+    if (providerRuntimeShutdownFinalized) return;
+    const shutdownRuntimes = new Map<string, PersistentRuntime>([
+      ...[...runtimeTeardowns].map(([agentId, state]) => [agentId, state.runtime] as const),
+      ...runtimeSessions,
+    ]);
+    for (const runtime of shutdownRuntimes.values()) cancelRuntimeIdleClose(runtime);
+    // Attempt every process group even when one fails. The retained teardown
+    // registry remains retryable and storage remains open until the complete
+    // authority-revocation policy succeeds.
+    const terminationResults = await Promise.allSettled([...shutdownRuntimes].map(([agentId, runtime]) =>
+      teardownPersistentRuntime(agentId, runtime, "server shutdown")
+    ));
+    const terminationFailures = terminationResults.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []
+    );
+    if (terminationFailures.length) {
+      throw new AggregateError(terminationFailures, "Provider runtime shutdown did not complete");
+    }
+    activeRuns.clear();
+    runtimeSessions.clear();
+    runtimeTeardowns.clear();
+    assets.close();
+    store.close();
+    providerRuntimeShutdownFinalized = true;
+  };
+  app.retryProviderRuntimeShutdown = finalizeProviderRuntimeShutdown;
+
   app.addHook("onClose", async () => {
     closed = true;
     await webPushDelivery?.stop();
@@ -3693,18 +3826,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       run.controller.abort();
     }
-    activeRuns.clear();
     await browserSessions.closeAll("server_shutdown");
     projectBrowserGrants.clear();
     await projectBrowserSessions.closeAll("server_shutdown");
-    for (const runtime of runtimeSessions.values()) cancelRuntimeIdleClose(runtime);
-    // RuntimeSession.close() is an observed process-group termination barrier.
-    // Fail shutdown closed rather than acknowledging it while a provider still
-    // retains filesystem or shell authority.
-    await Promise.all([...runtimeSessions.values()].map(({ session }) => session.close()));
-    runtimeSessions.clear();
-    assets.close();
-    store.close();
+    await finalizeProviderRuntimeShutdown();
   });
 
   function publish(agentId: string, stored: StoredLogEvent): void {
@@ -6182,12 +6307,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       organizationEnvelopeStates.delete(agent.id);
       if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
       else {
-        const runtime = runtimeSessions.get(agent.id);
-        if (runtime) {
-          removePersistentRuntime(agent.id, runtime);
-          await runtime.session.close().catch(() => undefined);
-        }
         store.clearResumeSession(agent.id, "request_context_rollover");
+        const runtime = persistentRuntimeForTermination(agent.id);
+        if (runtime) await teardownPersistentRuntime(agent.id, runtime, "Project instruction update", project.id);
       }
     }
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
@@ -6205,38 +6327,56 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
     if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
     const agentIds = new Set(agents.map((agent) => agent.id));
-    cancelAgentDecisions(agentIds);
     for (const agentId of agentIds) deletingAgentIds.add(agentId);
-    // Fence scheduler ownership before touching provider processes. The later
-    // project-store callback purges V3 in the same transaction as Project rows.
-    coordinationV3.prepareProjectDeletion(project.id);
-    for (const agentId of agentIds) {
-      closeLinkPreviewsForAgent(agentId, "project deleted");
-      const active = activeRuns.get(agentId);
-      if (active) {
-        await closeRunBrowser(agentId, active, "project_deleted");
-        clearRunLeaseTimer(active);
-        clearRunLivenessTimer(active);
-        active.controller.abort();
-        activeRuns.delete(agentId);
-        agentMessageCapabilities.delete(active.messageCapability);
+    try {
+      // Fence scheduler ownership before touching provider processes. Project
+      // data remains intact until every provider authority barrier succeeds, so
+      // a failed deletion is safely retryable instead of half-committed.
+      coordinationV3.prepareProjectDeletion(project.id);
+      const terminations = await Promise.allSettled([...agentIds].map(async (agentId) => {
+        closeLinkPreviewsForAgent(agentId, "project deleted");
+        const active = activeRuns.get(agentId);
+        if (active) {
+          await closeRunBrowser(agentId, active, "project_deleted");
+          clearRunLeaseTimer(active);
+          clearRunLivenessTimer(active);
+          agentMessageCapabilities.delete(active.messageCapability);
+          active.controller.abort();
+        }
+        const runtime = persistentRuntimeForTermination(agentId);
+        const terminationError = await terminateRuntimeHandle(
+          agentId,
+          active,
+          runtime,
+          "Project deletion",
+          project.id,
+        );
+        if (terminationError) throw new Error(`${agentId}: ${terminationError}`);
+        if (active && activeRuns.get(agentId) === active) activeRuns.delete(agentId);
+      }));
+      const failures = terminations.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
+
+      cancelAgentDecisions(agentIds);
+      for (const agentId of agentIds) {
+        subscribers.delete(agentId);
+        scheduledSessionRollovers.delete(agentId);
       }
-      const runtime = runtimeSessions.get(agentId);
-      if (runtime) {
-        removePersistentRuntime(agentId, runtime);
-        await runtime.session.interrupt().catch(() => undefined);
-        await runtime.session.close().catch(() => undefined);
-      }
-      subscribers.delete(agentId);
-      scheduledSessionRollovers.delete(agentId);
+      userReactions.deleteProject(project.id);
+      contextCursors.deleteAgents(agentIds);
+      store.deleteProject(project.id, (projectId) => coordinationV3.purgeProject(projectId));
+      appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
+      engineCapabilityFingerprints.clear();
+      return { deleted: true };
+    } catch (error) {
+      return reply.code(503).send({
+        error: error instanceof Error ? error.message : "Project deletion is waiting for provider runtime cleanup",
+        cleanupPending: true,
+        retryable: true,
+      });
+    } finally {
+      for (const agentId of agentIds) deletingAgentIds.delete(agentId);
     }
-    userReactions.deleteProject(project.id);
-    contextCursors.deleteAgents(agentIds);
-    store.deleteProject(project.id, (projectId) => coordinationV3.purgeProject(projectId));
-    appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
-    for (const agentId of agentIds) deletingAgentIds.delete(agentId);
-    engineCapabilityFingerprints.clear();
-    return { deleted: true };
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {
@@ -8725,6 +8865,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const requestContextRollover = Boolean(
         internalV3Dispatch && v3FreshProviderSession,
       );
+      // An evicted/failed runtime keeps this Agent fenced until its retained
+      // handle confirms exit. Never start a replacement beside it.
+      await retryPendingRuntimeTeardown(agent.id);
       let resumeSessionState = store.resumeSessionState(agent.id);
       if (requestContextRollover) {
         // Provider sessions are resumable caches, not agent identity. A newly
@@ -8733,27 +8876,21 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         // Close only the idle provider process; canonical agent state and all
         // durable coordination records remain intact.
         const staleRuntime = runtimeSessions.get(agent.id);
-        if (staleRuntime) {
-          removePersistentRuntime(agent.id, staleRuntime);
-          await staleRuntime.session.close().catch(() => undefined);
-        }
         scheduledSessionRollovers.delete(agent.id);
         store.clearResumeSession(agent.id, "request_context_rollover");
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
+        if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
       } else if (resumeSessionState && resumeSessionState.toolContractHash !== PROVIDER_TOOL_CONTRACT_HASH) {
         // A provider session is a cache of both context and its immutable tool
         // surface. Missing hashes are intentionally incompatible: canonical
         // Agent state survives while the opaque provider cache is reseeded.
         const staleRuntime = runtimeSessions.get(agent.id);
-        if (staleRuntime) {
-          removePersistentRuntime(agent.id, staleRuntime);
-          await staleRuntime.session.close().catch(() => undefined);
-        }
         scheduledSessionRollovers.delete(agent.id);
         store.clearResumeSession(agent.id, "tool_contract_changed");
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
+        if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
       }
       const reusablePersistentRuntime = engine.adapter.openSession ? runtimeSessions.get(agent.id) : undefined;
       cancelRuntimeIdleClose(reusablePersistentRuntime);
@@ -9309,7 +9446,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     while (true) {
                       const next = await persistentRuntime!.iterator.next();
                       if (next.done) {
-                        removePersistentRuntime(agent.id, persistentRuntime!);
+                        teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
                         yield { type: "error", message: "persistent engine session stopped" };
                         return;
                       }
@@ -9344,7 +9481,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                     while (true) {
                       const next = await persistentRuntime!.iterator.next();
                       if (next.done) {
-                        removePersistentRuntime(agent.id, persistentRuntime!);
+                        teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
                         yield { type: "error", message: "persistent engine session stopped" };
                         return;
                       }
@@ -9415,8 +9552,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 store.clearResumeSession(agent.id, "resume_compaction_failed");
                 if (persistentRuntime) {
                   const staleRuntime = persistentRuntime;
-                  removePersistentRuntime(agent.id, staleRuntime);
-                  await staleRuntime.session.close().catch(() => undefined);
+                  await teardownPersistentRuntime(agent.id, staleRuntime, "failed resume replacement", project.id);
                   persistentRuntime = await openPersistentRuntime();
                   runtimeSessions.set(agent.id, persistentRuntime);
                   activeRun.runtimeSession = persistentRuntime.session;
@@ -9644,12 +9780,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       organizationEnvelopeStates.delete(agent.id);
       if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
       else {
-        const runtime = runtimeSessions.get(agent.id);
-        if (runtime) {
-          removePersistentRuntime(agent.id, runtime);
-          await runtime.session.close().catch(() => undefined);
-        }
         store.clearResumeSession(agent.id, "request_context_rollover");
+        const runtime = persistentRuntimeForTermination(agent.id);
+        if (runtime) await teardownPersistentRuntime(agent.id, runtime, "workspace policy update", project.id);
       }
     }
     return preferences;
@@ -10210,10 +10343,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (activeRuns.has(request.params.id)) {
       return reply.code(409).send({ error: "cannot compact an agent with an active run", retryable: true });
     }
-    const runtime = runtimeSessions.get(request.params.id);
+    const runtime = persistentRuntimeForTermination(request.params.id);
     if (runtime) {
-      removePersistentRuntime(request.params.id, runtime);
-      await runtime.session.close();
+      await teardownPersistentRuntime(request.params.id, runtime, "explicit compaction");
     }
     return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
   });

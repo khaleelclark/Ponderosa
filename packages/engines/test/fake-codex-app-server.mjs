@@ -1,9 +1,26 @@
 import readline from "node:readline";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const lines = readline.createInterface({ input: process.stdin });
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 let dynamicToolEnabled = false;
 if (process.env.PONDEROSA_TEST_IGNORE_SIGTERM === "1") setInterval(() => undefined, 1_000);
+
+process.on("SIGTERM", () => {
+  if (process.env.PONDEROSA_TEST_IGNORE_SIGTERM === "1") return;
+  process.exit(0);
+});
+
+if (process.env.PONDEROSA_TEST_DESCENDANT_PID_FILE) {
+  spawn(process.execPath, [fileURLToPath(new URL("./fake-stubborn-descendant.mjs", import.meta.url))], {
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      PONDEROSA_TEST_PROVIDER_PID: String(process.pid),
+    },
+  });
+}
 
 lines.on("line", (line) => {
   const message = JSON.parse(line);
@@ -59,9 +76,4 @@ lines.on("line", (line) => {
   }
   if (message.method === "turn/interrupt") return send({ id: message.id, result: {} });
   send({ id: message.id, error: { code: -32601, message: `unknown method ${message.method}` } });
-});
-
-process.on("SIGTERM", () => {
-  if (process.env.PONDEROSA_TEST_IGNORE_SIGTERM === "1") return;
-  process.exit(0);
 });

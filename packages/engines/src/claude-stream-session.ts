@@ -11,7 +11,7 @@ import type {
 import { mapClaudeEvent } from "./claude-events.js";
 import { parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
-import { terminateProcessGroup } from "./process-termination.js";
+import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
 import { renderSeedPrompt } from "./seed-history.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
@@ -32,6 +32,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
+    assertPersistentRuntimeHostingSupported();
     this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN

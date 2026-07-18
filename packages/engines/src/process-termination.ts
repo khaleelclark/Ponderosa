@@ -7,6 +7,14 @@ export interface ObservedProcessTerminationOptions {
   killConfirmationMs?: number;
 }
 
+export function assertPersistentRuntimeHostingSupported(platform = process.platform): void {
+  if (platform === "win32") {
+    throw new Error(
+      "Persistent provider runtime hosting is unavailable on Windows until Job Object process-tree containment is implemented",
+    );
+  }
+}
+
 /**
  * Terminate an engine's entire detached process group and resolve only after
  * the operating system reports that no process remains in it. Timers stay
