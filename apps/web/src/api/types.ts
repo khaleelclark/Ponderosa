@@ -1,4 +1,5 @@
 import type {
+  ArtifactDto,
   ArtifactContentDto,
   CommunicationDocumentContentDto,
   AgentHealthProjectionDto,
@@ -181,9 +182,11 @@ export interface PonderosaApi {
   updateAgentOrganization(agentId: string, request: UpdateAgentOrganizationRequest): Promise<AgentDto>;
   deleteAgent(agentId: string): Promise<void>;
   getAgent(agentId: string): Promise<AgentDetailDto>;
+  listProjectArtifacts(projectId: string): Promise<ArtifactDto[]>;
   exportAgent(agentId: string, mode: AgentExportMode, organization?: boolean): Promise<AgentPortablePackageDto>;
   importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse>;
   listTriggers(agentId: string): Promise<TriggerDefinitionDto[]>;
+  listAllTriggers(): Promise<TriggerDefinitionDto[]>;
   createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse>;
   updateTrigger(triggerId: string, request: UpdateTriggerRequest): Promise<TriggerDefinitionDto>;
   deleteTrigger(triggerId: string): Promise<void>;

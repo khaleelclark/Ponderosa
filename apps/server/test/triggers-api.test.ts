@@ -78,6 +78,9 @@ describe("V3.2 Trigger API", () => {
       });
       expect(JSON.stringify((await app.inject({ method: "GET", url: `/api/agents/${agent.id}/triggers`, headers: authorization })).json()))
         .not.toContain(created.webhookSecret!);
+      const workspaceTriggers = await app.inject({ method: "GET", url: "/api/triggers", headers: authorization });
+      expect(workspaceTriggers.statusCode, workspaceTriggers.body).toBe(200);
+      expect(workspaceTriggers.json()).toEqual([expect.objectContaining({ id: created.trigger.id, agentId: agent.id, projectId: project.id })]);
       const allowance = await app.inject({ method: "POST", url: `/api/triggers/${created.trigger.id}/allow-runs`, headers: authorization, payload: { additionalRuns: 3 } });
       expect(allowance.statusCode, allowance.body).toBe(200);
       expect(allowance.json()).toMatchObject({ budgetState: { allowance: 3, held: false } });

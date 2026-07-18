@@ -4,6 +4,45 @@ export type ColorMode = "light" | "dark";
 
 export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
 
+export const ponderosaColorTokens = {
+  light: {
+    background: "#F8F6EF",
+    sidebar: "#F1EEE5",
+    surface: "#FFFFFF",
+    surfaceSecondary: "#F1EEE5",
+    elevated: "#FFFFFF",
+    hover: "#E8E7DD",
+    selected: "#FFFFFF",
+    border: "#D9D8CE",
+    textPrimary: "#10231C",
+    textSecondary: "#53645D",
+    textMuted: "#87948E",
+    brand: "#123126",
+    brandHover: "#1B4536",
+    accent: "#5C8A65",
+    highlight: "#7BC47F",
+    userMessage: "#F1EEE5",
+  },
+  dark: {
+    background: "#121816",
+    sidebar: "#17221E",
+    surface: "#1B2823",
+    surfaceSecondary: "#1B2823",
+    elevated: "#22312B",
+    hover: "#294039",
+    selected: "#253830",
+    border: "#31463D",
+    textPrimary: "#E6E7DF",
+    textSecondary: "#B2BBB4",
+    textMuted: "#7E8B84",
+    brand: "#315C48",
+    brandHover: "#4D8065",
+    accent: "#4D8065",
+    highlight: "#7CBF8A",
+    userMessage: "#24352E",
+  },
+} as const;
+
 export function loadColorMode(): ColorMode {
   if (typeof window === "undefined") {
     return "light";
@@ -18,83 +57,80 @@ export function loadColorMode(): ColorMode {
 }
 
 export function createPonderosaTheme(mode: ColorMode) {
+  const colors = ponderosaColorTokens[mode];
+  const dark = mode === "dark";
+
   return createTheme({
     palette: {
       mode,
-      // Require MUI's automatic foreground selection to meet normal-text AA.
       contrastThreshold: 4.5,
       primary: {
-        main: mode === "dark" ? "#9bc8ad" : "#20382b",
-        dark: mode === "dark" ? "#5a786b" : "#172b21",
-        light: mode === "dark" ? "#c0ddcd" : "#607d6e",
+        main: colors.brand,
+        dark: colors.brandHover,
+        light: colors.highlight,
+        contrastText: dark ? "#EDE9DD" : "#F8F6EF",
       },
-      // Pine bark is a quiet structural accent. Keep actions, focus, health,
-      // unread state, and success on the green/semantic palettes.
       secondary: {
-        main: mode === "dark" ? "#b99b84" : "#765846",
-        dark: mode === "dark" ? "#856a57" : "#523d31",
-        light: mode === "dark" ? "#d4bead" : "#9b7b66",
+        main: dark ? "#8FA49A" : colors.accent,
+        dark: dark ? "#71877D" : "#456E50",
+        light: dark ? "#B2BBB4" : "#7AA382",
       },
       background: {
-        default: mode === "dark" ? "#091510" : "#faf6f3",
-        paper: mode === "dark" ? "#11221a" : "#fffdfa",
+        default: colors.background,
+        paper: colors.surface,
       },
-      // In dark mode these remain visible against both default and paper
-      // surfaces. Divider also serves as the boundary for outlined controls.
-      divider: mode === "dark" ? "#547164" : "rgba(32,48,40,.20)",
-      text: mode === "dark" ? { primary: "#f5f1eb", secondary: "#9eaea5", disabled: "#84958b" } : { primary: "#203028", secondary: "#66756d", disabled: "#7d8982" },
-      action: mode === "dark" ? {
-        active: "#c0ddcd",
-        hover: "rgba(192,221,205,.10)",
-        selected: "rgba(185,155,132,.16)",
-        disabled: "#84958b",
-        disabledBackground: "rgba(132,149,139,.18)",
-        focus: "rgba(155,200,173,.24)",
-      } : {
-        selected: "rgba(118,88,70,.10)",
+      divider: colors.border,
+      text: {
+        primary: colors.textPrimary,
+        secondary: colors.textSecondary,
+        disabled: colors.textMuted,
       },
-      success: {
-        main: mode === "dark" ? "#75c990" : "#277a46",
+      action: {
+        active: colors.textSecondary,
+        hover: colors.hover,
+        selected: colors.selected,
+        disabled: colors.textMuted,
+        disabledBackground: dark ? "rgba(126,139,132,.14)" : "rgba(135,148,142,.14)",
+        focus: dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
       },
-      warning: {
-        main: mode === "dark" ? "#ebbd67" : "#a86f1b",
-      },
-      error: {
-        main: mode === "dark" ? "#f08a94" : "#b23b45",
-      },
+      success: { main: dark ? "#57C77A" : "#2E8B57" },
+      warning: { main: "#D8B85A" },
+      error: { main: "#D66A5C" },
     },
     shape: {
-      borderRadius: 6,
+      borderRadius: 12,
     },
     typography: {
       fontFamily:
-        'var(--ponderosa-font-family, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif)',
-      h1: { letterSpacing: 0 },
-      h2: { letterSpacing: 0 },
-      h3: { letterSpacing: 0 },
-      h4: { letterSpacing: 0 },
-      h5: { letterSpacing: 0 },
-      h6: { letterSpacing: 0 },
-      button: { textTransform: "none", fontWeight: 700, letterSpacing: 0 },
-      body1: { fontSize: 14, lineHeight: "20px" },
-      body2: { fontSize: 13, lineHeight: "19px" },
+        'var(--ponderosa-font-family, Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif)',
+      h1: { letterSpacing: "-0.025em" },
+      h2: { letterSpacing: "-0.022em" },
+      h3: { letterSpacing: "-0.02em" },
+      h4: { letterSpacing: "-0.018em" },
+      h5: { letterSpacing: "-0.014em" },
+      h6: { letterSpacing: "-0.01em" },
+      button: { textTransform: "none", fontWeight: 650, letterSpacing: 0 },
+      body1: { fontSize: 14, lineHeight: 1.55 },
+      body2: { fontSize: 13, lineHeight: 1.5 },
     },
     components: {
       MuiCssBaseline: {
         styleOverrides: {
           body: {
-            backgroundImage: mode === "dark" ? "radial-gradient(circle at 55% 15%, rgba(185, 155, 132, .055), transparent 32%)" : "none",
+            backgroundColor: colors.background,
+            color: colors.textPrimary,
+          },
+          "::selection": {
+            backgroundColor: dark ? "rgba(124,191,138,.28)" : "rgba(92,138,101,.22)",
           },
         },
       },
       MuiButtonBase: {
-        defaultProps: {
-          disableRipple: true,
-        },
+        defaultProps: { disableRipple: true },
         styleOverrides: {
           root: {
             "&.Mui-focusVisible": {
-              outline: `2px solid ${mode === "dark" ? "#9bc8ad" : "#20382b"}`,
+              outline: `2px solid ${colors.highlight}`,
               outlineOffset: 2,
             },
           },
@@ -102,25 +138,48 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
       MuiButton: {
         styleOverrides: {
-          root: {
-            minHeight: 44,
-            borderRadius: 6,
+          root: { minHeight: 44, borderRadius: 8 },
+          containedPrimary: {
+            backgroundColor: dark ? "#EDE9DD" : colors.brand,
+            color: dark ? "#123126" : "#F8F6EF",
+            boxShadow: "none",
+            "&:hover": {
+              backgroundColor: dark ? "#F8F6EF" : colors.brandHover,
+              boxShadow: "none",
+            },
+          },
+          outlined: {
+            borderColor: colors.border,
+            "&:hover": { borderColor: colors.textMuted, backgroundColor: colors.hover },
           },
         },
       },
       MuiPaper: {
         styleOverrides: {
           root: { backgroundImage: "none" },
+          elevation1: {
+            boxShadow: dark ? "0 10px 28px rgba(3,8,6,.18)" : "0 10px 30px rgba(33,45,38,.08)",
+          },
+        },
+      },
+      MuiCard: {
+        styleOverrides: {
+          root: {
+            borderColor: colors.border,
+            boxShadow: "none",
+          },
         },
       },
       MuiOutlinedInput: {
         styleOverrides: {
-          root: mode === "dark" ? {
-            backgroundColor: "rgba(255,255,255,.035)",
-            "& fieldset": { borderColor: "#547164" },
-            "&:hover fieldset, &.Mui-focused fieldset": { borderColor: "#9bc8ad" },
-            "&.Mui-disabled fieldset": { borderColor: "#405a4e" },
-          } : {},
+          root: {
+            backgroundColor: dark ? colors.surface : colors.surface,
+            borderRadius: 10,
+            "& fieldset": { borderColor: dark ? colors.textMuted : colors.border },
+            "&:hover fieldset": { borderColor: colors.textMuted },
+            "&.Mui-focused fieldset": { borderColor: colors.accent, borderWidth: 1 },
+            "&.Mui-disabled fieldset": { borderColor: colors.border },
+          },
         },
       },
       MuiIconButton: {
@@ -128,29 +187,35 @@ export function createPonderosaTheme(mode: ColorMode) {
           root: {
             minWidth: 44,
             minHeight: 44,
+            borderRadius: 8,
           },
         },
       },
       MuiTab: {
         styleOverrides: {
-          root: {
-            minHeight: 48,
-            minWidth: 72,
-          },
+          root: { minHeight: 48, minWidth: 72 },
         },
       },
       MuiListItemButton: {
         styleOverrides: {
           root: {
-            minHeight: 48,
+            minHeight: 44,
+            borderRadius: 8,
+            "&.Mui-selected": {
+              backgroundColor: colors.selected,
+              "&:hover": { backgroundColor: colors.hover },
+            },
           },
+        },
+      },
+      MuiChip: {
+        styleOverrides: {
+          root: { borderRadius: 8 },
         },
       },
       MuiToggleButton: {
         styleOverrides: {
-          root: {
-            minHeight: 44,
-          },
+          root: { minHeight: 44, borderRadius: 8 },
         },
       },
     },

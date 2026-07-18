@@ -28,7 +28,7 @@ describe("composer surface ownership", () => {
   });
 
   it("floats the shared composer above the viewport edge", () => {
-    expect(panes).toContain('width: { xs: "calc(100% - 16px)", sm: "min(880px, calc(100% - 24px))" }');
+    expect(panes).toContain('width: { xs: "calc(100% - 16px)", sm: "calc(100% - 32px)", md: "min(1180px, calc(100% - 48px))", xl: "min(1240px, calc(100% - 64px))" }');
     expect(panes).toContain("mb: { xs: 1, sm: 1.5 }");
     expect(panes).not.toContain('position: "sticky",\n        bottom: 0');
   });
@@ -45,7 +45,7 @@ describe("composer surface ownership", () => {
     expect(panes).toContain('aria-label="Steer active response"');
     expect(panes).toContain('showTimestamp={fromUser}');
     expect(conversation).toContain('justifyContent: fromManager ? "flex-end" : "flex-start"');
-    expect(conversation).toContain('width: fromManager ? "min(72%, 620px)" : "min(100%, 740px)"');
+    expect(conversation).toContain('width: fromManager ? "min(78%, 780px)" : "min(100%, 960px)"');
     expect(conversation).toContain('showTimestamp={fromManager}');
   });
 });

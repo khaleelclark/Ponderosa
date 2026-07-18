@@ -56,13 +56,22 @@ describe("responsive workspace sidebar flow", () => {
     expect(rendered).toContain("Release");
 
     act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
+    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "projects" });
+    expect(JSON.stringify(view.toJSON())).toContain("Search projects");
+    expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
+    act(() => view.root.findAllByProps({ "aria-label": "Open project Website" })[0]!.props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project files" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search agents");
     expect(JSON.stringify(view.toJSON())).toContain("Reviewer");
+    await act(async () => view.root.findByProps({ "aria-label": "Triggers" }).props.onClick());
+    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
+    expect(JSON.stringify(view.toJSON())).toContain("Search triggers or agents");
+    act(() => view.root.findAllByProps({ "aria-label": "Manage triggers for Reviewer" })[0]!.props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha" });
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();

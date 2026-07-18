@@ -208,7 +208,11 @@ export default function App({
       return;
     }
     if (route.kind === "home" || route.kind === "projects" || route.kind === "allAgents") return;
-    if (["conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
+    // Every project-scoped route is already a concrete destination. In
+    // particular, Project files intentionally uses the bare project route;
+    // treating it like an unresolved landing page caused it to flash and then
+    // redirect back to the most recent chat.
+    if (["project", "conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
     if (!target) return;
