@@ -196,7 +196,12 @@ agents Broadcast durable organizational synthesis.
 
 The reporting chain may be recursive. Runtime crashes wake the direct manager
 without manufacturing a chat message. Deleting a manager recursively deletes its
-remaining descendants; a user promotes or re-parents any agent they want to keep
+remaining descendants through one server-previewed atomic cascade; stale
+confirmation deletes nothing. Per-Agent settings may let that Agent delete
+descendant branches (including cancelling active work) or rearrange reporting
+lines within its subtree without another Decision. These permissions default off
+and never permit promotion, detachment, or cross-Project movement. A user promotes
+or re-parents any agent they want to keep
 before deletion. Changing the organization never rewrites creator, communication,
 or execution history.
 

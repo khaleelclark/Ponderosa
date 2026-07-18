@@ -56,6 +56,7 @@ import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
+import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
 export function conversationComposerRuntime(
@@ -630,14 +631,6 @@ export function ConversationView({
     },
   });
 
-  const deleteAgent = useMutation({
-    mutationFn: (agentId: string) => api.deleteAgent(agentId),
-    onSuccess: (_data, agentId) => {
-      queryClient.removeQueries({ queryKey: ["agent", agentId] });
-      invalidate();
-      setPendingDelete(undefined);
-    },
-  });
   const busy = spawn.isPending || reply.isPending || directReply.isPending || broadcast.isPending;
 
   useEffect(() => {
@@ -1202,38 +1195,16 @@ export function ConversationView({
         </DialogActions>
       </Dialog>
 
-      <Dialog
+      <AgentDeletionDialog
         open={Boolean(pendingDelete)}
-        onClose={() => {
-          if (!deleteAgent.isPending) setPendingDelete(undefined);
+        projectId={conversation.projectId}
+        rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
+        onClose={() => setPendingDelete(undefined)}
+        onDeleted={() => {
+          invalidate();
+          setPendingDelete(undefined);
         }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Delete agent?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its run history, work items, and files &amp; results. Any in-flight run is stopped. This cannot be undone.
-          </Typography>
-          {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setPendingDelete(undefined)} disabled={deleteAgent.isPending}>
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={deleteAgent.isPending}
-            onClick={() => {
-              if (pendingDelete) deleteAgent.mutate(pendingDelete.id);
-            }}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      />
     </Box>
   );
 }

@@ -63,6 +63,7 @@ import type {
   MessageDto,
   MessageReferenceDto,
   RuntimeSession,
+  UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
   TokenUsage,
@@ -105,6 +106,10 @@ import type {
   AgentExportMode,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
+  AgentDeletionPreviewRequest,
+  AgentDeletionPreviewDto,
+  CommitAgentDeletionRequest,
+  CommitAgentDeletionResponse,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -131,7 +136,7 @@ import {
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
-import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
+import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
@@ -1648,6 +1653,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     conversationId: string;
     idempotencyKey: string;
     operations: ManagementOperation[];
+    deletionPreview?: AgentDeletionPreviewDto;
     createdAt: string;
     appliedAt?: string;
     result?: unknown;
@@ -1712,6 +1718,65 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     }
     publishWorkspaceSince(cursor);
+  };
+  const commitAgentDeletion = async (
+    rootAgentIds: string[],
+    previewHash: string,
+  ): Promise<CommitAgentDeletionResponse> => {
+    const current = store.previewAgentDeletion(rootAgentIds);
+    if (current.previewHash !== previewHash) throw new AgentDeletionConflictError(current);
+    const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
+    if (expectedAgentIds.some((agentId) => deletingAgentIds.has(agentId))) {
+      throw new AgentDeletionConflictError(store.previewAgentDeletion(current.rootAgentIds));
+    }
+    // Reserve the exact confirmed topology before the first await. All server
+    // mutation paths reject a reserved Agent, so cleanup cannot open a gap in
+    // which the previewed cascade changes before the atomic store commit.
+    expectedAgentIds.forEach((agentId) => deletingAgentIds.add(agentId));
+    let committed: AgentDeletionPreviewDto;
+    try {
+      for (const agentId of expectedAgentIds) {
+        closeLinkPreviewsForAgent(agentId, "agent deleted");
+        const run = activeRuns.get(agentId);
+        if (run) await closeRunBrowser(agentId, run, "agent_deleted");
+      }
+      committed = store.deleteAgentSubtrees(current.rootAgentIds, previewHash, (agentId) => coordinationV3.handleAgentDeletion(agentId));
+    } catch (error) {
+      expectedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
+      throw error;
+    }
+    const deletedAgentIds = new Set(committed.affectedAgents.map((agent) => agent.id));
+    try {
+      cancelAgentDecisions(deletedAgentIds);
+      for (const agentId of deletedAgentIds) {
+        const run = activeRuns.get(agentId);
+        if (run) {
+          activeRuns.delete(agentId);
+          clearRunLeaseTimer(run);
+          clearRunLivenessTimer(run);
+          agentMessageCapabilities.delete(run.messageCapability);
+          scheduledSessionRollovers.delete(agentId);
+          run.controller.abort();
+        }
+        const runtime = runtimeSessions.get(agentId);
+        if (runtime) {
+          removePersistentRuntime(agentId, runtime);
+          await runtime.session.interrupt().catch(() => undefined);
+          await runtime.session.close().catch(() => undefined);
+        }
+        subscribers.delete(agentId);
+        scheduledSessionRollovers.delete(agentId);
+        workspace.deleteDraft(`agent:${agentId}`);
+        await fs.rm(draftAttachmentDir(`agent:${agentId}`), { recursive: true, force: true });
+      }
+      contextCursors.deleteAgents(deletedAgentIds);
+      await triggerSources.refresh();
+      coordinationV3Scheduler.notify();
+      appendWorkspace({ type: "project_changed", projectId: committed.projectId, action: "updated" });
+    } finally {
+      deletedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
+    }
+    return { deleted: true, deletedAgentIds: [...deletedAgentIds] };
   };
   // Migrate pre-V3.1.3 provider evidence once. A credential file proves only
   // that login existed; a later entitlement rejection remains authoritative
@@ -2107,15 +2172,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   }
 
-  function closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void> {
+  function closeRunBrowser(
+    agentId: string,
+    run: ActiveRun,
+    reason: string,
+  ): Promise<void> {
     const scope = browserScopeForRun(agentId, run);
     const releaseProjectBrowser = async (): Promise<void> => {
       const agent = store.getAgent(agentId);
-      if (!agent) return;
-      const grant = projectBrowserGrants.get(agent.projectId);
+      const projectId = agent?.projectId;
+      if (!projectId) return;
+      const grant = projectBrowserGrants.get(projectId);
       if (!grant || grant.agentId !== agentId || grant.runId !== run.runId) return;
-      projectBrowserGrants.delete(agent.projectId);
-      const projectScope = projectBrowserScope(agent.projectId);
+      projectBrowserGrants.delete(projectId);
+      const projectScope = projectBrowserScope(projectId);
       const session = projectBrowserSessions.get(projectScope.agentId);
       if (session?.status === "ready" && session.controlOwner === "agent") {
         await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch).catch(() => undefined);
@@ -3263,7 +3333,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    const agentToolRequest = request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover";
+    const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
+    if (capability) {
+      if (deletingAgentIds.has(capability.agentId)) {
+        return reply.code(409).send({ error: "Agent deletion is already in progress" });
+      }
+      return;
+    }
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -3793,6 +3870,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability || !active || !owner || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
       return reply.code(401).send({ error: "management capability is not authorized for an active Run" });
     }
+    if (deletingAgentIds.has(owner.id)) {
+      return reply.code(409).send({ error: "Agent deletion is already in progress" });
+    }
     if (!capability.conversationId || !owner.conversationIds.includes(capability.conversationId)) {
       return reply.code(409).send({ error: "organization management requires an active Team Chat scope" });
     }
@@ -3813,8 +3893,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           state: agent.state,
         })),
         permissions: {
-          autonomous: ["create_agent", "rename_agent", "stop_agent"],
-          requiresApprovalDecision: ["delete_agent", "set_manager"],
+          autonomous: [
+            "create_agent", "rename_agent", "stop_agent",
+            ...(owner.managementPermissions.allowAutomaticDescendantDeletion ? ["delete_agent"] : []),
+            ...(owner.managementPermissions.allowAutomaticDescendantReorganization ? ["set_manager"] : []),
+          ],
+          requiresApprovalDecision: [
+            ...(!owner.managementPermissions.allowAutomaticDescendantDeletion ? ["delete_agent"] : []),
+            ...(!owner.managementPermissions.allowAutomaticDescendantReorganization ? ["set_manager"] : []),
+          ],
+          bounds: {
+            deleteAgent: "descendant roots and their full subtrees; active work is cancelled",
+            setManager: "rearrange descendants within this subtree only; detaching and promotion are unavailable",
+          },
         },
       };
     }
@@ -3835,10 +3926,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return refs.get(value) ?? value;
       };
       try {
+        if (plan.deletionPreview) {
+          const deletion = await commitAgentDeletion(plan.deletionPreview.rootAgentIds, plan.deletionPreview.previewHash);
+          deletion.deletedAgentIds.forEach((agentId) => changedAgentIds.add(agentId));
+          plan.appliedAt = new Date().toISOString();
+          plan.result = { changedAgentIds: [...changedAgentIds], deletedAgentIds: deletion.deletedAgentIds, refs: {} };
+          managementPlans.set(plan.id, plan);
+          return { planId: plan.id, replayed: false, result: plan.result };
+        }
         for (const [index, operation] of plan.operations.entries()) {
           if (operation.kind === "create_agent") {
             const parentId = resolveRef(operation.parentRef) ?? owner.id;
             if (parentId !== owner.id && !descendantIds.has(parentId) && ![...refs.values()].includes(parentId)) throw new Error("create parent escaped the managed subtree");
+            if (deletingAgentIds.has(parentId)) throw new Error("create parent is being deleted");
             const engineId = operation.engine?.trim() || owner.activeEngine;
             const engine = engines.get(engineId);
             if (!engine) throw new Error(`unknown engine: ${engineId}`);
@@ -3859,6 +3959,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           }
           const targetId = resolveRef(operation.targetAgentId);
           if (!targetId || (!descendantIds.has(targetId) && ![...refs.values()].includes(targetId))) throw new Error("operation target escaped the managed subtree");
+          if (deletingAgentIds.has(targetId)) throw new Error("operation target is being deleted");
           if (operation.kind === "rename_agent") {
             const title = operation.title?.trim();
             if (!title) throw new Error("rename_agent requires title");
@@ -3870,12 +3971,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             changedAgentIds.add(targetId);
           } else if (operation.kind === "set_manager") {
             const managerId = resolveRef(operation.managerAgentId);
-            if (managerId !== null && managerId !== owner.id && (!managerId || (!descendantIds.has(managerId) && ![...refs.values()].includes(managerId)))) throw new Error("new manager escaped the managed subtree");
+            if (!managerId) throw new Error("Agents cannot detach or promote descendants");
+            if (managerId !== owner.id && (!descendantIds.has(managerId) && ![...refs.values()].includes(managerId))) throw new Error("new manager escaped the managed subtree");
+            if (deletingAgentIds.has(managerId)) throw new Error("new manager is being deleted");
             store.updateAgentOrganization(targetId, { managerAgentId: managerId });
-            changedAgentIds.add(targetId);
-          } else if (operation.kind === "delete_agent") {
-            const response = await app.inject({ method: "DELETE", url: `/api/agents/${encodeURIComponent(targetId)}`, headers: internalHeaders });
-            if (response.statusCode >= 400) throw new Error(response.json().error ?? "Agent deletion failed");
             changedAgentIds.add(targetId);
           }
         }
@@ -3886,7 +3985,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         appendWorkspace({ type: "project_changed", projectId: owner.projectId, action: "updated" });
         return { planId: plan.id, replayed: false, result: plan.result };
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "management plan failed", partialChangesPossible: true });
+        return reply.code(409).send({
+          error: error instanceof Error ? error.message : "management plan failed",
+          partialChangesPossible: !plan.deletionPreview,
+        });
       }
     }
 
@@ -3922,14 +4024,30 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (operation.kind === "rename_agent" && !operation.title?.trim()) return reply.code(400).send({ error: "rename_agent requires title" });
       if (operation.kind === "set_manager") {
         const managerId = operation.managerAgentId;
-        if (managerId !== null && managerId !== owner.id && (!managerId || (!descendantIds.has(managerId) && !refs.has(managerId)))) return reply.code(403).send({ error: "new manager is outside the managed subtree" });
+        if (!managerId) return reply.code(403).send({ error: "Agents cannot detach or promote descendants" });
+        if (managerId !== owner.id && !descendantIds.has(managerId) && !refs.has(managerId)) return reply.code(403).send({ error: "new manager is outside the managed subtree" });
       }
-      if (operation.kind === "delete_agent" || operation.kind === "set_manager") {
+      const requiresApproval = operation.kind === "delete_agent"
+        ? !owner.managementPermissions.allowAutomaticDescendantDeletion
+        : operation.kind === "set_manager"
+          ? !owner.managementPermissions.allowAutomaticDescendantReorganization
+          : false;
+      if (requiresApproval) {
         const decision = operation.decisionId ? workspace.getDecision(operation.decisionId) : undefined;
         if (!decision || decision.agentId !== owner.id || decision.status !== "resolved" || decision.mode !== "approval" || decision.response?.optionId !== "approve") {
           return reply.code(409).send({ error: `${operation.kind} requires this Agent's resolved approval Decision` });
         }
       }
+    }
+    const deleteOperations = operations.filter((operation) => operation.kind === "delete_agent");
+    if (deleteOperations.length > 0 && deleteOperations.length !== operations.length) {
+      return reply.code(400).send({ error: "delete_agent plans may contain only delete_agent operations" });
+    }
+    const deletionPreview = deleteOperations.length > 0
+      ? store.previewAgentDeletion(deleteOperations.map((operation) => operation.targetAgentId!))
+      : undefined;
+    if (deletionPreview?.affectedAgents.some((agent) => !descendantIds.has(agent.id))) {
+      return reply.code(403).send({ error: "deletion cascade escaped the descendant subtree" });
     }
     const createdAt = new Date().toISOString();
     const plan: ManagementPlan = {
@@ -3939,6 +4057,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       conversationId: capability.conversationId,
       idempotencyKey,
       operations: structuredClone(operations),
+      ...(deletionPreview ? { deletionPreview } : {}),
       createdAt,
     };
     managementPlans.set(plan.id, plan);
@@ -4242,6 +4361,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const manager = capability ? store.getAgent(capability.agentId) : undefined;
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !manager) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
+    }
+    if (deletingAgentIds.has(manager.id)) {
+      return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
     if (!capability.conversationId || !manager.conversationIds.includes(capability.conversationId)) {
       return reply.code(409).send({ error: "visible managed Agents require an active Team Chat scope" });
@@ -5711,6 +5833,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
+    if (agents.some((agent) => deletingAgentIds.has(agent.id))) {
+      return reply.code(409).send({ error: "Agent deletion is already in progress" });
+    }
     projectBrowserGrants.delete(project.id);
     const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
     if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
@@ -6884,6 +7009,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (!manager || manager.projectId !== request.params.id || manager.archived) {
           return reply.code(400).send({ error: "manager must be an active agent in this project" });
         }
+        if (deletingAgentIds.has(manager.id)) {
+          return reply.code(409).send({ error: "manager deletion is already in progress" });
+        }
         request.body.conversationId ??= manager.conversationId;
         if (request.body.conversationId && !manager.conversationIds.includes(request.body.conversationId)) {
           return reply.code(400).send({ error: "manager must belong to the selected conversation" });
@@ -7417,6 +7545,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         engine: agent.activeEngine,
         ...(agent.model ? { model: agent.model } : {}),
         ...(agent.effort ? { effort: agent.effort } : {}),
+        managementPermissions: agent.managementPermissions,
         ...(agent.spawnPrompt || agent.presetSnapshot?.guidance ? { initialInstructions: agent.spawnPrompt ?? agent.presetSnapshot?.guidance } : {}),
         ...(agent.managerAgentId && included.has(agent.managerAgentId) ? { managerRef: agent.managerAgentId } : {}),
         ...(mode !== "template" ? { history } : {}),
@@ -7483,6 +7612,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           conversationId: conversation.id,
           ...(node.model ? { model: node.model } : {}),
           ...(node.effort ? { effort: node.effort } : {}),
+          managementPermissions: node.managementPermissions,
         });
         created.set(node.ref, agent);
         for (const artifact of node.artifacts ?? []) {
@@ -7573,9 +7703,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
-  app.patch<{ Params: { id: string }; Body: { title?: string; archived?: boolean } }>(
+  app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/api/agents/:id",
     async (request, reply) => {
+      if (deletingAgentIds.has(request.params.id)) {
+        return reply.code(409).send({ error: "Agent deletion is already in progress" });
+      }
+      const permissions = request.body?.managementPermissions;
+      if (permissions && (
+        typeof permissions.allowAutomaticDescendantDeletion !== "boolean"
+        || typeof permissions.allowAutomaticDescendantReorganization !== "boolean"
+      )) return reply.code(400).send({ error: "managementPermissions requires two boolean settings" });
       const agent = store.updateAgent(request.params.id, request.body ?? {});
       if (agent && request.body?.archived !== undefined) await triggerSources.refresh();
       return agent ?? reply.code(404).send({ error: "agent not found" });
@@ -7588,6 +7726,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!request.body || !("managerAgentId" in request.body) ||
         (request.body.managerAgentId !== null && (typeof request.body.managerAgentId !== "string" || !request.body.managerAgentId.trim()))) {
         return reply.code(400).send({ error: "managerAgentId must be a stable agent ID or null" });
+      }
+      if (deletingAgentIds.has(request.params.id) ||
+          (request.body.managerAgentId !== null && deletingAgentIds.has(request.body.managerAgentId))) {
+        return reply.code(409).send({ error: "Agent deletion is already in progress" });
       }
       try {
         const agent = store.updateAgentOrganization(request.params.id, request.body);
@@ -7602,6 +7744,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Params: { id: string };
     Body: { conversationIds: string[]; primaryConversationId?: string };
   }>("/api/agents/:id/conversation-memberships", async (request, reply) => {
+    if (deletingAgentIds.has(request.params.id)) {
+      return reply.code(409).send({ error: "Agent deletion is already in progress" });
+    }
     if (!Array.isArray(request.body?.conversationIds)) {
       return reply.code(400).send({ error: "conversationIds is required" });
     }
@@ -7621,56 +7766,45 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
   });
 
-  app.delete<{ Params: { id: string } }>("/api/agents/:id", async (request, reply) => {
-    const { id } = request.params;
-    const subtree = store.listAgentSubtree(id);
-    if (subtree.length === 0) return reply.code(404).send({ error: "agent not found" });
-    cancelAgentDecisions(subtree.map((agent) => agent.id));
-    for (const agent of subtree) deletingAgentIds.add(agent.id);
-    // SQLite cancellation advances the fence and settles steering before the
-    // provider is interrupted. Late tool/output activity then fails closed.
-    for (const agent of subtree) coordinationV3.cancelAgentRun({
-      agentId: agent.id,
-      idempotencyKey: `agent-delete:${agent.id}`,
-    });
-    for (const agent of subtree) {
-      closeLinkPreviewsForAgent(agent.id, "agent deleted");
-      const run = activeRuns.get(agent.id);
-      if (run) {
-        await closeRunBrowser(agent.id, run, "agent_deleted");
-        activeRuns.delete(agent.id);
-        clearRunLeaseTimer(run);
-        clearRunLivenessTimer(run);
-        agentMessageCapabilities.delete(run.messageCapability);
-        scheduledSessionRollovers.delete(agent.id);
-        run.controller.abort();
+  app.post<{ Params: { id: string }; Body: AgentDeletionPreviewRequest }>(
+    "/api/projects/:id/agent-deletions/preview",
+    async (request, reply) => {
+      if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+      if (!Array.isArray(request.body?.rootAgentIds) || request.body.rootAgentIds.some((id) => typeof id !== "string" || !id.trim())) {
+        return reply.code(400).send({ error: "rootAgentIds must contain stable Agent IDs" });
       }
-      const runtime = runtimeSessions.get(agent.id);
-      if (runtime) {
-        removePersistentRuntime(agent.id, runtime);
-        await runtime.session.interrupt().catch(() => undefined);
-        await runtime.session.close().catch(() => undefined);
+      try {
+        const preview = store.previewAgentDeletion(request.body.rootAgentIds);
+        if (preview.projectId !== request.params.id) return reply.code(404).send({ error: "agent not found in Project" });
+        return preview;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "invalid Agent deletion preview";
+        return reply.code(message === "agent not found" ? 404 : 400).send({ error: message });
       }
-    }
-    const deleted = store.deleteAgent(id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
-    if (!deleted) {
-      for (const agent of subtree) deletingAgentIds.delete(agent.id);
-      return reply.code(404).send({ error: "agent not found" });
-    }
-    const deletedAgentIds = new Set(subtree.map((agent) => agent.id));
-    const workspaceCursor = workspace.cursor();
-    for (const agentId of deletedAgentIds) {
-      subscribers.delete(agentId);
-      scheduledSessionRollovers.delete(agentId);
-      workspace.deleteDraft(`agent:${agentId}`);
-      await fs.rm(draftAttachmentDir(`agent:${agentId}`), { recursive: true, force: true });
-    }
-    contextCursors.deleteAgents(deletedAgentIds);
-    await triggerSources.refresh();
-    publishWorkspaceSince(workspaceCursor);
-    for (const agentId of deletedAgentIds) deletingAgentIds.delete(agentId);
-    return { deleted: true, deletedAgentIds: subtree.map((agent) => agent.id) };
-  });
+    },
+  );
+
+  app.post<{ Params: { id: string }; Body: CommitAgentDeletionRequest }>(
+    "/api/projects/:id/agent-deletions/commit",
+    async (request, reply) => {
+      if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+      if (!Array.isArray(request.body?.rootAgentIds) || request.body.rootAgentIds.some((id) => typeof id !== "string" || !id.trim()) ||
+          typeof request.body?.previewHash !== "string" || !/^[a-f0-9]{64}$/.test(request.body.previewHash)) {
+        return reply.code(400).send({ error: "rootAgentIds and a valid previewHash are required" });
+      }
+      try {
+        const current = store.previewAgentDeletion(request.body.rootAgentIds);
+        if (current.projectId !== request.params.id) return reply.code(404).send({ error: "agent not found in Project" });
+        return await commitAgentDeletion(current.rootAgentIds, request.body.previewHash);
+      } catch (error) {
+        if (error instanceof AgentDeletionConflictError) {
+          return reply.code(409).send({ error: error.message, currentPreview: error.currentPreview });
+        }
+        const message = error instanceof Error ? error.message : "Agent deletion failed";
+        return reply.code(message === "agent not found" ? 404 : 400).send({ error: message });
+      }
+    },
+  );
 
   app.post("/api/agents/:id/switch-engine", async (_request, reply) =>
     reply.code(501).send({ error: "switch-engine is a v2 endpoint" }),
@@ -8885,7 +9019,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 });
                 v3PromptInjected = true;
               }
-              if (closed || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
+              if (deletingAgentIds.has(agent.id) || closed || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
               if (!receiveRuntimeEvent(agent.id, activeRun)) break;
               if (opts.runtimeEventFaults?.beforePersist && !await waitBeforeRuntimePersist(agent.id, activeRun, event)) break;
               if (event.type === "error" && sessionId && !providerWorkObserved && shouldRolloverEngineSession(agent.activeEngine, event.message)) {

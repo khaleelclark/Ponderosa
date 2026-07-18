@@ -1,13 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentStore } from "../src/store.js";
+import { AgentDeletionConflictError, AgentStore } from "../src/store.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -1283,6 +1283,83 @@ describe("agent organizational hierarchy", () => {
     expect(store.getAgent(grandchild.id)).toBeUndefined();
     store.rebuildProjections();
     expect(store.getAgent(child.id)).toBeUndefined();
+  });
+
+  it("persists explicit descendant-management permissions through projection rebuild", () => {
+    const project = store.createProject({ label: "Permissions", hostPath: "/repo" });
+    const manager = store.createAgent(project.id, {
+      title: "Manager",
+      engine: "codex",
+      managementPermissions: {
+        allowAutomaticDescendantDeletion: true,
+        allowAutomaticDescendantReorganization: true,
+      },
+    });
+    expect(manager.managementPermissions).toEqual({
+      allowAutomaticDescendantDeletion: true,
+      allowAutomaticDescendantReorganization: true,
+    });
+    store.rebuildProjections();
+    expect(store.getAgent(manager.id)?.managementPermissions).toEqual(manager.managementPermissions);
+  });
+
+  it("rejects stale deletion previews after spawn or reparent without deleting any Agent", () => {
+    const project = store.createProject({ label: "Atomic deletion", hostPath: "/repo" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex" });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", managerAgentId: manager.id });
+    const outside = store.createAgent(project.id, { title: "Outside", engine: "codex" });
+
+    const beforeSpawn = store.previewAgentDeletion([manager.id]);
+    const lateChild = store.createAgent(project.id, { title: "Late child", engine: "codex", managerAgentId: child.id });
+    expect(() => store.deleteAgentSubtrees(beforeSpawn.rootAgentIds, beforeSpawn.previewHash))
+      .toThrow(AgentDeletionConflictError);
+    expect(store.getAgent(manager.id)).toBeDefined();
+    expect(store.getAgent(child.id)).toBeDefined();
+    expect(store.getAgent(lateChild.id)).toBeDefined();
+
+    const beforeReparent = store.previewAgentDeletion([manager.id]);
+    store.updateAgentOrganization(child.id, { managerAgentId: outside.id });
+    expect(() => store.deleteAgentSubtrees(beforeReparent.rootAgentIds, beforeReparent.previewHash))
+      .toThrow(AgentDeletionConflictError);
+    expect(store.getAgent(manager.id)).toBeDefined();
+    expect(store.getAgent(child.id)?.managerAgentId).toBe(outside.id);
+
+    const current = store.previewAgentDeletion([manager.id]);
+    expect(store.deleteAgentSubtrees(current.rootAgentIds, current.previewHash).affectedAgents.map((agent) => agent.id))
+      .toEqual([manager.id]);
+    expect(store.getAgent(manager.id)).toBeUndefined();
+    expect(store.getAgent(child.id)).toBeDefined();
+  });
+
+  it("restores pre-commit deletion renames and finishes committed deletion journals after restart", () => {
+    const project = store.createProject({ label: "Deletion recovery", hostPath: "/repo" });
+    const restored = store.createAgent(project.id, { title: "Restore me", engine: "codex" });
+    const restoredName = `.${restored.id}.deleting-before-commit`;
+    const restoredTombstone = join(agentsDir(dir, project.id), restoredName);
+    renameSync(agentDir(dir, project.id, restored.id), restoredTombstone);
+    store.close();
+
+    store = new AgentStore(dir);
+    expect(store.getAgent(restored.id)).toBeDefined();
+    expect(existsSync(agentDir(dir, project.id, restored.id))).toBe(true);
+    expect(existsSync(restoredTombstone)).toBe(false);
+
+    const deleted = store.createAgent(project.id, { title: "Finish deletion", engine: "codex" });
+    const deletedName = `.${deleted.id}.deleting-after-commit`;
+    const deletedTombstone = join(agentsDir(dir, project.id), deletedName);
+    renameSync(agentDir(dir, project.id, deleted.id), deletedTombstone);
+    store.sqlite.transaction(() => {
+      store.sqlite.prepare(`INSERT INTO agent_deletion_tombstones (agent_id, project_id, tombstone_name, created_at) VALUES (?, ?, ?, ?)`)
+        .run(deleted.id, project.id, deletedName, new Date().toISOString());
+      store.sqlite.prepare(`DELETE FROM agents WHERE id = ?`).run(deleted.id);
+    })();
+    store.close();
+
+    store = new AgentStore(dir);
+    expect(store.getAgent(deleted.id)).toBeUndefined();
+    expect(existsSync(agentDir(dir, project.id, deleted.id))).toBe(false);
+    expect(existsSync(deletedTombstone)).toBe(false);
+    expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM agent_deletion_tombstones`).get()).toEqual({ count: 0 });
   });
 
   it("persists agent spawn provenance and replays it by execution idempotency", () => {

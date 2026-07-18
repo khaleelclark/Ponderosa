@@ -38,11 +38,21 @@ export const agents = sqliteTable("agents", {
   // SQLite has no boolean: 0/1.
   archived: integer("archived").notNull().default(0),
   managerAgentId: text("manager_agent_id"),
+  allowAutomaticDescendantDeletion: integer("allow_automatic_descendant_deletion").notNull().default(0),
+  allowAutomaticDescendantReorganization: integer("allow_automatic_descendant_reorganization").notNull().default(0),
   spawnedByAgentId: text("spawned_by_agent_id"),
   spawnedByExecutionId: text("spawned_by_execution_id"),
   spawnPrompt: text("spawn_prompt"),
   spawnIdempotencyKey: text("spawn_idempotency_key"),
   presetSnapshotJson: text("preset_snapshot_json"),
+});
+
+/** Authoritative crash-recovery journal for filesystem-backed Agent deletion. */
+export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", {
+  agentId: text("agent_id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  tombstoneName: text("tombstone_name").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 export const conversations = sqliteTable("conversations", {
@@ -413,6 +423,7 @@ export const triggerDefinitions = sqliteTable("trigger_definitions", {
 export type ProjectRow = typeof projects.$inferSelect;
 export type AgentPresetRow = typeof agentPresets.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
+export type AgentDeletionTombstoneRow = typeof agentDeletionTombstones.$inferSelect;
 export type ConversationRow = typeof conversations.$inferSelect;
 export type AgentConversationMembershipRow = typeof agentConversationMemberships.$inferSelect;
 export type MessageRow = typeof messages.$inferSelect;

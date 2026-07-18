@@ -82,6 +82,7 @@ const agents: AgentDto[] = [
     createdAt: now,
     updatedAt: now,
     archived: false,
+    managementPermissions: { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false },
   },
   {
     id: "agent-sse",
@@ -93,6 +94,7 @@ const agents: AgentDto[] = [
     createdAt: now,
     updatedAt: now,
     archived: false,
+    managementPermissions: { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false },
   },
   {
     id: "agent-login",
@@ -104,6 +106,7 @@ const agents: AgentDto[] = [
     createdAt: now,
     updatedAt: now,
     archived: false,
+    managementPermissions: { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false },
   },
 ];
 
@@ -647,6 +650,7 @@ export const mockApi: PonderosaApi = {
       updatedAt: new Date().toISOString(),
       archived: false,
       managerAgentId: request.managerAgentId,
+      managementPermissions: request.managementPermissions ?? { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false },
     };
     agents.push(agent);
     messages[agent.id] = [];
@@ -680,6 +684,7 @@ export const mockApi: PonderosaApi = {
     if (!agent) return Promise.reject(new Error("Agent not found"));
     if (patch.title !== undefined) agent.title = patch.title;
     if (patch.archived !== undefined) agent.archived = patch.archived;
+    if (patch.managementPermissions !== undefined) agent.managementPermissions = patch.managementPermissions;
     agent.updatedAt = new Date().toISOString();
     return delay(agent);
   },
@@ -698,16 +703,44 @@ export const mockApi: PonderosaApi = {
     agent.updatedAt = new Date().toISOString();
     return delay(agent);
   },
-  deleteAgent(agentId) {
-    const index = agents.findIndex((candidate) => candidate.id === agentId);
-    if (index !== -1) agents.splice(index, 1);
-    delete messages[agentId];
-    delete runs[agentId];
-    delete workItems[agentId];
-    delete artifacts[agentId];
-    agentSeq.delete(agentId);
-    subscribers.delete(agentId);
-    return delay(undefined, 80);
+  previewAgentDeletion(projectId, request) {
+    const requested = new Set(request.rootAgentIds);
+    const projectAgents = agents.filter((agent) => agent.projectId === projectId);
+    const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
+    const rootAgentIds = [...requested].filter((id) => {
+      let managerId = byId.get(id)?.managerAgentId;
+      while (managerId) {
+        if (requested.has(managerId)) return false;
+        managerId = byId.get(managerId)?.managerAgentId;
+      }
+      return true;
+    }).sort();
+    const affected = new Set<string>();
+    const visit = (id: string) => {
+      affected.add(id);
+      projectAgents.filter((agent) => agent.managerAgentId === id).forEach((agent) => visit(agent.id));
+    };
+    rootAgentIds.forEach(visit);
+    const affectedAgents = [...affected].sort().map((id) => {
+      const agent = byId.get(id)!;
+      return { id, title: agent.title, ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}) };
+    });
+    return delay({ projectId, rootAgentIds, affectedAgents, previewHash: `mock:${JSON.stringify(affectedAgents)}` });
+  },
+  async commitAgentDeletion(projectId, request) {
+    const preview = await this.previewAgentDeletion(projectId, { rootAgentIds: request.rootAgentIds });
+    if (preview.previewHash !== request.previewHash) return Promise.reject(new Error("Agent organization changed after deletion preview"));
+    for (const agentId of preview.affectedAgents.map((agent) => agent.id)) {
+      const index = agents.findIndex((candidate) => candidate.id === agentId);
+      if (index !== -1) agents.splice(index, 1);
+      delete messages[agentId];
+      delete runs[agentId];
+      delete workItems[agentId];
+      delete artifacts[agentId];
+      agentSeq.delete(agentId);
+      subscribers.delete(agentId);
+    }
+    return delay({ deleted: true as const, deletedAgentIds: preview.affectedAgents.map((agent) => agent.id) }, 80);
   },
   getAgent(agentId) {
     const agent = agents.find((candidate) => candidate.id === agentId);
@@ -735,7 +768,7 @@ export const mockApi: PonderosaApi = {
   },
   exportAgent(agentId, mode, organization = false) {
     const agent = agents.find((candidate) => candidate.id === agentId)!;
-    return delay({ schema: "ponderosa.agent-package.v1", mode, kind: organization ? "organization" : "agent", exportedAt: new Date().toISOString(), sourceLabel: agent.title, rootRef: agent.id, agents: [{ ref: agent.id, title: agent.title, engine: agent.activeEngine }] });
+    return delay({ schema: "ponderosa.agent-package.v1", mode, kind: organization ? "organization" : "agent", exportedAt: new Date().toISOString(), sourceLabel: agent.title, rootRef: agent.id, agents: [{ ref: agent.id, title: agent.title, engine: agent.activeEngine, managementPermissions: agent.managementPermissions }] });
   },
   importAgents(_projectId, request) { return delay({ rootAgentId: request.package.rootRef, agentIds: request.package.agents.map((node) => node.ref) }); },
   listTriggers(agentId) {

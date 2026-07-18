@@ -731,6 +731,13 @@ export interface AgentState {
   commit?: string;
 }
 
+export interface AgentManagementPermissionsDto {
+  /** May cancel and atomically delete roots inside this Agent's descendant subtree. */
+  allowAutomaticDescendantDeletion: boolean;
+  /** May rearrange reporting lines inside this Agent's subtree, but never detach from it. */
+  allowAutomaticDescendantReorganization: boolean;
+}
+
 /** A stable, addressable agent identity. Mirrors the `agents` projection. */
 export interface AgentDto {
   id: string;
@@ -752,6 +759,8 @@ export interface AgentDto {
   archived: boolean;
   /** Direct manager in the mutable agent organization. Undefined means the agent reports to the user. */
   managerAgentId?: string;
+  /** Explicit operator-granted authority over this Agent's descendants. */
+  managementPermissions: AgentManagementPermissionsDto;
   /** Stable creation provenance for an agent spawned by another agent. */
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;
@@ -785,6 +794,7 @@ export interface PortableAgentNodeDto {
   effort?: string;
   initialInstructions?: string;
   managerRef?: string;
+  managementPermissions: AgentManagementPermissionsDto;
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
   triggers?: Array<Omit<CreateTriggerRequest, "conversationId"> & { enabled: false }>;
@@ -868,6 +878,8 @@ export interface CreateAgentRequest {
   presetId?: string;
   /** Optional existing agent this new agent reports to. User-authorized creation only. */
   managerAgentId?: string;
+  /** Persisted Agent settings. Omitted creation defaults both permissions off. */
+  managementPermissions?: AgentManagementPermissionsDto;
 }
 
 /** Agent-facing creation request. Manager identity is always derived from the bearer capability. */
@@ -891,6 +903,36 @@ export interface AgentSpawnResponse {
 export interface UpdateAgentRequest {
   title?: string;
   archived?: boolean;
+  managementPermissions?: AgentManagementPermissionsDto;
+}
+
+export interface AgentDeletionPreviewRequest {
+  rootAgentIds: string[];
+}
+
+export interface AgentDeletionAffectedAgentDto {
+  id: string;
+  title: string;
+  managerAgentId?: string;
+}
+
+export interface AgentDeletionPreviewDto {
+  projectId: string;
+  /** Server-normalized roots; descendants of another selected root are omitted. */
+  rootAgentIds: string[];
+  affectedAgents: AgentDeletionAffectedAgentDto[];
+  /** Hash of the exact confirmed roots, affected IDs, names, and reporting edges. */
+  previewHash: string;
+}
+
+export interface CommitAgentDeletionRequest {
+  rootAgentIds: string[];
+  previewHash: string;
+}
+
+export interface CommitAgentDeletionResponse {
+  deleted: true;
+  deletedAgentIds: string[];
 }
 
 // ─── Triggers (Communication V3.2) ─────────────────────────────────────────

@@ -82,6 +82,10 @@ import type {
   AgentExportMode,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
+  AgentDeletionPreviewRequest,
+  AgentDeletionPreviewDto,
+  CommitAgentDeletionRequest,
+  CommitAgentDeletionResponse,
 } from "@ponderosa/core";
 
 /** User-facing options when spawning an agent from the UI. */
@@ -180,7 +184,8 @@ export interface PonderosaApi {
   updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto>;
   updateAgentConversationMemberships(agentId: string, request: UpdateAgentConversationMembershipsRequest): Promise<AgentDto>;
   updateAgentOrganization(agentId: string, request: UpdateAgentOrganizationRequest): Promise<AgentDto>;
-  deleteAgent(agentId: string): Promise<void>;
+  previewAgentDeletion(projectId: string, request: AgentDeletionPreviewRequest): Promise<AgentDeletionPreviewDto>;
+  commitAgentDeletion(projectId: string, request: CommitAgentDeletionRequest): Promise<CommitAgentDeletionResponse>;
   getAgent(agentId: string): Promise<AgentDetailDto>;
   listProjectArtifacts(projectId: string): Promise<ArtifactDto[]>;
   exportAgent(agentId: string, mode: AgentExportMode, organization?: boolean): Promise<AgentPortablePackageDto>;
