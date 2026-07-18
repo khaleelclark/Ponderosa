@@ -56,7 +56,7 @@ import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, 
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
 import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
-import { engineIsAvailable } from "./conversationEngine";
+import { engineAvailabilityPresentation, engineIsAvailable } from "./conversationEngine";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
   closeWorkspaceTab,
@@ -103,6 +103,8 @@ export default function App({
     return (b.lastUsedAt ?? b.createdAt).localeCompare(a.lastUsedAt ?? a.createdAt) || a.id.localeCompare(b.id);
   });
   const engines = enginesQuery.data ?? [];
+  const engineAvailability = engineAvailabilityPresentation(engines);
+  const appIconSource = colorMode === "light" ? "/icons/app-icon-inverted.png" : "/icons/app-icon.png";
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectLabel, setProjectLabel] = useState("");
@@ -387,17 +389,21 @@ export default function App({
       <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.5 }}><MenuIcon /></IconButton>
-          <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 28, height: 28, mr: 1, borderRadius: 1 }} />
+          <Box component="img" src={appIconSource} alt="" sx={{ width: 28, height: 28, mr: 1, borderRadius: 1, objectFit: "contain" }} />
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
             Ponderosa
           </Typography>
-          <Chip
-            size="small"
-            label={engines.some(engineIsAvailable) ? "Engine ready" : engines.some((engine) => engine.authenticated) ? "Engine unavailable" : "Engine auth needed"}
-            color={engines.some(engineIsAvailable) ? "success" : "warning"}
-            variant="outlined"
-            sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" } }}
-          />
+          <Tooltip title={engineAvailability.detail} arrow enterTouchDelay={0}>
+            <Chip
+              size="small"
+              label={engineAvailability.label}
+              color={engineAvailability.severity}
+              variant="outlined"
+              tabIndex={0}
+              aria-label={`${engineAvailability.label}. ${engineAvailability.detail}`}
+              sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" }, cursor: "help" }}
+            />
+          </Tooltip>
           <Button
             variant="outlined"
             color="inherit"
@@ -423,6 +429,7 @@ export default function App({
         <Box sx={{ display: { xs: "none", md: "block" }, minHeight: 0 }}>
           <WorkspaceSidebar
             projects={projects}
+            engines={engines}
             preferences={preferences}
             route={route}
             notifications={notificationsQuery.data ?? []}
@@ -464,7 +471,7 @@ export default function App({
         ) : projects.length === 0 && !projectsQuery.isLoading ? (
           <Box sx={{ minHeight: 0, display: "grid", placeItems: "center", p: 2 }}>
             <Stack spacing={1.5} sx={{ alignItems: "center", maxWidth: 480, textAlign: "center", p: { xs: 2.5, sm: 4 }, border: 1, borderColor: "divider", borderRadius: 3, bgcolor: "background.paper" }}>
-              <Box component="img" src="/icons/app-icon.png" alt="" sx={{ width: 56, height: 56, borderRadius: 2 }} />
+              <Box component="img" src={appIconSource} alt="" sx={{ width: 56, height: 56, borderRadius: 2, objectFit: "contain" }} />
               <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
               <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
@@ -498,6 +505,7 @@ export default function App({
         <WorkspaceSidebar
           drawer
           projects={projects}
+          engines={engines}
           preferences={preferences}
           route={route}
           notifications={notificationsQuery.data ?? []}
@@ -693,6 +701,9 @@ export default function App({
             <Typography variant="subtitle2">AI providers</Typography>
             <Typography variant="body2" color="text.secondary">Disabled providers finish active Runs, then hold queued work until re-enabled.</Typography>
             {engines.map((engine) => <FormControlLabel key={engine.id} control={<Switch checked={engine.enabled !== false} disabled={updateEngine.isPending} onChange={(_, enabled) => updateEngine.mutate({ engineId: engine.id, enabled })} />} label={`${engine.displayName}${engine.available ? "" : ` — ${engine.availabilityDetail ?? "unavailable"}`}`} />)}
+            {engines.some((engine) => engine.enabled !== false && !engineIsAvailable(engine)) ? <Alert severity={engines.some(engineIsAvailable) ? "warning" : "error"}>
+              {engineAvailability.detail} {engines.some(engineIsAvailable) ? "Ponderosa can continue through an available engine." : "Enable or restore at least one engine before starting new work."}
+            </Alert> : null}
             <Typography variant="subtitle2">Master rules</Typography>
             <TextField label="Rules for every Ponderosa Agent" value={globalInstructionsDraft} onChange={(event) => setGlobalInstructionsDraft(event.target.value)} multiline minRows={5} helperText="Ponderosa stores these rules directly and starts affected Agents with a fresh provider session on their next Run." />
           </Stack>

@@ -1,6 +1,6 @@
 import type { EngineDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineAvailabilityPresentation, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
 
 const engine = (id: string, authenticated: boolean): EngineDto => ({
   id,
@@ -27,6 +27,29 @@ describe("Project chat engine initialization", () => {
   it("distinguishes configured authentication from proven provider availability", () => {
     expect(engineIsAvailable({ ...engine("claude", true), available: false })).toBe(false);
     expect(engineIsAvailable(engine("codex", true))).toBe(true);
+    expect(engineIsAvailable({ ...engine("codex", true), enabled: false })).toBe(false);
+  });
+
+  it("keeps the workspace operational when one enabled provider is available", () => {
+    const presentation = engineAvailabilityPresentation([
+      { ...engine("codex", true), displayName: "Codex" },
+      { ...engine("claude", true), displayName: "Claude", available: false, availabilityDetail: "Subscription access is inactive." },
+    ]);
+    expect(presentation.label).toBe("Engine ready");
+    expect(presentation.severity).toBe("success");
+    expect(presentation.detail).toContain("1 of 2 enabled engines ready");
+    expect(presentation.detail).toContain("Claude is unavailable: Subscription access is inactive.");
+  });
+
+  it("needs attention only when no enabled provider can run work", () => {
+    const presentation = engineAvailabilityPresentation([
+      { ...engine("claude", true), displayName: "Claude", available: false },
+      { ...engine("codex", true), displayName: "Codex", enabled: false },
+    ]);
+    expect(presentation.label).toBe("Needs attention");
+    expect(presentation.severity).toBe("warning");
+    expect(presentation.detail).toContain("No enabled engine can currently run work");
+    expect(presentation.detail).toContain("Codex is disabled");
   });
 
   it("forwards the selected model and effort to the first Project-chat run", () => {
