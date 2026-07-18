@@ -310,8 +310,8 @@ The cutover gate must prove:
 
 ## Provider-visible tools
 
-The coordination contract exposes three mutation tools and two read-only
-discovery tools to the model:
+The coordination contract exposes three mutation tools and three read-only
+discovery/retrieval tools to the model:
 
 - `ponderosa_coordinate`: `{recipientAgentId,text}` is the common single
   delegation contract; `{delegations:[...]}` is common fan-out. The server
@@ -343,6 +343,11 @@ discovery tools to the model:
   or one focused Agent entry without relying on provider shell/network access.
 - `ponderosa_context`: retrieves paginated older scoped history only when the
   current Run advertises that bounded context omitted it.
+- `ponderosa_result`: retrieves ordered, byte-bounded pages for stable
+  `ponderosa://activation/<id>` and `ponderosa://artifact/<id>` references that
+  are reachable from the current authoritative Run. Its signed cursor is bound
+  to that Run, reference order, content versions, and byte budget. Retrieval is
+  read-only and never creates scheduler or communication state.
 
 “Coordinate and wait” is a skill/helper around `ponderosa_coordinate`, not a
 fourth runtime tool. All tool mutations commit SQLite state and an outbox record

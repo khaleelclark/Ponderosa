@@ -3894,6 +3894,77 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("retrieves reachable durable results through signed bounded pagination without scheduler mutation", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Result retrieval", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const activation = new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+      id: "large-result",
+      projectId: project.id,
+      sender: { kind: "system", component: "qualification" },
+      intent: "qualification_result",
+      audience: { agentId: agent.id },
+      payload: { result: "é".repeat(40_000), exact: true },
+      scopeKey: `conversation:${conversation.id}`,
+      activation: {
+        agentId: agent.id, kind: "qualification_result", priority: 60,
+        dispatchPolicy: "next_run", promptClass: "coordination",
+      },
+    });
+    const ref = `ponderosa://activation/${activation.activationId}`;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    await app.ready();
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    expect(runtime.dynamicTools?.find((tool) => tool.name === "ponderosa_coordinate")?.inputSchema.properties)
+      .not.toHaveProperty("inspectActivationIds");
+    expect(persistent.starts[0]?.prompt).toContain(`fullResultRef: ${ref}`);
+    expect(persistent.starts[0]?.prompt).toContain("ponderosa_result({refs:[fullResultRef]})");
+    const countsBefore = store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations,
+      (SELECT COUNT(*) FROM coordination_requests) AS requests,
+      (SELECT COUNT(*) FROM coordination_joins) AS joins`).get();
+    const first = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], maxBytes: 4096 },
+    });
+    expect(first.success, first.text).toBe(true);
+    const firstPage = JSON.parse(first.text) as {
+      items: Array<{ ref: string; range: { start: number; end: number }; complete: boolean; content: string }>;
+      nextCursor: string;
+    };
+    expect(firstPage.items).toEqual([expect.objectContaining({
+      ref, range: { start: 0, end: expect.any(Number) }, complete: false,
+    })]);
+    expect(Buffer.byteLength(firstPage.items[0]!.content, "utf8")).toBeLessThanOrEqual(4096);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+    const replay = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: firstPage.nextCursor },
+    });
+    expect(replay.success, replay.text).toBe(true);
+    const replayAgain = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: firstPage.nextCursor },
+    });
+    expect(replayAgain.text).toBe(replay.text);
+    const tampered = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: `${firstPage.nextCursor.slice(0, -1)}x` },
+    });
+    expect(tampered.success).toBe(false);
+    expect(JSON.parse(tampered.text)).toMatchObject({ error: expect.stringContaining("tampered") });
+    expect(store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations,
+      (SELECT COUNT(*) FROM coordination_requests) AS requests,
+      (SELECT COUNT(*) FROM coordination_joins) AS joins`).get()).toEqual(countsBefore);
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
   it("creates one streaming aggregate Join for common fan-out and validates explicit completion modes", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -3978,7 +4049,7 @@ describe("server chunk F", () => {
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "ponderosa_team_directory", "ponderosa_context",
+      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result",
     ]));
     const providerDirectory = await requesterRuntime.handleDynamicToolCall!({
       name: "ponderosa_team_directory", arguments: { agentId: recipient.id },

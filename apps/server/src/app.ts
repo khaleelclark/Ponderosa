@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
 import { promises as dns } from "node:dns";
@@ -111,6 +111,7 @@ import {
   deriveCommunicationBehavior,
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_CONTEXT_TOOL,
+  PONDEROSA_RESULT_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
@@ -177,6 +178,75 @@ function acceptsGzip(value: string | string[] | undefined): boolean {
   const explicit = preferences.find((preference) => preference.encoding === "gzip");
   if (explicit) return explicit.quality > 0;
   return Boolean(preferences.find((preference) => preference.encoding === "*" && preference.quality > 0));
+}
+
+const RESULT_PAGE_MIN_BYTES = 4 * 1024;
+const RESULT_PAGE_DEFAULT_BYTES = 64 * 1024;
+const RESULT_PAGE_MAX_BYTES = 256 * 1024;
+
+interface ResultCursorState {
+  runId: string;
+  refsHash: string;
+  versionsHash: string;
+  maxBytes: number;
+  itemIndex: number;
+  byteOffset: number;
+}
+
+function encodeResultCursor(state: ResultCursorState, secret: Buffer): string {
+  const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
+  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function decodeResultCursor(value: string, secret: Buffer): ResultCursorState | undefined {
+  const [payload, suppliedSignature, extra] = value.split(".");
+  if (!payload || !suppliedSignature || extra !== undefined) return undefined;
+  const expectedSignature = createHmac("sha256", secret).update(payload).digest();
+  let supplied: Buffer;
+  try { supplied = Buffer.from(suppliedSignature, "base64url"); }
+  catch { return undefined; }
+  if (supplied.length !== expectedSignature.length || !timingSafeEqual(supplied, expectedSignature)) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<ResultCursorState>;
+    if (typeof parsed.runId !== "string" || typeof parsed.refsHash !== "string" ||
+        typeof parsed.versionsHash !== "string" || !Number.isSafeInteger(parsed.maxBytes) ||
+        !Number.isSafeInteger(parsed.itemIndex) || !Number.isSafeInteger(parsed.byteOffset) ||
+        (parsed.itemIndex ?? -1) < 0 || (parsed.byteOffset ?? -1) < 0) return undefined;
+    return parsed as ResultCursorState;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseResultRef(ref: string): { kind: "activation" | "artifact"; id: string } | undefined {
+  const match = /^ponderosa:\/\/(activation|artifact)\/([^/]+)$/.exec(ref);
+  return match ? { kind: match[1] as "activation" | "artifact", id: match[2]! } : undefined;
+}
+
+function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
+  if (typeof value === "string") {
+    const ref = /^ponderosa:\/\/artifact\/([^/]+)$/.exec(value);
+    if (ref) found.add(ref[1]!);
+    return found;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectReachableArtifactIds(item, found);
+    return found;
+  }
+  if (!value || typeof value !== "object") return found;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "artifactId" && typeof item === "string" && item.trim()) found.add(item);
+    collectReachableArtifactIds(item, found);
+  }
+  return found;
+}
+
+function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number {
+  let end = Math.min(content.length, maximumEnd);
+  if (end >= content.length) return end;
+  while (end > start && (content[end]! & 0xc0) === 0x80) end -= 1;
+  return end > start ? end : Math.min(content.length, maximumEnd);
 }
 
 function sendInspectorJson(reply: FastifyReply, acceptEncoding: string | string[] | undefined, value: unknown): FastifyReply {
@@ -458,6 +528,8 @@ interface AgentMessageCapability {
   };
   /** One material inferred reply is allowed; exact retries replay it. */
   inferredReplyFingerprint?: string;
+  /** Project artifacts explicitly submitted to this Run's provider context. */
+  reachableArtifactIds: string[];
 }
 
 interface InboundMessageContext {
@@ -644,7 +716,7 @@ function communicationV3Prompt(): string[] {
     "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
-    "Live Team identities and overflow Activation payloads are retrievable from their run-scoped Ponderosa references.",
+    "Live Team identities are retrievable with ponderosa_team_directory. Retrieve overflow Activation or artifact references with ponderosa_result({refs:[ref]}); continue only with the returned nextCursor.",
     "When bounded context omits older scoped material, the current Run receives a separate on-demand reference for it.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover stable teammate IDs with ponderosa_team_directory({}).",
@@ -1275,6 +1347,7 @@ export function projectedRunCost(
 export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite);
+  const resultCursorSecret = randomBytes(32);
   const coordinationV3WorkerId = `server:${process.pid}`;
   const workspace = new WorkspaceStore(opts.dataDir);
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
@@ -3024,7 +3097,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
+    if ((request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover") && provided && agentMessageCapabilities.has(provided)) return;
     if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
     if (!secretEqual(provided, opts.authToken)) {
@@ -3654,6 +3727,124 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.post<{
+    Body: { refs?: string[]; cursor?: string; maxBytes?: number };
+  }>("/api/agent-results", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const author = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !author || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
+      return reply.code(401).send({ error: "result capability is not authorized for an active Run" });
+    }
+    const body = request.body ?? {};
+    if (Object.keys(body).some((key) => !["refs", "cursor", "maxBytes"].includes(key))) {
+      return reply.code(400).send({ error: "result retrieval accepts only refs, cursor, and maxBytes" });
+    }
+    if (!Array.isArray(body.refs) || body.refs.length === 0 || body.refs.length > 20 ||
+        new Set(body.refs).size !== body.refs.length || body.refs.some((ref) => typeof ref !== "string" || !parseResultRef(ref))) {
+      return reply.code(400).send({ error: "refs must contain 1 to 20 unique ponderosa://activation/<id> or ponderosa://artifact/<id> references" });
+    }
+    if (body.cursor !== undefined && (typeof body.cursor !== "string" || !body.cursor || body.cursor.length > 4096)) {
+      return reply.code(400).send({ error: "cursor must be a non-empty opaque string of at most 4096 characters" });
+    }
+    const decodedCursor = body.cursor ? decodeResultCursor(body.cursor, resultCursorSecret) : undefined;
+    if (body.cursor && !decodedCursor) return reply.code(400).send({ error: "result cursor is invalid or has been tampered with" });
+    const maxBytes = body.maxBytes ?? decodedCursor?.maxBytes ?? RESULT_PAGE_DEFAULT_BYTES;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < RESULT_PAGE_MIN_BYTES || maxBytes > RESULT_PAGE_MAX_BYTES) {
+      return reply.code(400).send({ error: `maxBytes must be an integer from ${RESULT_PAGE_MIN_BYTES} through ${RESULT_PAGE_MAX_BYTES}` });
+    }
+
+    const parsedRefs = body.refs.map((ref) => ({ ref, parsed: parseResultRef(ref)! }));
+    const activationIds = parsedRefs.flatMap(({ parsed }) => parsed.kind === "activation" ? [parsed.id] : []);
+    const activations = coordinationV3.activationPayloads(author.id, activationIds, capability.runId);
+    if (activations.length !== activationIds.length) {
+      return reply.code(404).send({ error: "one or more activation references are not reachable from this Run" });
+    }
+    const activationById = new Map(activations.map((activation) => [activation.id, activation]));
+    const reachableArtifactIds = new Set(capability.reachableArtifactIds);
+    for (const activation of activations) collectReachableArtifactIds(activation.payload, reachableArtifactIds);
+
+    const sources: Array<{ ref: string; title: string; mediaType: string; content: Buffer; encoding: "utf8" | "base64" }> = [];
+    for (const { ref, parsed } of parsedRefs) {
+      if (parsed.kind === "activation") {
+        const activation = activationById.get(parsed.id)!;
+        const content = Buffer.from(JSON.stringify({
+          id: activation.id,
+          kind: activation.kind,
+          promptClass: activation.promptClass,
+          payload: activation.payload,
+        }, null, 2));
+        sources.push({ ref, title: `Activation ${activation.id}`, mediaType: "application/json", content, encoding: "utf8" });
+        continue;
+      }
+      if (!reachableArtifactIds.has(parsed.id)) {
+        return reply.code(404).send({ error: `artifact reference is not reachable from this Run: ${ref}` });
+      }
+      const artifact = store.getProjectArtifact(author.projectId, parsed.id);
+      if (!artifact) return reply.code(404).send({ error: `artifact is unavailable: ${ref}` });
+      let content: Buffer;
+      try { content = await fs.readFile(managedArtifactContentPath(opts.dataDir, author.projectId, artifact.id)); }
+      catch { return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` }); }
+      sources.push({
+        ref,
+        title: artifact.summary ?? path.basename(artifact.path),
+        mediaType: artifact.mediaType ?? "application/octet-stream",
+        content,
+        encoding: isUtf8(content) ? "utf8" : "base64",
+      });
+    }
+
+    const refsHash = createHash("sha256").update(JSON.stringify(body.refs)).digest("hex");
+    const versionsHash = createHash("sha256").update(JSON.stringify(sources.map((source) => ({
+      ref: source.ref,
+      hash: createHash("sha256").update(source.content).digest("hex"),
+    })))).digest("hex");
+    if (decodedCursor && (decodedCursor.runId !== capability.runId || decodedCursor.refsHash !== refsHash ||
+        decodedCursor.versionsHash !== versionsHash || decodedCursor.maxBytes !== maxBytes)) {
+      return reply.code(409).send({ error: "result cursor no longer matches this Run, reference order, content version, or byte budget" });
+    }
+    let itemIndex = decodedCursor?.itemIndex ?? 0;
+    let byteOffset = decodedCursor?.byteOffset ?? 0;
+    if (itemIndex > sources.length || (itemIndex < sources.length && byteOffset > sources[itemIndex]!.content.length)) {
+      return reply.code(409).send({ error: "result cursor is outside the durable result boundary" });
+    }
+    let remaining = maxBytes;
+    const items: Array<{
+      ref: string; mediaType: string; title: string; totalBytes: number;
+      range: { start: number; end: number }; content: string; encoding: "utf8" | "base64"; complete: boolean;
+    }> = [];
+    while (itemIndex < sources.length && remaining > 0) {
+      const source = sources[itemIndex]!;
+      const start = byteOffset;
+      const tentativeEnd = Math.min(source.content.length, start + remaining);
+      const end = source.encoding === "utf8" ? utf8PageEnd(source.content, start, tentativeEnd) : tentativeEnd;
+      const chunk = source.content.subarray(start, end);
+      const complete = end >= source.content.length;
+      items.push({
+        ref: source.ref,
+        mediaType: source.mediaType,
+        title: source.title,
+        totalBytes: source.content.length,
+        range: { start, end },
+        content: source.encoding === "utf8" ? chunk.toString("utf8") : chunk.toString("base64"),
+        encoding: source.encoding,
+        complete,
+      });
+      remaining -= end - start;
+      if (!complete) {
+        byteOffset = end;
+        break;
+      }
+      itemIndex += 1;
+      byteOffset = 0;
+    }
+    const nextCursor = itemIndex < sources.length
+      ? encodeResultCursor({ runId: capability.runId, refsHash, versionsHash, maxBytes, itemIndex, byteOffset }, resultCursorSecret)
+      : undefined;
+    return { items, ...(nextCursor ? { nextCursor } : {}), maxBytes };
+  });
+
+  app.post<{
     Body: {
       operation?: "open" | "navigate" | "inspect" | "act" | "screenshot" | "take_control" | "close";
       url?: string;
@@ -3906,7 +4097,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       deadlineAt?: string;
       requests?: Array<{ requestId?: string; recipientAgentId?: string; text?: string; lifetime?: RequestLifetime }>;
       join?: { id?: string; mode?: "all" | "any" | "quorum"; quorum?: number; deadlineAt?: string; satisfyingOutcomes?: CoordinationRequestState[]; requestIds?: string[]; wakePolicy?: "each_result" | "final_only" };
-      inspectActivationIds?: string[];
     };
   }>("/api/agent-coordinate", async (request, reply) => {
     if (!coordinationV3) return reply.code(404).send({ error: "Communication V3 is not enabled" });
@@ -3919,7 +4109,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
-      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "deadlineAt", "requests", "join", "inspectActivationIds"].includes(key));
+      !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "deadlineAt", "requests", "join"].includes(key));
     if (unknownTopLevel.length) {
       return reply.code(400).send({ error: `unknown coordinate field(s): ${unknownTopLevel.join(", ")}` });
     }
@@ -3934,8 +4124,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const shorthand = body.recipientAgentId !== undefined || body.text !== undefined || body.delegations !== undefined ||
       body.completionMode !== undefined || body.wakePolicy !== undefined || body.awaitResult !== undefined || body.deadlineAt !== undefined;
-    if (shorthand && (body.requests !== undefined || body.join !== undefined || body.inspectActivationIds !== undefined)) {
-      return reply.code(400).send({ error: "common delegation fields cannot be combined with requests, join, or inspectActivationIds" });
+    if (shorthand && (body.requests !== undefined || body.join !== undefined)) {
+      return reply.code(400).send({ error: "common delegation fields cannot be combined with requests or join" });
     }
     const hasSingleDelegation = body.recipientAgentId !== undefined || body.text !== undefined;
     if (body.delegations !== undefined && hasSingleDelegation) {
@@ -4012,19 +4202,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           (body.join.satisfyingOutcomes !== undefined && !Array.isArray(body.join.satisfyingOutcomes))) {
         return reply.code(400).send({ error: "join fields do not match the published coordinate schema" });
       }
-    }
-    const inspectActivationIds = request.body?.inspectActivationIds;
-    if (inspectActivationIds !== undefined) {
-      if (!Array.isArray(inspectActivationIds) || inspectActivationIds.length === 0 || inspectActivationIds.length > 20 ||
-          new Set(inspectActivationIds).size !== inspectActivationIds.length ||
-          inspectActivationIds.some((id) => typeof id !== "string" || !id.trim())) {
-        return reply.code(400).send({ error: "inspectActivationIds must contain 1 to 20 unique IDs" });
-      }
-      const payloads = coordinationV3.activationPayloads(author.id, inspectActivationIds, capability.runId);
-      if (payloads.length !== inspectActivationIds.length) {
-        return reply.code(404).send({ error: "one or more activation references are not attached to this run" });
-      }
-      return { activations: payloads };
     }
     const commonDelegations = body.delegations ?? (hasSingleDelegation ? [{
       recipientAgentId: body.recipientAgentId,
@@ -7536,6 +7713,17 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const globalInstructions = workspacePreferences.globalInstructions.trim();
       const operatorProfile = workspacePreferences.profile;
       const projectInstructions = project.instructions?.trim() ?? "";
+      const providerDynamicTools = [
+        PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_DECISION_TOOL, PONDEROSA_MANAGE_TOOL,
+        PONDEROSA_COORDINATE_TOOL, PONDEROSA_RESULT_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL,
+        PONDEROSA_MESSAGE_TOOL, PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_CONTEXT_TOOL,
+        ...PONDEROSA_BROWSER_TOOLS,
+      ];
+      const toolContractHash = createHash("sha256").update(JSON.stringify({
+        tools: providerDynamicTools,
+        providerDefinitions: ["codex-app-server:dynamic-tools-v1", "claude-sdk:mcp-tools-v1"],
+        promptContract: communicationV3Prompt(),
+      })).digest("hex");
       const managedRules = contextSection("POLICY · SESSION SNAPSHOT", "AUTHORITATIVE", [
         "Ponderosa instruction precedence: runtime identity, security, communication, and capability rules are authoritative; then global rules; then Project rules; then Agent preset guidance; then the current work request.",
         `The local operator is ${operatorProfile.displayName} and their stable Ponderosa handle is #${operatorProfile.handle}. Address them as ${operatorProfile.displayName} unless they ask otherwise.`,
@@ -7545,7 +7733,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...communicationV3Prompt(),
       ]);
       const policySnapshotHash = createHash("sha256").update(JSON.stringify({
-        contract: "context-and-coordination-v3.4",
+        contract: "context-and-coordination-v3.4.2",
+        toolContractHash,
         globalInstructions,
         projectInstructions,
         operatorProfile,
@@ -7647,7 +7836,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           { kind: "identity" as const, ref: agent.id, delivery: "submitted" as const },
           {
             kind: "policy" as const,
-            ref: "ponderosa-policy:context-and-coordination-v3.4",
+            ref: "ponderosa-policy:context-and-coordination-v3.4.2",
             hash: policySnapshotHash,
             delivery: policyDelivery,
           },
@@ -7796,6 +7985,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         v3FencingToken: trackedV3FencingToken!,
         mentionDepth: mentionDepth ?? 0,
         mentionTrail,
+        reachableArtifactIds: manifestArtifactIds,
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
       });
@@ -7817,6 +8007,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             PONDEROSA_AGENT_DIRECTORY_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-directory`,
             PONDEROSA_AGENT_CONTEXT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-context`,
             PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
+            PONDEROSA_AGENT_RESULT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-results`,
             PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
             PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
             PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
@@ -7835,7 +8026,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: [PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_DECISION_TOOL, PONDEROSA_MANAGE_TOOL, PONDEROSA_COORDINATE_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL, PONDEROSA_MESSAGE_TOOL, PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_CONTEXT_TOOL, ...PONDEROSA_BROWSER_TOOLS],
+              dynamicTools: providerDynamicTools,
               handleDynamicToolCall: async (call) => {
                 const browserOperation = call.name.startsWith("ponderosa_browser_")
                   ? call.name.slice("ponderosa_browser_".length)
@@ -7848,6 +8039,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   : {};
                 const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
                 const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
+                const isResult = call.name === PONDEROSA_RESULT_TOOL.name;
                 const contextQuery = new URLSearchParams();
                 if (typeof contextArguments.before === "string" && contextArguments.before.trim()) contextQuery.set("before", contextArguments.before.trim());
                 if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
@@ -7859,6 +8051,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   ? "/api/agent-management"
                   : call.name === PONDEROSA_COORDINATE_TOOL.name
                   ? "/api/agent-coordinate"
+                  : isResult
+                    ? "/api/agent-results"
                   : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
                     ? "/api/agent-request-updates"
                     : call.name === PONDEROSA_MESSAGE_TOOL.name

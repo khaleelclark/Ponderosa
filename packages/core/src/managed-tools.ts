@@ -26,7 +26,6 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
       { required: ["recipientAgentId", "text"] },
       { required: ["delegations"] },
       { required: ["requests"] },
-      { required: ["inspectActivationIds"] },
     ],
     properties: {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for the common delegation form." },
@@ -86,10 +85,33 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
           },
         },
       },
-      inspectActivationIds: {
+    },
+  },
+};
+
+/** Read-only retrieval for durable result references advertised to the current
+ * Run. The byte budget is provider-visible so models can paginate deliberately
+ * instead of discovering response-size limits through rejected calls. */
+export const PONDEROSA_RESULT_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_result",
+  description: "Retrieve durable result references that are reachable from the current authoritative Run. Use refs from fullResultRef or artifact references in this Run; references stay stable, while access is recomputed per Run. Results are ordered and paginated without creating Runs, Activations, Requests, Joins, messages, or artifacts.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["refs"],
+    properties: {
+      refs: {
         type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
-        items: { type: "string", minLength: 1, maxLength: 200 },
-        description: "Retrieve complete durable payloads for activation references supplied in the current run.",
+        items: { type: "string", pattern: "^ponderosa://(activation|artifact)/[^/]+$", maxLength: 260 },
+        description: "One to twenty stable ponderosa://activation/<id> or ponderosa://artifact/<id> references, in desired return order.",
+      },
+      cursor: {
+        type: "string", minLength: 1, maxLength: 4096,
+        description: "Opaque continuation cursor returned by the preceding call. Reuse it with the exact same refs and maxBytes.",
+      },
+      maxBytes: {
+        type: "integer", minimum: 4096, maximum: 262144,
+        description: "Overall raw-content byte budget for this page. Defaults to 65536 bytes; valid range is 4096 through 262144.",
       },
     },
   },

@@ -292,7 +292,7 @@ export function formatActivationPrompt(
     "Recipients do not inherit a requester's hidden prompt or provider-session context. Work only from the durable request payload and referenced artifacts; ask one blocking question when required information is genuinely absent.",
     "Keep bounded work bounded: inspect only what the request needs, verify once, publish one terminal result after work and edits are complete, then stop.",
     "For an outbound request, do not repeat or forward the recipient's update; consume its outcome directly. Only the requester or user may answer, cancel, or supersede it.",
-    "Full payloads remain durable. Use ponderosa_coordinate inspection when a fullResultRef is present.",
+    "Full payloads remain durable. Use ponderosa_result({refs:[fullResultRef]}) when an Activation advertises a fullResultRef; use its nextCursor to continue a paginated result.",
     ...materialized,
   ].join("\n");
 }
