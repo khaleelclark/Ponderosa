@@ -83,8 +83,8 @@ export function ProjectArtifactsView({
   const loading = projectArtifacts.isLoading
     || agents.some((agent) => !detailByAgentId.has(agent.id) || detailByAgentId.get(agent.id) === undefined);
 
-  return <Box sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
-    <Stack spacing={1.5} sx={{ maxWidth: 1040 }}>
+  return <Box sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
+    <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
       <Box>
         <Typography variant="h5" component="h2" fontWeight={800}>Project files</Typography>
         <Typography variant="body2" color="text.secondary">Documents, images, downloads, test results, and generated artifacts created across this project.</Typography>

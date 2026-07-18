@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { AgentHealthDto, ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -59,6 +59,18 @@ export function operatorInitials(displayName: string): string {
     ? words[0]!.slice(0, 2)
     : `${words[0]![0] ?? ""}${words.at(-1)?.[0] ?? ""}`;
   return initials.toLocaleUpperCase();
+}
+
+export function projectHealthPresentation(health: AgentHealthDto[] | undefined): {
+  label: string;
+  color: "success.main" | "info.main" | "warning.main" | "error.main" | "text.disabled";
+} {
+  if (!health) return { label: "Checking", color: "text.disabled" };
+  if (health.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
+  if (health.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
+  if (health.some((agent) => agent.status === "running" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
+  if (health.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
+  return { label: "Healthy", color: "success.main" };
 }
 
 function projectSnapshots(
@@ -237,7 +249,7 @@ export function WorkspaceSidebar({
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25 }} /></Tooltip>
-      <RailButton label="Home" selected={!showingAgents && !showingTriggers && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
+      <RailButton label="Home" selected={sidebarSection === "navigation" && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
       <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
@@ -381,13 +393,15 @@ export function WorkspaceSidebar({
   </Box>;
 
   const project = selected;
+  const selectedProjectIndex = project ? projects.findIndex((candidate) => candidate.id === project.project.id) : -1;
+  const projectHealth = projectHealthPresentation(selectedProjectIndex >= 0 ? healthQueries[selectedProjectIndex]?.data?.agents : undefined);
   const activeConversations = (project?.conversations ?? []).filter((conversation) => !conversation.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const filteredConversations = activeConversations.filter((conversation) => !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
   const grouped = (["Today", "Yesterday", "Earlier"] as const).map((group) => ({ group, conversations: filteredConversations.filter((conversation) => conversationGroup(conversation.updatedAt) === group) }));
 
   const chatsPanel = project ? <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
     <Stack direction="row" sx={{ alignItems: "center", px: 1.25, pt: 1.25 }}><Button size="small" color="inherit" startIcon={<ArrowBackIcon />} onClick={showProjects} sx={{ color: "text.secondary", justifyContent: "flex-start" }}>All Projects</Button><IconButton aria-label={`Project settings for ${project.project.label}`} onClick={() => onManageProject(project.project)} sx={{ ml: "auto" }}><MoreHorizIcon /></IconButton></Stack>
-    <Stack direction="row" sx={{ alignItems: "center", px: 2, py: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }} noWrap>{project.project.label}</Typography><Stack direction="row" spacing={.75} sx={{ alignItems: "center" }}><Typography variant="caption" color="primary.light">Healthy</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: "success.main" }} /></Stack></Stack>
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1, minWidth: 0 }} noWrap>{project.project.label}</Typography><Stack direction="row" spacing={.75} sx={{ alignItems: "center", flexShrink: 0 }}><Typography variant="caption" sx={{ color: projectHealth.color }}>{projectHealth.label}</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} /></Stack></Stack>
     <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Project Chats" inputProps={{ "aria-label": "Search Project Chats" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Box component="kbd" sx={{ px: .75, py: .35, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>⌘K</Box> }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") onSearch?.(); }} /><Button fullWidth variant="contained" startIcon={<AddIcon />} onClick={() => void createChat(project.project)} sx={{ justifyContent: "flex-start" }}>New Project Chat</Button></Stack>
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
       {grouped.map(({ group, conversations }) => conversations.length ? <Box key={group} component="section" sx={{ mb: 1.75 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>{group}</Typography><List disablePadding>{conversations.map((conversation) => {

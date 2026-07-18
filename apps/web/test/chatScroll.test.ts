@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import {
   individualChatSenderLabel,
+  chatMessageLayoutKey,
   isLongChatMessage,
   isChatNearBottom,
   replyFallbackText,
@@ -33,6 +34,13 @@ describe("scrollChatToBottom", () => {
   it("offers an explicit return to the latest message only after scrolling away", () => {
     expect(renderToStaticMarkup(createElement(ScrollToLatestButton, { visible: true, onClick: vi.fn() }))).toContain('aria-label="Jump to latest message"');
     expect(renderToStaticMarkup(createElement(ScrollToLatestButton, { visible: false, onClick: vi.fn() }))).toBe("");
+  });
+
+  it("keeps a stable layout key across cache-array refreshes and changes it only for rendered growth", () => {
+    const message = { id: "message-1", text: "Hello", createdAt: "2026-07-18T00:00:00.000Z" };
+    expect(chatMessageLayoutKey([message])).toBe(chatMessageLayoutKey([{ ...message }]));
+    expect(chatMessageLayoutKey([message, { ...message, id: "message-2" }])).not.toBe(chatMessageLayoutKey([message]));
+    expect(chatMessageLayoutKey([{ ...message, text: "Hello again" }])).not.toBe(chatMessageLayoutKey([message]));
   });
 });
 

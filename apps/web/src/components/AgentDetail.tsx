@@ -538,6 +538,7 @@ export function AgentDetail({
     })} onReply={setReplyTo} /></Box>,
     runOutput: <WorkLogPane
       entries={detail.runOutput}
+      projectId={detail.agent.projectId}
       onOpenFile={(file: ResponseFileActivityDto) => {
         if (file.artifactId) {
           writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);

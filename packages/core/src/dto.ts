@@ -394,6 +394,8 @@ export interface ResponseFileActivityDto {
   sourceSeq: number;
   /** Canonical persisted Artifact projection for the source event, when available. */
   artifactId?: string;
+  /** Distinguishes a downloadable generated result from an execution diff. */
+  artifactKind?: ArtifactKind;
   /** True only when the persisted artifact contains a focused textual diff. */
   previewable: boolean;
   /** Unified-diff line totals when the engine supplied a textual diff. */

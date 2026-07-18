@@ -381,6 +381,25 @@ export function isChatNearBottom(
   return element.scrollHeight - element.clientHeight - element.scrollTop <= CHAT_BOTTOM_THRESHOLD;
 }
 
+/**
+ * Stable layout signal for chat follow-mode. Query refreshes often allocate a
+ * new message array even when its rendered content is unchanged; using that
+ * array as an effect dependency makes a reader who scrolled up fight repeated
+ * scroll-to-bottom writes.
+ */
+export function chatMessageLayoutKey(messages: ReadonlyArray<{
+  id: string;
+  text: string;
+  createdAt: string;
+  attachments?: readonly unknown[];
+  fileActivity?: readonly unknown[];
+}>): string {
+  const last = messages.at(-1);
+  return last
+    ? `${messages.length}:${last.id}:${last.createdAt}:${last.text.length}:${last.attachments?.length ?? 0}:${last.fileActivity?.length ?? 0}`
+    : "0";
+}
+
 export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "scrollTop">): void {
   element.scrollTop = element.scrollHeight;
 }
@@ -716,6 +735,7 @@ export function ChatPane({
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
   );
+  const messageLayoutKey = chatMessageLayoutKey(chatMessages);
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowNewMessages = useRef(true);
   const restoredScrollKey = useRef<string>();
@@ -737,7 +757,7 @@ export function ChatPane({
       scrollChatToBottom(scrollRef.current);
       setShowScrollToLatest(false);
     }
-  }, [chatMessages, scrollStorageKey]);
+  }, [messageLayoutKey, scrollStorageKey]);
 
   return (
     <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0 }}>
@@ -786,8 +806,8 @@ export function ChatPane({
           }}
         >
           <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
-            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#22312B" : "#F1EEE5", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-            <Box sx={{ minWidth: 0, width: fromUser ? "min(78%, 780px)" : "min(100%, 960px)" }}>
+            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+            <Box sx={{ minWidth: 0, width: fromUser ? "fit-content" : "min(100%, 960px)", maxWidth: fromUser ? "min(78%, 780px)" : "100%" }}>
               {!fromUser ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
                 <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
                 <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
@@ -799,7 +819,7 @@ export function ChatPane({
                   px: fromUser ? { xs: 1.25, sm: 1.5 } : 0,
                   py: fromUser ? { xs: 1, sm: 1.15 } : 0,
                   borderRadius: 2,
-                  bgcolor: fromUser ? (theme) => theme.palette.mode === "dark" ? "#24352E" : "#F1EEE5" : "transparent",
+                  bgcolor: fromUser ? (theme) => theme.palette.mode === "dark" ? "#27332F" : "#EFF0EB" : "transparent",
                   color: "text.primary",
                   border: 0,
                 }}
@@ -936,10 +956,12 @@ export function ResponseFileActivity({
   files,
   onOpenFile,
   onViewAll,
+  projectId,
 }: {
   files: ResponseFileActivityDto[];
   onOpenFile?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
+  projectId?: string;
 }): JSX.Element | null {
   if (files.length === 0) return null;
   const additions = files.reduce((total, file) => total + (file.additions ?? 0), 0);
@@ -962,20 +984,29 @@ export function ResponseFileActivity({
           </Stack>
         </Box>
         <Stack spacing={0.25} sx={{ px: 0.5, pb: 0.5 }}>
-          {files.map((file) => <Button
-            key={`${file.sourceSeq}:${file.path}`}
-            size="small"
-            color="inherit"
-            onClick={() => onOpenFile?.(file)}
-            disabled={!onOpenFile}
-            aria-label={file.previewable ? `Open focused diff for ${file.path}` : `Open file artifact for ${file.path}`}
-            sx={{ display: "flex", width: "100%", justifyContent: "flex-start", textTransform: "none", minHeight: 30, px: 0.75, py: 0.25, textAlign: "left" }}
-          >
-            <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
-              {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & results"}
-            </Typography>
-          </Button>)}
+          {files.map((file) => {
+            const generated = file.artifactKind === "generated_file" && file.artifactId && projectId;
+            const root = generated ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}` : undefined;
+            return <Stack key={`${file.sourceSeq}:${file.path}`} direction="row" sx={{ alignItems: "center", minWidth: 0 }}>
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => onOpenFile?.(file)}
+                disabled={!onOpenFile}
+                aria-label={file.previewable ? `Open focused diff for ${file.path}` : `Open file artifact for ${file.path}`}
+                sx={{ display: "flex", flex: 1, minWidth: 0, justifyContent: "flex-start", textTransform: "none", minHeight: 30, px: 0.75, py: 0.25, textAlign: "left" }}
+              >
+                <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
+                  {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & results"}
+                </Typography>
+              </Button>
+              {root ? <>
+                <Button size="small" component="a" href={`${root}/preview`} target="_blank" rel="noreferrer" sx={{ minWidth: 0, px: .75 }}>Preview</Button>
+                <Button size="small" component="a" href={`${root}/download`} download sx={{ minWidth: 0, px: .75 }}>Download</Button>
+              </> : null}
+            </Stack>;
+          })}
         </Stack>
       </Paper>
       {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review all</Button> : null}
@@ -983,10 +1014,11 @@ export function ResponseFileActivity({
   </Box>;
 }
 
-export function WorkLogPane({ entries, onOpenFile, onViewAll }: {
+export function WorkLogPane({ entries, onOpenFile, onViewAll, projectId }: {
   entries: RunOutputDto[];
   onOpenFile?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
+  projectId?: string;
 }): JSX.Element {
   const ordered = [...entries].sort((a, b) => a.seq - b.seq);
   return (
@@ -1007,7 +1039,7 @@ export function WorkLogPane({ entries, onOpenFile, onViewAll }: {
             {entry.text}
           </Typography>
           {entry.kind === "response" && entry.fileActivity?.length
-            ? <ResponseFileActivity files={entry.fileActivity} onOpenFile={onOpenFile} onViewAll={onViewAll} />
+            ? <ResponseFileActivity files={entry.fileActivity} onOpenFile={onOpenFile} onViewAll={onViewAll} projectId={projectId} />
             : null}
         </Paper>
       ))}
@@ -2186,7 +2218,7 @@ export function Composer({
             maxRows={5}
             sx={{
               "& .MuiInputBase-root": { alignItems: "flex-end", bgcolor: "transparent", px: 0.25, pb: 0.5 },
-              "& textarea": { fontSize: 15, lineHeight: "22px" },
+              "& textarea": { fontSize: 15, lineHeight: "22px", maxHeight: "110px !important", overflowY: "auto !important" },
             }}
             InputProps={{ disableUnderline: true }}
             value={text}

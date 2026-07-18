@@ -858,6 +858,25 @@ describe("AgentStore — append + projection", () => {
     expect(store.getArtifacts(agentId).find((artifact) => artifact.id === id)).toMatchObject({ visibility: "published", pinned: true });
   });
 
+  it("links response file activity to the downloadable generated result instead of its diff", () => {
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-generated" });
+    store.appendEvent(agentId, { type: "file_change", path: "outputs/report.md", kind: "create", diff: "+report" });
+    store.appendEvent(agentId, {
+      type: "generated_artifact", artifactId: "generated-result", executionId: "run-generated",
+      path: "generated/report.md", sourcePath: "outputs/report.md", name: "report.md",
+      mediaType: "text/markdown", size: 7, visibility: "project",
+    });
+
+    expect(store.getResponseFileActivity(agentId, "run-generated", "completed")).toEqual([
+      expect.objectContaining({
+        path: "outputs/report.md",
+        artifactId: "generated-result",
+        artifactKind: "generated_file",
+      }),
+    ]);
+  });
+
   it("projects a full run into Chat, Work log, Runs, and Artifacts", () => {
     const { projectId, agentId } = seedAgent();
     for (const ev of RUN) store.appendEvent(agentId, ev);
@@ -873,7 +892,7 @@ describe("AgentStore — append + projection", () => {
       sourceSeqEnd: 8,
       fileActivity: [{
         path: "auth.ts", kind: "edit", status: "completed", sourceSeq: 7,
-        artifactId: `${agentId}:a:7:0`, previewable: true,
+        artifactId: `${agentId}:a:7:0`, artifactKind: "diff", previewable: true,
       }],
     })]);
     expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);

@@ -34,16 +34,19 @@ describe("WorkLogPane", () => {
   });
 
   it("labels unpreviewable files for the Files & results fallback without rendering a diff", () => {
-    const html = renderToStaticMarkup(<WorkLogPane entries={[{
+    const html = renderToStaticMarkup(<WorkLogPane projectId="project" entries={[{
       id: "binary", agentId: "agent", executionId: "run-3", kind: "response", text: "Generated image",
       completed: true, seq: 10, sourceSeqStart: 9, sourceSeqEnd: 10, createdAt: "2026-07-12T01:00:03.000Z",
       fileActivity: [{
         path: "result.png", kind: "create", status: "completed", sourceSeq: 9,
-        artifactId: "agent:a:9:0", previewable: false,
+        artifactId: "generated-9", artifactKind: "generated_file", previewable: false,
       }],
     }]} />);
     expect(html).toContain("Open file artifact for result.png");
     expect(html).toContain("Files &amp; results");
+    expect(html).toContain("Preview");
+    expect(html).toContain("Download");
+    expect(html).toContain("/api/projects/project/artifacts/generated-9/download");
     expect(html).not.toContain("diff --git");
   });
 });
