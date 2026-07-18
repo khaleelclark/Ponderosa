@@ -722,9 +722,10 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
+export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
   text: string;
   citations?: VerifiedCitationDto[];
+  collapseLongMessage?: boolean;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
@@ -732,7 +733,7 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentio
   previewScope?: LinkPreviewScope;
   projectId?: string;
 }): JSX.Element {
-  const collapsible = isLongChatMessage(text);
+  const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
   return (
     <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0 }}>
@@ -917,6 +918,7 @@ export function ChatPane({
             <ChatMessageBody
               text={message.text}
               citations={message.citations}
+              collapseLongMessage={fromUser}
               agentIdForHandle={agentIdForHandle}
               agentMentionForHandle={(handle) => {
                 const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
@@ -1873,6 +1875,7 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
 export function Composer({
   disabled,
   running,
+  allowSendWhileRunning = false,
   placeholder,
   projectId,
   mentionHandles,
@@ -1885,6 +1888,8 @@ export function Composer({
   allowUnmentionedSend = true,
   onSend,
   onQueue,
+  preferQueue = false,
+  queuedMentionHandles,
   agentResponding = false,
   onCancel,
   replyTo,
@@ -1898,6 +1903,8 @@ export function Composer({
 }: {
   disabled: boolean;
   running: boolean;
+  /** Keep the composer available while other Agents in this shared chat are working. */
+  allowSendWhileRunning?: boolean;
   placeholder?: string;
   /** Project scope used by `@` file/folder reference autocomplete. */
   projectId?: string;
@@ -1919,6 +1926,10 @@ export function Composer({
   onSend(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
   /** Explicitly enqueue this draft instead of steering the active agent turn. */
   onQueue?(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
+  /** Make the primary send action enqueue while this direct Agent already has pending work. */
+  preferQueue?: boolean;
+  /** Agent handles whose existing pending work should make a targeted follow-up enqueue by default. */
+  queuedMentionHandles?: string[];
   /** Canonical server-owned activity; used only to reveal the explicit Queue action. */
   agentResponding?: boolean;
   onCancel?(): void;
@@ -1965,17 +1976,23 @@ export function Composer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
+  const queuedHandles = new Set((queuedMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
+  const mentionedAgentsWithQueues = mentionedHandles.filter((handle) => queuedHandles.has(handle.toLocaleLowerCase()));
+  const defaultsToQueue = Boolean(onQueue) && (preferQueue || (
+    mentionedHandles.length > 0 && mentionedAgentsWithQueues.length === mentionedHandles.length
+  ));
+  const composerLocked = running && !allowSendWhileRunning;
   const busyHandles = new Set((busyMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedBusyHandles = mentionedHandles.filter((handle) => busyHandles.has(handle.toLocaleLowerCase()));
   const textCanSend = canSubmitComposerText({
     text: submissionText,
     disabled,
-    running,
+    running: composerLocked,
     allowUnmentionedSend,
     mentionedHandles,
     mentionedBusyHandles,
   });
-  const canSend = textCanSend || (!disabled && !running && allowUnmentionedSend && files.length > 0);
+  const canSend = textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0);
   const canCancel = running && Boolean(onCancel);
 
   useEffect(() => {
@@ -2243,11 +2260,12 @@ export function Composer({
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
       .finally(() => { sendingRef.current = false; });
   };
-  const send = () => submit(onSend);
+  const steer = () => submit(onSend);
   const queue = () => {
     if (!onQueue) return;
     submit(onQueue);
   };
+  const send = () => defaultsToQueue ? queue() : steer();
   const showQueue = Boolean(onQueue) && shouldShowQueueControl({
     text: submissionText,
     hasAttachments: files.length > 0,
@@ -2327,7 +2345,7 @@ export function Composer({
           aria-haspopup="menu"
           aria-expanded={Boolean(capabilityMenuAnchor)}
           aria-controls={capabilityMenuAnchor ? capabilityListId : undefined}
-          disabled={disabled || running}
+          disabled={disabled || composerLocked}
           onClick={(event) => {
             setCapabilityFilter("");
             setCapabilityMenuAnchor(event.currentTarget);
@@ -2406,8 +2424,8 @@ export function Composer({
             InputProps={{ disableUnderline: true }}
             value={text}
             inputRef={inputRef}
-            disabled={disabled || running}
-            placeholder={running ? "Agent is working" : (placeholder ?? "Send a message")}
+            disabled={disabled || composerLocked}
+            placeholder={composerLocked ? "Agent is working" : (placeholder ?? "Send a message")}
             inputProps={{
               "aria-label": "Message",
               enterKeyHint: "send",
@@ -2424,7 +2442,7 @@ export function Composer({
               setSuppressMenu(false);
             }}
             onPaste={(event) => {
-              if (disabled || running) return;
+              if (disabled || composerLocked) return;
               if (attachmentsEnabled) {
                 const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
                 if (pasted.length > 0) {
@@ -2533,33 +2551,33 @@ export function Composer({
           </Popper>
         </Box>
         {showQueue ? (
-          <Tooltip title="Steer the active response">
+          <Tooltip title={defaultsToQueue ? "Send after the active response finishes" : "Steer the active response"}>
             <span>
               <Button
                 size="small"
                 variant="contained"
                 disabled={!canSend}
                 onClick={send}
-                aria-label="Steer active response"
+                aria-label={defaultsToQueue ? "Queue message" : "Steer active response"}
                 sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
               >
-                Steer
+                {defaultsToQueue ? "Queue" : "Steer"}
               </Button>
             </span>
           </Tooltip>
         ) : null}
         {showQueue ? (
-          <Tooltip title="Send after the active response finishes">
+          <Tooltip title={defaultsToQueue ? "Steer the active response" : "Send after the active response finishes"}>
             <span>
               <Button
                 size="small"
                 variant="outlined"
                 disabled={!canSend}
-                onClick={queue}
-                aria-label="Queue message"
+                onClick={defaultsToQueue ? steer : queue}
+                aria-label={defaultsToQueue ? "Steer active response" : "Queue message"}
                 sx={{ minHeight: 40, px: 1.5 }}
               >
-                Queue
+                {defaultsToQueue ? "Steer" : "Queue"}
               </Button>
             </span>
           </Tooltip>
@@ -2570,7 +2588,8 @@ export function Composer({
               <StopCircleIcon />
             </IconButton>
           </Tooltip>
-        ) : showQueue ? null : (
+        ) : null}
+        {!showQueue && (!canCancel || allowSendWhileRunning) ? (
           <Tooltip title="Send">
             <span>
               <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"} sx={{ minWidth: 44, minHeight: 44 }}>
@@ -2578,7 +2597,7 @@ export function Composer({
               </IconButton>
             </span>
           </Tooltip>
-        )}
+        ) : null}
       </Stack>
     </Paper>
   );

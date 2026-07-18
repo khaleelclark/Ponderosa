@@ -881,6 +881,7 @@ export function AgentDetail({
             return submitAgentMessage("steer")(text, files);
           }}
           onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
+          preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}
           onCancel={() => stopActiveRun()}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(undefined)}

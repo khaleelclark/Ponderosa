@@ -10,6 +10,7 @@ describe("composer surface ownership", () => {
   it("keeps the full shared composer in direct Agent chat with an explicit running-agent queue", () => {
     expect(agentDetail).toContain("controls={agentRuntimeControls}");
     expect(agentDetail).toContain('onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}');
+    expect(agentDetail).toContain('preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}');
     expect(agentDetail).toContain("agentResponding={Boolean(runtimeActivity)}");
     expect(agentDetail).toContain('{tab === "chat" ? <Box');
     expect(agentDetail).toContain('<Box sx={{ minWidth: 0 }}>\n        <BrowserPanel');
@@ -42,11 +43,19 @@ describe("composer surface ownership", () => {
   });
 
   it("keeps the active-turn actions explicit and presents chat as an open transcript", () => {
-    expect(panes).toContain('aria-label="Steer active response"');
+    expect(panes).toContain('aria-label={defaultsToQueue ? "Queue message" : "Steer active response"}');
     expect(panes).toContain('showTimestamp={fromUser}');
     expect(conversation).toContain('justifyContent: fromManager ? "flex-end" : "flex-start"');
     expect(conversation).toContain('width: fromManager ? "fit-content" : "min(100%, 960px)"');
     expect(conversation).toContain('maxWidth: fromManager ? "min(78%, 780px)" : "100%"');
     expect(conversation).toContain('showTimestamp={fromManager}');
+  });
+
+  it("keeps an existing queue sticky without blocking concurrent Project chat work", () => {
+    expect(panes).toContain("const send = () => defaultsToQueue ? queue() : steer();");
+    expect(panes).toContain("const composerLocked = running && !allowSendWhileRunning;");
+    expect(conversation).toContain("allowSendWhileRunning");
+    expect(conversation).toContain("queuedMentionHandles={(queuedMessagesQuery.data ?? []).flatMap");
+    expect(conversation).toContain("disabled={busy}");
   });
 });
