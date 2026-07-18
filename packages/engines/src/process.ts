@@ -7,6 +7,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentEvent } from "@ponderosa/core";
 import { parseJsonlChunks } from "./jsonl.js";
+import { terminateProcessGroup } from "./process-termination.js";
 
 /** A minimal spawn signature so tests can inject a fake CLI. */
 export type SpawnFn = typeof nodeSpawn;
@@ -97,15 +98,23 @@ export async function* streamProcess(
     stderrTail = (stderrTail + d).slice(-8192);
   });
 
-  let killTimer: NodeJS.Timeout | undefined;
+  let termination: Promise<void> | undefined;
+  const terminate = (): Promise<void> => {
+    if (termination) return termination;
+    termination = terminateProcessGroup(child, {
+      label: `${label} run`,
+      termGraceMs: killGraceMs,
+    });
+    // The generator awaits this barrier below. Observe an early rejection now
+    // so an AbortSignal callback cannot create an unhandled promise first.
+    void termination.catch(() => undefined);
+    return termination;
+  };
   const onAbort = (): void => {
-    signalRun(child, "SIGTERM");
-    killTimer = setTimeout(() => {
-      signalRun(child, "SIGKILL");
-    }, killGraceMs);
-    killTimer.unref?.();
+    void terminate();
   };
   signal.addEventListener("abort", onAbort);
+  if (signal.aborted) onAbort();
 
   // spawn errors (e.g. CLI not installed) surface as an 'error' on the child.
   let spawnError: Error | undefined;
@@ -126,6 +135,10 @@ export async function* streamProcess(
     }
 
     const code = await waitForClose(child);
+    // Root exit is insufficient: commands spawned by the CLI can remain in
+    // the detached process group. Resolve the Run only after the whole group
+    // is observed gone, escalating through SIGKILL when required.
+    await terminate();
 
     if (spawnError) {
       yield { type: "error", message: `failed to spawn ${bin}: ${spawnError.message}` };
@@ -140,7 +153,7 @@ export async function* streamProcess(
     }
   } finally {
     signal.removeEventListener("abort", onAbort);
-    if (killTimer) clearTimeout(killTimer);
+    await terminate();
   }
 }
 
@@ -153,19 +166,6 @@ function processSnapshot(child: ChildProcess): ProcessStreamSnapshot {
     stdoutOpen: Boolean(child.stdout && !child.stdout.destroyed),
     stderrOpen: Boolean(child.stderr && !child.stderr.destroyed),
   };
-}
-
-/** Signal the entire run, including commands spawned by the agent CLI. */
-function signalRun(child: ChildProcess, signal: NodeJS.Signals): void {
-  try {
-    if (process.platform !== "win32" && child.pid) {
-      process.kill(-child.pid, signal);
-    } else {
-      child.kill(signal);
-    }
-  } catch {
-    /* process already exited */
-  }
 }
 
 /** Resolve with the process exit code once it has fully closed (or failed to spawn). */

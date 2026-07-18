@@ -12,7 +12,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
-import { ClaudeStreamSession } from "@ponderosa/engines";
+import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 
@@ -716,14 +716,23 @@ class MockAdapter implements Adapter {
 class TestEventQueue implements AsyncIterable<AgentEvent> {
   private values: AgentEvent[] = [];
   private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
+  private closed = false;
   push(value: AgentEvent): void {
+    if (this.closed) return;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value, done: false }); else this.values.push(value);
+  }
+  close(): void {
+    this.closed = true;
+    this.values = [];
+    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
   }
   [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
     return { next: () => {
       const value = this.values.shift();
-      return value ? Promise.resolve({ value, done: false }) : new Promise((resolve) => this.waiters.push(resolve));
+      return value ? Promise.resolve({ value, done: false })
+        : this.closed ? Promise.resolve({ value: undefined, done: true })
+        : new Promise((resolve) => this.waiters.push(resolve));
     } };
   }
 }
@@ -737,6 +746,7 @@ class SteerableMockAdapter extends MockAdapter {
   interrupted = 0;
   closeFailuresRemaining = 0;
   closeBarrier?: Promise<void>;
+  openBarrier?: Promise<void>;
   failNextSteer = false;
   completeStartedTurns = false;
   completeSteers = true;
@@ -750,6 +760,7 @@ class SteerableMockAdapter extends MockAdapter {
   async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
     this.opened += 1;
     this.openedOptions.push(opts);
+    await this.openBarrier;
     const queue = new TestEventQueue();
     this.queues.push(queue);
     queue.push({ type: "session", sessionId: "persistent-session" });
@@ -785,6 +796,7 @@ class SteerableMockAdapter extends MockAdapter {
           this.closeFailuresRemaining -= 1;
           throw new Error("simulated provider close failure");
         }
+        queue.close();
       },
     };
   }
@@ -813,6 +825,37 @@ function stubbornProcessAdapter(children: ChildProcess[], killGraceMs = 80): Ada
         return child;
       }) as unknown as typeof spawn,
     }),
+  };
+}
+
+function stubbornOneShotAdapter(children: ChildProcess[], pidFile: string, killGraceMs = 120): Adapter {
+  const fake = fileURLToPath(new URL("../../../packages/engines/test/fake-stubborn-run.mjs", import.meta.url));
+  const fallback = new MockAdapter();
+  const execute = (opts: SeedOptions | ContinueOptions): AsyncIterable<AgentEvent> => streamProcess({
+    bin: process.execPath,
+    args: [fake],
+    cwd: opts.cwd,
+    signal: opts.signal,
+    environment: { ...opts.environment, PONDEROSA_TEST_DESCENDANT_PID_FILE: pidFile },
+    killGraceMs,
+    label: "stubborn one-shot",
+    spawnFn: ((_bin: string, _args: readonly string[], spawnOptions: object) => {
+      const child = spawn(process.execPath, [fake], spawnOptions);
+      children.push(child);
+      return child;
+    }) as unknown as typeof spawn,
+    map: (raw) => (raw as { type?: string }).type === "ready"
+      ? [{ type: "session", sessionId: "stubborn-one-shot" }]
+      : [],
+  });
+  return {
+    id: "codex",
+    displayName: "Stubborn one-shot runtime",
+    listModels: () => fallback.listModels(),
+    listEfforts: () => fallback.listEfforts(),
+    apiPriceProfile: () => fallback.apiPriceProfile(),
+    seed: execute,
+    continue: execute,
   };
 }
 
@@ -2429,6 +2472,99 @@ describe("persistent engine steering", () => {
     expect(processAlive(pid)).toBe(false);
   });
 
+  it("awaits non-persistent Run completion until a stubborn descendant exits", async () => {
+    const children: ChildProcess[] = [];
+    const pidFile = path.join(dataDir, "one-shot-descendant.json");
+    engines = [{ adapter: stubbornOneShotAdapter(children, pidFile), authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Observed one-shot shutdown", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "One shot", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow());
+    const descendantPid = JSON.parse(readFileSync(pidFile, "utf8")) as { descendantPid: number };
+
+    const closing = app.close();
+    let settled = false;
+    void closing.then(() => { settled = true; }, () => { settled = true; });
+    await sleep(25);
+    expect(settled).toBe(false);
+    expect(processAlive(descendantPid.descendantPid)).toBe(true);
+    await closing;
+    expect(processAlive(descendantPid.descendantPid)).toBe(false);
+    expect(children[0]?.exitCode).not.toBeNull();
+  });
+
+  it("drains a provider that finishes opening after Project deletion begins", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseOpen!: () => void;
+    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Delete during open", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Opening", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Open slowly" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+
+    const deletion = app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    let settled = false;
+    void deletion.then(() => { settled = true; });
+    await sleep(25);
+    expect(settled).toBe(false);
+    expect(store.getProject(project.id)).toBeDefined();
+    releaseOpen();
+
+    const deleted = await deletion;
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(persistent.closed).toBe(1);
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("drains a provider that finishes opening after server shutdown begins", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseOpen!: () => void;
+    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Shutdown during open", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Opening", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Open slowly" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+
+    const closing = app.close();
+    let settled = false;
+    void closing.then(() => { settled = true; }, () => { settled = true; });
+    await sleep(25);
+    expect(settled).toBe(false);
+    releaseOpen();
+    await closing;
+    expect(persistent.closed).toBe(1);
+  });
+
+  it("revokes provider authority even when an earlier shutdown cleanup fails", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      shutdownFaults: { backgroundCleanup: () => { throw new Error("injected watcher shutdown failure"); } },
+    });
+    const project = store.createProject({ label: "Independent provider cleanup", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Warm", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "finish" } });
+    await waitForRun(agent.id);
+
+    await expect(app.close()).rejects.toThrow(/Ponderosa server shutdown did not complete/);
+    expect(persistent.closed).toBe(1);
+  });
+
   it("attempts every runtime barrier before reporting aggregate shutdown failure", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
@@ -2446,7 +2582,7 @@ describe("persistent engine steering", () => {
       await waitForRun(agent.id);
     }
     persistent.closeFailuresRemaining = 1;
-    await expect(app.close()).rejects.toThrow(/Provider runtime shutdown did not complete/);
+    await expect(app.close()).rejects.toThrow(/Ponderosa server shutdown did not complete/);
     expect(persistent.closed).toBe(2);
     await app.retryProviderRuntimeShutdown();
     expect(persistent.closed).toBe(3);
