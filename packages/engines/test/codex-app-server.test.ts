@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,11 @@ import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsag
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const processAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+};
 
 describe("Codex app-server persistent runtime", () => {
   it("injects canonical history into the first turn of a fresh persistent session", async () => {
@@ -115,6 +120,31 @@ describe("Codex app-server persistent runtime", () => {
       },
     ]);
     await session.close();
+  });
+
+  it("shares shutdown close and waits for observed SIGKILL exit when SIGTERM is ignored", async () => {
+    const controller = new AbortController();
+    let child: ChildProcess | undefined;
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => {
+      child = spawn(process.execPath, [fake], opts);
+      return child;
+    }) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "stubborn-codex", cwd: here, history: [], signal: controller.signal,
+      bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 80,
+      environment: { PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
+    });
+    const pid = child!.pid!;
+    controller.abort();
+    const shutdownClose = session.close();
+    expect(session.close()).toBe(shutdownClose);
+    let settled = false;
+    void shutdownClose.then(() => { settled = true; }, () => { settled = true; });
+    await sleep(20);
+    expect(settled).toBe(false);
+    expect(processAlive(pid)).toBe(true);
+    await shutdownClose;
+    expect(processAlive(pid)).toBe(false);
   });
 
   it("costs the first resumed turn from per-request checkpoints when no cumulative baseline is replayed", async () => {

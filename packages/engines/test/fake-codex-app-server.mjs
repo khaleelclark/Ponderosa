@@ -3,6 +3,7 @@ import readline from "node:readline";
 const lines = readline.createInterface({ input: process.stdin });
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 let dynamicToolEnabled = false;
+if (process.env.PONDEROSA_TEST_IGNORE_SIGTERM === "1") setInterval(() => undefined, 1_000);
 
 lines.on("line", (line) => {
   const message = JSON.parse(line);
@@ -58,4 +59,9 @@ lines.on("line", (line) => {
   }
   if (message.method === "turn/interrupt") return send({ id: message.id, result: {} });
   send({ id: message.id, error: { code: -32601, message: `unknown method ${message.method}` } });
+});
+
+process.on("SIGTERM", () => {
+  if (process.env.PONDEROSA_TEST_IGNORE_SIGTERM === "1") return;
+  process.exit(0);
 });

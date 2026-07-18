@@ -266,8 +266,9 @@ Ordinary runtime output → execution-scoped Work log
   transaction; a changed spawn or reporting edge returns `409` and deletes
   nothing. Once deletion commits, a durable receipt makes retries report success
   while filesystem/runtime cleanup completes idempotently. Provider runtime
-  handles remain retryable until close succeeds; a failed close keeps cleanup
-  pending and raises an operational notification. Cleanup failure must never
+  handles remain retryable until the operating system reports the complete
+  process group exited; sending SIGTERM alone is not success. A failed close
+  keeps cleanup pending and raises an operational notification. Cleanup failure must never
   make a committed deletion look rolled back. Promotion or detachment is
   always an explicit user action performed before deletion. A user may separately enable per-Agent authority to cancel
   and delete descendant branches or rearrange reporting lines inside that
@@ -284,6 +285,9 @@ Ordinary runtime output → execution-scoped Work log
 - Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
+  `RuntimeSession.close()` is a process-group termination barrier: SIGTERM grace,
+  SIGKILL escalation, then observed exit. Daemon shutdown awaits that same shared
+  barrier and fails closed if authority cannot be revoked.
 - Explicit user cancellation targets the exact Run ID the caller observed and is
   terminal only for that Run and its claimed activation. A delayed or retried
   stop must return a conflict rather than cancel a successor Run. An accepted

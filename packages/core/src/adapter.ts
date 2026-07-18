@@ -148,6 +148,8 @@ export interface RuntimeSession {
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;
+  /** Resolve only after the owned provider process group has exited. A failed
+   * termination attempt rejects while retaining enough authority to retry. */
   close(): Promise<void>;
 }
 
