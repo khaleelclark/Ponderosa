@@ -8,6 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -55,6 +56,7 @@ import type {
   AgentRunStatus,
   AgentDetailDto,
   AgentDto,
+  AgentDeletionPreviewDto,
   PortableAgentHistoryMessageDto,
   AgentState,
   TokenUsageSummaryDto,
@@ -98,6 +100,12 @@ function revisedRenderedText(rendered: string, original: string, replacement: st
   if (original && rendered.endsWith(original)) return `${rendered.slice(0, -original.length)}${replacement}`.trimEnd();
   return replacement;
 }
+
+function fsyncDirectory(directory: string): void {
+  const descriptor = openSync(directory, "r");
+  try { fsyncSync(descriptor); }
+  finally { closeSync(descriptor); }
+}
 import {
   artifacts,
   agentPresets,
@@ -109,6 +117,7 @@ import {
   runs,
   workItems,
   agents,
+  agentDeletionTombstones,
   agentConversationMemberships,
 } from "./schema.js";
 import {
@@ -213,6 +222,7 @@ interface AgentJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  managementPermissions?: AgentDto["managementPermissions"];
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;
   spawnPrompt?: string;
@@ -225,6 +235,13 @@ export interface AgentSpawnOrigin {
   executionId: string;
   idempotencyKey: string;
   prompt?: string;
+}
+
+export class AgentDeletionConflictError extends Error {
+  constructor(readonly currentPreview: AgentDeletionPreviewDto) {
+    super("Agent organization changed after deletion preview");
+    this.name = "AgentDeletionConflictError";
+  }
 }
 
 type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
@@ -1642,6 +1659,10 @@ export class AgentStore {
     const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
     const model = preset?.model ?? input.model;
     const effort = preset?.effort ?? input.effort;
+    const managementPermissions: AgentDto["managementPermissions"] = {
+      allowAutomaticDescendantDeletion: input.managementPermissions?.allowAutomaticDescendantDeletion ?? false,
+      allowAutomaticDescendantReorganization: input.managementPermissions?.allowAutomaticDescendantReorganization ?? false,
+    };
     const record: AgentJson = {
       id,
       projectId,
@@ -1654,6 +1675,7 @@ export class AgentStore {
       createdAt: now,
       updatedAt: now,
       archived: false,
+      managementPermissions,
       spawnedByAgentId: origin?.agentId,
       spawnedByExecutionId: origin?.executionId,
       spawnPrompt: origin?.prompt,
@@ -1677,6 +1699,8 @@ export class AgentStore {
         createdAt: now,
         updatedAt: now,
         archived: 0,
+        allowAutomaticDescendantDeletion: managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
+        allowAutomaticDescendantReorganization: managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
         spawnedByAgentId: origin?.agentId ?? null,
         spawnedByExecutionId: origin?.executionId ?? null,
         spawnPrompt: origin?.prompt ?? null,
@@ -1756,6 +1780,10 @@ export class AgentStore {
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
+    const managementPermissions: AgentDto["managementPermissions"] = patch.managementPermissions ?? {
+      allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,
+      allowAutomaticDescendantReorganization: row.allowAutomaticDescendantReorganization === 1,
+    };
     if (archived && row.archived !== 1) {
       for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
         this.updateAgentOrganization(child.id, { managerAgentId: null });
@@ -1764,7 +1792,13 @@ export class AgentStore {
     }
     this.db
       .update(agents)
-      .set({ title, archived: archived ? 1 : 0, updatedAt: now })
+      .set({
+        title,
+        archived: archived ? 1 : 0,
+        allowAutomaticDescendantDeletion: managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
+        allowAutomaticDescendantReorganization: managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
+        updatedAt: now,
+      })
       .where(eq(agents.id, id))
       .run();
     // Keep the on-disk metadata (source of truth for these fields) in sync.
@@ -1773,6 +1807,7 @@ export class AgentStore {
       ...json,
       title,
       archived,
+      managementPermissions,
       updatedAt: now,
     });
     return this.rowToAgentDto(id);
@@ -1842,43 +1877,134 @@ export class AgentStore {
     return this.getAgent(id);
   }
 
-  /**
-   * Permanently delete an agent: its projection rows AND its on-disk canonical
-   * log directory (`agent.json`, `events.jsonl`, artifacts, attachments). This is
-   * a whole-agent removal — a deliberate user action, distinct from the
-   * append-only rule (which forbids mutating events *within* a live agent, not
-   * discarding an entire agent). Returns false if the agent didn't exist.
-   */
-  deleteAgent(id: string, beforeProjectionDelete?: (agentId: string) => void): boolean {
-    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    if (!row) return false;
-
-    for (const child of this.listAgents(row.projectId).filter((agent) => agent.managerAgentId === id)) {
-      this.deleteAgent(child.id, beforeProjectionDelete);
+  /** Compute the exact server-authoritative cascade the operator will confirm. */
+  previewAgentDeletion(rootAgentIds: string[]): AgentDeletionPreviewDto {
+    const requested = [...new Set(rootAgentIds)].sort();
+    if (requested.length < 1 || requested.length > 100) throw new Error("deletion requires 1 to 100 root Agent IDs");
+    const roots = requested.map((id) => this.getAgent(id));
+    if (roots.some((agent) => !agent)) throw new Error("agent not found");
+    const projectId = roots[0]!.projectId;
+    if (roots.some((agent) => agent!.projectId !== projectId)) throw new Error("deletion roots must belong to one Project");
+    const projectAgents = this.listAgents(projectId);
+    const byId = new Map(projectAgents.map((agent) => [agent.id, agent]));
+    const requestedSet = new Set(requested);
+    const normalizedRoots = roots.filter((agent) => {
+      let managerId = agent!.managerAgentId;
+      const visited = new Set<string>();
+      while (managerId && !visited.has(managerId)) {
+        if (requestedSet.has(managerId)) return false;
+        visited.add(managerId);
+        managerId = byId.get(managerId)?.managerAgentId;
+      }
+      return true;
+    }).map((agent) => agent!.id).sort();
+    const children = new Map<string, AgentDto[]>();
+    for (const agent of projectAgents) if (agent.managerAgentId) {
+      children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
     }
-
-    this.db.transaction((tx) => {
-      // Coordination V3 uses the same underlying SQLite connection. Its nested
-      // transaction is a savepoint, so join cancellation, recipient outcomes,
-      // pending-activation invalidation, and the agent projection deletion
-      // commit or roll back together.
-      beforeProjectionDelete?.(id);
-      tx.delete(events).where(eq(events.agentId, id)).run();
-      tx.delete(artifacts).where(eq(artifacts.agentId, id)).run();
-      tx.delete(workItems).where(eq(workItems.agentId, id)).run();
-      tx.delete(runs).where(eq(runs.agentId, id)).run();
-      this.client.prepare(`DELETE FROM provider_inputs WHERE agent_id = ?`).run(id);
-      tx.delete(messages).where(eq(messages.agentId, id)).run();
-      tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-      tx.delete(agents).where(eq(agents.id, id)).run();
+    const affectedIds = new Set<string>();
+    const visit = (id: string): void => {
+      if (affectedIds.has(id)) return;
+      affectedIds.add(id);
+      for (const child of children.get(id) ?? []) visit(child.id);
+    };
+    normalizedRoots.forEach(visit);
+    const affectedAgents = [...affectedIds].sort().map((id) => {
+      const agent = byId.get(id)!;
+      return { id: agent.id, title: agent.title, ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}) };
     });
+    const previewHash = createHash("sha256").update(JSON.stringify({
+      projectId,
+      rootAgentIds: normalizedRoots,
+      affectedAgents: affectedAgents.map((agent) => ({
+        id: agent.id,
+        title: agent.title,
+        managerAgentId: agent.managerAgentId ?? null,
+      })),
+    })).digest("hex");
+    return { projectId, rootAgentIds: normalizedRoots, affectedAgents, previewHash };
+  }
 
-    // Remove the on-disk agent directory (the canonical log lives here).
-    rmSync(agentDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+  /**
+   * Validate and permanently delete every confirmed subtree in one SQLite
+   * transaction. Canonical directories are first renamed to hidden tombstones;
+   * a crash can therefore never resurrect a committed deletion during rebuild.
+   */
+  deleteAgentSubtrees(
+    rootAgentIds: string[],
+    expectedPreviewHash: string,
+    beforeProjectionDelete?: (agentId: string) => void,
+  ): AgentDeletionPreviewDto {
+    let committedPreview: AgentDeletionPreviewDto | undefined;
+    const stagedDirectories = new Map<string, { canonical: string; tombstone: string; tombstoneName: string }>();
+    try {
+      this.db.transaction((tx) => {
+        const current = this.previewAgentDeletion(rootAgentIds);
+        if (current.previewHash !== expectedPreviewHash) throw new AgentDeletionConflictError(current);
+        committedPreview = current;
+        for (const agent of current.affectedAgents) {
+          const canonical = agentDir(this.dataDir, current.projectId, agent.id);
+          const tombstoneName = `.${agent.id}.deleting-${randomUUID()}`;
+          const tombstone = join(agentsDir(this.dataDir, current.projectId), tombstoneName);
+          renameSync(canonical, tombstone);
+          stagedDirectories.set(agent.id, { canonical, tombstone, tombstoneName });
+        }
+        // Make every rename durable before SQLite is allowed to commit. The
+        // journal rows below distinguish a committed deletion from a crash
+        // before commit and let startup either finish or restore it.
+        fsyncDirectory(agentsDir(this.dataDir, current.projectId));
+        const createdAt = new Date().toISOString();
+        for (const [agentId, staged] of stagedDirectories) tx.insert(agentDeletionTombstones).values({
+          agentId,
+          projectId: current.projectId,
+          tombstoneName: staged.tombstoneName,
+          createdAt,
+        }).run();
+        // Coordination V3 shares this SQLite connection. Its nested
+        // transactions become savepoints, so all scheduler outcomes and every
+        // selected Agent projection commit or roll back as one unit.
+        for (const agent of current.affectedAgents) beforeProjectionDelete?.(agent.id);
+        for (const agent of current.affectedAgents) {
+          tx.delete(events).where(eq(events.agentId, agent.id)).run();
+          tx.delete(artifacts).where(eq(artifacts.agentId, agent.id)).run();
+          tx.delete(workItems).where(eq(workItems.agentId, agent.id)).run();
+          tx.delete(runs).where(eq(runs.agentId, agent.id)).run();
+          this.client.prepare(`DELETE FROM provider_inputs WHERE agent_id = ?`).run(agent.id);
+          tx.delete(messages).where(eq(messages.agentId, agent.id)).run();
+          tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, agent.id)).run();
+          tx.delete(agents).where(eq(agents.id, agent.id)).run();
+        }
+      });
+    } catch (error) {
+      for (const { canonical, tombstone } of [...stagedDirectories.values()].reverse()) {
+        if (existsSync(tombstone) && !existsSync(canonical)) renameSync(tombstone, canonical);
+      }
+      for (const directory of new Set([...stagedDirectories.values()].map(({ canonical }) => dirname(canonical)))) {
+        if (existsSync(directory)) fsyncDirectory(directory);
+      }
+      throw error;
+    }
+    for (const [agentId, { tombstone }] of stagedDirectories) {
+      rmSync(tombstone, { recursive: true, force: true });
+      this.logs.delete(agentId);
+      this.states.delete(agentId);
+    }
+    for (const directory of new Set([...stagedDirectories.values()].map(({ canonical }) => dirname(canonical)))) {
+      if (existsSync(directory)) fsyncDirectory(directory);
+    }
+    this.db.transaction((tx) => {
+      for (const agentId of stagedDirectories.keys()) {
+        tx.delete(agentDeletionTombstones).where(eq(agentDeletionTombstones.agentId, agentId)).run();
+      }
+    });
+    return committedPreview!;
+  }
 
-    // Drop any cached log writer / projection state.
-    this.logs.delete(id);
-    this.states.delete(id);
+  /** Internal exact-current deletion convenience for rollback and fixtures. */
+  deleteAgent(id: string, beforeProjectionDelete?: (agentId: string) => void): boolean {
+    if (!this.getAgent(id)) return false;
+    const preview = this.previewAgentDeletion([id]);
+    this.deleteAgentSubtrees(preview.rootAgentIds, preview.previewHash, beforeProjectionDelete);
     return true;
   }
 
@@ -2686,7 +2812,43 @@ export class AgentStore {
    * `events.jsonl`). After this, projections are byte-identical to the incremental
    * result — the property the rebuild test asserts.
    */
+  private recoverAgentDeletionDirectories(): void {
+    const committed = this.db.select().from(agentDeletionTombstones).all();
+    const committedNames = new Set(committed.map((row) => `${row.projectId}\0${row.tombstoneName}`));
+    const touchedDirectories = new Set<string>();
+    for (const row of committed) {
+      if (row.tombstoneName.includes("/") || row.tombstoneName.includes("\\") ||
+          !row.tombstoneName.startsWith(`.${row.agentId}.deleting-`)) {
+        throw new Error("invalid Agent deletion recovery journal");
+      }
+      const directory = agentsDir(this.dataDir, row.projectId);
+      rmSync(join(directory, row.tombstoneName), { recursive: true, force: true });
+      // A committed journal row is authoritative even if a filesystem rollback
+      // resurrected the canonical name after the SQLite commit.
+      rmSync(agentDir(this.dataDir, row.projectId, row.agentId), { recursive: true, force: true });
+      if (existsSync(directory)) touchedDirectories.add(directory);
+    }
+    const root = projectsDir(this.dataDir);
+    if (existsSync(root)) for (const projectId of readdirSync(root)) {
+      const directory = agentsDir(this.dataDir, projectId);
+      if (!existsSync(directory)) continue;
+      for (const name of readdirSync(directory)) {
+        const separator = name.indexOf(".deleting-", 1);
+        if (!name.startsWith(".") || separator < 2 || committedNames.has(`${projectId}\0${name}`)) continue;
+        const agentId = name.slice(1, separator);
+        const tombstone = join(directory, name);
+        const canonical = agentDir(this.dataDir, projectId, agentId);
+        if (existsSync(canonical)) rmSync(tombstone, { recursive: true, force: true });
+        else renameSync(tombstone, canonical);
+        touchedDirectories.add(directory);
+      }
+    }
+    for (const directory of touchedDirectories) fsyncDirectory(directory);
+    this.db.delete(agentDeletionTombstones).run();
+  }
+
   rebuildProjections(): void {
+    this.recoverAgentDeletionDirectories();
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
     this.db.delete(workItems).run();
@@ -2760,6 +2922,10 @@ export class AgentStore {
       const tDir = agentsDir(this.dataDir, projectId);
       if (!existsSync(tDir)) continue;
       for (const agentId of readdirSync(tDir)) {
+        if (agentId.startsWith(".") || agentId.endsWith(".creating")) {
+          rmSync(agentDir(this.dataDir, projectId, agentId), { recursive: true, force: true });
+          continue;
+        }
         const tj = agentJsonPath(this.dataDir, projectId, agentId);
         if (!existsSync(tj)) continue;
         const t = readJson<AgentJson>(tj);
@@ -2781,6 +2947,8 @@ export class AgentStore {
             updatedAt: t.updatedAt,
             archived: t.archived ? 1 : 0,
             managerAgentId: organizationalParents.get(t.id) ?? null,
+            allowAutomaticDescendantDeletion: t.managementPermissions?.allowAutomaticDescendantDeletion ? 1 : 0,
+            allowAutomaticDescendantReorganization: t.managementPermissions?.allowAutomaticDescendantReorganization ? 1 : 0,
             spawnedByAgentId: t.spawnedByAgentId ?? null,
             spawnedByExecutionId: t.spawnedByExecutionId ?? null,
             spawnPrompt: t.spawnPrompt ?? null,
@@ -3019,6 +3187,10 @@ export class AgentStore {
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
       managerAgentId: row.managerAgentId ?? undefined,
+      managementPermissions: {
+        allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,
+        allowAutomaticDescendantReorganization: row.allowAutomaticDescendantReorganization === 1,
+      },
       spawnedByAgentId: row.spawnedByAgentId ?? undefined,
       spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
       spawnPrompt: row.spawnPrompt ?? undefined,

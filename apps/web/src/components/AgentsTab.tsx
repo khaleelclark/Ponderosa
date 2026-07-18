@@ -9,10 +9,6 @@ import {
   ButtonBase,
   Checkbox,
   Chip,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
   IconButton,
   InputLabel,
@@ -33,9 +29,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { ImportAgentDialog } from "./ImportAgentDialog";
+import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import {
   agentActivity,
-  agentDescendants,
   agentBelongsToConversation,
   agentStatusColor,
   agentStatusLabel,
@@ -45,25 +41,6 @@ import {
 } from "../agents";
 
 type StatusFilter = "all" | "running" | "waiting" | "idle" | "unassigned";
-
-export function selectedAgentDeletion(agents: AgentDto[], selectedAgentIds: ReadonlySet<string>): {
-  roots: AgentDto[];
-  affectedIds: Set<string>;
-} {
-  const selectedAgents = agents.filter((agent) => selectedAgentIds.has(agent.id));
-  const roots = selectedAgents.filter((agent) => {
-    let managerId = agent.managerAgentId;
-    while (managerId) {
-      if (selectedAgentIds.has(managerId)) return false;
-      managerId = agents.find((candidate) => candidate.id === managerId)?.managerAgentId;
-    }
-    return true;
-  });
-  return {
-    roots,
-    affectedIds: new Set(roots.flatMap((agent) => [agent.id, ...agentDescendants(agent.id, agents).map((descendant) => descendant.id)])),
-  };
-}
 
 export function AgentsTab({
   agents,
@@ -94,19 +71,8 @@ export function AgentsTab({
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
-  const [deleteSelectedConfirmation, setDeleteSelectedConfirmation] = useState("");
-  const [deletingSelected, setDeletingSelected] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
-  const deleteAgent = useMutation({
-    mutationFn: (agentId: string) => api.deleteAgent(agentId),
-    onSuccess: (_data, agentId) => {
-      queryClient.removeQueries({ queryKey: ["agent", agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
-      setPendingDelete(undefined);
-    },
-  });
   const promoteAgent = useMutation({
     mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
     onSuccess: (updated) => {
@@ -147,7 +113,6 @@ export function AgentsTab({
     { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
   const activeAgentIds = agents.filter((agent) => ["running", "compacting", "waiting"].includes(statusByAgentId.get(agent.id) ?? "idle")).map((agent) => agent.id);
-  const { roots: selectedRoots, affectedIds: affectedAgentIds } = selectedAgentDeletion(agents, selectedAgentIds);
   const toggleSelection = (agentId: string) => setSelectedAgentIds((current) => {
     const next = new Set(current);
     if (next.has(agentId)) next.delete(agentId);
@@ -158,7 +123,6 @@ export function AgentsTab({
     setSelectionMode(false);
     setSelectedAgentIds(new Set());
     setDeleteSelectedOpen(false);
-    setDeleteSelectedConfirmation("");
   };
   const stopAll = async () => {
     setStoppingAll(true); setBulkError(undefined);
@@ -168,18 +132,6 @@ export function AgentsTab({
     await queryClient.invalidateQueries({ queryKey: ["agents"] });
     setStoppingAll(false);
   };
-  const deleteSelected = async () => {
-    setBulkError(undefined);
-    setDeletingSelected(true);
-    const results = await Promise.allSettled(selectedRoots.map((agent) => api.deleteAgent(agent.id)));
-    const failed = results.filter((item) => item.status === "rejected").length;
-    if (failed) setBulkError(`${selectedRoots.length - failed} selected agent trees deleted; ${failed} failed. Project-chat history was preserved.`);
-    await queryClient.invalidateQueries({ queryKey: ["agents"] });
-    await queryClient.invalidateQueries({ queryKey: ["conversation"] });
-    setDeletingSelected(false);
-    leaveSelectionMode();
-  };
-
   return (
     <Box data-testid="agent-roster" sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
       <Stack
@@ -411,50 +363,22 @@ export function AgentsTab({
         )}
       </Box>
 
-      <Dialog
+      <AgentDeletionDialog
         open={Boolean(pendingDelete)}
-        onClose={() => {
-          if (!deleteAgent.isPending) setPendingDelete(undefined);
-        }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Delete agent?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            This permanently deletes <Box component="strong">{pendingDelete?.title}</Box>, including
-            its run history, work items, and files &amp; results. Any in-flight run is stopped.
-            {pendingDelete && agentDescendants(pendingDelete.id, agents).length
-              ? ` Its ${agentDescendants(pendingDelete.id, agents).length} direct and indirect reports will also be deleted unless promoted or reparented first.`
-              : ""}
-            {" "}This cannot be undone.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setPendingDelete(undefined)} disabled={deleteAgent.isPending}>
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={deleteAgent.isPending}
-            onClick={() => {
-              if (pendingDelete) deleteAgent.mutate(pendingDelete.id);
-            }}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <Dialog open={deleteSelectedOpen} onClose={() => { if (!deletingSelected) { setDeleteSelectedOpen(false); setDeleteSelectedConfirmation(""); } }} fullWidth maxWidth="xs">
-        <DialogTitle>Delete selected agents?</DialogTitle>
-        <DialogContent>
-          <Alert severity="error" sx={{ mb: 2 }}>This permanently deletes {affectedAgentIds.size} agent {affectedAgentIds.size === 1 ? "identity" : "identities"}, including runs, work logs, files, and any descendants of a selected manager. Active runs are stopped. Project-chat history remains intact.</Alert>
-          <Typography variant="body2" sx={{ mb: 2 }}>{selectedAgentIds.size} selected. {selectedRoots.length} deletion {selectedRoots.length === 1 ? "root" : "roots"} will be sent to preserve cascade semantics.</Typography>
-          <TextField fullWidth label="Type DELETE SELECTED" value={deleteSelectedConfirmation} onChange={(event) => setDeleteSelectedConfirmation(event.target.value)} />
-        </DialogContent>
-        <DialogActions><Button onClick={() => { setDeleteSelectedOpen(false); setDeleteSelectedConfirmation(""); }} disabled={deletingSelected}>Cancel</Button><Button color="error" variant="contained" disabled={deleteSelectedConfirmation !== "DELETE SELECTED" || deletingSelected} onClick={() => void deleteSelected()}>Delete selected agents</Button></DialogActions>
-      </Dialog>
+        projectId={projectId}
+        rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
+        onClose={() => setPendingDelete(undefined)}
+        onDeleted={() => setPendingDelete(undefined)}
+      />
+      <AgentDeletionDialog
+        open={deleteSelectedOpen}
+        projectId={projectId}
+        rootAgentIds={[...selectedAgentIds]}
+        title="Delete selected agents?"
+        confirmationText="DELETE SELECTED"
+        onClose={() => setDeleteSelectedOpen(false)}
+        onDeleted={leaveSelectionMode}
+      />
     </Box>
   );
 }

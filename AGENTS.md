@@ -261,9 +261,17 @@ Ordinary runtime output → execution-scoped Work log
   Direct Message the user but cannot Broadcast; top-level agents own organizational
   synthesis and publication. Runtime failure creates one deduplicated Activation
   for the direct manager without manufacturing chat.
-- Deleting a manager recursively deletes its remaining descendants. Promotion
-  or re-parenting is an explicit user action performed before deletion; it never
-  rewrites creator, communication, or execution history.
+- Deleting a manager recursively deletes its remaining descendants. The UI must
+  confirm the server's exact cascade and commit every selected subtree in one
+  transaction; a changed spawn or reporting edge returns `409` and deletes
+  nothing. Promotion or detachment is always an explicit user action performed
+  before deletion. A user may separately enable per-Agent authority to cancel
+  and delete descendant branches or rearrange reporting lines inside that
+  Agent's existing subtree without another Decision. Those settings default off,
+  persist through full/template portability, never inherit automatically, and
+  never authorize cross-Project movement, self/ancestor mutation, promotion, or
+  detachment. Organization changes never rewrite creator, communication, or
+  execution history.
 - Persistent engine sessions use a bounded warm-idle lifetime. Closing the host
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.

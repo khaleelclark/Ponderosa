@@ -55,6 +55,10 @@ import type {
   AgentExportMode,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
+  AgentDeletionPreviewRequest,
+  AgentDeletionPreviewDto,
+  CommitAgentDeletionRequest,
+  CommitAgentDeletionResponse,
 } from "@ponderosa/core";
 import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
 
@@ -327,8 +331,17 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(organization satisfies UpdateAgentOrganizationRequest),
     });
   },
-  async deleteAgent(agentId) {
-    await requestJson(`/api/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+  previewAgentDeletion(projectId, request) {
+    return requestJson<AgentDeletionPreviewDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-deletions/preview`, {
+      method: "POST",
+      body: JSON.stringify(request satisfies AgentDeletionPreviewRequest),
+    });
+  },
+  commitAgentDeletion(projectId, request) {
+    return requestJson<CommitAgentDeletionResponse>(`/api/projects/${encodeURIComponent(projectId)}/agent-deletions/commit`, {
+      method: "POST",
+      body: JSON.stringify(request satisfies CommitAgentDeletionRequest),
+    });
   },
   getAgent(agentId) {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}`);

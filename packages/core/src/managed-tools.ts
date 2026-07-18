@@ -237,7 +237,7 @@ export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
  * action; it does not pretend the host sandbox structurally forbids the work. */
 export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_decision",
-  description: "Ask the user one durable question with {question}. Ponderosa derives stable idempotency and defaults to an open text answer; providing options defaults to choice. Use mode:approval for permission. Every approval/choice includes a Something else path. Set blocking false when safe independent work remains. Structural deletion, re-parenting, or promotion must use a Decision first.",
+  description: "Ask the user one durable question with {question}. Ponderosa derives stable idempotency and defaults to an open text answer; providing options defaults to choice. Use mode:approval for permission. Every approval/choice includes a Something else path. Set blocking false when safe independent work remains. Descendant deletion or rearrangement requires a Decision unless the user enabled that exact Agent setting; detaching or promoting descendants remains a user action.",
   inputSchema: {
     type: "object", additionalProperties: false,
     required: ["question"],
@@ -255,7 +255,7 @@ export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_manage",
-  description: "Safely inspect or manage your visible Ponderosa descendant organization. Call describe to discover scope, plan with a complete operation list, then apply the returned planId. Creating/renaming Agents and stopping descendants may be autonomous. delete_agent and set_manager require a resolved approval Decision ID. Plans are exact, scoped to this Run, idempotent, and audited; this never manages provider-native helpers or arbitrary Projects.",
+  description: "Safely inspect or manage your visible Ponderosa descendant organization. Call describe first: it reports whether the user enabled automatic descendant deletion and/or reorganization for this Agent. Then plan an exact operation list and apply its planId. Deletion atomically cancels and removes confirmed descendant subtrees. set_manager may only rearrange descendants inside this subtree; it cannot detach or promote them. Without the corresponding setting, delete_agent or set_manager requires a resolved approval Decision ID. Plans are scoped to this Run, idempotent, and audited; this never manages provider-native helpers or arbitrary Projects.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {

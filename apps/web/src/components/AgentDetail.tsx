@@ -23,6 +23,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   IconButton,
   InputLabel,
   LinearProgress,
@@ -31,6 +32,7 @@ import {
   MenuItem,
   Select,
   Stack,
+  Switch,
   Tab,
   Tabs,
   TextField,
@@ -44,7 +46,7 @@ import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, C
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { agentDescendants, agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
+import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
 import { useAgent } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useAgentStream } from "../hooks/useAgentStream";
@@ -62,6 +64,7 @@ import { conversationDisplayTitle } from "../conversationLabels";
 import { TriggersPane } from "./TriggersPane";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
+import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
@@ -344,16 +347,6 @@ export function AgentDetail({
     onOpenAgent(imported.rootAgentId);
   };
 
-  const deleteAgent = useMutation({
-    mutationFn: () => api.deleteAgent(agentId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      queryClient.removeQueries({ queryKey: ["agent", agentId] });
-      setDeleteOpen(false);
-      onDeleted();
-    },
-  });
-
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: (updated) => {
@@ -401,6 +394,19 @@ export function AgentDetail({
       );
       void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
       setOrganizationOpen(false);
+    },
+  });
+
+  const updateManagementPermissions = useMutation({
+    mutationFn: (managementPermissions: AgentDto["managementPermissions"]) =>
+      api.updateAgent(agentId, { managementPermissions }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+        current ? { ...current, agent: updated } : current,
+      );
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+        current?.map((agent) => agent.id === updated.id ? updated : agent),
+      );
     },
   });
 
@@ -475,7 +481,6 @@ export function AgentDetail({
   const lineageAgent = spawningAgent ?? organizationalParent;
   const lineageAgentId = detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
   const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Reports to";
-  const descendantCount = agentDescendants(detail.agent.id, agents).length;
   const agentRuntimeControls = <ComposerRuntimeSelector
     engine={engine?.id ?? ""}
     engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
@@ -675,6 +680,40 @@ export function AgentDetail({
               <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
                 {detail.state.branch ?? "No branch"}{detail.state.commit ? ` · ${detail.state.commit}` : ""}
               </Typography>
+              <Box sx={{ pt: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">Organization permissions</Typography>
+                <FormControlLabel
+                  control={<Switch
+                    size="small"
+                    checked={detail.agent.managementPermissions.allowAutomaticDescendantDeletion}
+                    disabled={updateManagementPermissions.isPending}
+                    onChange={(_event, checked) => updateManagementPermissions.mutate({
+                      ...detail.agent.managementPermissions,
+                      allowAutomaticDescendantDeletion: checked,
+                    })}
+                  />}
+                  label={<Typography variant="body2">Allow automatic descendant deletion</Typography>}
+                />
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75 }}>
+                  This Agent may cancel active work and permanently delete branches beneath it without another Decision.
+                </Typography>
+                <FormControlLabel
+                  control={<Switch
+                    size="small"
+                    checked={detail.agent.managementPermissions.allowAutomaticDescendantReorganization}
+                    disabled={updateManagementPermissions.isPending}
+                    onChange={(_event, checked) => updateManagementPermissions.mutate({
+                      ...detail.agent.managementPermissions,
+                      allowAutomaticDescendantReorganization: checked,
+                    })}
+                  />}
+                  label={<Typography variant="body2">Allow automatic descendant reorganization</Typography>}
+                />
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75 }}>
+                  This Agent may rearrange reporting lines inside its subtree, but cannot detach or promote descendants.
+                </Typography>
+                {updateManagementPermissions.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateManagementPermissions.error)}</Alert> : null}
+              </Box>
               <Typography variant="caption" color="text.secondary">
                 {master ? <>Assigned to <Link component="button" variant="caption" onClick={() => onOpenMaster(master.id)}>{master.title}</Link></> : "Unassigned"}
                 {" · "}{organizationalParent
@@ -797,26 +836,16 @@ export function AgentDetail({
         />
       </Box> : null}
 
-      <Dialog open={deleteOpen} onClose={() => setDeleteOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Delete agent?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            This permanently deletes <Box component="strong">{detail.agent.title}</Box>, including its
-            run history, work items, and files &amp; results.
-            {descendantCount ? ` Its ${descendantCount} direct and indirect report${descendantCount === 1 ? "" : "s"} will also be deleted unless promoted or reparented first.` : ""}
-            {" "}This cannot be undone.
-          </Typography>
-          {deleteAgent.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(deleteAgent.error)}</Alert> : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteOpen(false)} disabled={deleteAgent.isPending}>
-            Cancel
-          </Button>
-          <Button color="error" variant="contained" disabled={deleteAgent.isPending} onClick={() => deleteAgent.mutate()}>
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <AgentDeletionDialog
+        open={deleteOpen}
+        projectId={detail.agent.projectId}
+        rootAgentIds={[detail.agent.id]}
+        onClose={() => setDeleteOpen(false)}
+        onDeleted={() => {
+          setDeleteOpen(false);
+          onDeleted();
+        }}
+      />
 
       <ImportAgentDialog
         open={importOpen}

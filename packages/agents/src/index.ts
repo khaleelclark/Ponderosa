@@ -2,7 +2,7 @@
 // (SPEC §4/§7). A library consumed by apps/server; exposes no HTTP. Does not import
 // from packages/engines except AgentEvent (re-exported through core).
 
-export { AgentStore } from "./store.js";
+export { AgentStore, AgentDeletionConflictError } from "./store.js";
 export { WorkspaceStore } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";

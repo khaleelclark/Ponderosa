@@ -128,7 +128,16 @@ describe("V3.2 Trigger API", () => {
       expect(invalidPatch.statusCode).toBe(400);
       expect((await app.inject({ method: "GET", url: `/api/agents/${agent.id}/triggers`, headers: authorization })).json<[{ enabled: boolean }]>() [0]?.enabled).toBe(true);
 
-      const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}`, headers: authorization });
+      const preview = await app.inject({
+        method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, headers: authorization,
+        payload: { rootAgentIds: [agent.id] },
+      });
+      expect(preview.statusCode, preview.body).toBe(200);
+      const exact = preview.json<{ rootAgentIds: string[]; previewHash: string }>();
+      const deleted = await app.inject({
+        method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, headers: authorization,
+        payload: exact,
+      });
       expect(deleted.statusCode, deleted.body).toBe(200);
       expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM trigger_definitions").get()).toEqual({ count: 0 });
       expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM trigger_occurrences").get()).toEqual({ count: 1 });

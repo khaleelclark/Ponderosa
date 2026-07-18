@@ -16,6 +16,25 @@ import type { BrowserDriver } from "../src/browser-session-manager.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+async function deleteAgentsWithServerPreview(
+  app: ReturnType<typeof createServer>,
+  projectId: string,
+  rootAgentIds: string[],
+) {
+  const preview = await app.inject({
+    method: "POST",
+    url: `/api/projects/${projectId}/agent-deletions/preview`,
+    payload: { rootAgentIds },
+  });
+  expect(preview.statusCode, preview.body).toBe(200);
+  const exact = preview.json<{ rootAgentIds: string[]; previewHash: string }>();
+  return app.inject({
+    method: "POST",
+    url: `/api/projects/${projectId}/agent-deletions/commit`,
+    payload: exact,
+  });
+}
+
 function appendBroadcast(store: AgentStore, projectId: string, conversationId: string, text: string) {
   const eventId = randomUUID();
   store.appendCommunicationEvent({
@@ -344,7 +363,10 @@ describe("localhost link preview registration", () => {
     const currentOriginViteUrl = `ws://127.0.0.1:${appAddress.port}/nested/?token=vite-token`;
     new sandbox.window.WebSocket(currentOriginViteUrl, "vite-hmr");
     new sandbox.window.WebSocket(`ws://127.0.0.1:${upstreamAddress.port}/nested/?token=vite-token`, "vite-ping");
-    const foreignPort = upstreamAddress.port === 65_535 ? upstreamAddress.port - 1 : upstreamAddress.port + 1;
+    const occupiedPorts = new Set([upstreamAddress.port, appAddress.port]);
+    let foreignPort = upstreamAddress.port;
+    do foreignPort = foreignPort === 65_535 ? 1 : foreignPort + 1;
+    while (occupiedPorts.has(foreignPort));
     new sandbox.window.WebSocket(`ws://127.0.0.1:${foreignPort}/nested/?token=vite-token`, "vite-hmr");
     expect(websocketCalls).toEqual([
       { url: `ws://127.0.0.1:${appAddress.port}/api/link-previews/${preview.id}/__ws/nested/?token=vite-token`, protocols: "vite-hmr" },
@@ -1335,6 +1357,53 @@ describe("interactive browser API", () => {
     expect(driver.close).toHaveBeenCalledTimes(1);
   });
 
+  it("reserves a confirmed cascade while active browser cleanup blocks spawn and reparent races", async () => {
+    adapter.mode = "hang";
+    let releaseClose!: () => void;
+    const closeBlocked = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const driver = trackedBrowserDriver();
+    driver.close = vi.fn(async () => closeBlocked);
+    const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
+    const { project, agent: manager } = await startBrowserRun(app);
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", managerAgentId: manager.id });
+    const outside = store.createAgent(project.id, { title: "Outside", engine: "codex" });
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`,
+      payload: { rootAgentIds: [manager.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+
+    const committing = app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
+    const capability = adapter.seeds.at(-1)!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    const lateToolCall = await app.inject({
+      method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${capability}` },
+    });
+    const lateSpawn = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Late child", engine: "codex", managerAgentId: manager.id },
+    });
+    const lateReparent = await app.inject({
+      method: "PUT", url: `/api/agents/${child.id}/manager`, payload: { managerAgentId: outside.id },
+    });
+    const competingProjectDelete = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(lateToolCall.statusCode, lateToolCall.body).toBe(409);
+    expect(lateSpawn.statusCode, lateSpawn.body).toBe(409);
+    expect(lateReparent.statusCode, lateReparent.body).toBe(409);
+    expect(competingProjectDelete.statusCode, competingProjectDelete.body).toBe(409);
+
+    releaseClose();
+    const committed = await committing;
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({
+      deletedAgentIds: expect.arrayContaining([manager.id, child.id]),
+    });
+    expect(store.getAgent(outside.id)).toBeDefined();
+    expect(store.listAgents(project.id).map((agent) => agent.id)).toEqual([outside.id]);
+    await app.close();
+  });
+
   it("authorizes run-capability close and tears down only its owned browser session", async () => {
     adapter.mode = "hang";
     const driver = trackedBrowserDriver();
@@ -1541,9 +1610,10 @@ describe("interactive browser API", () => {
     adapter.mode = "hang";
     const driver = trackedBrowserDriver();
     const app = createServer({ dataDir, store, engines, logger: false, browserDriverFactory: async () => driver });
-    const { agent } = await startBrowserRun(app);
+    const { project, agent } = await startBrowserRun(app);
 
-    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
+    const deletion = await deleteAgentsWithServerPreview(app, project.id, [agent.id]);
+    expect(deletion.statusCode, deletion.body).toBe(200);
     await expect.poll(() => vi.mocked(driver.close).mock.calls.length).toBe(1);
     await app.close();
   });
@@ -2866,10 +2936,52 @@ describe("server chunk F", () => {
     const grandchild = store.createAgent(project.id, {
       title: "Assistant", engine: "codex", conversationId: master.id, managerAgentId: child.id,
     });
-    const deleted = await app.inject({ method: "DELETE", url: `/api/agents/${manager.id}` });
+    const deleted = await deleteAgentsWithServerPreview(app, project.id, [manager.id]);
     expect(deleted.statusCode).toBe(200);
-    expect(deleted.json()).toEqual({ deleted: true, deletedAgentIds: [manager.id, child.id, grandchild.id] });
+    expect(deleted.json()).toMatchObject({
+      deleted: true,
+      deletedAgentIds: expect.arrayContaining([manager.id, child.id, grandchild.id]),
+    });
     expect(store.listAgents(project.id)).toEqual([]);
+    await app.close();
+  });
+
+  it("returns 409 without deletion when spawn or reparent changes a confirmed cascade", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Deletion races", hostPath: repoDir });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex" });
+    const child = store.createAgent(project.id, { title: "Child", engine: "codex", managerAgentId: manager.id });
+    const outside = store.createAgent(project.id, { title: "Outside", engine: "codex" });
+
+    const beforeSpawn = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`,
+      payload: { rootAgentIds: [manager.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const lateChild = store.createAgent(project.id, { title: "Late child", engine: "codex", managerAgentId: child.id });
+    const spawnConflict = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: beforeSpawn,
+    });
+    expect(spawnConflict.statusCode, spawnConflict.body).toBe(409);
+    expect(spawnConflict.json()).toMatchObject({ currentPreview: { affectedAgents: expect.arrayContaining([
+      expect.objectContaining({ id: lateChild.id }),
+    ]) } });
+    expect([manager.id, child.id, outside.id, lateChild.id].every((id) => Boolean(store.getAgent(id)))).toBe(true);
+
+    const beforeReparent = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`,
+      payload: { rootAgentIds: [manager.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    store.updateAgentOrganization(child.id, { managerAgentId: outside.id });
+    const reparentConflict = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: beforeReparent,
+    });
+    expect(reparentConflict.statusCode, reparentConflict.body).toBe(409);
+    expect([manager.id, child.id, outside.id, lateChild.id].every((id) => Boolean(store.getAgent(id)))).toBe(true);
+
+    const deleted = await deleteAgentsWithServerPreview(app, project.id, [manager.id]);
+    expect(deleted.json()).toEqual({ deleted: true, deletedAgentIds: [manager.id] });
+    expect(store.getAgent(child.id)?.managerAgentId).toBe(outside.id);
+    expect((await app.inject({ method: "DELETE", url: `/api/agents/${outside.id}` })).statusCode).toBe(404);
     await app.close();
   });
 
@@ -2900,7 +3012,7 @@ describe("server chunk F", () => {
 
     store.rebuildProjections();
     expect(readFileSync(legacyFile)).toEqual(body);
-    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
+    expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json())
       .toContainEqual(expect.objectContaining({ id: artifactId, projectId: project.id, originAgentId: agent.id }));
     const downloaded = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download` });
@@ -5738,7 +5850,7 @@ describe("server chunk F", () => {
     await waitForRun(agent.id);
     expect(store.readEvents(agent.id).length).toBeGreaterThan(0);
 
-    const del = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
+    const del = await deleteAgentsWithServerPreview(app, project.id, [agent.id]);
     expect(del.statusCode).toBe(200);
     expect(del.json<{ deleted: boolean }>().deleted).toBe(true);
 
@@ -5749,7 +5861,11 @@ describe("server chunk F", () => {
     expect(detail.statusCode).toBe(404);
 
     // Deleting again is a 404.
-    const again = await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` });
+    const again = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agent-deletions/preview`,
+      payload: { rootAgentIds: [agent.id] },
+    });
     expect(again.statusCode).toBe(404);
 
     // On-disk agent directory is gone (rebuild won't resurrect it).
@@ -5907,7 +6023,7 @@ describe("server chunk F", () => {
     const foreignUrl = `/api/agents/${second.id}/assets/${asset.id}/download`;
     expect((await app.inject({ method: "GET", url: foreignUrl })).json()).toEqual({ error: "asset not found" });
     expect((await app.inject({ method: "GET", url: `/api/agents/${second.id}/assets/${randomUUID()}/download` })).json()).toEqual({ error: "asset not found" });
-    expect((await app.inject({ method: "DELETE", url: `/api/agents/${agent.id}` })).statusCode).toBe(200);
+    expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: asset.downloadUrl })).statusCode).toBe(404);
     expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id))).toBe(false);
     await app.close();
@@ -6339,6 +6455,55 @@ describe("V3.3 Decisions, management, and portability", () => {
     const deleted = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(deletePlan.text).planId } });
     expect(deleted.success, deleted.text).toBe(true);
     expect(store.getAgent(reviewer.id)).toBeUndefined();
+
+    const enabled = await app.inject({
+      method: "PATCH", url: `/api/agents/${owner.id}`,
+      payload: { managementPermissions: {
+        allowAutomaticDescendantDeletion: true,
+        allowAutomaticDescendantReorganization: true,
+      } },
+    });
+    expect(enabled.statusCode, enabled.body).toBe(200);
+    const branch = store.createAgent(project.id, { title: "Branch", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const leaf = store.createAgent(project.id, { title: "Leaf", engine: "codex", conversationId: conversation.id, managerAgentId: child.id });
+    const reorganizePlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "automatic-reorganize", operations: [
+        { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: branch.id },
+      ] },
+    });
+    expect(reorganizePlan.success, reorganizePlan.text).toBe(true);
+    expect((await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(reorganizePlan.text).planId },
+    })).success).toBe(true);
+    expect(store.getAgent(leaf.id)?.managerAgentId).toBe(branch.id);
+    expect((await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "no-detach", operations: [
+        { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: null },
+      ] },
+    })).success).toBe(false);
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${branch.id}/messages`, payload: { text: "Keep working until cancelled" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    expect(store.getRuns(branch.id).at(-1)?.status).toBe("running");
+
+    const autonomousDelete = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "plan", idempotencyKey: "automatic-delete", operations: [
+        { kind: "delete_agent", targetAgentId: branch.id },
+      ] },
+    });
+    expect(autonomousDelete.success, autonomousDelete.text).toBe(true);
+    expect((await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(autonomousDelete.text).planId },
+    })).success).toBe(true);
+    expect(store.getAgent(branch.id)).toBeUndefined();
+    expect(store.getAgent(leaf.id)).toBeUndefined();
+    expect(persistent.interrupted).toBeGreaterThanOrEqual(1);
+    expect(persistent.closed).toBeGreaterThanOrEqual(1);
     await app.close();
   });
 
@@ -6348,7 +6513,13 @@ describe("V3.3 Decisions, management, and portability", () => {
     store.updateProject(project.id, { instructions: "Destination-safe Project rule" });
     const sourceChat = store.createConversation(project.id, { title: "Source" });
     const destinationChat = store.createConversation(project.id, { title: "Destination" });
-    const source = store.createAgent(project.id, { title: "Portable Agent", engine: "codex", conversationId: sourceChat.id });
+    const source = store.createAgent(project.id, {
+      title: "Portable Agent", engine: "codex", conversationId: sourceChat.id,
+      managementPermissions: {
+        allowAutomaticDescendantDeletion: true,
+        allowAutomaticDescendantReorganization: true,
+      },
+    });
     const portableCoordination = new CoordinationV3Store(store.sqlite);
     portableCoordination.createTriggerDefinition({
       id: "completed-one-time", projectId: project.id, conversationId: sourceChat.id, agentId: source.id,
@@ -6371,10 +6542,16 @@ describe("V3.3 Decisions, management, and portability", () => {
     expect(exported.statusCode, exported.body).toBe(200);
     expect(exported.json()).toMatchObject({
       sourceProjectInstructions: "Destination-safe Project rule",
-      agents: [{ artifacts: [{ ref: artifactId, dataBase64: bytes.toString("base64") }] }],
+      agents: [{
+        managementPermissions: source.managementPermissions,
+        artifacts: [{ ref: artifactId, dataBase64: bytes.toString("base64") }],
+      }],
     });
     const template = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=template` });
-    expect(template.json()).toMatchObject({ mode: "template", agents: [{ title: "Portable Agent" }] });
+    expect(template.json()).toMatchObject({
+      mode: "template",
+      agents: [{ title: "Portable Agent", managementPermissions: source.managementPermissions }],
+    });
     expect(template.body).not.toContain("sourceProjectInstructions");
     expect(template.body).not.toContain("history");
     expect(template.body).not.toContain("artifacts");
@@ -6389,6 +6566,7 @@ describe("V3.3 Decisions, management, and portability", () => {
     });
     expect(imported.statusCode, imported.body).toBe(201);
     const importedAgentId = imported.json<{ rootAgentId: string }>().rootAgentId;
+    expect(store.getAgent(importedAgentId)?.managementPermissions).toEqual(source.managementPermissions);
     const importedArtifacts = store.getProjectArtifacts(project.id).filter((artifact) => artifact.originAgentId === importedAgentId);
     expect(importedArtifacts).toHaveLength(1);
     expect(importedArtifacts[0]!.id).not.toBe(artifactId);
