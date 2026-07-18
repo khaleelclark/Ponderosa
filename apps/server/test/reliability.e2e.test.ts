@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
 import { AgentStore } from "@ponderosa/agents";
-import { createServer } from "../src/app.js";
+import { createServer, PROVIDER_TOOL_CONTRACT_HASH } from "../src/app.js";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -83,6 +83,10 @@ describe("V1 reliability safety net", () => {
     const continued = await adapter.continueStarted.promise;
     expect(continued.prompt).toContain("second turn");
     expect(continued.resumeSessionId).toBe("controlled-session");
+    expect(store.resumeSessionState(agent.id)).toMatchObject({
+      sessionId: "controlled-session",
+      toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+    });
     while (!store.readEvents(agent.id).some(({ event }) => event.type === "agent_output")) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }

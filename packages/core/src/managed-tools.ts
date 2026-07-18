@@ -336,3 +336,18 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
 ];
+
+/** One canonical provider-visible tool surface. Engine adapters may rename a
+ * tool for their native protocol, but they must derive from this exact list. */
+export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
+  PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
+  PONDEROSA_DECISION_TOOL,
+  PONDEROSA_MANAGE_TOOL,
+  PONDEROSA_COORDINATE_TOOL,
+  PONDEROSA_RESULT_TOOL,
+  PONDEROSA_UPDATE_REQUEST_TOOL,
+  PONDEROSA_MESSAGE_TOOL,
+  PONDEROSA_TEAM_DIRECTORY_TOOL,
+  PONDEROSA_CONTEXT_TOOL,
+  ...PONDEROSA_BROWSER_TOOLS,
+];

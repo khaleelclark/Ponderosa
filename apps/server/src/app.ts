@@ -122,6 +122,7 @@ import {
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_BROWSER_TOOLS,
+  PONDEROSA_RUNTIME_TOOLS,
   shouldBackTextWithArtifact,
   truncateUnicodeCodePoints,
   TERMINAL_REQUEST_STATES,
@@ -232,8 +233,9 @@ function parseResultRef(ref: string): { kind: "activation" | "artifact"; id: str
 
 function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
   if (typeof value === "string") {
-    const ref = /^ponderosa:\/\/artifact\/([^/]+)$/.exec(value);
-    if (ref) found.add(ref[1]!);
+    for (const match of value.matchAll(/ponderosa:\/\/artifact\/([A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?)/g)) {
+      found.add(match[1]!);
+    }
     return found;
   }
   if (Array.isArray(value)) {
@@ -735,6 +737,21 @@ function communicationV3Prompt(): string[] {
     "Discover stable teammate IDs with ponderosa_team_directory({}).",
   ];
 }
+
+const PROVIDER_DYNAMIC_TOOLS = PONDEROSA_RUNTIME_TOOLS;
+
+export const PROVIDER_TOOL_CONTRACT_HASH = createHash("sha256").update(JSON.stringify({
+  tools: PROVIDER_DYNAMIC_TOOLS,
+  providerDefinitions: {
+    codexAppServer: PROVIDER_DYNAMIC_TOOLS.map((tool) => ({
+      type: "function", name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
+    })),
+    claudeMcp: PROVIDER_DYNAMIC_TOOLS.map((tool) => ({
+      name: tool.name.replace(/^ponderosa_/, ""), description: tool.description, inputSchema: tool.inputSchema,
+    })),
+  },
+  promptContract: communicationV3Prompt(),
+})).digest("hex");
 
 function runtimeSelectionError(adapter: Adapter, model?: string, effort?: string): string | undefined {
   const selectedModel = model?.trim() || undefined;
@@ -8188,6 +8205,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const requestContextRollover = Boolean(
         internalV3Dispatch && v3FreshProviderSession,
       );
+      let resumeSessionState = store.resumeSessionState(agent.id);
       if (requestContextRollover) {
         // Provider sessions are resumable caches, not agent identity. A newly
         // created inbound request is an independent task context, while answer,
@@ -8202,11 +8220,26 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         scheduledSessionRollovers.delete(agent.id);
         store.clearResumeSession(agent.id, "request_context_rollover");
         organizationEnvelopeStates.delete(agent.id);
+        resumeSessionState = undefined;
+      } else if (resumeSessionState && resumeSessionState.toolContractHash !== PROVIDER_TOOL_CONTRACT_HASH) {
+        // A provider session is a cache of both context and its immutable tool
+        // surface. Missing hashes are intentionally incompatible: canonical
+        // Agent state survives while the opaque provider cache is reseeded.
+        const staleRuntime = runtimeSessions.get(agent.id);
+        if (staleRuntime) {
+          removePersistentRuntime(agent.id, staleRuntime);
+          await staleRuntime.session.close().catch(() => undefined);
+        }
+        scheduledSessionRollovers.delete(agent.id);
+        store.clearResumeSession(agent.id, "tool_contract_changed");
+        organizationEnvelopeStates.delete(agent.id);
+        resumeSessionState = undefined;
       }
       const reusablePersistentRuntime = engine.adapter.openSession ? runtimeSessions.get(agent.id) : undefined;
       cancelRuntimeIdleClose(reusablePersistentRuntime);
       const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();
-      const resumeSessionId = store.resumeSessionId(agent.id);
+      const resumeSessionId = resumeSessionState?.sessionId;
+      const retainedSessionArtifactIds = resumeSessionState?.artifactIds ?? [];
       const mode = resumeSessionId ? "continue" : "seed";
       const history = boundedSeedHistory(fullHistory);
       // An omitted model/effort means "keep this agent's current provider
@@ -8342,17 +8375,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const globalInstructions = workspacePreferences.globalInstructions.trim();
       const operatorProfile = workspacePreferences.profile;
       const projectInstructions = project.instructions?.trim() ?? "";
-      const providerDynamicTools = [
-        PONDEROSA_CREATE_MANAGED_AGENT_TOOL, PONDEROSA_DECISION_TOOL, PONDEROSA_MANAGE_TOOL,
-        PONDEROSA_COORDINATE_TOOL, PONDEROSA_RESULT_TOOL, PONDEROSA_UPDATE_REQUEST_TOOL,
-        PONDEROSA_MESSAGE_TOOL, PONDEROSA_TEAM_DIRECTORY_TOOL, PONDEROSA_CONTEXT_TOOL,
-        ...PONDEROSA_BROWSER_TOOLS,
-      ];
-      const toolContractHash = createHash("sha256").update(JSON.stringify({
-        tools: providerDynamicTools,
-        providerDefinitions: ["codex-app-server:dynamic-tools-v1", "claude-sdk:mcp-tools-v1"],
-        promptContract: communicationV3Prompt(),
-      })).digest("hex");
       const managedRules = contextSection("POLICY · SESSION SNAPSHOT", "AUTHORITATIVE", [
         "Ponderosa instruction precedence: runtime identity, security, communication, and capability rules are authoritative; then global rules; then Project rules; then Agent preset guidance; then the current work request.",
         `The local operator is ${operatorProfile.displayName} and their stable Ponderosa handle is #${operatorProfile.handle}. Address them as ${operatorProfile.displayName} unless they ask otherwise.`,
@@ -8362,8 +8384,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...communicationV3Prompt(),
       ]);
       const policySnapshotHash = createHash("sha256").update(JSON.stringify({
-        contract: "context-and-coordination-v3.4.2",
-        toolContractHash,
+        contract: "context-and-coordination-v3.4.3",
+        toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
         globalInstructions,
         projectInstructions,
         operatorProfile,
@@ -8451,13 +8473,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...contextCommunicationEventIds,
       ])];
       const submittedHistory = resumeSessionId ? [] : history;
-      const manifestArtifactIds = [...new Set([...submittedHistory, ...contextMessages].flatMap((message) =>
-        message.attachments?.flatMap((item) => "artifactId" in item && item.artifactId ? [item.artifactId] : []) ?? []))];
+      const submittedArtifactCandidates = collectReachableArtifactIds([
+        ...submittedHistory,
+        ...roomMessages,
+        ...initialBroadcastContext.map((message) => ({
+          text: message.text,
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+        })),
+        ...manifestActivationPayloads.map(({ payload }) => payload),
+      ]);
+      const artifactExistsInProject = (id: string): boolean => {
+        if (store.getProjectArtifact(project.id, id)) return true;
+        return coordinationV3.runtimeArtifact(id)?.projectId === project.id;
+      };
+      const submittedArtifactIds = [...submittedArtifactCandidates].filter(artifactExistsInProject).sort();
+      const retainedArtifactIds = retainedSessionArtifactIds
+        .filter((id) => !submittedArtifactCandidates.has(id) && artifactExistsInProject(id))
+        .sort();
+      const manifestArtifactIds = [...new Set([...submittedArtifactIds, ...retainedArtifactIds])].sort();
       const policyDelivery = sessionEnvelope ? "submitted" as const : "retained_session" as const;
       const providerInputManifest = {
         schemaVersion: 3 as const,
         historyMessageCount: submittedHistory.length + contextMessages.length,
-        retainedSessionSourceCount: policyDelivery === "retained_session" ? 1 : 0,
+        retainedSessionSourceCount: (policyDelivery === "retained_session" ? 1 : 0) + retainedArtifactIds.length,
         activationIds: manifestActivationIds,
         triggerOccurrenceIds: manifestTriggerOccurrences.map((occurrence) => occurrence.id),
         communicationEventIds: manifestCommunicationEventIds,
@@ -8468,7 +8506,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           { kind: "identity" as const, ref: agent.id, delivery: "submitted" as const },
           {
             kind: "policy" as const,
-            ref: "ponderosa-policy:context-and-coordination-v3.4.2",
+            ref: "ponderosa-policy:context-and-coordination-v3.4.3",
             hash: policySnapshotHash,
             delivery: policyDelivery,
           },
@@ -8515,7 +8553,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...manifestCommunicationEventIds
             .filter((id) => !contextCommunicationEventIds.includes(id))
             .map((id) => ({ kind: "communication" as const, ref: id, delivery: "submitted" as const })),
-          ...manifestArtifactIds.map((id) => ({ kind: "artifact" as const, ref: id, delivery: "submitted" as const })),
+          ...submittedArtifactIds.map((id) => ({ kind: "artifact" as const, ref: id, delivery: "submitted" as const })),
+          ...retainedArtifactIds.map((id) => ({ kind: "artifact" as const, ref: id, delivery: "retained_session" as const })),
         ],
       };
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
@@ -8658,7 +8697,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               model: effectiveModel,
               effort: effectiveEffort,
               environment,
-              dynamicTools: providerDynamicTools,
+              dynamicTools: PROVIDER_DYNAMIC_TOOLS,
               handleDynamicToolCall: async (call) => {
                 const browserOperation = call.name.startsWith("ponderosa_browser_")
                   ? call.name.slice("ponderosa_browser_".length)
@@ -8805,6 +8844,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                   signal: controller.signal,
                 });
 
+          const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
+            const artifactIds = [...manifestArtifactIds].sort();
+            const current = store.resumeSessionState(agent.id);
+            if (
+              current?.sessionId === acceptedSessionId
+              && current.toolContractHash === PROVIDER_TOOL_CONTRACT_HASH
+              && current.artifactIds.length === artifactIds.length
+              && current.artifactIds.every((id, index) => id === artifactIds[index])
+            ) return;
+            const sessionSnapshot = store.appendEvent(agent.id, {
+              type: "session_snapshot",
+              sessionId: acceptedSessionId,
+              toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+              artifactIds,
+            });
+            publish(agent.id, sessionSnapshot);
+          };
+
           let sessionId = resumeSessionId;
           while (true) {
             const bufferedSessionEvents: AgentEvent[] = [];
@@ -8864,6 +8921,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 : event;
               const stored = persistRuntimeEvent(agent.id, activeRun, logEvent);
               if (!stored) break;
+              // Once provider acceptance is fenced and durable, preserve the
+              // compatible session's expanded artifact roots even if the
+              // operator later cancels the turn. Fresh providers reveal their
+              // opaque id through the session event; continuations retain it.
+              const acceptedSessionId = event.type === "session"
+                ? event.sessionId
+                : event.type !== "error"
+                  ? sessionId
+                  : undefined;
+              if (acceptedSessionId) persistAcceptedSessionSnapshot(acceptedSessionId);
               if (event.type === "text") {
                 finalText += event.delta;
                 firstTextSeq ??= stored.seq;
@@ -8916,11 +8983,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               executionId: runId,
             });
             publish(agent.id, terminal);
-            const acceptedSessionId = !runError ? store.resumeSessionId(agent.id) : undefined;
-            if (acceptedSessionId) organizationEnvelopeStates.set(agent.id, {
-              sessionId: acceptedSessionId,
-              hash: policySnapshotHash,
-            });
+            const acceptedSessionId = !runError && !schedulerCancelled ? store.resumeSessionId(agent.id) : undefined;
+            if (acceptedSessionId) {
+              organizationEnvelopeStates.set(agent.id, {
+                sessionId: acceptedSessionId,
+                hash: policySnapshotHash,
+              });
+            }
             if (runError && !schedulerCancelled) {
               if (classifyProviderFailure(runError) === "authentication") {
                 engineAvailability.record({

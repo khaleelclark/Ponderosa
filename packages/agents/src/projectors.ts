@@ -40,7 +40,7 @@ export type ProjectionOp =
   | { kind: "insert_work_item"; row: WorkItemRow }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow }
-  | { kind: "set_session"; sessionId: string | null }
+  | { kind: "set_session"; sessionId: string | null; toolContractHash: string | null; artifactIds: string[] }
   | { kind: "set_state"; branch?: string; commit?: string }
   | { kind: "touch_agent"; updatedAt: string };
 
@@ -144,11 +144,20 @@ export function projectEvent(
       break;
 
     case "session":
-      ops.push({ kind: "set_session", sessionId: event.sessionId });
+      ops.push({ kind: "set_session", sessionId: event.sessionId, toolContractHash: null, artifactIds: [] });
+      break;
+
+    case "session_snapshot":
+      ops.push({
+        kind: "set_session",
+        sessionId: event.sessionId,
+        toolContractHash: event.toolContractHash,
+        artifactIds: [...new Set(event.artifactIds)].sort(),
+      });
       break;
 
     case "session_reset":
-      ops.push({ kind: "set_session", sessionId: null });
+      ops.push({ kind: "set_session", sessionId: null, toolContractHash: null, artifactIds: [] });
       break;
 
     case "agent_lifecycle": {

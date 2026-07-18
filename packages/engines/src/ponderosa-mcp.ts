@@ -1,20 +1,13 @@
 import { createInterface } from "node:readline";
 import {
-  PONDEROSA_COORDINATE_TOOL,
-  PONDEROSA_CONTEXT_TOOL,
-  PONDEROSA_TEAM_DIRECTORY_TOOL,
-  PONDEROSA_MESSAGE_TOOL,
-  PONDEROSA_UPDATE_REQUEST_TOOL,
-  PONDEROSA_BROWSER_TOOLS,
-  PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
-  PONDEROSA_DECISION_TOOL,
-  PONDEROSA_MANAGE_TOOL,
+  PONDEROSA_RUNTIME_TOOLS,
 } from "@ponderosa/core";
 
 type RpcRequest = { id?: string | number; method?: string; params?: unknown };
 
 const messageUrl = process.env.PONDEROSA_AGENT_MESSAGE_URL;
 const coordinateUrl = process.env.PONDEROSA_AGENT_COORDINATE_URL;
+const resultUrl = process.env.PONDEROSA_AGENT_RESULT_URL;
 const updateRequestUrl = process.env.PONDEROSA_AGENT_UPDATE_REQUEST_URL;
 const browserUrl = process.env.PONDEROSA_AGENT_BROWSER_URL;
 const spawnUrl = process.env.PONDEROSA_AGENT_SPAWN_URL;
@@ -47,53 +40,11 @@ async function handle(request: RpcRequest): Promise<void> {
       jsonrpc: "2.0",
       id: request.id,
       result: {
-        tools: [
-          {
-            name: "create_managed_agent",
-            description: PONDEROSA_CREATE_MANAGED_AGENT_TOOL.description,
-            inputSchema: PONDEROSA_CREATE_MANAGED_AGENT_TOOL.inputSchema,
-          },
-          {
-            name: "coordinate",
-            description: PONDEROSA_COORDINATE_TOOL.description,
-            inputSchema: PONDEROSA_COORDINATE_TOOL.inputSchema,
-          },
-          {
-            name: "update_request",
-            description: PONDEROSA_UPDATE_REQUEST_TOOL.description,
-            inputSchema: PONDEROSA_UPDATE_REQUEST_TOOL.inputSchema,
-          },
-          {
-            name: "message",
-            description: PONDEROSA_MESSAGE_TOOL.description,
-            inputSchema: PONDEROSA_MESSAGE_TOOL.inputSchema,
-          },
-          {
-            name: "decision",
-            description: PONDEROSA_DECISION_TOOL.description,
-            inputSchema: PONDEROSA_DECISION_TOOL.inputSchema,
-          },
-          {
-            name: "manage",
-            description: PONDEROSA_MANAGE_TOOL.description,
-            inputSchema: PONDEROSA_MANAGE_TOOL.inputSchema,
-          },
-          {
-            name: "team_directory",
-            description: PONDEROSA_TEAM_DIRECTORY_TOOL.description,
-            inputSchema: PONDEROSA_TEAM_DIRECTORY_TOOL.inputSchema,
-          },
-          {
-            name: "context",
-            description: PONDEROSA_CONTEXT_TOOL.description,
-            inputSchema: PONDEROSA_CONTEXT_TOOL.inputSchema,
-          },
-          ...PONDEROSA_BROWSER_TOOLS.map((tool) => ({
-            name: tool.name.replace(/^ponderosa_/, ""),
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          })),
-        ],
+        tools: PONDEROSA_RUNTIME_TOOLS.map((tool) => ({
+          name: tool.name.replace(/^ponderosa_/, ""),
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+        })),
       },
     });
     return;
@@ -105,6 +56,7 @@ async function handle(request: RpcRequest): Promise<void> {
       : undefined;
     const isDirectory = params?.name === "team_directory";
     const isContext = params?.name === "context";
+    const isResult = params?.name === "result";
     const args = params?.arguments && typeof params.arguments === "object"
       ? params.arguments as { agentId?: unknown; before?: unknown; limit?: unknown }
       : {};
@@ -114,22 +66,24 @@ async function handle(request: RpcRequest): Promise<void> {
     const targetUrl = params?.name === "create_managed_agent"
       ? spawnUrl
       : params?.name === "coordinate"
-      ? coordinateUrl
-      : params?.name === "update_request"
-        ? updateRequestUrl
-        : params?.name === "message"
-          ? messageUrl
-          : params?.name === "decision"
-            ? decisionUrl
-            : params?.name === "manage"
-              ? manageUrl
-            : isDirectory
-              ? directoryUrl && `${directoryUrl}${typeof args.agentId === "string" && args.agentId.trim() ? `/${encodeURIComponent(args.agentId.trim())}` : ""}`
-            : isContext
-              ? contextUrl && `${contextUrl}${contextQuery.size ? `?${contextQuery.toString()}` : ""}`
-          : browserOperation
-            ? browserUrl
-          : undefined;
+        ? coordinateUrl
+        : isResult
+          ? resultUrl
+          : params?.name === "update_request"
+            ? updateRequestUrl
+            : params?.name === "message"
+              ? messageUrl
+              : params?.name === "decision"
+                ? decisionUrl
+                : params?.name === "manage"
+                  ? manageUrl
+                  : isDirectory
+                    ? directoryUrl && `${directoryUrl}${typeof args.agentId === "string" && args.agentId.trim() ? `/${encodeURIComponent(args.agentId.trim())}` : ""}`
+                    : isContext
+                      ? contextUrl && `${contextUrl}${contextQuery.size ? `?${contextQuery.toString()}` : ""}`
+                      : browserOperation
+                        ? browserUrl
+                        : undefined;
     if (!targetUrl || !messageToken) {
       send({ jsonrpc: "2.0", id: request.id, result: { isError: true, content: [{ type: "text", text: "The requested Ponderosa capability is unavailable." }] } });
       return;
