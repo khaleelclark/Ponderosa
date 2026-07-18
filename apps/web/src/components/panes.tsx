@@ -1875,6 +1875,7 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
 export function Composer({
   disabled,
   running,
+  allowSendWhileRunning = false,
   placeholder,
   projectId,
   mentionHandles,
@@ -1902,6 +1903,8 @@ export function Composer({
 }: {
   disabled: boolean;
   running: boolean;
+  /** Keep the composer available while other Agents in this shared chat are working. */
+  allowSendWhileRunning?: boolean;
   placeholder?: string;
   /** Project scope used by `@` file/folder reference autocomplete. */
   projectId?: string;
@@ -1978,17 +1981,18 @@ export function Composer({
   const defaultsToQueue = Boolean(onQueue) && (preferQueue || (
     mentionedHandles.length > 0 && mentionedAgentsWithQueues.length === mentionedHandles.length
   ));
+  const composerLocked = running && !allowSendWhileRunning;
   const busyHandles = new Set((busyMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedBusyHandles = mentionedHandles.filter((handle) => busyHandles.has(handle.toLocaleLowerCase()));
   const textCanSend = canSubmitComposerText({
     text: submissionText,
     disabled,
-    running,
+    running: composerLocked,
     allowUnmentionedSend,
     mentionedHandles,
     mentionedBusyHandles,
   });
-  const canSend = textCanSend || (!disabled && !running && allowUnmentionedSend && files.length > 0);
+  const canSend = textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0);
   const canCancel = running && Boolean(onCancel);
 
   useEffect(() => {
@@ -2341,7 +2345,7 @@ export function Composer({
           aria-haspopup="menu"
           aria-expanded={Boolean(capabilityMenuAnchor)}
           aria-controls={capabilityMenuAnchor ? capabilityListId : undefined}
-          disabled={disabled || running}
+          disabled={disabled || composerLocked}
           onClick={(event) => {
             setCapabilityFilter("");
             setCapabilityMenuAnchor(event.currentTarget);
@@ -2420,8 +2424,8 @@ export function Composer({
             InputProps={{ disableUnderline: true }}
             value={text}
             inputRef={inputRef}
-            disabled={disabled || running}
-            placeholder={running ? "Agent is working" : (placeholder ?? "Send a message")}
+            disabled={disabled || composerLocked}
+            placeholder={composerLocked ? "Agent is working" : (placeholder ?? "Send a message")}
             inputProps={{
               "aria-label": "Message",
               enterKeyHint: "send",
@@ -2438,7 +2442,7 @@ export function Composer({
               setSuppressMenu(false);
             }}
             onPaste={(event) => {
-              if (disabled || running) return;
+              if (disabled || composerLocked) return;
               if (attachmentsEnabled) {
                 const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
                 if (pasted.length > 0) {
@@ -2584,7 +2588,8 @@ export function Composer({
               <StopCircleIcon />
             </IconButton>
           </Tooltip>
-        ) : showQueue ? null : (
+        ) : null}
+        {!showQueue && (!canCancel || allowSendWhileRunning) ? (
           <Tooltip title="Send">
             <span>
               <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"} sx={{ minWidth: 44, minHeight: 44 }}>
@@ -2592,7 +2597,7 @@ export function Composer({
               </IconButton>
             </span>
           </Tooltip>
-        )}
+        ) : null}
       </Stack>
     </Paper>
   );

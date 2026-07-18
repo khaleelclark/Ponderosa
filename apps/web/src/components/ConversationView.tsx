@@ -1130,8 +1130,9 @@ export function ConversationView({
           guidance={agents.length > 0
             ? "Send normally to start a fresh agent, use #agent to target an existing agent, or @ to reference a project file."
             : "Send normally to start a fresh agent, or use @ to reference a project file."}
-          disabled={busy && !operationRunning}
+          disabled={busy}
           running={operationRunning}
+          allowSendWhileRunning
           mentionHandles={mentionHandles}
           commands={commands}
           capabilities={composerRuntime.capabilities}
