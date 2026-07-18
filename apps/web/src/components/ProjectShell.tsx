@@ -28,6 +28,17 @@ interface AgentDialogState {
   defaultManagerAgentId?: string;
 }
 
+export interface AgentReturnContext {
+  conversationId: string;
+  reopenRoster: boolean;
+}
+
+export function agentBackRoute(projectId: string, context?: AgentReturnContext): Route {
+  return context
+    ? { kind: "conversation", projectId, conversationId: context.conversationId }
+    : { kind: "agents", projectId };
+}
+
 export function ProjectShell({
   projectId,
   route,
@@ -61,6 +72,7 @@ export function ProjectShell({
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
   const [presetsOpen, setPresetsOpen] = useState(false);
+  const [agentReturnContext, setAgentReturnContext] = useState<AgentReturnContext>();
 
   // Per-agent detail powers live status + activity in the sidebar and Agents tab.
   const agentDetailQueries = useQueries({
@@ -217,6 +229,11 @@ export function ProjectShell({
 
   let main: JSX.Element;
   if (route.kind === "conversation") {
+    const reopenRoster = agentReturnContext?.conversationId === route.conversationId && agentReturnContext.reopenRoster;
+    const openAgentFromConversation = (agentId: string, fromRoster: boolean) => {
+      setAgentReturnContext({ conversationId: route.conversationId, reopenRoster: fromRoster });
+      navigate({ kind: "agent", projectId, agentId });
+    };
     main = (
       <ConversationView
         key={route.conversationId}
@@ -227,7 +244,10 @@ export function ProjectShell({
         onRefreshCapabilities={() => capabilitiesQuery.refetch()}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenAgent={(agentId) => openAgentFromConversation(agentId, false)}
+        onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
+        initialAgentsOpen={reopenRoster}
+        onInitialAgentsOpenConsumed={() => setAgentReturnContext(undefined)}
         onOpenReview={openAgentReview}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={openNewAgentFromMaster}
@@ -250,7 +270,11 @@ export function ProjectShell({
         projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}
         conversations={conversations}
-        onBack={() => navigate({ kind: "agents", projectId })}
+        onBack={() => {
+          const destination = agentBackRoute(projectId, agentReturnContext);
+          if (!agentReturnContext?.reopenRoster) setAgentReturnContext(undefined);
+          navigate(destination);
+        }}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenMaster={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
         onNewSubagent={openNewSubagent}

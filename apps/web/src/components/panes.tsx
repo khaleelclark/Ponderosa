@@ -840,14 +840,15 @@ export function ChatPane({
               </Box>)}
             </Stack> : null}
             <MessageReactions reactions={message.reactions} />
-            {message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
-              receipts={message.deliveryReceipts}
-              recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
-            /> : null}
               </Box>
               <MessageActionsAndTimestamp
                 showTimestamp={fromUser}
                 value={message.createdAt}
+                status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
+                  receipts={message.deliveryReceipts}
+                  recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
+                  onOpenAgent={onOpenAgent}
+                /> : undefined}
                 actions={<>
               {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
               <CopyMessageButton text={message.text} />

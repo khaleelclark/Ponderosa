@@ -1,4 +1,9 @@
-import { Alert, Button, Stack } from "@mui/material";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
+import { Alert, Button, ButtonBase, Stack, Typography } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -41,9 +46,11 @@ function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "war
 export function MessageDeliveryStatus({
   receipts,
   recipientName,
+  onOpenAgent,
 }: {
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
+  onOpenAgent?(agentId: string): void;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(Date.now());
@@ -74,22 +81,51 @@ export function MessageDeliveryStatus({
       setPendingInjectionId(undefined);
     }
   };
-  return <Stack spacing={0.5} sx={{ mt: 0.75 }} aria-label="Message delivery status">
-    {receipts.map((receipt) => <Alert
-      key={receipt.activationId}
-      severity={severity(receipt)}
-      variant="outlined"
-      role="status"
-      action={receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
-        color="inherit"
-        size="small"
-        disabled={pendingInjectionId === receipt.injectionId}
-        onClick={() => void letRunFinish(receipt)}
-      >Let current Run finish</Button> : undefined}
-      sx={{ py: 0, alignItems: "center", "& .MuiAlert-message": { py: 0.5 } }}
-    >
-      {deliveryLabel(receipt, recipientName(receipt.targetAgentId), now)}
-    </Alert>)}
+  return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
+    {receipts.map((receipt) => {
+      const tone = severity(receipt);
+      const name = recipientName(receipt.targetAgentId);
+      const StatusIcon = tone === "success"
+        ? CheckCircleOutlineIcon
+        : tone === "warning"
+          ? WarningAmberOutlinedIcon
+          : tone === "error"
+            ? ErrorOutlineIcon
+            : InfoOutlinedIcon;
+      return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%" }}>
+        <ButtonBase
+          role="status"
+          aria-label={onOpenAgent ? `${deliveryLabel(receipt, name, now)} Open direct chat with ${name}.` : deliveryLabel(receipt, name, now)}
+          disabled={!onOpenAgent}
+          onClick={() => onOpenAgent?.(receipt.targetAgentId)}
+          sx={{
+            maxWidth: "100%",
+            minHeight: 28,
+            px: 0.75,
+            py: 0.25,
+            borderRadius: 999,
+            color: `${tone}.main`,
+            bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.08 : 0.06),
+            cursor: onOpenAgent ? "pointer" : "default",
+            "&.Mui-disabled": { color: `${tone}.main`, opacity: 1 },
+            "&:hover": onOpenAgent ? { bgcolor: (theme) => alpha(theme.palette[tone].main, theme.palette.mode === "dark" ? 0.14 : 0.1) } : undefined,
+          }}
+        >
+          <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
+          <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>
+            {deliveryLabel(receipt, name, now)}
+          </Typography>
+        </ButtonBase>
+        {receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
+          color="warning"
+          variant="text"
+          size="small"
+          disabled={pendingInjectionId === receipt.injectionId}
+          onClick={() => void letRunFinish(receipt)}
+          sx={{ minHeight: 28, py: 0.25 }}
+        >Let current Run finish</Button> : null}
+      </Stack>;
+    })}
     {error ? <Alert severity="error">{error}</Alert> : null}
   </Stack>;
 }

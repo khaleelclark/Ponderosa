@@ -52,8 +52,8 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
   const activeKey = workspaceTabKey(route);
   const activeProjectId = routeProjectId(route);
 
-  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, minHeight: { md: 62 }, px: 1, bgcolor: "background.paper", alignItems: "center", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
-    <Stack direction="row" spacing={0.5} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, overflowX: "auto", alignItems: "center", py: 0.75 }}>
+  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 56 }, px: 1, pt: 0.75, bgcolor: "background.paper", alignItems: "flex-end", overflow: "hidden", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
+    <Stack direction="row" spacing={0.5} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, height: "100%", overflowX: "auto", overflowY: "hidden", alignItems: "flex-end", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
       {tabs.map((tab) => {
         const project = projects.find((candidate) => candidate.id === tab.route.projectId);
         const resources = resourcesByProject.get(tab.route.projectId);
@@ -66,7 +66,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
             : tab.route.kind === "agents" ? "Agents" : "Project files";
         const selected = tab.key === activeKey;
         const projectLabel = project?.label ?? "Unavailable project";
-        return <Box key={tab.key} data-tab-key={tab.key} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }} sx={{ position: "relative", minWidth: 168, maxWidth: 240, height: 48, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 1.25, border: 1, borderColor: selected ? "divider" : "transparent", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "transparent", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}>
+        return <Box key={tab.key} data-tab-key={tab.key} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }} sx={{ position: "relative", minWidth: 168, maxWidth: 240, height: 48, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: "12px 12px 0 0", border: 1, borderBottom: 0, borderColor: "divider", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "background.default", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}>
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={600}>
             <ButtonBase onClick={() => navigate(tab.route)} aria-label={`Open ${label} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{ minWidth: 0, flex: 1, px: 1.25, gap: 1, justifyContent: "flex-start" }}>
               <TabIcon kind={tab.route.kind} />

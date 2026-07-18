@@ -215,9 +215,16 @@ export function ConversationMessage({
           </Box>)}
         </Stack> : null}
         <MessageReactions reactions={message.reactions} />
-        {message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus receipts={message.deliveryReceipts} recipientName={(agentId) => agentTitle(agentId)} /> : null}
           </Box>
-          <MessageActionsAndTimestamp showTimestamp={fromManager} value={message.createdAt} actions={conversation === "main" ? <>
+          <MessageActionsAndTimestamp
+            showTimestamp={fromManager}
+            value={message.createdAt}
+            status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
+              receipts={message.deliveryReceipts}
+              recipientName={(agentId) => agentTitle(agentId)}
+              onOpenAgent={onOpenAgent}
+            /> : undefined}
+            actions={conversation === "main" ? <>
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
@@ -232,7 +239,8 @@ export function ConversationMessage({
             <QuickreplyIcon fontSize="inherit" />
           </IconButton></Tooltip>
         ) : null}
-          </> : undefined} />
+          </> : undefined}
+          />
         </Box>
       </Stack>
     </Box>
@@ -248,6 +256,9 @@ export function ConversationView({
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
+  onOpenRosterAgent,
+  initialAgentsOpen = false,
+  onInitialAgentsOpenConsumed,
   onOpenReview,
   onOpenFileActivity,
   onNewAgent,
@@ -261,6 +272,9 @@ export function ConversationView({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
+  onOpenRosterAgent?(agentId: string): void;
+  initialAgentsOpen?: boolean;
+  onInitialAgentsOpenConsumed?(): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto): void;
@@ -290,7 +304,8 @@ export function ConversationView({
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(initialAgentsOpen);
+  const consumedInitialAgentsOpen = useRef(false);
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
@@ -305,6 +320,12 @@ export function ConversationView({
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  useEffect(() => {
+    if (!initialAgentsOpen || consumedInitialAgentsOpen.current) return;
+    consumedInitialAgentsOpen.current = true;
+    setAgentsOpen(true);
+    onInitialAgentsOpenConsumed?.();
+  }, [initialAgentsOpen, onInitialAgentsOpenConsumed]);
   const clearReply = () => {
     if (directReplyRequestId && directReplyTargetId) {
       const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
@@ -1037,7 +1058,7 @@ export function ConversationView({
                     <ListItemButton
                       onClick={() => {
                         setAgentsOpen(false);
-                        onOpenAgent(agent.id);
+                        (onOpenRosterAgent ?? onOpenAgent)(agent.id);
                       }}
                       sx={{ minWidth: 0, borderRadius: 1, border: 1, borderLeftWidth: depth ? 3 : 1, borderColor: "divider", pr: 7 }}
                     >
