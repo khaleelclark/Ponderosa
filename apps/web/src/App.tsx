@@ -111,6 +111,7 @@ export default function App({
   const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [operatorProfileOpen, setOperatorProfileOpen] = useState(false);
   const [globalInstructionsDraft, setGlobalInstructionsDraft] = useState("");
   const [profileNameDraft, setProfileNameDraft] = useState("User");
   const [profileHandleDraft, setProfileHandleDraft] = useState("operator");
@@ -354,10 +355,13 @@ export default function App({
   };
   const openSettings = () => {
     setGlobalInstructionsDraft(preferences.globalInstructions);
+    setNotificationSettingsOpen(true);
+  };
+  const openOperatorProfile = () => {
     setProfileNameDraft(preferences.profile.displayName);
     setProfileHandleDraft(preferences.profile.handle);
     setProfileAvatarDraft(preferences.profile.avatarId);
-    setNotificationSettingsOpen(true);
+    setOperatorProfileOpen(true);
   };
 
   return (
@@ -427,6 +431,7 @@ export default function App({
             onSearch={() => setGlobalSearchOpen(true)}
             onOpenNotifications={() => setNotificationPanelOpen(true)}
             onOpenSettings={openSettings}
+            onOpenProfile={openOperatorProfile}
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
@@ -501,6 +506,7 @@ export default function App({
           onSearch={() => { setMobileNavOpen(false); setGlobalSearchOpen(true); }}
           onOpenNotifications={() => { setMobileNavOpen(false); setNotificationPanelOpen(true); }}
           onOpenSettings={() => { setMobileNavOpen(false); openSettings(); }}
+          onOpenProfile={() => { setMobileNavOpen(false); openOperatorProfile(); }}
         />
       </Drawer>
 
@@ -643,13 +649,7 @@ export default function App({
         notifications={notificationsQuery.data ?? []}
         onClose={() => setNotificationPanelOpen(false)}
         onNavigate={navigate}
-        onOpenSettings={() => {
-          setGlobalInstructionsDraft(preferences.globalInstructions);
-          setProfileNameDraft(preferences.profile.displayName);
-          setProfileHandleDraft(preferences.profile.handle);
-          setProfileAvatarDraft(preferences.profile.avatarId);
-          setNotificationSettingsOpen(true);
-        }}
+        onOpenSettings={openSettings}
       />
       <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Settings</DialogTitle>
@@ -689,18 +689,33 @@ export default function App({
             <Typography variant="subtitle2">AI providers</Typography>
             <Typography variant="body2" color="text.secondary">Disabled providers finish active Runs, then hold queued work until re-enabled.</Typography>
             {engines.map((engine) => <FormControlLabel key={engine.id} control={<Switch checked={engine.enabled !== false} disabled={updateEngine.isPending} onChange={(_, enabled) => updateEngine.mutate({ engineId: engine.id, enabled })} />} label={`${engine.displayName}${engine.available ? "" : ` — ${engine.availabilityDetail ?? "unavailable"}`}`} />)}
-            <Typography variant="subtitle2">Your profile</Typography>
-            <TextField label="What Agents call you" value={profileNameDraft} onChange={(event) => setProfileNameDraft(event.target.value)} inputProps={{ maxLength: 80 }} />
-            <TextField label="Handle" value={profileHandleDraft} onChange={(event) => setProfileHandleDraft(event.target.value.replace(/^#/, "").toLowerCase())} helperText="Used as your stable #handle." inputProps={{ maxLength: 32 }} />
-            <FormControl fullWidth><InputLabel id="profile-avatar-label">Picture</InputLabel><Select labelId="profile-avatar-label" label="Picture" value={profileAvatarDraft} onChange={(event) => setProfileAvatarDraft(event.target.value)}><MenuItem value="default-user">Pine</MenuItem><MenuItem value="sunset">Sunset</MenuItem><MenuItem value="river">River</MenuItem><MenuItem value="mountain">Mountain</MenuItem><MenuItem value="fox">Fox</MenuItem><MenuItem value="owl">Owl</MenuItem></Select></FormControl>
             <Typography variant="subtitle2">Master rules</Typography>
             <TextField label="Rules for every Ponderosa Agent" value={globalInstructionsDraft} onChange={(event) => setGlobalInstructionsDraft(event.target.value)} multiline minRows={5} helperText="Ponderosa stores these rules directly and starts affected Agents with a fresh provider session on their next Run." />
           </Stack>
         </DialogContent>
-        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={!profileNameDraft.trim() || !/^[a-z][a-z0-9_-]{1,31}$/.test(profileHandleDraft) || ["broadcast", "everyone", "user"].includes(profileHandleDraft)} onClick={() => {
-          savePreferences({ globalInstructions: globalInstructionsDraft, profile: { displayName: profileNameDraft.trim(), handle: profileHandleDraft, avatarId: profileAvatarDraft } });
+        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Cancel</Button><Button variant="contained" onClick={() => {
+          savePreferences({ globalInstructions: globalInstructionsDraft });
           setNotificationSettingsOpen(false);
         }}>Save settings</Button></DialogActions>
+      </Dialog>
+
+      <Dialog open={operatorProfileOpen} onClose={() => setOperatorProfileOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Operator profile</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography variant="body2" color="text.secondary">This synced identity controls how Agents address you and how your profile appears throughout Ponderosa.</Typography>
+            <TextField autoFocus label="What Agents call you" value={profileNameDraft} onChange={(event) => setProfileNameDraft(event.target.value)} inputProps={{ maxLength: 80 }} />
+            <TextField label="Handle" value={profileHandleDraft} onChange={(event) => setProfileHandleDraft(event.target.value.replace(/^#/, "").toLowerCase())} helperText="Used as your stable #handle." inputProps={{ maxLength: 32 }} />
+            <FormControl fullWidth><InputLabel id="operator-profile-avatar-label">Picture</InputLabel><Select labelId="operator-profile-avatar-label" label="Picture" value={profileAvatarDraft} onChange={(event) => setProfileAvatarDraft(event.target.value)}><MenuItem value="default-user">Pine</MenuItem><MenuItem value="sunset">Sunset</MenuItem><MenuItem value="river">River</MenuItem><MenuItem value="mountain">Mountain</MenuItem><MenuItem value="fox">Fox</MenuItem><MenuItem value="owl">Owl</MenuItem></Select></FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOperatorProfileOpen(false)}>Cancel</Button>
+          <Button variant="contained" disabled={!profileNameDraft.trim() || !/^[a-z][a-z0-9_-]{1,31}$/.test(profileHandleDraft) || ["broadcast", "everyone", "user"].includes(profileHandleDraft)} onClick={() => {
+            savePreferences({ profile: { displayName: profileNameDraft.trim(), handle: profileHandleDraft, avatarId: profileAvatarDraft } });
+            setOperatorProfileOpen(false);
+          }}>Save profile</Button>
+        </DialogActions>
       </Dialog>
 
       <Dialog open={projectSettingsOpen} onClose={() => setProjectSettingsOpen(false)} fullWidth maxWidth="sm">

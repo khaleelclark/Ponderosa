@@ -1,6 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import SearchIcon from "@mui/icons-material/Search";
@@ -68,6 +67,15 @@ function openProjectRoute(snapshot: WorkspaceProjectSnapshot): Route {
     : { kind: "agents", projectId: snapshot.project.id };
 }
 
+export function reorderProjectIds(order: string[], draggedId: string, targetId: string, position: "before" | "after" = "before"): string[] {
+  if (draggedId === targetId) return order;
+  const next = order.filter((projectId) => projectId !== draggedId);
+  const targetIndex = next.indexOf(targetId);
+  if (targetIndex < 0 || next.length === order.length) return order;
+  next.splice(position === "after" ? targetIndex + 1 : targetIndex, 0, draggedId);
+  return next;
+}
+
 export function AllProjectsView({ projects, preferences, onNavigate, onCreateProject, onManageProject, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
@@ -78,6 +86,8 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
 }): JSX.Element {
   const snapshots = useWorkspaceSnapshots(projects);
   const [filter, setFilter] = useState("");
+  const [draggedProjectId, setDraggedProjectId] = useState<string>();
+  const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredProjectIds = new Set(preferences.starredProjectIds);
   const filteredSnapshots = useMemo(() => normalizedFilter
@@ -90,13 +100,13 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
       return searchable.includes(normalizedFilter);
     })
     : snapshots, [snapshots, normalizedFilter]);
-  const moveProject = (projectId: string, offset: -1 | 1) => {
-    const order = projects.map((project) => project.id);
-    const from = order.indexOf(projectId);
-    const to = from + offset;
-    if (from < 0 || to < 0 || to >= order.length) return;
-    [order[from], order[to]] = [order[to]!, order[from]!];
-    onPreferences({ projectSort: "custom", projectOrder: order });
+  const dropProject = (targetId: string, position: "before" | "after") => {
+    if (!draggedProjectId) return;
+    const currentOrder = projects.map((project) => project.id);
+    const order = reorderProjectIds(currentOrder, draggedProjectId, targetId, position);
+    if (order !== currentOrder) onPreferences({ projectSort: "custom", projectOrder: order });
+    setDraggedProjectId(undefined);
+    setDropTarget(undefined);
   };
   const toggleStar = (projectId: string) => onPreferences({
     starredProjectIds: starredProjectIds.has(projectId)
@@ -136,10 +146,25 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>{filteredSnapshots.length === projects.length ? `${projects.length} projects` : `${filteredSnapshots.length} of ${projects.length} projects`}</Typography>
     <List aria-label="All projects" disablePadding sx={{ display: "grid", gap: 1, width: "100%" }}>
       {filteredSnapshots.map((snapshot) => {
-        const index = projects.findIndex((project) => project.id === snapshot.project.id);
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
-        return <Stack key={snapshot.project.id} direction="row" sx={{ border: 1, borderColor: "divider", borderRadius: 1.5, overflow: "hidden", bgcolor: "background.paper" }}>
+        return <Stack
+          key={snapshot.project.id}
+          direction="row"
+          onDragOver={(event) => {
+            if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            const bounds = event.currentTarget.getBoundingClientRect();
+            setDropTarget({ projectId: snapshot.project.id, position: event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before" });
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const bounds = event.currentTarget.getBoundingClientRect();
+            dropProject(snapshot.project.id, event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before");
+          }}
+          sx={{ border: 1, borderColor: dropTarget?.projectId === snapshot.project.id ? "primary.main" : "divider", borderRadius: 1.5, overflow: "hidden", bgcolor: dropTarget?.projectId === snapshot.project.id ? "action.hover" : "background.paper", transform: dropTarget?.projectId === snapshot.project.id ? `translateY(${dropTarget.position === "before" ? 2 : -2}px)` : "none", transition: "border-color 120ms ease, background-color 120ms ease, transform 120ms ease" }}
+        >
           <ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => onNavigate(openProjectRoute(snapshot))} sx={{ minWidth: 0, px: 1.5 }}>
             <ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon /></ListItemIcon>
             <ListItemText
@@ -150,10 +175,20 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
             />
             {running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
           </ListItemButton>
-          {preferences.projectSort === "custom" ? <Stack direction="row" sx={{ alignItems: "center" }}>
-            <IconButton size="small" disabled={index === 0} aria-label={`Move ${snapshot.project.label} up`} onClick={() => moveProject(snapshot.project.id, -1)}><ArrowUpwardIcon fontSize="small" /></IconButton>
-            <IconButton size="small" disabled={index === snapshots.length - 1} aria-label={`Move ${snapshot.project.label} down`} onClick={() => moveProject(snapshot.project.id, 1)}><ArrowDownwardIcon fontSize="small" /></IconButton>
-          </Stack> : null}
+          {preferences.projectSort === "custom" ? <Tooltip title={`Drag to reorder ${snapshot.project.label}`}>
+            <IconButton
+              size="small"
+              draggable
+              aria-label={`Drag ${snapshot.project.label} to reorder`}
+              onDragStart={(event) => {
+                setDraggedProjectId(snapshot.project.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", snapshot.project.id);
+              }}
+              onDragEnd={() => { setDraggedProjectId(undefined); setDropTarget(undefined); }}
+              sx={{ cursor: draggedProjectId === snapshot.project.id ? "grabbing" : "grab", color: "text.secondary" }}
+            ><DragIndicatorIcon fontSize="small" /></IconButton>
+          </Tooltip> : null}
           <Tooltip title={`${starredProjectIds.has(snapshot.project.id) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
             <IconButton aria-label={`${starredProjectIds.has(snapshot.project.id) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
               {starredProjectIds.has(snapshot.project.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}

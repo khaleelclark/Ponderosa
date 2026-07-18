@@ -8,6 +8,10 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   InputAdornment,
   List,
   ListItemButton,
@@ -48,6 +52,7 @@ export function ProjectArtifactsView({
   onOpenArtifact(agentId: string, artifactId: string): void;
 }): JSX.Element {
   const [filter, setFilter] = useState("");
+  const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
     queryKey: ["project-artifacts", projectId],
@@ -108,7 +113,7 @@ export function ProjectArtifactsView({
               aria-label={`Open ${label} from ${owner}`}
               disabled={!canOpen}
               onClick={() => {
-                if (artifact.previewUrl) window.open(artifact.previewUrl, "_blank", "noopener,noreferrer");
+                if (artifact.previewUrl) setPreviewArtifact(artifact);
                 else if (agent) onOpenArtifact(agent.id, artifact.id);
               }}
               sx={{ minWidth: 0, px: 1.5 }}
@@ -125,11 +130,33 @@ export function ProjectArtifactsView({
                 <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{new Date(artifact.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Typography>
               </Stack>
             </ListItemButton>
-            {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" startIcon={<OpenInNewOutlinedIcon />} sx={{ display: { xs: "none", md: "inline-flex" }, mr: .5 }}>Preview</Button> : null}
+            {artifact.previewUrl ? <Button aria-label={`Preview ${label}`} onClick={() => setPreviewArtifact(artifact)} size="small" startIcon={<OpenInNewOutlinedIcon />} sx={{ display: { xs: "none", md: "inline-flex" }, mr: .5 }}>Preview</Button> : null}
             {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" startIcon={<DownloadOutlinedIcon />} sx={{ mr: 1 }}>Download</Button> : null}
           </Box>;
         })}
       </List>
     </Stack>
+    <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">
+      <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File preview"}</DialogTitle>
+      <DialogContent sx={{ p: { xs: 1, sm: 2 }, bgcolor: "background.default" }}>
+        {previewArtifact?.previewUrl ? previewArtifact.mediaType?.startsWith("image/") ? <Box
+          component="img"
+          data-testid="artifact-image-preview"
+          src={previewArtifact.previewUrl}
+          alt={artifactDisplayLabel(previewArtifact)}
+          sx={{ display: "block", maxWidth: "100%", maxHeight: "72dvh", mx: "auto", objectFit: "contain", borderRadius: 1 }}
+        /> : <Box
+          component="iframe"
+          data-testid="artifact-document-preview"
+          src={previewArtifact.previewUrl}
+          title={artifactDisplayLabel(previewArtifact)}
+          sx={{ display: "block", width: "100%", height: "72dvh", border: 0, borderRadius: 1, bgcolor: "background.paper" }}
+        /> : null}
+      </DialogContent>
+      <DialogActions>
+        {previewArtifact?.downloadUrl ? <Button component="a" href={previewArtifact.downloadUrl} download startIcon={<DownloadOutlinedIcon />}>Download</Button> : null}
+        <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
+      </DialogActions>
+    </Dialog>
   </Box>;
 }

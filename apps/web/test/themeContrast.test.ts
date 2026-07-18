@@ -23,6 +23,7 @@ describe("dark theme contrast", () => {
   it.each([
     ["primary text", theme.palette.text.primary],
     ["secondary text", theme.palette.text.secondary],
+    ["interactive links and cost labels", theme.palette.primary.main],
   ])("keeps %s at WCAG AA contrast on every surface", (_label, foreground) => {
     for (const background of surfaces) {
       expect(contrastRatio(foreground, background)).toBeGreaterThanOrEqual(4.5);

@@ -65,10 +65,12 @@ export function createPonderosaTheme(mode: ColorMode) {
       mode,
       contrastThreshold: 4.5,
       primary: {
-        main: colors.brand,
-        dark: colors.brandHover,
-        light: colors.highlight,
-        contrastText: dark ? "#EDE9DD" : "#F8F6EF",
+        // In dark mode primary.main is used for links and outlined controls, so it
+        // must be a readable foreground rather than the much darker brand surface.
+        main: dark ? colors.highlight : colors.brand,
+        dark: dark ? colors.brand : colors.brandHover,
+        light: dark ? "#9ED4AA" : colors.highlight,
+        contrastText: dark ? "#10231C" : "#F8F6EF",
       },
       secondary: {
         main: dark ? "#8FA49A" : colors.accent,

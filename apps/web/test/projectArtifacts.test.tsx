@@ -53,6 +53,11 @@ describe("project artifacts view", () => {
     expect(JSON.stringify(view.toJSON())).not.toContain("pnpm test");
     act(() => view.root.findByProps({ "aria-label": "Open Accessibility audit from Cabrillo" }).props.onClick());
     expect(onOpenArtifact).toHaveBeenCalledWith(agent.id, artifact.id);
+    const previewButton = view.root.findByProps({ "aria-label": "Preview Final report.pdf" });
+    expect(previewButton.props.onClick).toEqual(expect.any(Function));
+    expect(previewButton.props.href).toBeUndefined();
+    expect(previewButton.props.target).toBeUndefined();
+    expect(onOpenArtifact).toHaveBeenCalledTimes(1);
     view.unmount();
     client.clear();
   });

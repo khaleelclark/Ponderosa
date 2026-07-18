@@ -217,9 +217,10 @@ documented package-size boundary.
 
 The sidebar includes a compact, collapsible agent hierarchy with live status and
 project running counts; Agent Detail remains the complete management surface.
-Stop All reports partial cancellation failures. Delete All is unavailable until
-every agent is stopped, requires destructive confirmation, and preserves main
-Project-chat history by using canonical deletion semantics.
+Stop All reports partial cancellation failures. Bulk deletion is selection-based,
+shows the complete cascade impact of selected managers, requires destructive
+confirmation, and preserves main Project-chat history by using canonical deletion
+semantics.
 
 ## Live workspace and notifications
 

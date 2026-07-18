@@ -2,7 +2,7 @@ import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } f
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { operatorInitials, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -63,6 +63,8 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).toHaveBeenCalledWith({ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project files" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
+    act(() => view.root.findByProps({ "aria-label": "Open project agents" }).props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "agents", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search agents");
@@ -74,6 +76,37 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha" });
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
+    view.unmount();
+    client.clear();
+  });
+
+  it("derives the operator avatar from the synced name and makes it actionable", () => {
+    expect(operatorInitials("Khaleel Clark")).toBe("KC");
+    expect(operatorInitials("Patrick")).toBe("PA");
+    expect(operatorInitials("   ")).toBe("U");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    projects.forEach((project) => {
+      client.setQueryData(["conversations", project.id], []);
+      client.setQueryData(["agents", project.id], []);
+      client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
+    });
+    const onOpenProfile = vi.fn();
+    const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
+      projects={projects}
+      preferences={{ ...preferences, profile: { ...preferences.profile, displayName: "Khaleel Clark" } }}
+      route={{ kind: "projects" }}
+      notifications={[]}
+      onNavigate={vi.fn()}
+      onCreateProject={vi.fn()}
+      onManageProject={vi.fn()}
+      onPreferences={vi.fn()}
+      onRenameConversation={vi.fn()}
+      onDeleteConversation={vi.fn()}
+      onOpenProfile={onOpenProfile}
+    /></QueryClientProvider>);
+    expect(JSON.stringify(view.toJSON())).toContain("KC");
+    act(() => view.root.findByProps({ "aria-label": "Open operator profile" }).props.onClick());
+    expect(onOpenProfile).toHaveBeenCalledOnce();
     view.unmount();
     client.clear();
   });

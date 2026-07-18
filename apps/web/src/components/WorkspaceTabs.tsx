@@ -2,7 +2,6 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
@@ -53,12 +52,8 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
   const activeKey = workspaceTabKey(route);
   const activeProjectId = routeProjectId(route);
 
-  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, minHeight: { md: 58 }, px: 1, bgcolor: "background.paper", alignItems: "stretch", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
-    <Stack direction="row" className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, overflowX: "auto", alignItems: "stretch" }}>
-      <ButtonBase onClick={() => navigate({ kind: "home" })} aria-current={route.kind === "home" ? "page" : undefined} sx={{ position: "relative", minWidth: 112, height: 58, px: 1.5, gap: 1, color: route.kind === "home" ? "text.primary" : "text.secondary", justifyContent: "flex-start", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": route.kind === "home" ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>
-        <HomeOutlinedIcon fontSize="small" />
-        <Typography variant="body2" fontWeight={route.kind === "home" ? 750 : 500}>Home</Typography>
-      </ButtonBase>
+  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, minHeight: { md: 62 }, px: 1, bgcolor: "background.paper", alignItems: "center", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
+    <Stack direction="row" spacing={0.5} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, overflowX: "auto", alignItems: "center", py: 0.75 }}>
       {tabs.map((tab) => {
         const project = projects.find((candidate) => candidate.id === tab.route.projectId);
         const resources = resourcesByProject.get(tab.route.projectId);
@@ -71,7 +66,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
             : tab.route.kind === "agents" ? "Agents" : "Project files";
         const selected = tab.key === activeKey;
         const projectLabel = project?.label ?? "Unavailable project";
-        return <Box key={tab.key} data-tab-key={tab.key} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }} sx={{ position: "relative", minWidth: 168, maxWidth: 240, height: 58, display: "flex", alignItems: "stretch", overflow: "hidden", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "transparent", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>
+        return <Box key={tab.key} data-tab-key={tab.key} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }} sx={{ position: "relative", minWidth: 168, maxWidth: 240, height: 48, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 1.25, border: 1, borderColor: selected ? "divider" : "transparent", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "transparent", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}>
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={600}>
             <ButtonBase onClick={() => navigate(tab.route)} aria-label={`Open ${label} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{ minWidth: 0, flex: 1, px: 1.25, gap: 1, justifyContent: "flex-start" }}>
               <TabIcon kind={tab.route.kind} />
