@@ -14,10 +14,13 @@ export interface CommunicationDocumentRecord {
   id: string;
   title: string;
   mediaType: "text/markdown";
-  content: string;
+  /** Legacy/small inline body. Artifact-backed documents omit this copy. */
+  content?: string;
+  artifactId?: string;
   byteLength: number;
-  authorAgentId: string;
-  executionId: string;
+  authorAgentId?: string;
+  authorUserId?: string;
+  executionId?: string;
   createdAt: string;
 }
 

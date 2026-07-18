@@ -164,6 +164,7 @@ export interface UpdateRequestV3Input {
   runAuthorization?: RunAuthorizationV3;
   inReplyToUpdateId?: string;
   payload?: unknown;
+  artifacts?: RuntimeArtifactInputV3[];
   now?: string;
 }
 
@@ -221,6 +222,7 @@ export interface RuntimeCommunicationV3Input {
   scopeKey?: string;
   /** Required for provider-authored communications. */
   runAuthorization?: RunAuthorizationV3;
+  artifacts?: RuntimeArtifactInputV3[];
   activation?: {
     agentId: string;
     kind: string;
@@ -244,6 +246,7 @@ export interface RuntimeCommunicationV3Result {
   id: string;
   activationId?: string;
   activationIds?: string[];
+  artifactIds?: string[];
   replayed: boolean;
 }
 
@@ -252,6 +255,25 @@ export interface RuntimeCommunicationV3View {
   projectId: string;
   audience: unknown;
   payload: unknown;
+  createdAt: string;
+}
+
+export interface RuntimeArtifactInputV3 {
+  id: string;
+  role: "long_text" | "document";
+  title: string;
+  mediaType: string;
+  blobPath: string;
+  blobHash: string;
+  byteLength: number;
+  originAgentId?: string;
+  executionId?: string;
+}
+
+export interface RuntimeArtifactV3 extends RuntimeArtifactInputV3 {
+  ownerKind: "communication" | "request_update";
+  ownerId: string;
+  projectId: string;
   createdAt: string;
 }
 
@@ -478,6 +500,13 @@ function payloadHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+function runtimeArtifactMetadataIsValid(artifact: RuntimeArtifactInputV3): boolean {
+  return /^text-[a-f0-9]{64}$/.test(artifact.id) && artifact.blobPath === artifact.id &&
+    Boolean(artifact.title.trim()) && Boolean(artifact.mediaType.trim()) &&
+    /^[a-f0-9]{64}$/.test(artifact.blobHash) &&
+    Number.isSafeInteger(artifact.byteLength) && artifact.byteLength >= 0;
+}
+
 function isIso(value: string): boolean {
   return Number.isFinite(Date.parse(value));
 }
@@ -502,6 +531,7 @@ export class CoordinationV3Store {
       intent: input.intent,
       audience: input.audience,
       payload: input.payload,
+      artifacts: input.artifacts ?? [],
       actionable: activationInputs.length > 0,
       activations: activationInputs,
     };
@@ -524,6 +554,7 @@ export class CoordinationV3Store {
           id: input.id,
           ...(activations[0] ? { activationId: activations[0].id } : {}),
           ...(activations.length ? { activationIds: activations.map((activation) => activation.id) } : {}),
+          ...(input.artifacts?.length ? { artifactIds: input.artifacts.map((artifact) => artifact.id) } : {}),
           replayed: true,
         };
       }
@@ -538,6 +569,22 @@ export class CoordinationV3Store {
         stableJson(input.audience), stableJson(input.payload), hash,
         activationInputs.length ? 1 : 0, now,
       );
+      const insertArtifact = this.sqlite.prepare(`
+        INSERT INTO runtime_artifacts (
+          id, owner_kind, owner_id, project_id, role, title, media_type,
+          blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
+        ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const artifact of input.artifacts ?? []) {
+        if (!runtimeArtifactMetadataIsValid(artifact)) {
+          throw new Error("runtime communication artifact metadata is invalid");
+        }
+        insertArtifact.run(
+          artifact.id, input.id, input.projectId, artifact.role, artifact.title, artifact.mediaType,
+          artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
+          artifact.originAgentId ?? null, artifact.executionId ?? null, now,
+        );
+      }
       const activationIds = activationInputs.map((activation, index) => this.createActivation({
         projectId: input.projectId,
         agentId: activation.agentId,
@@ -557,6 +604,7 @@ export class CoordinationV3Store {
         id: input.id,
         ...(activationIds[0] ? { activationId: activationIds[0] } : {}),
         ...(activationIds.length ? { activationIds } : {}),
+        ...(input.artifacts?.length ? { artifactIds: input.artifacts.map((artifact) => artifact.id) } : {}),
         replayed: false,
       };
     })();
@@ -590,6 +638,48 @@ export class CoordinationV3Store {
       audience: JSON.parse(row.audience_json) as unknown,
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,
+    } : undefined;
+  }
+
+  runtimeArtifacts(ownerKind?: RuntimeArtifactV3["ownerKind"], ownerId?: string): RuntimeArtifactV3[] {
+    const rows = this.sqlite.prepare(`
+      SELECT id, owner_kind, owner_id, project_id, role, title, media_type, blob_path,
+        blob_hash, byte_length, origin_agent_id, execution_id, created_at
+      FROM runtime_artifacts
+      WHERE (? IS NULL OR owner_kind = ?) AND (? IS NULL OR owner_id = ?)
+      ORDER BY created_at, id
+    `).all(ownerKind ?? null, ownerKind ?? null, ownerId ?? null, ownerId ?? null) as Array<{
+      id: string; owner_kind: "communication" | "request_update"; owner_id: string;
+      project_id: string; role: "long_text" | "document";
+      title: string; media_type: string; blob_path: string; blob_hash: string; byte_length: number;
+      origin_agent_id: string | null; execution_id: string | null; created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id, ownerKind: row.owner_kind, ownerId: row.owner_id, projectId: row.project_id,
+      role: row.role, title: row.title, mediaType: row.media_type, blobPath: row.blob_path,
+      blobHash: row.blob_hash, byteLength: row.byte_length, createdAt: row.created_at,
+      ...(row.origin_agent_id ? { originAgentId: row.origin_agent_id } : {}),
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
+    }));
+  }
+
+  runtimeArtifact(id: string): RuntimeArtifactV3 | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT id, owner_kind, owner_id, project_id, role, title, media_type, blob_path,
+        blob_hash, byte_length, origin_agent_id, execution_id, created_at
+      FROM runtime_artifacts WHERE id = ?
+    `).get(id) as {
+      id: string; owner_kind: "communication" | "request_update"; owner_id: string;
+      project_id: string; role: "long_text" | "document";
+      title: string; media_type: string; blob_path: string; blob_hash: string; byte_length: number;
+      origin_agent_id: string | null; execution_id: string | null; created_at: string;
+    } | undefined;
+    return row ? {
+      id: row.id, ownerKind: row.owner_kind, ownerId: row.owner_id, projectId: row.project_id,
+      role: row.role, title: row.title, mediaType: row.media_type, blobPath: row.blob_path,
+      blobHash: row.blob_hash, byteLength: row.byte_length, createdAt: row.created_at,
+      ...(row.origin_agent_id ? { originAgentId: row.origin_agent_id } : {}),
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
     } : undefined;
   }
 
@@ -831,6 +921,17 @@ export class CoordinationV3Store {
       const row = byId.get(id);
       return row ? [{ id, kind: row.kind, promptClass: row.prompt_class, payload: JSON.parse(row.payload_json) as unknown }] : [];
     });
+  }
+
+  activationIdsAttachedToRun(runId: string, agentId: string): string[] {
+    return (this.sqlite.prepare(`
+      SELECT attached.activation_id AS id
+      FROM scheduler_run_activations attached
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      JOIN agent_activations activation ON activation.id = attached.activation_id
+      WHERE attached.run_id = ? AND run.agent_id = ? AND activation.agent_id = ?
+      ORDER BY attached.attached_at, attached.activation_id
+    `).all(runId, agentId, agentId) as Array<{ id: string }>).map((row) => row.id);
   }
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
@@ -2242,6 +2343,7 @@ export class CoordinationV3Store {
       actor: input.actor,
       inReplyToUpdateId: input.inReplyToUpdateId ?? null,
       payload: input.payload ?? null,
+      artifacts: input.artifacts ?? [],
     };
     const hash = payloadHash(replayPayload);
     return this.sqlite.transaction(() => {
@@ -2301,6 +2403,22 @@ export class CoordinationV3Store {
         input.inReplyToUpdateId ?? null, stableJson(input.payload ?? null), hash,
         next.state, next.version, now,
       );
+      const insertArtifact = this.sqlite.prepare(`
+        INSERT INTO runtime_artifacts (
+          id, owner_kind, owner_id, project_id, role, title, media_type,
+          blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
+        ) VALUES (?, 'request_update', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const artifact of input.artifacts ?? []) {
+        if (!runtimeArtifactMetadataIsValid(artifact)) {
+          throw new Error("request update artifact metadata is invalid");
+        }
+        insertArtifact.run(
+          artifact.id, input.updateId, request.project_id, artifact.role, artifact.title, artifact.mediaType,
+          artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
+          artifact.originAgentId ?? null, artifact.executionId ?? null, now,
+        );
+      }
       this.sqlite.prepare(`
         UPDATE coordination_requests
         SET state = ?, version = ?, open_question_update_id = ?,
@@ -2621,6 +2739,7 @@ export class CoordinationV3Store {
         SELECT id FROM coordination_requests WHERE project_id = ?
       )`).run(projectId);
       this.sqlite.prepare(`DELETE FROM coordination_requests WHERE project_id = ?`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM runtime_artifacts WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM runtime_communications WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM coordination_idempotency WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM scheduler_agent_fences WHERE agent_id IN (
@@ -2948,6 +3067,16 @@ export class CoordinationV3Store {
       WHERE run_id = ? AND kind = 'steer' AND state = 'acknowledged'
       ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1
     `).get(runId) as { id: string } | undefined)?.id;
+  }
+
+  /** Every injection identifier associated with a Run, including stale and
+   * superseded steering attempts. These values are sanitation inputs only. */
+  steeringInjectionIds(runId: string): string[] {
+    return (this.sqlite.prepare(`
+      SELECT id FROM scheduler_prompt_injections
+      WHERE run_id = ?
+      ORDER BY sequence, created_at, id
+    `).all(runId) as Array<{ id: string }>).map((row) => row.id);
   }
 
   /** Materialize due recovery work transactionally. The recovery Activation is

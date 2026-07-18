@@ -498,6 +498,7 @@ export function AgentDetail({
           return await sendMessage.mutateAsync(
             {
               text,
+              idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
               attachmentIds: attachments.map((item) => item.id),
               model,
               effort: effortSelectionIsCompatible(engine, model, effort) ? effort : "",

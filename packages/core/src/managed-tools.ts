@@ -1,4 +1,5 @@
 import type { RuntimeDynamicToolSpec } from "./adapter.js";
+import { LONG_TEXT_MAX_UTF8_BYTES } from "./text-policy.js";
 
 const REQUEST_LIFETIME_SCHEMA = {
   oneOf: [
@@ -26,7 +27,6 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
       { required: ["recipientAgentId", "text"] },
       { required: ["delegations"] },
       { required: ["requests"] },
-      { required: ["inspectActivationIds"] },
     ],
     properties: {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for the common delegation form." },
@@ -86,10 +86,33 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
           },
         },
       },
-      inspectActivationIds: {
+    },
+  },
+};
+
+/** Read-only retrieval for durable result references advertised to the current
+ * Run. The byte budget is provider-visible so models can paginate deliberately
+ * instead of discovering response-size limits through rejected calls. */
+export const PONDEROSA_RESULT_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_result",
+  description: "Retrieve durable result references that are reachable from the current authoritative Run. Use refs from fullResultRef or artifact references in this Run; references stay stable, while access is recomputed per Run. Results are ordered and paginated without creating Runs, Activations, Requests, Joins, messages, or artifacts.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["refs"],
+    properties: {
+      refs: {
         type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
-        items: { type: "string", minLength: 1, maxLength: 200 },
-        description: "Retrieve complete durable payloads for activation references supplied in the current run.",
+        items: { type: "string", pattern: "^ponderosa://(activation|artifact)/[^/]+$", maxLength: 260 },
+        description: "One to twenty stable ponderosa://activation/<id> or ponderosa://artifact/<id> references, in desired return order.",
+      },
+      cursor: {
+        type: "string", minLength: 1, maxLength: 4096,
+        description: "Opaque continuation cursor returned by the preceding call. Reuse it with the exact same refs and maxBytes.",
+      },
+      maxBytes: {
+        type: "integer", minimum: 4096, maximum: 262144,
+        description: "Overall raw-content byte budget for this page. Defaults to 65536 bytes; valid range is 4096 through 262144.",
       },
     },
   },
@@ -134,8 +157,8 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
         enum: ["progress", "waiting_dependency", "dependency_resolved", "question", "answer", "completed", "blocked", "failed", "cancelled", "superseded"],
         description: "Use completed for the recipient's result/reply. Use question only for a recipient's blocking follow-up; use answer only for the original requester's correlated response.",
       },
-      text: { type: "string", maxLength: 4000 },
-      question: { type: "string", minLength: 1, maxLength: 4000, description: "Common blocking follow-up to the original requester; maps to a correlated question update." },
+      text: { type: "string", description: `Canonical report text. UTF-8 content above 10,000 Unicode code points is stored as a durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
+      question: { type: "string", minLength: 1, description: `Common blocking follow-up to the original requester. Long UTF-8 content is artifact-backed; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
       inReplyToUpdateId: { type: "string", minLength: 1, maxLength: 200, description: "Required for kind answer. Copy the exact inReplyToUpdateId from the coordination_question Activation." },
     },
   },
@@ -153,7 +176,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         type: "string", enum: ["broadcast", "direct_to_user", "collaboration"],
         description: "Exact routing enum. Use direct_to_user for a private user reply; user_dm is not a tool value.",
       },
-      text: { type: "string", minLength: 1, maxLength: 4000 },
+      text: { type: "string", minLength: 1, description: `Complete message text. Content above 10,000 Unicode code points is stored as one durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
       steeringInjectionId: {
         type: "string", minLength: 1,
         description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt. Ponderosa rejects output fenced behind an acknowledged steer.",
@@ -168,7 +191,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         type: "object", additionalProperties: false, required: ["title", "content"],
         properties: {
           title: { type: "string", minLength: 1, maxLength: 160 },
-          content: { type: "string", minLength: 1 },
+          content: { type: "string", minLength: 1, description: `Full Markdown document content; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
           mediaType: { type: "string", enum: ["text/markdown"] },
         },
       },

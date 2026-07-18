@@ -292,6 +292,24 @@ truncated: it reserves room for human messages and blockers, may use summaries
 and artifact references, splits large result sets into inspectable batches, and
 exposes full-result retrieval. An overflow is explicit and actionable.
 
+Canonical provider-authored text is normalized to NFC with LF line endings and
+every current or stale steering injection ID is removed before hashing, byte or
+character counting, persistence, and artifact creation. “Character” means one
+Unicode code point everywhere. Text at or below 10,000 code points stays inline;
+text above that boundary is artifact-backed, with an 8 MiB UTF-8 ceiling. An
+explicit document suppresses automatic duplication only when its sanitized,
+normalized content exactly equals the full response.
+
+Artifact publication is a recoverable operation: write and flush a staged blob,
+atomically rename it, fsync its containing directory, then commit artifact
+metadata and the communication or Request update in one SQLite transaction. That
+transaction revalidates authoritative Run status and fencing. Cancellation and
+publication therefore serialize by commit order, and a fenced Run cannot publish
+afterward. Append-only chat and artifact-catalog projections happen only after
+the blob is available; startup and exact retries repair a committed-but-
+unprojected operation. Operation identity includes the Run, communication or
+update identity, and idempotency key rather than relying on content hash alone.
+
 SQLite is the only runtime authority. Deleting JSONL telemetry cannot affect
 scheduling, ownership, recovery, cancellation, or agent availability.
 
@@ -310,8 +328,8 @@ The cutover gate must prove:
 
 ## Provider-visible tools
 
-The coordination contract exposes three mutation tools and two read-only
-discovery tools to the model:
+The coordination contract exposes three mutation tools and three read-only
+discovery/retrieval tools to the model:
 
 - `ponderosa_coordinate`: `{recipientAgentId,text}` is the common single
   delegation contract; `{delegations:[...]}` is common fan-out. The server
@@ -343,6 +361,30 @@ discovery tools to the model:
   or one focused Agent entry without relying on provider shell/network access.
 - `ponderosa_context`: retrieves paginated older scoped history only when the
   current Run advertises that bounded context omitted it.
+- `ponderosa_result`: retrieves ordered, byte-bounded pages for stable
+  `ponderosa://activation/<id>` and `ponderosa://artifact/<id>` references that
+  are reachable from the current authoritative Run. Its signed cursor is bound
+  to that Run, reference order, content versions, and byte budget. Retrieval is
+  read-only and never creates scheduler or communication state.
+
+Artifact reachability follows attached Requests, Joins, and Activations rather
+than creator ownership. The reference itself is durable; authorization is always
+re-evaluated against the current authoritative Run. Provider-visible limits are
+4 KiB minimum, 64 KiB default, 256 KiB maximum, 20 ordered references per call,
+with an opaque continuation cursor.
+
+A Trigger occurrence grants its root Run a default Direct Message reply route
+only if that Agent chooses to call `ponderosa_message`; silent Triggers stay
+silent. Delegated children never inherit that user authority. Correlated manager
+continuations may inherit it through their Request/Join structure.
+
+Provider tool-contract cutover drains rather than attempting compatibility.
+Deployment control first pauses all new Run, steering, and provider-operation
+leasing while durable intake and trigger occurrence persistence remain active.
+Readiness reports `acceptingDurableIntake`, `leasingRuns`, drain state, and active
+Run count separately. Cutover waits for zero active Runs; an aborted deployment
+must explicitly resume leasing. The contract hash covers complete tool schemas,
+provider-specific definitions, and the relevant prompt contract.
 
 “Coordinate and wait” is a skill/helper around `ponderosa_coordinate`, not a
 fourth runtime tool. All tool mutations commit SQLite state and an outbox record

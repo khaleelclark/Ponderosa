@@ -37,6 +37,9 @@ The executable source of this matrix is `deriveCommunicationBehavior` in
   recipient's Agent chat.
 - Completed ordinary output belongs to the originating Run and appears in Work
   log. It is not communication.
+- Text through 10,000 Unicode code points is inline. Longer user or Agent text
+  is represented by one stable, Project-owned artifact reference; its full body
+  is retrieved only by an authorized Run and is not copied into chat history.
 - Transient reasoning belongs only to the live Run stream.
 - `#broadcast`, `#user`, and agent handles are presentation. Routing never
   reparses them.

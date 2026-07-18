@@ -918,6 +918,225 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("generated artifact endpoints", () => {
+  it("backs text above 10,000 Unicode code points with one durable user artifact", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Long text", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const inlineAgent = store.createAgent(project.id, { title: "Inline", engine: "codex", conversationId: conversation.id });
+    const longAgent = store.createAgent(project.id, { title: "Long", engine: "codex", conversationId: conversation.id });
+
+    const boundary = "😀".repeat(10_000);
+    const inline = await app.inject({
+      method: "POST", url: `/api/agents/${inlineAgent.id}/messages`,
+      payload: { text: boundary, sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(inline.statusCode, inline.body).toBe(202);
+    const inlineEvent = store.readCommunicationEvents(project.id).find((event) => event.sender.kind === "user" && event.text === boundary);
+    expect(inlineEvent?.document).toBeUndefined();
+
+    const fullText = "😀".repeat(10_001);
+    const submitted = await app.inject({
+      method: "POST", url: `/api/agents/${longAgent.id}/messages`,
+      payload: {
+        text: fullText,
+        idempotencyKey: "long-user-message",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+      },
+    });
+    expect(submitted.statusCode, submitted.body).toBe(202);
+    const submittedBody = submitted.json<{ activationId: string; communicationEventId: string }>();
+    const event = store.getCommunicationEvent(project.id, submittedBody.communicationEventId)!;
+    expect(event.text).toMatch(/^Full message: ponderosa:\/\/artifact\/text-/);
+    expect(event.text).not.toContain(fullText);
+    expect(event.document).toMatchObject({
+      id: expect.stringMatching(/^text-/),
+      artifactId: expect.stringMatching(/^text-/),
+      title: "Pasted text",
+      authorUserId: "local-operator",
+      byteLength: Buffer.byteLength(fullText, "utf8"),
+    });
+    expect(event.document).not.toHaveProperty("content");
+    const artifactId = event.document!.artifactId!;
+    expect(readFileSync(managedArtifactContentPath(dataDir, project.id, artifactId), "utf8")).toBe(fullText);
+    expect(store.getProjectArtifact(project.id, artifactId)).toMatchObject({ id: artifactId, visibility: "project" });
+    const runtimeRow = store.sqlite.prepare(`
+      SELECT payload_json FROM runtime_communications WHERE id = ?
+    `).get(`dispatch:${submittedBody.communicationEventId}:${longAgent.id}`) as { payload_json: string };
+    expect(runtimeRow.payload_json).toContain(`ponderosa://artifact/${artifactId}`);
+    expect(runtimeRow.payload_json).not.toContain(fullText);
+    const retried = await app.inject({
+      method: "POST", url: `/api/agents/${longAgent.id}/messages`,
+      payload: {
+        text: fullText,
+        idempotencyKey: "long-user-message",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+      },
+    });
+    expect(retried.statusCode, retried.body).toBe(202);
+    expect(retried.json()).toMatchObject({ communicationEventId: submittedBody.communicationEventId });
+    expect(store.getConversationMessages(conversation.id, "main")
+      .filter((message) => message.communicationEventId === submittedBody.communicationEventId)).toHaveLength(1);
+    expect(new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication", `dispatch:${submittedBody.communicationEventId}:${longAgent.id}`)).toHaveLength(1);
+
+    await vi.waitFor(() => expect(persistent.openedOptions.some((options) => options.agentId === longAgent.id)).toBe(true));
+    const sessionIndex = persistent.openedOptions.findIndex((options) => options.agentId === longAgent.id);
+    const runtime = persistent.openedOptions[sessionIndex]!;
+    const started = persistent.starts[sessionIndex]!;
+    expect(started.prompt).toContain(`ponderosa://artifact/${artifactId}`);
+    expect(started.prompt).not.toContain(fullText);
+    const countsBefore = store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations`).get();
+    const retrieved = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result",
+      arguments: { refs: [`ponderosa://artifact/${artifactId}`], maxBytes: 262_144 },
+    });
+    expect(retrieved.success, retrieved.text).toBe(true);
+    expect(JSON.parse(retrieved.text)).toMatchObject({
+      items: [{ ref: `ponderosa://artifact/${artifactId}`, complete: true, content: fullText }],
+    });
+    expect(store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations`).get()).toEqual(countsBefore);
+    for (let index = 0; index < persistent.openedOptions.length; index += 1) persistent.completeTurn(index);
+    await app.close();
+  });
+
+  it("uses the same artifact-backed long-text contract on every shared composer route", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Shared long text", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: conversation.id });
+    const second = store.createAgent(project.id, {
+      title: "Second", engine: "codex", conversationId: conversation.id, managerAgentId: first.id,
+    });
+    const fullText = `Shared body\n${"z".repeat(10_100)}`;
+    const eventIds: string[] = [];
+
+    const broadcast = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/messages`,
+      payload: { text: fullText, idempotencyKey: "long-broadcast" },
+    });
+    expect(broadcast.statusCode, broadcast.body).toBe(200);
+    eventIds.push(broadcast.json<{ communicationEventId: string }>().communicationEventId);
+
+    const direct = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/direct-messages`,
+      payload: {
+        text: fullText,
+        recipients: [{ agentId: first.id }, { agentId: second.id }],
+        idempotencyKey: "long-direct",
+      },
+    });
+    expect(direct.statusCode, direct.body).toBe(200);
+    eventIds.push(direct.json<{ messageId: string }>().messageId);
+
+    const collaboration = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/collaboration/messages`,
+      payload: { text: fullText, recipientAgentIds: [first.id], idempotencyKey: "long-collaboration" },
+    });
+    expect(collaboration.statusCode, collaboration.body).toBe(200);
+    eventIds.push(collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId);
+
+    const authored = appendCanonicalMessage(
+      store, project.id, conversation.id, { role: "assistant", text: "Reply here" }, first.id,
+    )!;
+    const directReply = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/direct-replies`,
+      payload: {
+        text: fullText,
+        replyToMessageId: authored.id,
+        targetAuthorAgentId: first.id,
+        idempotencyKey: "long-direct-reply",
+      },
+    });
+    expect(directReply.statusCode, directReply.body).toBe(200);
+    eventIds.push(directReply.json<{ messageId: string }>().messageId);
+
+    const created = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: { title: "New reader", engine: "codex", conversationId: conversation.id, initialMessage: fullText },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    eventIds.push(`agent-opening:${created.json<{ id: string }>().id}`);
+
+    expect(new Set(eventIds).size).toBe(5);
+    for (const eventId of eventIds) {
+      const event = store.getCommunicationEvent(project.id, eventId)!;
+      expect(event.text).toMatch(/^Full message: ponderosa:\/\/artifact\/text-/);
+      expect(event.text).not.toContain(fullText);
+      expect(event.document).toMatchObject({
+        artifactId: expect.stringMatching(/^text-/),
+        authorUserId: "local-operator",
+        byteLength: Buffer.byteLength(fullText, "utf8"),
+      });
+      expect(readFileSync(managedArtifactContentPath(dataDir, project.id, event.document!.artifactId!), "utf8")).toBe(fullText);
+    }
+    expect(new CoordinationV3Store(store.sqlite).runtimeArtifacts()
+      .filter((artifact) => artifact.projectId === project.id)).toHaveLength(5);
+    const directArtifactId = store.getCommunicationEvent(project.id, eventIds[1]!)!.document!.artifactId!;
+    const exported = (await app.inject({
+      method: "GET", url: `/api/agents/${first.id}/export?mode=full&organization=true`,
+    })).json<import("@ponderosa/core").AgentPortablePackageDto>();
+    const exportedArtifactRefs = exported.agents.flatMap((agent) => agent.artifacts ?? []).map((artifact) => artifact.ref);
+    expect(exportedArtifactRefs).toContain(directArtifactId);
+    expect(new Set(exportedArtifactRefs).size).toBe(exportedArtifactRefs.length);
+    await app.close();
+  });
+
+  it("recovers a user artifact and canonical message after restart between SQLite commit and projection", async () => {
+    const project = store.createProject({ label: "Restart artifact", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let crash = true;
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1 },
+      messageLifecycleFaults: {
+        afterCommunicationArtifactCommit: () => {
+          if (crash) {
+            crash = false;
+            throw new Error("simulated process crash before projection");
+          }
+        },
+      },
+    });
+    await first.ready();
+    await first.inject({ method: "POST", url: "/api/deployment/drain" });
+    const response = await first.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "u".repeat(10_100), sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(response.statusCode).toBe(500);
+    const artifact = new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication")[0]!;
+    expect(readFileSync(managedArtifactContentPath(dataDir, project.id, artifact.id), "utf8")).toBe("u".repeat(10_100));
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(0);
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    await restarted.ready();
+    expect(store.getProjectArtifact(project.id, artifact.id)).toMatchObject({ id: artifact.id });
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      eventId: expect.any(String),
+      text: `Full message: ponderosa://artifact/${artifact.id}`,
+      document: expect.objectContaining({ artifactId: artifact.id, authorUserId: "local-operator" }),
+    }));
+    await restarted.close();
+  });
+
   it("previews and downloads a canonical PDF only inside its owning project", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     const pdf = Buffer.from("%PDF-1.4\n% test\n");
@@ -2237,6 +2456,9 @@ describe("server chunk F", () => {
     expect(ready.json()).toMatchObject({
       status: "ready",
       canAcceptWork: true,
+      acceptingDurableIntake: true,
+      leasingRuns: true,
+      deploymentDrain: { state: "accepting", activeRuns: 0 },
       checks: {
         daemon: { ok: true },
         dataDirectory: { ok: true },
@@ -2245,6 +2467,27 @@ describe("server chunk F", () => {
       },
       runtimes: [{ id: "codex", authenticated: true }],
     });
+    const operator = { authorization: "Bearer operator-secret" };
+    expect((await app.inject({ method: "POST", url: "/api/deployment/drain", headers: operator })).json()).toMatchObject({
+      state: "draining", acceptingDurableIntake: true, leasingRuns: false, activeRuns: 0,
+    });
+    const drained = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(drained.statusCode).toBe(503);
+    expect(drained.json()).toMatchObject({
+      status: "not_ready", canAcceptWork: false, acceptingDurableIntake: true, leasingRuns: false,
+      deploymentDrain: { state: "draining", activeRuns: 0 },
+    });
+    const project = store.createProject({ label: "Drain intake", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Queued", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, headers: operator, payload: { text: "Persist during drain" },
+    })).statusCode).toBe(202);
+    await sleep(20);
+    expect(store.getRuns(agent.id)).toHaveLength(0);
+    expect((await app.inject({ method: "POST", url: "/api/deployment/resume", headers: operator })).json()).toMatchObject({
+      state: "accepting", acceptingDurableIntake: true, leasingRuns: true,
+    });
+    await waitForRun(agent.id);
     await app.close();
 
     const unavailable = createServer({
@@ -2258,6 +2501,8 @@ describe("server chunk F", () => {
     expect(notReady.json()).toMatchObject({
       status: "not_ready",
       canAcceptWork: false,
+      acceptingDurableIntake: true,
+      leasingRuns: true,
       checks: { daemon: { ok: true }, dataDirectory: { ok: true }, projections: { ok: true }, runtimes: { ok: false } },
       runtimes: [{ id: "codex", authenticated: false, detail: "login required" }],
     });
@@ -3894,6 +4139,251 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("lets a manager retrieve an artifact-backed child result through the continuation Activation", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Large child result", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const worker = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${manager.id}/messages`,
+      payload: { text: "Get the full result", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const delegated = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: worker.id, text: "Return the full result", completionMode: "callback" },
+    });
+    expect(delegated.success, delegated.text).toBe(true);
+    persistent.completeTurn(0);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const fullResult = `Result\n${"r".repeat(10_100)}`;
+    const reported = await persistent.openedOptions[1]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: fullResult },
+    });
+    expect(reported.success, reported.text).toBe(true);
+    const resultRef = JSON.parse(reported.text).resultRef as string;
+    expect(resultRef).toMatch(/^ponderosa:\/\/artifact\/text-/);
+    persistent.completeTurn(1);
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    expect(persistent.starts[2]?.prompt).toContain(resultRef);
+    expect(persistent.starts[2]?.prompt).not.toContain(fullResult);
+    const countsBefore = store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations`).get();
+    const retrieved = await persistent.openedOptions[2]!.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [resultRef], maxBytes: 262_144 },
+    });
+    expect(retrieved.success, retrieved.text).toBe(true);
+    expect(JSON.parse(retrieved.text)).toMatchObject({
+      items: [{ ref: resultRef, complete: true, content: fullResult }],
+    });
+    expect(store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations`).get()).toEqual(countsBefore);
+    persistent.completeTurn(2);
+    await app.close();
+  });
+
+  it("retrieves reachable durable results through signed bounded pagination without scheduler mutation", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Result retrieval", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const activation = new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+      id: "large-result",
+      projectId: project.id,
+      sender: { kind: "system", component: "qualification" },
+      intent: "qualification_result",
+      audience: { agentId: agent.id },
+      payload: { result: "é".repeat(40_000), exact: true },
+      scopeKey: `conversation:${conversation.id}`,
+      activation: {
+        agentId: agent.id, kind: "qualification_result", priority: 60,
+        dispatchPolicy: "next_run", promptClass: "coordination",
+      },
+    });
+    const ref = `ponderosa://activation/${activation.activationId}`;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    await app.ready();
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    expect(runtime.dynamicTools?.find((tool) => tool.name === "ponderosa_coordinate")?.inputSchema.properties)
+      .not.toHaveProperty("inspectActivationIds");
+    expect(persistent.starts[0]?.prompt).toContain(`fullResultRef: ${ref}`);
+    expect(persistent.starts[0]?.prompt).toContain("ponderosa_result({refs:[fullResultRef]})");
+    const countsBefore = store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations,
+      (SELECT COUNT(*) FROM coordination_requests) AS requests,
+      (SELECT COUNT(*) FROM coordination_joins) AS joins`).get();
+    const first = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], maxBytes: 4096 },
+    });
+    expect(first.success, first.text).toBe(true);
+    const firstPage = JSON.parse(first.text) as {
+      items: Array<{ ref: string; range: { start: number; end: number }; complete: boolean; content: string }>;
+      nextCursor: string;
+    };
+    expect(firstPage.items).toEqual([expect.objectContaining({
+      ref, range: { start: 0, end: expect.any(Number) }, complete: false,
+    })]);
+    expect(Buffer.byteLength(firstPage.items[0]!.content, "utf8")).toBeLessThanOrEqual(4096);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+    const replay = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: firstPage.nextCursor },
+    });
+    expect(replay.success, replay.text).toBe(true);
+    const replayAgain = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: firstPage.nextCursor },
+    });
+    expect(replayAgain.text).toBe(replay.text);
+    const tampered = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: `${firstPage.nextCursor.slice(0, -1)}x` },
+    });
+    expect(tampered.success).toBe(false);
+    expect(JSON.parse(tampered.text)).toMatchObject({ error: expect.stringContaining("tampered") });
+    expect(store.sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM scheduler_runs) AS runs,
+      (SELECT COUNT(*) FROM agent_activations) AS activations,
+      (SELECT COUNT(*) FROM coordination_requests) AS requests,
+      (SELECT COUNT(*) FROM coordination_joins) AS joins`).get()).toEqual(countsBefore);
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
+  it("sanitizes every Run steering identifier before artifact creation and deduplicates an equal document", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Sanitized artifact", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Writer", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Write the report", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runId = store.sqlite.prepare(`SELECT id FROM scheduler_runs WHERE agent_id = ? AND status = 'running'`).get(agent.id) as { id: string };
+    const injections = store.sqlite.prepare(`SELECT id FROM scheduler_prompt_injections WHERE run_id = ? ORDER BY sequence`).all(runId.id) as Array<{ id: string }>;
+    expect(injections.length).toBeGreaterThan(0);
+    const staleOrCurrentId = injections[0]!.id;
+    const raw = `Report references ${staleOrCurrentId}\r\n${"x".repeat(10_100)}`;
+    const published = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_message",
+      arguments: {
+        text: raw,
+        document: { title: `Report ${staleOrCurrentId}`, mediaType: "text/markdown", content: raw },
+      },
+    });
+    expect(published.success, published.text).toBe(true);
+    const result = JSON.parse(published.text) as { eventId: string; resultRef: string };
+    const event = store.getCommunicationEvent(project.id, result.eventId)!;
+    expect(event.text).toBe(result.resultRef.replace("ponderosa://artifact/", "Full response: ponderosa://artifact/"));
+    expect(event.document?.title).toBe("Report [steering reference]");
+    const artifactRows = new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication", result.eventId);
+    expect(artifactRows).toHaveLength(1);
+    const body = readFileSync(managedArtifactContentPath(dataDir, project.id, artifactRows[0]!.id), "utf8");
+    expect(body).toContain("[steering reference]\n");
+    expect(body).not.toContain(staleOrCurrentId);
+    expect(JSON.stringify(event)).not.toContain(staleOrCurrentId);
+    expect((store.sqlite.prepare(`SELECT payload_json FROM runtime_communications WHERE id = ?`).get(result.eventId) as { payload_json: string }).payload_json)
+      .not.toContain(staleOrCurrentId);
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
+  it("repairs an artifact communication on exact retry after SQLite committed before projection", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    let failProjection = true;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+      messageLifecycleFaults: {
+        afterCommunicationArtifactCommit: ({ kind }) => {
+          if (kind === "communication" && failProjection) {
+            failProjection = false;
+            throw new Error("simulated crash after SQLite commit");
+          }
+        },
+      },
+    });
+    const project = store.createProject({ label: "Artifact retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Writer", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Write the long result", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const full = "z".repeat(10_100);
+    const call = { name: "ponderosa_message", arguments: { text: full } };
+    const first = await persistent.openedOptions[0]!.handleDynamicToolCall!(call);
+    expect(first.success).toBe(false);
+    const runtimeRow = store.sqlite.prepare(`SELECT owner_id AS id FROM runtime_artifacts WHERE project_id = ?`).get(project.id) as { id: string };
+    expect(new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication", runtimeRow.id)).toHaveLength(1);
+    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toBeUndefined();
+
+    const retry = await persistent.openedOptions[0]!.handleDynamicToolCall!(call);
+    expect(retry.success, retry.text).toBe(true);
+    expect(JSON.parse(retry.text)).toMatchObject({ eventId: runtimeRow.id, replayed: true, resultRef: expect.stringMatching(/^ponderosa:\/\/artifact\//) });
+    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toMatchObject({
+      eventId: runtimeRow.id,
+      text: expect.stringMatching(/^Full response: ponderosa:\/\/artifact\//),
+    });
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
+  it("gives a Trigger root a silent-by-default direct user reply route", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Trigger reply", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.createTriggerDefinition({
+      id: "reply", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Reply", instructions: "Notify the user only for a material result.",
+      sourceKind: "webhook", sourceConfig: { replayWindowSeconds: 300 },
+    });
+    coordination.recordTriggerOccurrence({
+      triggerId: "reply", occurrenceKey: "one", payload: {}, provenance: { source: "test" },
+    });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    await app.ready();
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(0);
+    const reply = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_message", arguments: { text: "Trigger completed materially." },
+    });
+    expect(reply.success, reply.text).toBe(true);
+    expect(store.readCommunicationEvents(project.id)).toContainEqual(expect.objectContaining({
+      intent: "user_dm", text: "Trigger completed materially.",
+      sender: { kind: "agent", agentId: agent.id, executionId: expect.any(String) },
+    }));
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
   it("creates one streaming aggregate Join for common fan-out and validates explicit completion modes", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -3978,7 +4468,7 @@ describe("server chunk F", () => {
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "ponderosa_team_directory", "ponderosa_context",
+      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result",
     ]));
     const providerDirectory = await requesterRuntime.handleDynamicToolCall!({
       name: "ponderosa_team_directory", arguments: { agentId: recipient.id },

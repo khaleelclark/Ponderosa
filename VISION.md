@@ -75,11 +75,15 @@ and Triggers for Agent-owned automatic work.
 Sources remain attached to their message in a compact footer. Generated PDFs are
 previewable and downloadable as project-scoped artifacts.
 
-Long-form agent results use a concise chat summary with a titled Markdown
-document attached to the same communication. The document is previewable and
-downloadable, preserves its original Markdown, and records agent/execution/
-creator provenance. Normal future context contains the summary and document
-reference, not the entire body; agents retrieve full content only when needed.
+Text through 10,000 Unicode code points remains inline. Longer user or Agent
+text is accepted through an 8 MiB UTF-8 ceiling and automatically becomes a
+titled, Ponderosa-managed Markdown artifact attached to the same communication.
+The document is previewable and downloadable, preserves its normalized Markdown,
+and records creator plus Run provenance when applicable. Normal future context
+contains the stable artifact reference, not a second full-body copy; authorized
+Agents retrieve ordered, byte-bounded pages only when needed. A user pasting
+long text sees the same document-like treatment before sending and may restore
+it to the text field.
 Document scope is never independent: Broadcast documents are organizational,
 while Direct Message and Collaboration documents remain private to their
 immutable audiences.

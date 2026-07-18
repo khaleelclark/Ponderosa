@@ -1172,6 +1172,11 @@ describe("CoordinationV3Store scheduler", () => {
       id: "late-message", projectId, sender: { kind: "agent", id: recipientA },
       intent: "collaboration", audience: { agentId: recipientB }, payload: { text: "late" },
       runAuthorization: authorization,
+      artifacts: [{
+        id: "late-artifact", role: "long_text", title: "Late", mediaType: "text/markdown",
+        blobPath: "late-artifact", blobHash: "a".repeat(64), byteLength: 4,
+        originAgentId: recipientA, executionId: lease.runId,
+      }],
     })).toThrow("no longer authoritative");
     expect(() => store.coordinate({
       projectId, requesterAgentId: recipientA, actorScope: `agent:${recipientA}:run:${lease.runId}`,
@@ -1179,6 +1184,8 @@ describe("CoordinationV3Store scheduler", () => {
       requests: [{ requestId: "late-request", recipientAgentId: recipientB, lifetime: indefinite }],
     })).toThrow("no longer authoritative");
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM runtime_communications WHERE id = 'late-message'").get())
+      .toEqual({ count: 0 });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM runtime_artifacts WHERE id = 'late-artifact'").get())
       .toEqual({ count: 0 });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_requests WHERE id = 'late-request'").get())
       .toEqual({ count: 0 });

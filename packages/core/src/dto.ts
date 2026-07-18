@@ -1456,6 +1456,8 @@ export interface AgentDetailDto {
 /** POST /api/agents/:id/messages body — send a user turn. */
 export interface SendMessageRequest {
   text: string;
+  /** Stable across an exact transport retry so long-text artifact publication is idempotent. */
+  idempotencyKey?: string;
   attachmentIds?: string[];
   model?: string;
   effort?: string;
@@ -1647,6 +1649,14 @@ export interface ReadinessDto {
   service: "ponderosa";
   version: string;
   canAcceptWork: boolean;
+  /** Durable API intake remains available while deployment draining pauses
+   * provider leasing. */
+  acceptingDurableIntake: boolean;
+  leasingRuns: boolean;
+  deploymentDrain: {
+    state: "accepting" | "draining";
+    activeRuns: number;
+  };
   checks: {
     daemon: ReadinessCheckDto;
     dataDirectory: ReadinessCheckDto;

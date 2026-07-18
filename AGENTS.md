@@ -106,6 +106,15 @@ pay-per-token provider API keys.
    message references their stable artifact ID, or when the operator pins or
    publishes them. Never replay the entire artifact library.
 
+   Canonical user and provider text uses NFC, LF line endings, and Unicode code
+   point counts. Keep at most 10,000 code points inline; artifact-back longer
+   text through an 8 MiB UTF-8 ceiling. Remove every Run steering injection ID
+   before hashing, counting, persistence, or artifact creation. Artifact-backed
+   publication must flush and atomically rename the blob, fsync its directory,
+   then commit metadata with the communication or Request update while
+   revalidating the authoritative Run fence in that same SQLite transaction.
+   Canonical projections may never reference an unavailable artifact.
+
    Every provider turn records the exact submitted text, its SHA-256 hash, and a
    structured source manifest. The manifest is the default inspection surface;
    exact text is sensitive and remains behind an explicit operator action.
@@ -163,6 +172,11 @@ pay-per-token provider API keys.
    the same secret for that session, but authorize requests only while its owning
    agent has an active turn. Never rotate an environment-bound secret per turn or
    leave it authorized while the runtime is idle.
+
+   Tool-contract deployment pauses new provider leasing without disabling
+   durable intake. Readiness must expose those states independently. Wait for
+   active Runs to drain before cutover, and explicitly resume leasing whenever a
+   deployment is aborted.
 
 8. **Routing uses stable identities.** Store structured recipient agent IDs and
    let the server own routing. Display names and rendered `#labels` are presentation,

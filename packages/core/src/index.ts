@@ -10,5 +10,6 @@ export * from "./dto.js";
 export * from "./sse.js";
 export * from "./communication.js";
 export * from "./managed-tools.js";
+export * from "./text-policy.js";
 export * from "./coordination-v3.js";
 export * from "./file-activity.js";
