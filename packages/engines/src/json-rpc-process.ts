@@ -1,6 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { SpawnFn } from "./process.js";
+import { terminateProcessGroup } from "./process-termination.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -65,7 +66,7 @@ export class JsonRpcProcess {
   private nextId = 1;
   private stderrTail = "";
   private closed = false;
-  private killTimer?: NodeJS.Timeout;
+  private closePromise?: Promise<void>;
 
   readonly notifications: AsyncIterable<JsonRpcNotification> = this.queue;
 
@@ -87,7 +88,7 @@ export class JsonRpcProcess {
     this.child.once("close", (code) => this.finish(code === 0 || this.closed
       ? undefined
       : new Error(`${opts.bin} exited with code ${code}${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}`)));
-    opts.signal.addEventListener("abort", () => void this.close());
+    opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
   }
 
   async initialize(): Promise<void> {
@@ -113,15 +114,24 @@ export class JsonRpcProcess {
   }
 
   isAlive(): boolean {
-    return !this.closed && this.child.exitCode === null;
+    return !this.closed && this.child.exitCode === null && this.child.signalCode === null;
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    this.signal("SIGTERM");
-    this.killTimer = setTimeout(() => this.signal("SIGKILL"), this.opts.killGraceMs ?? 3_000);
-    this.killTimer.unref?.();
+    const attempt = terminateProcessGroup(this.child, {
+      label: this.opts.bin,
+      termGraceMs: this.opts.killGraceMs ?? 3_000,
+    });
+    const shared = attempt.catch((error) => {
+      // A failed attempt keeps the process handle live. Later cleanup retries
+      // may re-signal it instead of inheriting a permanently rejected promise.
+      if (this.closePromise === shared) this.closePromise = undefined;
+      throw error;
+    });
+    this.closePromise = shared;
+    return shared;
   }
 
   private write(message: RpcMessage): void {
@@ -169,17 +179,10 @@ export class JsonRpcProcess {
 
   private finish(error?: Error): void {
     this.closed = true;
-    if (this.killTimer) clearTimeout(this.killTimer);
     for (const pending of this.pending.values()) pending.reject(error ?? new Error("engine RPC process closed"));
     this.pending.clear();
     if (error) this.queue.push({ method: "ponderosa/processError", params: { message: error.message } });
     this.queue.end();
   }
 
-  private signal(signal: NodeJS.Signals): void {
-    try {
-      if (process.platform !== "win32" && this.child.pid) process.kill(-this.child.pid, signal);
-      else this.child.kill(signal);
-    } catch { /* already exited */ }
-  }
 }

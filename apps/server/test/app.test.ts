@@ -1,20 +1,26 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
+import { ClaudeStreamSession } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const processAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; }
+  catch { return false; }
+};
 
 function activeRunCancellationPayload(store: AgentStore, agentId: string, idempotencyKey: string) {
   const targetRunId = new CoordinationV3Store(store.sqlite).agentSnapshot(agentId).activeRun?.id;
@@ -780,6 +786,32 @@ class SteerableMockAdapter extends MockAdapter {
       },
     };
   }
+}
+
+function stubbornProcessAdapter(children: ChildProcess[], killGraceMs = 80): Adapter {
+  const fake = fileURLToPath(new URL("../../../packages/engines/test/fake-claude-stream.mjs", import.meta.url));
+  const fallback = new MockAdapter();
+  return {
+    id: "codex",
+    displayName: "Stubborn persistent runtime",
+    listModels: () => fallback.listModels(),
+    listEfforts: () => fallback.listEfforts(),
+    apiPriceProfile: () => fallback.apiPriceProfile(),
+    seed: (opts) => fallback.seed(opts),
+    continue: (opts) => fallback.continue(opts),
+    openSession: async (opts) => new ClaudeStreamSession({
+      ...opts,
+      bin: "claude",
+      permissionMode: "bypassPermissions",
+      killGraceMs,
+      environment: { ...opts.environment, PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
+      spawnFn: ((_bin: string, _args: readonly string[], spawnOptions: object) => {
+        const child = spawn(process.execPath, [fake], spawnOptions);
+        children.push(child);
+        return child;
+      }) as unknown as typeof spawn,
+    }),
+  };
 }
 
 let dataDir: string;
@@ -2296,6 +2328,28 @@ describe("persistent engine steering", () => {
     expect(persistent.opened).toBe(3);
     await app.close();
   });
+
+  it("keeps server shutdown pending through provider SIGKILL and observed exit", async () => {
+    const children: ChildProcess[] = [];
+    const persistent = stubbornProcessAdapter(children);
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Observed shutdown", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Stubborn", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(store.resumeSessionId(agent.id)).toBe("claude-stream-v1"));
+    const pid = children[0]!.pid!;
+    const closing = app.close();
+    let settled = false;
+    void closing.then(() => { settled = true; }, () => { settled = true; });
+    await sleep(20);
+    expect(settled).toBe(false);
+    expect(processAlive(pid)).toBe(true);
+    await closing;
+    expect(processAlive(pid)).toBe(false);
+  });
 });
 
 async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: string): Promise<void> {
@@ -3115,6 +3169,55 @@ describe("server chunk F", () => {
     expect(replay.statusCode, replay.body).toBe(200);
     expect(replay.json()).toMatchObject({ deleted: true, cleanupPending: false, replayed: true });
     expect(persistent.closed).toBe(2);
+    expect(store.sqlite.prepare(`SELECT server_cleanup_completed, last_error FROM agent_deletion_receipts WHERE id = ?`).get(receiptId)).toEqual({
+      server_cleanup_completed: 1,
+      last_error: null,
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: `agent-deletion:${receiptId}:cleanup-pending`, status: "resolved" }),
+    ]));
+    await app.close();
+  });
+
+  it("keeps deletion cleanup and its notification pending until a stubborn provider process exits", async () => {
+    const children: ChildProcess[] = [];
+    engines = [{ adapter: stubbornProcessAdapter(children, 200), authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      agentDeletionCleanupFaults: { runtimeTerminationTimeoutMs: 20 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Observed deletion cleanup", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Stubborn child", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(store.resumeSessionId(agent.id)).toBe("claude-stream-v1"));
+    const pid = children[0]!.pid!;
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, payload: { rootAgentIds: [agent.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const committed = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    expect(processAlive(pid)).toBe(true);
+    const receiptId = committed.json<{ deletionReceiptId: string }>().deletionReceiptId;
+    expect(store.sqlite.prepare(`SELECT server_cleanup_completed, last_error FROM agent_deletion_receipts WHERE id = ?`).get(receiptId)).toMatchObject({
+      server_cleanup_completed: 0,
+      last_error: expect.stringMatching(/runtime (interrupt|close) timed out/),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: `agent-deletion:${receiptId}:cleanup-pending`, status: "open" }),
+    ]));
+
+    await vi.waitFor(() => expect(processAlive(pid)).toBe(false), { timeout: 1_000 });
+    const replay = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({ deleted: true, cleanupPending: false, replayed: true });
     expect(store.sqlite.prepare(`SELECT server_cleanup_completed, last_error FROM agent_deletion_receipts WHERE id = ?`).get(receiptId)).toEqual({
       server_cleanup_completed: 1,
       last_error: null,

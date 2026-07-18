@@ -11,6 +11,7 @@ import type {
 import { mapClaudeEvent } from "./claude-events.js";
 import { parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
+import { terminateProcessGroup } from "./process-termination.js";
 import { renderSeedPrompt } from "./seed-history.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
@@ -27,7 +28,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private active = false;
   private closed = false;
   private stderrTail = "";
-  private killTimer?: NodeJS.Timeout;
+  private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
@@ -67,7 +68,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.child.stderr?.on("data", (chunk: string) => {
       this.stderrTail = (this.stderrTail + chunk).slice(-8192);
     });
-    opts.signal.addEventListener("abort", () => void this.close());
+    opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
     this.events = this.eventStream();
   }
 
@@ -97,16 +98,23 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   isAlive(): boolean {
-    return !this.closed && this.child.exitCode === null;
+    return !this.closed && this.child.exitCode === null && this.child.signalCode === null;
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
     this.child.stdin?.end();
-    this.signal("SIGTERM");
-    this.killTimer = setTimeout(() => this.signal("SIGKILL"), this.opts.killGraceMs);
-    this.killTimer.unref?.();
+    const attempt = terminateProcessGroup(this.child, {
+      label: "Claude runtime",
+      termGraceMs: this.opts.killGraceMs,
+    });
+    const shared = attempt.catch((error) => {
+      if (this.closePromise === shared) this.closePromise = undefined;
+      throw error;
+    });
+    this.closePromise = shared;
+    return shared;
   }
 
   private async writeInput(prompt: string, id: string): Promise<void> {
@@ -138,13 +146,5 @@ export class ClaudeStreamSession implements RuntimeSession {
     if (!this.closed) {
       yield { type: "error", message: `Claude stream stopped${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}` };
     }
-    if (this.killTimer) clearTimeout(this.killTimer);
-  }
-
-  private signal(signal: NodeJS.Signals): void {
-    try {
-      if (process.platform !== "win32" && this.child.pid) process.kill(-this.child.pid, signal);
-      else this.child.kill(signal);
-    } catch { /* already exited */ }
   }
 }

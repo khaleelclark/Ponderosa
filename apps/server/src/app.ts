@@ -3698,7 +3698,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     projectBrowserGrants.clear();
     await projectBrowserSessions.closeAll("server_shutdown");
     for (const runtime of runtimeSessions.values()) cancelRuntimeIdleClose(runtime);
-    await Promise.allSettled([...runtimeSessions.values()].map(({ session }) => session.close()));
+    // RuntimeSession.close() is an observed process-group termination barrier.
+    // Fail shutdown closed rather than acknowledging it while a provider still
+    // retains filesystem or shell authority.
+    await Promise.all([...runtimeSessions.values()].map(({ session }) => session.close()));
     runtimeSessions.clear();
     assets.close();
     store.close();

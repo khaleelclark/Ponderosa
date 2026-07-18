@@ -91,7 +91,9 @@ immutable audiences.
 Engine processes may stay warm briefly for responsive steering and follow-up,
 but idle agents must not retain an unbounded process and MCP stack. Canonical
 provider session identity survives process teardown so a later turn can resume
-without making runtime residency part of the product's memory model.
+without making runtime residency part of the product's memory model. Process
+teardown is complete only after the provider's detached process group is observed
+gone; daemon shutdown waits through SIGTERM grace and SIGKILL escalation.
 
 A stop action is scoped to the exact Run the user or managing Agent observed.
 If that Run has already ended or been replaced, Ponderosa reports the stale
@@ -213,7 +215,8 @@ exact destructive plan; old or unrelated approvals never authorize later work.
 Imported packages disclose elevated permissions and require explicit user
 acknowledgement. Committed deletion remains successful while durable cleanup
 finishes or retries. Provider cleanup is not complete until runtime termination
-is confirmed; failed closes retain a retryable handle and surface an operational
+is confirmed by observed process-group exit; successful signal dispatch alone is
+not confirmation. Failed closes retain a retryable handle and surface an operational
 warning. A user promotes or re-parents any agent they want to keep before deletion.
 Changing the organization never rewrites creator, communication, or execution
 history.
