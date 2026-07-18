@@ -14,6 +14,30 @@ Before installing the unit, update its `User`, `WorkingDirectory`, data director
 and `PATH` for the host. Reachability is a separate choice; the service does not
 depend on Tailscale.
 
+## Drain provider Runs before an upgrade
+
+Tool schemas and their prompt contract cut over atomically; active provider Runs
+are not expected to survive a contract change. Before replacing the daemon,
+pause new Run leasing while leaving durable messages, Trigger occurrences, and
+other intake available:
+
+```sh
+curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
+  http://127.0.0.1:8787/api/deployment/drain
+curl -sS http://127.0.0.1:8787/api/ready
+```
+
+The readiness response distinguishes `acceptingDurableIntake` from
+`leasingRuns`. Wait until `deploymentDrain.activeRuns` is zero, then replace and
+restart the service. If the deployment is aborted, explicitly restore leasing:
+
+```sh
+curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \
+  http://127.0.0.1:8787/api/deployment/resume
+```
+
+Do not leave a healthy old daemon in the drained state after an aborted deploy.
+
 ## Enable browser push notifications
 
 After the build, initialize VAPID and restart the service with one command as

@@ -114,6 +114,7 @@ import {
 import {
   artifactsDir,
   artifactContentPath,
+  managedArtifactContentPath,
   managedArtifactsLogPath,
   attachmentsDir,
   dbPath,
@@ -585,10 +586,20 @@ export class AgentStore {
       }
     }
     if (event.document) {
-      if (event.sender.kind !== "agent" || event.document.authorAgentId !== event.sender.agentId ||
-          event.document.executionId !== event.sender.executionId || event.document.mediaType !== "text/markdown" ||
-          !event.document.id || !event.document.title.trim() || !event.document.content.trim() ||
-          event.document.byteLength !== Buffer.byteLength(event.document.content, "utf8")) {
+      const artifactContent = event.document.artifactId
+        ? managedArtifactContentPath(this.dataDir, event.projectId, event.document.artifactId)
+        : undefined;
+      const validAuthor = event.sender.kind === "agent"
+        ? event.document.authorAgentId === event.sender.agentId &&
+          event.document.executionId === event.sender.executionId && !event.document.authorUserId
+        : event.sender.kind === "user"
+          ? event.document.authorUserId === event.sender.userId && !event.document.authorAgentId && !event.document.executionId
+          : false;
+      if (!validAuthor || event.document.mediaType !== "text/markdown" ||
+          !event.document.id || !event.document.title.trim() ||
+          (!event.document.content?.trim() && !event.document.artifactId) ||
+          (event.document.content !== undefined && event.document.byteLength !== Buffer.byteLength(event.document.content, "utf8")) ||
+          (artifactContent && !existsSync(artifactContent))) {
         throw new Error("communication document provenance is invalid");
       }
     }
@@ -754,7 +765,12 @@ export class AgentStore {
 
   getCommunicationDocument(projectId: string, documentId: string) {
     const event = this.readCommunicationEvents(projectId).find((candidate) => candidate.document?.id === documentId);
-    return event?.document ? { event, document: event.document } : undefined;
+    if (!event?.document) return undefined;
+    if (event.document.content !== undefined) return { event, document: event.document };
+    if (!event.document.artifactId) return undefined;
+    const file = managedArtifactContentPath(this.dataDir, projectId, event.document.artifactId);
+    if (!existsSync(file)) return undefined;
+    return { event, document: { ...event.document, content: readFileSync(file, "utf8") } };
   }
 
   private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {

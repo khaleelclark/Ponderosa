@@ -40,6 +40,25 @@ beforeEach(() => {
 afterEach(() => opened.client.close());
 
 describe("Communication V3 central scheduler", () => {
+  it("pauses and explicitly resumes Run leasing without rejecting durable intake", async () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const leases: SchedulerLease[] = [];
+    const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
+      leases.push(lease);
+      return { accepted: true };
+    }, { workerId: "scheduler", now: () => Date.parse(now), maxConcurrentRuns: 1 });
+
+    await scheduler.pauseLeasing();
+    expect(scheduler.isLeasingRuns()).toBe(false);
+    store.enqueueMessageActivation({ projectId, agentId: agentA, messageId: "during-drain", kind: "human", payload: {}, now });
+    expect(await scheduler.drainOnce()).toBe(0);
+    expect(store.schedulerMetrics()).toMatchObject({ pendingActivations: 1, activeRuns: 0 });
+    scheduler.resumeLeasing();
+    expect(scheduler.isLeasingRuns()).toBe(true);
+    expect(await scheduler.drainOnce()).toBe(1);
+    expect(leases).toHaveLength(1);
+  });
+
   it("leaves denied-runtime work queued without leasing or consuming attempts", async () => {
     const now = Date.parse("2026-07-15T00:00:00.000Z");
     store.enqueueMessageActivation({

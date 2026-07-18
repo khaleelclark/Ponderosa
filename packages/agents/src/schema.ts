@@ -277,6 +277,22 @@ export const runtimeCommunications = sqliteTable("runtime_communications", {
   createdAt: text("created_at").notNull(),
 });
 
+export const runtimeArtifacts = sqliteTable("runtime_artifacts", {
+  id: text("id").primaryKey(),
+  ownerKind: text("owner_kind").notNull(),
+  ownerId: text("owner_id").notNull(),
+  projectId: text("project_id").notNull(),
+  role: text("role").notNull(),
+  title: text("title").notNull(),
+  mediaType: text("media_type").notNull(),
+  blobPath: text("blob_path").notNull(),
+  blobHash: text("blob_hash").notNull(),
+  byteLength: integer("byte_length").notNull(),
+  originAgentId: text("origin_agent_id"),
+  executionId: text("execution_id"),
+  createdAt: text("created_at").notNull(),
+});
+
 export const schedulerPromptInjections = sqliteTable("scheduler_prompt_injections", {
   id: text("id").primaryKey(),
   runId: text("run_id").notNull(),

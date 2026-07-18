@@ -21,6 +21,7 @@ export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
   private draining = false;
   private stopped = false;
+  private leasingPaused = false;
   private maintenanceDrains = 0;
   private readonly stopWaiters = new Set<() => void>();
   private readonly metrics: CoordinationV3SchedulerMetrics = {
@@ -64,6 +65,25 @@ export class CoordinationV3Scheduler {
     if (!this.stopped) this.schedule(0);
   }
 
+  isLeasingRuns(): boolean {
+    return !this.stopped && !this.leasingPaused;
+  }
+
+  /** Stop all new provider work while durable intake and maintenance remain
+   * available. Resolves only after an in-progress leasing pass observes the
+   * pause, so a deployment can safely wait for already-active Runs. */
+  async pauseLeasing(): Promise<void> {
+    if (this.stopped) throw new Error("scheduler has been stopped");
+    this.leasingPaused = true;
+    if (this.draining) await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
+  }
+
+  resumeLeasing(): void {
+    if (this.stopped) throw new Error("scheduler has been stopped");
+    this.leasingPaused = false;
+    this.schedule(0);
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) (this.options.clearTimer ?? clearTimeout)(this.timer);
@@ -92,7 +112,7 @@ export class CoordinationV3Scheduler {
         this.store.completeOutbox(item.id, this.options.workerId, now);
         this.metrics.outboxSignals += 1;
       }
-      if (this.options.dispatchProviderOperation) {
+      if (!this.leasingPaused && this.options.dispatchProviderOperation) {
         for (const operation of this.store.claimProviderOperations(this.options.workerId, 50, now)) {
           let result: CoordinationV3DispatchResult;
           try {
@@ -109,7 +129,7 @@ export class CoordinationV3Scheduler {
           );
         }
       }
-      if (this.options.dispatchSteering) {
+      if (!this.leasingPaused && this.options.dispatchSteering) {
         while (true) {
           const steering = this.store.leaseNextSteering({ workerId: this.options.workerId, now });
           if (!steering) break;
@@ -156,7 +176,7 @@ export class CoordinationV3Scheduler {
         }
       }
       const maximum = this.options.maxConcurrentRuns ?? 8;
-      while (this.store.activeRunCount() < maximum) {
+      while (!this.leasingPaused && this.store.activeRunCount() < maximum) {
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,

@@ -40,7 +40,13 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { unifiedDiffLineTotals } from "@ponderosa/core";
+import {
+  INLINE_TEXT_MAX_CODE_POINTS,
+  LONG_TEXT_MAX_UTF8_BYTES,
+  unicodeCodePointLength,
+  unifiedDiffLineTotals,
+  utf8ByteLength,
+} from "@ponderosa/core";
 import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
@@ -195,6 +201,14 @@ export function canSubmitComposerText(input: {
     !input.running &&
     (input.allowUnmentionedSend || input.mentionedHandles.length > 0)
   );
+}
+
+export function shouldExtractLongPaste(value: string): boolean {
+  return unicodeCodePointLength(value) > INLINE_TEXT_MAX_CODE_POINTS;
+}
+
+export function composerSubmissionText(text: string, pastedText?: string): string {
+  return [text.trim(), pastedText?.trim()].filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 export function shouldShowQueueControl(input: {
@@ -1707,6 +1721,7 @@ export function Composer({
   focusReply?: boolean;
 }): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
+  const [pastedText, setPastedText] = useState<string>();
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
   const files = attachments.files;
   const queryClient = useQueryClient();
@@ -1732,11 +1747,12 @@ export function Composer({
   const [capabilityFilter, setCapabilityFilter] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const mentionedHandles = findMentionedHandles(text, mentionHandles ?? []);
+  const submissionText = composerSubmissionText(text, pastedText);
+  const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
   const busyHandles = new Set((busyMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedBusyHandles = mentionedHandles.filter((handle) => busyHandles.has(handle.toLocaleLowerCase()));
   const textCanSend = canSubmitComposerText({
-    text,
+    text: submissionText,
     disabled,
     running,
     allowUnmentionedSend,
@@ -1771,6 +1787,7 @@ export function Composer({
     if (previousDraftStorageKey.current !== draftStorageKey) {
       previousDraftStorageKey.current = draftStorageKey;
       setText(draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
+      setPastedText(undefined);
     }
   }, [draftStorageKey]);
 
@@ -1999,8 +2016,9 @@ export function Composer({
     sendingRef.current = true;
     setSendError(undefined);
     const stagedIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
-    void Promise.resolve(handler(text.trim(), files, stagedIds)).then(() => {
+    void Promise.resolve(handler(submissionText, files, stagedIds)).then(() => {
       update("");
+      setPastedText(undefined);
       dispatchAttachments({ type: "clear" });
       draftAttachmentIds.current.clear();
       setDraftAttachmentVersion((value) => value + 1);
@@ -2015,7 +2033,7 @@ export function Composer({
     submit(onQueue);
   };
   const showQueue = Boolean(onQueue) && shouldShowQueueControl({
-    text,
+    text: submissionText,
     hasAttachments: files.length > 0,
     agentResponding: agentResponding || mentionedBusyHandles.length > 0,
     disabled,
@@ -2064,6 +2082,21 @@ export function Composer({
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
         {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => removeFile(index)} />)}
       </Stack> : null}
+      {pastedText ? (
+        <Paper variant="outlined" sx={{ mb: 1, px: 1, py: 0.75, display: "flex", alignItems: "center", gap: 1, maxWidth: 360 }}>
+          <ArticleIcon color="action" fontSize="small" />
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="body2" noWrap>Pasted text</Typography>
+            <Button size="small" sx={{ p: 0, minWidth: 0, textTransform: "none" }} onClick={() => {
+              update(composerSubmissionText(text, pastedText));
+              setPastedText(undefined);
+              requestAnimationFrame(() => inputRef.current?.focus());
+            }}>Show in text field</Button>
+          </Box>
+          <Typography variant="caption" color="text.secondary">{utf8ByteLength(pastedText).toLocaleString()} bytes</Typography>
+          <IconButton size="small" aria-label="Remove pasted text" onClick={() => setPastedText(undefined)}><CloseIcon fontSize="small" /></IconButton>
+        </Paper>
+      ) : null}
       {(attachments.error ?? sendError) ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {attachments.error ?? sendError}</Alert> : null}
       {draftConflict ? <Alert severity="warning" sx={{ mb: 1 }} action={<Button size="small" onClick={() => { update(draftConflict.displaced.text); setDraftConflict(undefined); inputRef.current?.focus(); }}>Restore</Button>}>
         This chat changed in another tab. Your displaced draft is preserved: “{replyPreviewText(draftConflict.displaced.text)}”
@@ -2175,11 +2208,25 @@ export function Composer({
               setSuppressMenu(false);
             }}
             onPaste={(event) => {
-              if (disabled || running || !attachmentsEnabled) return;
-              const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
-              if (pasted.length === 0) return;
+              if (disabled || running) return;
+              if (attachmentsEnabled) {
+                const pasted = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
+                if (pasted.length > 0) {
+                  event.preventDefault();
+                  addFiles(pasted);
+                  return;
+                }
+              }
+              const pasted = event.clipboardData.getData("text/plain");
+              if (!shouldExtractLongPaste(pasted)) return;
               event.preventDefault();
-              addFiles(pasted);
+              const combined = composerSubmissionText(pastedText ?? "", pasted);
+              if (utf8ByteLength(combined) > LONG_TEXT_MAX_UTF8_BYTES) {
+                setSendError("Pasted text exceeds the 8 MiB limit.");
+                return;
+              }
+              setPastedText(combined);
+              setSendError(undefined);
             }}
             onClick={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyUp={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}

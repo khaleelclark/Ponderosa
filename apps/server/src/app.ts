@@ -108,6 +108,9 @@ import type {
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
+  INLINE_TEXT_MAX_CODE_POINTS,
+  LONG_TEXT_MAX_UTF8_BYTES,
+  canonicalizeProviderText,
   deriveCommunicationBehavior,
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_CONTEXT_TOOL,
@@ -119,12 +122,15 @@ import {
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_BROWSER_TOOLS,
+  shouldBackTextWithArtifact,
+  truncateUnicodeCodePoints,
   TERMINAL_REQUEST_STATES,
+  unicodeCodePointLength,
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
-import { artifactContentPath, managedArtifactContentPath, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
+import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
@@ -342,6 +348,13 @@ export interface CreateServerOptions {
   messageLifecycleFaults?: {
     beforeRunClaim?: (context: { agentId: string; runId: string }) => void | Promise<void>;
     afterRunClaim?: (context: { agentId: string; runId: string; generation: number }) => void | Promise<void>;
+    /** Crash seam after the authoritative SQLite commit and before append-only
+     * chat/artifact projections. */
+    afterCommunicationArtifactCommit?: (context: {
+      kind: "communication" | "request_update";
+      ownerId: string;
+      artifactIds: string[];
+    }) => void | Promise<void>;
   };
   /** Web Push configuration/test seams. Production reads host-only VAPID env. */
   webPush?: {
@@ -1348,6 +1361,117 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite);
   const resultCursorSecret = randomBytes(32);
+  type PreparedCommunicationArtifact = {
+    id: string;
+    role: "long_text" | "document";
+    title: string;
+    mediaType: "text/markdown";
+    blobPath: string;
+    blobHash: string;
+    byteLength: number;
+    originAgentId?: string;
+    executionId?: string;
+    createdAt: string;
+  };
+  const stageCommunicationArtifact = async (input: {
+    projectId: string;
+    communicationId: string;
+    role: PreparedCommunicationArtifact["role"];
+    title: string;
+    content: string;
+    originAgentId?: string;
+    executionId?: string;
+    createdAt: string;
+  }): Promise<PreparedCommunicationArtifact> => {
+    const content = Buffer.from(input.content, "utf8");
+    if (content.length > LONG_TEXT_MAX_UTF8_BYTES) throw new AssetError(413, "long text exceeds the 8 MiB limit");
+    const id = `text-${createHash("sha256").update(`${input.communicationId}\0${input.role}`).digest("hex")}`;
+    const blobHash = createHash("sha256").update(content).digest("hex");
+    const destination = managedArtifactContentPath(opts.dataDir, input.projectId, id);
+    await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+    if (await pathExists(destination)) {
+      const existing = await fs.readFile(destination);
+      if (createHash("sha256").update(existing).digest("hex") !== blobHash) {
+        throw new Error("communication artifact identity collision");
+      }
+    } else {
+      const temporary = `${destination}.staged-${process.pid}-${randomUUID()}`;
+      let staged: Awaited<ReturnType<typeof fs.open>> | undefined;
+      try {
+        staged = await fs.open(temporary, "wx", 0o600);
+        await staged.writeFile(content);
+        await staged.sync();
+        await staged.close();
+        staged = undefined;
+        await fs.rename(temporary, destination);
+        const directory = await fs.open(path.dirname(destination), "r");
+        try { await directory.sync(); }
+        finally { await directory.close(); }
+      } catch (error) {
+        await staged?.close().catch(() => undefined);
+        await fs.rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
+    }
+    return {
+      id, role: input.role, title: input.title, mediaType: "text/markdown",
+      blobPath: id, blobHash, byteLength: content.length, createdAt: input.createdAt,
+      ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
+      ...(input.executionId ? { executionId: input.executionId } : {}),
+    };
+  };
+  const projectCommunicationArtifact = (projectId: string, fallbackAgentId: string, artifact: PreparedCommunicationArtifact): void => {
+    if (store.getProjectArtifact(projectId, artifact.id)) return;
+    store.recordProjectArtifact({
+      id: artifact.id, projectId, agentId: artifact.originAgentId ?? fallbackAgentId,
+      originAgentId: artifact.originAgentId ?? fallbackAgentId,
+      ...(artifact.executionId ? { executionId: artifact.executionId } : {}),
+      kind: "document", path: `communication/${artifact.id}.md`, summary: artifact.title,
+      createdAt: artifact.createdAt, mediaType: artifact.mediaType,
+      visibility: "project", pinned: false, size: artifact.byteLength,
+    });
+  };
+  const prepareUserCommunicationText = async (input: {
+    projectId: string;
+    communicationId: string;
+    text: string;
+    createdAt: string;
+  }): Promise<{
+    canonicalText: string;
+    publishedText: string;
+    artifact?: PreparedCommunicationArtifact;
+    document?: CommunicationEvent["document"];
+  }> => {
+    const canonicalText = canonicalizeProviderText(input.text).trim();
+    if (Buffer.byteLength(canonicalText, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
+      throw new AssetError(413, "text exceeds the 8 MiB limit");
+    }
+    if (!shouldBackTextWithArtifact(canonicalText)) {
+      return { canonicalText, publishedText: canonicalText };
+    }
+    const artifact = await stageCommunicationArtifact({
+      projectId: input.projectId,
+      communicationId: input.communicationId,
+      role: "long_text",
+      title: "Pasted text",
+      content: canonicalText,
+      createdAt: input.createdAt,
+    });
+    return {
+      canonicalText,
+      publishedText: `Full message: ponderosa://artifact/${artifact.id}`,
+      artifact,
+      document: {
+        id: artifact.id,
+        artifactId: artifact.id,
+        title: artifact.title,
+        mediaType: "text/markdown",
+        byteLength: artifact.byteLength,
+        authorUserId: "local-operator",
+        createdAt: input.createdAt,
+      },
+    };
+  };
   const coordinationV3WorkerId = `server:${process.pid}`;
   const workspace = new WorkspaceStore(opts.dataDir);
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
@@ -2923,6 +3047,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       onMessageDeliveryChanged: publishMessageDeliveryChanged,
     },
   );
+  let deploymentDraining = false;
   const triggerSources = new TriggerSourceService({
     store,
     coordination: coordinationV3,
@@ -2973,6 +3098,30 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         event.projectId !== row.projectId
       ) continue;
       const communicationEventId = event.eventId;
+      const runtimeArtifacts = coordinationV3.runtimeArtifacts("communication", row.id);
+      let artifactsAvailable = true;
+      for (const artifact of runtimeArtifacts) {
+        const file = managedArtifactContentPath(opts.dataDir, row.projectId, artifact.blobPath);
+        try {
+          const content = await fs.readFile(file);
+          if (content.length !== artifact.byteLength || createHash("sha256").update(content).digest("hex") !== artifact.blobHash) {
+            artifactsAvailable = false;
+            break;
+          }
+          projectCommunicationArtifact(
+            row.projectId,
+            artifact.originAgentId ?? (event.sender?.kind === "agent" ? event.sender.agentId : "local-operator"),
+            { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
+          );
+        } catch {
+          artifactsAvailable = false;
+          break;
+        }
+      }
+      if (!artifactsAvailable) {
+        app.log.error({ runtimeCommunicationId: row.id, communicationEventId }, "runtime communication artifact is unavailable; projection remains uncommitted");
+        continue;
+      }
       const audience = row.audience && typeof row.audience === "object"
         ? row.audience as Record<string, unknown>
         : undefined;
@@ -3135,6 +3284,38 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   });
 
   app.addHook("onReady", async () => {
+    const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
+    const ownedRuntimeArtifactIds = new Set(coordinationV3.runtimeArtifacts().map((artifact) => artifact.id));
+    for (const project of store.listProjects()) {
+      const contentDirectory = path.join(managedArtifactsDir(opts.dataDir, project.id), "content");
+      let names: string[] = [];
+      try { names = await fs.readdir(contentDirectory); }
+      catch { /* no managed artifact content yet */ }
+      for (const name of names.filter((candidate) => candidate.includes(".staged-"))) {
+        const candidate = path.join(contentDirectory, name);
+        try {
+          if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) await fs.rm(candidate, { force: true });
+        } catch { /* a concurrent exact retry may have already resolved it */ }
+      }
+      for (const name of names.filter((candidate) => candidate.startsWith("text-") && !candidate.includes(".staged-") && !ownedRuntimeArtifactIds.has(candidate))) {
+        const candidate = path.join(contentDirectory, name);
+        try {
+          if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) await fs.rm(candidate, { force: true });
+        } catch { /* a concurrent exact retry may have committed its metadata */ }
+      }
+    }
+    for (const artifact of coordinationV3.runtimeArtifacts()) {
+      const file = managedArtifactContentPath(opts.dataDir, artifact.projectId, artifact.blobPath);
+      try {
+        const content = await fs.readFile(file);
+        if (content.length !== artifact.byteLength || createHash("sha256").update(content).digest("hex") !== artifact.blobHash) continue;
+        projectCommunicationArtifact(
+          artifact.projectId,
+          artifact.originAgentId ?? "local-operator",
+          { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
+        );
+      } catch { /* unavailable blobs remain unprojected and auditable in SQLite */ }
+    }
     await reconcileRuntimeCommunicationProjections();
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.reconcileUnavailableActivationRecipients();
@@ -3529,13 +3710,25 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(400).send({ error: "Decision options require id and label and are limited to 8" });
     }
     if (new Set(options.map((option) => (option as { id: string }).id)).size !== options.length) return reply.code(400).send({ error: "Decision option IDs must be unique" });
-    const question = body.question.trim().slice(0, 1_000);
-    const decisionContext = typeof body.context === "string" && body.context.trim() ? body.context.trim().slice(0, 4_000) : undefined;
+    const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
+    const question = truncateUnicodeCodePoints(
+      canonicalizeProviderText(body.question, steeringInjectionIds).trim(),
+      1_000,
+    );
+    const decisionContext = typeof body.context === "string" && body.context.trim()
+      ? truncateUnicodeCodePoints(canonicalizeProviderText(body.context, steeringInjectionIds).trim(), 4_000)
+      : undefined;
     const normalizedOptions = options.map((option) => ({
       id: String((option as { id: string }).id).slice(0, 80),
-      label: String((option as { label: string }).label).slice(0, 120),
+      label: truncateUnicodeCodePoints(
+        canonicalizeProviderText(String((option as { label: string }).label), steeringInjectionIds),
+        120,
+      ),
       ...(typeof (option as { description?: unknown }).description === "string"
-        ? { description: String((option as { description: string }).description).slice(0, 400) }
+        ? { description: truncateUnicodeCodePoints(
+            canonicalizeProviderText(String((option as { description: string }).description), steeringInjectionIds),
+            400,
+          ) }
         : {}),
     }));
     const idempotencyKey = typeof body.idempotencyKey === "string"
@@ -3681,7 +3874,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
 
     const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
-    const operations = Array.isArray(body.operations) ? body.operations as ManagementOperation[] : [];
+    const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
+    const operations = Array.isArray(body.operations) ? (body.operations as ManagementOperation[]).map((operation) => ({
+      ...operation,
+      ...(typeof operation.title === "string"
+        ? { title: canonicalizeProviderText(operation.title, steeringInjectionIds) }
+        : {}),
+      ...(typeof operation.instructions === "string"
+        ? { instructions: canonicalizeProviderText(operation.instructions, steeringInjectionIds) }
+        : {}),
+    })) : [];
     if (!idempotencyKey || idempotencyKey.length > 200 || operations.length < 1 || operations.length > 100) {
       return reply.code(400).send({ error: "plan requires idempotencyKey and 1 to 100 operations" });
     }
@@ -3762,7 +3964,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const activationById = new Map(activations.map((activation) => [activation.id, activation]));
     const reachableArtifactIds = new Set(capability.reachableArtifactIds);
-    for (const activation of activations) collectReachableArtifactIds(activation.payload, reachableArtifactIds);
+    const attachedActivationIds = coordinationV3.activationIdsAttachedToRun(capability.runId, author.id);
+    for (const activation of coordinationV3.activationPayloads(author.id, attachedActivationIds, capability.runId)) {
+      collectReachableArtifactIds(activation.payload, reachableArtifactIds);
+    }
 
     const sources: Array<{ ref: string; title: string; mediaType: string; content: Buffer; encoding: "utf8" | "base64" }> = [];
     for (const { ref, parsed } of parsedRefs) {
@@ -3781,14 +3986,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(404).send({ error: `artifact reference is not reachable from this Run: ${ref}` });
       }
       const artifact = store.getProjectArtifact(author.projectId, parsed.id);
-      if (!artifact) return reply.code(404).send({ error: `artifact is unavailable: ${ref}` });
+      const runtimeArtifact = coordinationV3.runtimeArtifact(parsed.id);
+      if (!artifact && runtimeArtifact?.projectId !== author.projectId) {
+        return reply.code(404).send({ error: `artifact is unavailable: ${ref}` });
+      }
       let content: Buffer;
-      try { content = await fs.readFile(managedArtifactContentPath(opts.dataDir, author.projectId, artifact.id)); }
+      try {
+        content = await fs.readFile(managedArtifactContentPath(
+          opts.dataDir,
+          author.projectId,
+          runtimeArtifact?.blobPath ?? artifact!.id,
+        ));
+      }
       catch { return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` }); }
       sources.push({
         ref,
-        title: artifact.summary ?? path.basename(artifact.path),
-        mediaType: artifact.mediaType ?? "application/octet-stream",
+        title: runtimeArtifact?.title ?? artifact!.summary ?? path.basename(artifact!.path),
+        mediaType: runtimeArtifact?.mediaType ?? artifact!.mediaType ?? "application/octet-stream",
         content,
         encoding: isUtf8(content) ? "utf8" : "base64",
       });
@@ -4016,10 +4230,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       return reply.code(409).send({ error: "visible managed Agents require an active Team Chat scope" });
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
-    const title = request.body?.title?.trim();
-    const text = request.body?.text?.trim();
+    const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
+    const title = request.body?.title === undefined
+      ? undefined
+      : canonicalizeProviderText(request.body.title, steeringInjectionIds).trim();
+    const text = request.body?.text === undefined
+      ? undefined
+      : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
     const engineId = request.body?.engine?.trim();
-    if (!idempotencyKey || idempotencyKey.length > 200 || !title || title.length < 2 || title.length > 60 || !text || text.length > 4000 || !engineId || !request.body.lifetime) {
+    if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || unicodeCodePointLength(text) > 4000 || !engineId || !request.body.lifetime) {
       return reply.code(400).send({ error: "idempotencyKey, title, engine, text, and explicit lifetime are required" });
     }
     const engine = engines.get(engineId);
@@ -4107,6 +4326,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token || !author) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const body = request.body ?? {};
     const unknownTopLevel = Object.keys(body).filter((key) =>
       !["idempotencyKey", "recipientAgentId", "text", "delegations", "completionMode", "wakePolicy", "awaitResult", "deadlineAt", "requests", "join"].includes(key));
@@ -4203,10 +4423,15 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return reply.code(400).send({ error: "join fields do not match the published coordinate schema" });
       }
     }
-    const commonDelegations = body.delegations ?? (hasSingleDelegation ? [{
+    const commonDelegations = (body.delegations ?? (hasSingleDelegation ? [{
       recipientAgentId: body.recipientAgentId,
       text: body.text,
-    }] : []);
+    }] : [])).map((delegation) => ({
+      ...delegation,
+      text: typeof delegation.text === "string"
+        ? canonicalizeProviderText(delegation.text, steeringInjectionIds)
+        : delegation.text,
+    }));
     const completionMode = shorthand
       ? body.completionMode ?? (body.awaitResult === false ? "callback" : "join")
       : undefined;
@@ -4246,8 +4471,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const normalized: Array<{ requestId?: string; recipientAgentId: string; text: string; lifetime: RequestLifetime }> = [];
     for (const candidate of requests) {
       const recipientAgentId = candidate.recipientAgentId?.trim();
-      const text = candidate.text?.trim();
-      if (!recipientAgentId || recipientAgentId === author.id || !text || text.length > 4000 || !candidate.lifetime) {
+      const text = candidate.text === undefined
+        ? undefined
+        : canonicalizeProviderText(candidate.text, steeringInjectionIds).trim();
+      if (!recipientAgentId || recipientAgentId === author.id || !text || unicodeCodePointLength(text) > 4000 || !candidate.lifetime) {
         return reply.code(400).send({ error: "each request needs another recipient, text, and explicit lifetime" });
       }
       const recipient = store.getAgent(recipientAgentId);
@@ -4366,17 +4593,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const suppliedRequestId = request.body?.requestId?.trim();
     const attachedRequestIds = coordinationV3.requestIdsAttachedToRun(
       capability.v3SchedulerRunId,
       capability.agentId,
     );
     const requestId = suppliedRequestId ?? (attachedRequestIds.length === 1 ? attachedRequestIds[0] : undefined);
-    const question = request.body?.question?.trim();
+    const question = request.body?.question === undefined
+      ? undefined
+      : canonicalizeProviderText(request.body.question, steeringInjectionIds).trim();
     if (question && (request.body?.text !== undefined || request.body?.kind !== undefined)) {
       return reply.code(400).send({ error: "question shorthand cannot be combined with text or kind" });
     }
-    const kind = question ? "question" : request.body?.kind ?? (request.body?.text?.trim() ? "completed" : undefined);
+    const canonicalText = request.body?.text === undefined
+      ? undefined
+      : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
+    const kind = question ? "question" : request.body?.kind ?? (canonicalText ? "completed" : undefined);
     if (!kind) return reply.code(400).send({ error: "request update requires text, question, or an explicit kind" });
     if (kind === "answer" && !request.body?.inReplyToUpdateId?.trim()) {
       return reply.code(400).send({
@@ -4389,7 +4622,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         : "requestId is required because the current run has multiple attached correlated requests",
       currentRequestIds: attachedRequestIds,
     });
-    const handoffText = question ?? request.body.text?.trim() ?? "";
+    const handoffText = question ?? canonicalText ?? "";
+    if (Buffer.byteLength(handoffText, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
+      return reply.code(413).send({ error: "request update text exceeds the 8 MiB limit" });
+    }
     if (kind && (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind) && !handoffText) {
       return reply.code(400).send({ error: "terminal request updates require a canonical final handoff in text" });
     }
@@ -4406,7 +4642,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       text: handoffText,
       inReplyToUpdateId: request.body.inReplyToUpdateId?.trim() || null,
     });
+    let artifact: PreparedCommunicationArtifact | undefined;
     try {
+      if (shouldBackTextWithArtifact(handoffText)) {
+        artifact = await stageCommunicationArtifact({
+          projectId: store.getAgent(capability.agentId)!.projectId,
+          communicationId: updateId,
+          role: "long_text",
+          title: kind === "question" ? "Blocking question" : "Request result",
+          content: handoffText,
+          originAgentId: capability.agentId,
+          executionId: capability.runId,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      const persistedText = artifact
+        ? `Full ${kind === "question" ? "question" : "result"}: ponderosa://artifact/${artifact.id}`
+        : handoffText;
       const result = coordinationV3.updateRequest({
         requestId,
         updateId,
@@ -4414,13 +4666,23 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         actor: { kind: "agent", id: capability.agentId },
         runAuthorization: runAuthorization(capability),
         ...(request.body.inReplyToUpdateId?.trim() ? { inReplyToUpdateId: request.body.inReplyToUpdateId.trim() } : {}),
-        payload: { text: handoffText, executionId: capability.runId, canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind) },
+        payload: {
+          text: persistedText,
+          ...(artifact ? { artifactId: artifact.id, resultRef: `ponderosa://artifact/${artifact.id}` } : {}),
+          executionId: capability.runId,
+          canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
+        },
+        ...(artifact ? { artifacts: [artifact] } : {}),
       });
+      if (artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+        kind: "request_update", ownerId: updateId, artifactIds: [artifact.id],
+      });
+      if (artifact) projectCommunicationArtifact(store.getAgent(capability.agentId)!.projectId, capability.agentId, artifact);
       const changedRequest = coordinationV3.getRequest(requestId);
       if (changedRequest?.requesterAgentId) publishCoordinationV3Changed(changedRequest.requesterAgentId);
       if (changedRequest) publishCoordinationV3Changed(changedRequest.recipientAgentId);
       coordinationV3Scheduler?.notify();
-      return result;
+      return { ...result, ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}) };
     } catch (error) {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "request update failed" });
     }
@@ -4436,9 +4698,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const inferredReply = request.body?.intent === undefined;
     const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
-    const text = request.body?.text?.trim();
+    const text = request.body?.text === undefined
+      ? undefined
+      : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
     if (!candidateIntent || !(["broadcast", "direct_to_user", "collaboration"] as const).includes(candidateIntent)) {
       return reply.code(400).send({
@@ -4459,24 +4724,54 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!text) return reply.code(400).send({ error: "text is required" });
     const scopedText = intent === "broadcast" ? stripLeadingScopeTag(text, "broadcast") : text;
     if (!scopedText) return reply.code(400).send({ error: "text is required after the broadcast scope" });
-    if (text.length > 4000) return reply.code(400).send({ error: "text must be 4000 characters or fewer" });
+    if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
+      return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
+    }
     const requestedDocument = request.body?.document;
     if (requestedDocument && (requestedDocument.mediaType && requestedDocument.mediaType !== "text/markdown")) {
       return reply.code(400).send({ error: "document mediaType must be text/markdown" });
     }
-    const documentTitle = requestedDocument?.title?.trim();
-    const documentContent = requestedDocument?.content;
+    const documentTitle = requestedDocument?.title === undefined
+      ? undefined
+      : canonicalizeProviderText(requestedDocument.title, steeringInjectionIds).trim();
+    const documentContent = requestedDocument?.content === undefined
+      ? undefined
+      : canonicalizeProviderText(requestedDocument.content, steeringInjectionIds);
     if (requestedDocument && (!documentTitle || !documentContent?.trim())) return reply.code(400).send({ error: "document title and content are required" });
-    if (documentTitle && documentTitle.length > 160) return reply.code(400).send({ error: "document title must be 160 characters or fewer" });
-    if (documentContent && Buffer.byteLength(documentContent, "utf8") > 256 * 1024) return reply.code(413).send({ error: "document must be 256 KiB or fewer" });
+    if (documentTitle && unicodeCodePointLength(documentTitle) > 160) return reply.code(400).send({ error: "document title must be 160 characters or fewer" });
+    if (documentContent && Buffer.byteLength(documentContent, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
+      return reply.code(413).send({ error: "document exceeds the 8 MiB limit" });
+    }
     let citations: VerifiedCitationDto[];
-    try { citations = normalizeExternalCitations(request.body?.citations); }
+    try {
+      const citationInput = Array.isArray(request.body?.citations)
+        ? request.body.citations.map((citation) => {
+            if (!citation || typeof citation !== "object") return citation;
+            const source = citation as { url?: unknown; title?: unknown };
+            const citationUrl = typeof source.url === "string" ? source.url : undefined;
+            if (citationUrl && steeringInjectionIds.some((identifier) => citationUrl.includes(identifier))) {
+              throw new Error("citation URL contains an internal steering reference");
+            }
+            return {
+              ...source,
+              ...(typeof source.title === "string"
+                ? { title: canonicalizeProviderText(source.title, steeringInjectionIds) }
+                : {}),
+            };
+          })
+        : request.body?.citations;
+      citations = normalizeExternalCitations(citationInput);
+    }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid citations" }); }
     const inferredRecipientAgentIds = intent === "collaboration"
       ? [...new Set(request.body?.recipientAgentIds ?? capability.defaultReply?.recipientAgentIds ?? [])]
       : [];
     const inferredReplyFingerprint = inferredReply
-      ? createHash("sha256").update(JSON.stringify({ intent, text, recipientAgentIds: inferredRecipientAgentIds, document: requestedDocument ?? null, citations })).digest("hex")
+      ? createHash("sha256").update(JSON.stringify({
+          intent, text, recipientAgentIds: inferredRecipientAgentIds,
+          document: documentTitle && documentContent ? { title: documentTitle, content: documentContent, mediaType: "text/markdown" } : null,
+          citations,
+        })).digest("hex")
       : undefined;
     if (inferredReplyFingerprint && capability.inferredReplyFingerprint && capability.inferredReplyFingerprint !== inferredReplyFingerprint) {
       return reply.code(409).send({ error: "this Run already published its inferred reply; use an explicit advanced communication only if additional material communication is required" });
@@ -4515,12 +4810,66 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         return { suppressed: true, reason: "acknowledgement_only", recipientAgentIds: ordinaryCollaborationRecipients };
       }
     }
-    const document = documentTitle && documentContent ? {
+    const createdAt = replay?.createdAt ?? new Date().toISOString();
+    const messageContent = intent === "broadcast" ? scopedText : text;
+    const messageNeedsArtifact = shouldBackTextWithArtifact(messageContent);
+    const explicitDocumentMatchesMessage = Boolean(documentContent && documentContent === messageContent);
+    const preparedArtifacts: PreparedCommunicationArtifact[] = [];
+    let messageArtifact: PreparedCommunicationArtifact | undefined;
+    let explicitDocumentArtifact: PreparedCommunicationArtifact | undefined;
+    try {
+      if (messageNeedsArtifact) {
+        messageArtifact = await stageCommunicationArtifact({
+          projectId: currentAuthor.projectId,
+          communicationId: communicationEventId,
+          role: "long_text",
+          title: explicitDocumentMatchesMessage && documentTitle ? documentTitle : `${currentAuthor.title} response`,
+          content: messageContent,
+          originAgentId: capability.agentId,
+          executionId: capability.runId,
+          createdAt,
+        });
+        preparedArtifacts.push(messageArtifact);
+      }
+      if (documentTitle && documentContent && !explicitDocumentMatchesMessage &&
+          (shouldBackTextWithArtifact(documentContent) || messageNeedsArtifact)) {
+        explicitDocumentArtifact = await stageCommunicationArtifact({
+          projectId: currentAuthor.projectId,
+          communicationId: communicationEventId,
+          role: "document",
+          title: documentTitle,
+          content: documentContent,
+          originAgentId: capability.agentId,
+          executionId: capability.runId,
+          createdAt,
+        });
+        preparedArtifacts.push(explicitDocumentArtifact);
+      }
+    } catch (error) {
+      const status = error instanceof AssetError ? error.statusCode : 409;
+      return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
+    }
+    const primaryArtifact = messageArtifact ?? explicitDocumentArtifact;
+    const document = primaryArtifact ? {
+      id: replayCommunication?.document?.id ?? primaryArtifact.id,
+      artifactId: primaryArtifact.id,
+      title: primaryArtifact.title,
+      mediaType: "text/markdown" as const,
+      byteLength: primaryArtifact.byteLength,
+      authorAgentId: capability.agentId,
+      executionId: capability.runId,
+      createdAt,
+    } : documentTitle && documentContent ? {
       id: replayCommunication?.document?.id ?? randomUUID(), title: documentTitle, mediaType: "text/markdown" as const,
       content: documentContent, byteLength: Buffer.byteLength(documentContent, "utf8"),
-      authorAgentId: capability.agentId, executionId: capability.runId,
-      createdAt: new Date().toISOString(),
+      authorAgentId: capability.agentId, executionId: capability.runId, createdAt,
     } : undefined;
+    const publishedText = messageArtifact
+      ? [
+          `Full response: ponderosa://artifact/${messageArtifact.id}`,
+          ...(explicitDocumentArtifact ? [`Additional document: ponderosa://artifact/${explicitDocumentArtifact.id}`] : []),
+        ].join("\n")
+      : messageContent;
     if (inferredReplyFingerprint) capability.inferredReplyFingerprint = inferredReplyFingerprint;
 
     if (intent === "direct_to_user") {
@@ -4532,27 +4881,44 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         sender: { kind: "agent", agentId: capability.agentId, executionId: capability.runId },
         intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: capability.agentId },
-        text,
+        text: publishedText,
         ...(document ? { document } : {}),
         ...(citations.length ? { citations } : {}),
-        createdAt: replay?.createdAt ?? new Date().toISOString(),
+        createdAt,
         ...(idempotencyKey ? { idempotencyKey } : {}),
       };
-      const intake = coordinationV3.recordRuntimeCommunication({
-        id: proposedCommunication.eventId,
-        projectId: currentAuthor.projectId,
-        sender: proposedCommunication.sender,
-        intent: proposedCommunication.intent,
-        audience: proposedCommunication.audience,
-        payload: proposedCommunication,
-        scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
-        runAuthorization: runAuthorization(capability),
-        now: proposedCommunication.createdAt,
+      let intake;
+      try {
+        intake = coordinationV3.recordRuntimeCommunication({
+          id: proposedCommunication.eventId,
+          projectId: currentAuthor.projectId,
+          sender: proposedCommunication.sender,
+          intent: proposedCommunication.intent,
+          audience: proposedCommunication.audience,
+          payload: proposedCommunication,
+          ...(preparedArtifacts.length ? { artifacts: preparedArtifacts } : {}),
+          scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
+          runAuthorization: runAuthorization(capability),
+          now: proposedCommunication.createdAt,
+        });
+      } catch (error) {
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "message authorization failed" });
+      }
+      if (preparedArtifacts.length) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+        kind: "communication", ownerId: proposedCommunication.eventId,
+        artifactIds: preparedArtifacts.map((artifact) => artifact.id),
       });
+      for (const artifact of preparedArtifacts) projectCommunicationArtifact(currentAuthor.projectId, capability.agentId, artifact);
       if (intake.replayed) {
+        await reconcileRuntimeCommunicationProjections();
         const existing = store.readEvents(capability.agentId).find((item) =>
           item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
-        return { intent, eventId: proposedCommunication.eventId, messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId, replayed: true };
+        return {
+          intent, eventId: proposedCommunication.eventId,
+          messageId: existing ? `agent-event-${existing.seq}` : proposedCommunication.eventId,
+          replayed: true,
+          ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
+        };
       }
       const communication = recordCommunication(proposedCommunication);
       store.appendCommunicationProjection(currentAuthor.projectId, {
@@ -4564,7 +4930,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (capability.conversationId) {
         store.appendConversationMessage(
           capability.conversationId,
-          { text: renderScopedMessage("user", text) },
+          { text: renderScopedMessage("user", publishedText) },
           capability.agentId,
           "main",
           undefined,
@@ -4573,11 +4939,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         );
       }
       const stored = store.appendEvent(capability.agentId, {
-        type: "communication_projection", communicationEventId: communication.eventId, text,
+        type: "communication_projection", communicationEventId: communication.eventId, text: publishedText,
       });
       publish(capability.agentId, stored);
       const messageId = `agent-event-${stored.seq}`;
-      return { intent, eventId: communication.eventId, messageId, replayed: false };
+      return {
+        intent, eventId: communication.eventId, messageId, replayed: false,
+        ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
+      };
     }
     if (!capability.conversationId) {
       return reply.code(409).send({ error: "agent is not linked to a conversation" });
@@ -4585,7 +4954,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (!currentAuthor.conversationIds.includes(capability.conversationId)) {
       return reply.code(409).send({ error: "agent is no longer an active member of this conversation" });
     }
-    let renderedText = scopedText;
+    let renderedText = publishedText;
     let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> } = { intents: [], blocked: [] };
     if (intent === "collaboration") {
       const recipientAgentIds = inferredRecipientAgentIds;
@@ -4597,7 +4966,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         capability.conversationId,
         capability.agentId,
         recipientAgentIds,
-        text,
+        publishedText,
         capability.mentionDepth,
         capability.mentionTrail,
       );
@@ -4625,10 +4994,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       sender: { kind: "agent", agentId: capability.agentId, executionId: capability.runId },
       intent,
       audience: { kind: "organization", organizationId: currentAuthor.projectId },
-      text: scopedText,
+        text: publishedText,
       ...(document ? { document } : {}),
       ...(citations.length ? { citations } : {}),
-      createdAt: replay?.createdAt ?? new Date().toISOString(),
+      createdAt,
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
       eventId: communicationEventId,
@@ -4639,10 +5008,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       intent,
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
-      text,
+      text: publishedText,
       ...(document ? { document } : {}),
       ...(citations.length ? { citations } : {}),
-      createdAt: replay?.createdAt ?? new Date().toISOString(),
+      createdAt,
       ...(idempotencyKey ? { idempotencyKey } : {}),
     };
     let intake;
@@ -4654,6 +5023,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         intent: proposedCommunication.intent,
         audience: proposedCommunication.audience,
         payload: proposedCommunication,
+        ...(preparedArtifacts.length ? { artifacts: preparedArtifacts } : {}),
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
         ...(intent === "collaboration" ? {
@@ -4672,7 +5042,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const message = error instanceof Error ? error.message : "message authorization failed";
       return reply.code(message.includes("scope") ? 409 : 403).send({ error: message });
     }
+    if (preparedArtifacts.length) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+      kind: "communication", ownerId: proposedCommunication.eventId,
+      artifactIds: preparedArtifacts.map((artifact) => artifact.id),
+    });
+    for (const artifact of preparedArtifacts) projectCommunicationArtifact(currentAuthor.projectId, capability.agentId, artifact);
     if (intake.replayed) {
+      await reconcileRuntimeCommunicationProjections();
       const existing = store.getConversationMessages(capability.conversationId, channel)
         .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
       return {
@@ -4720,6 +5096,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       eventId: communication?.eventId,
       messageId: message.id,
       replayed: false,
+      ...(primaryArtifact ? { resultRef: `ponderosa://artifact/${primaryArtifact.id}` } : {}),
       ...(passiveRecipientAgentIds.size ? { passiveRecipientAgentIds: [...passiveRecipientAgentIds].sort() } : {}),
     };
   });
@@ -4838,6 +5215,36 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     revision: opts.buildRevision?.trim() || "development",
   }));
 
+  app.post("/api/deployment/drain", async (_request, reply) => {
+    if (closed) return reply.code(409).send({ error: "daemon is shutting down" });
+    deploymentDraining = true;
+    try {
+      await coordinationV3Scheduler.pauseLeasing();
+    } catch (error) {
+      deploymentDraining = false;
+      if (!closed) coordinationV3Scheduler.resumeLeasing();
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "deployment drain failed" });
+    }
+    return {
+      state: "draining" as const,
+      acceptingDurableIntake: true,
+      leasingRuns: false,
+      activeRuns: coordinationV3.activeRunCount(),
+    };
+  });
+
+  app.post("/api/deployment/resume", async (_request, reply) => {
+    if (closed) return reply.code(409).send({ error: "daemon is shutting down" });
+    deploymentDraining = false;
+    coordinationV3Scheduler.resumeLeasing();
+    return {
+      state: "accepting" as const,
+      acceptingDurableIntake: true,
+      leasingRuns: true,
+      activeRuns: coordinationV3.activeRunCount(),
+    };
+  });
+
   app.get("/api/communication-v3/metrics", async (_request, reply) => {
     if (!coordinationV3 || !coordinationV3Scheduler) return reply.code(404).send({ error: "Communication V3 is not enabled" });
     return {
@@ -4938,12 +5345,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
     // Projection drift is project-scoped diagnostic state. It must not make
     // unrelated clean projects or the entire daemon reject new work.
-    const canAcceptWork = !closed && dataDirectory.ok && projections.ok && runtimes.ok;
+    const acceptingDurableIntake = !closed && dataDirectory.ok && projections.ok;
+    const leasingRuns = coordinationV3Scheduler.isLeasingRuns();
+    const canAcceptWork = acceptingDurableIntake && leasingRuns && runtimes.ok;
     const body: ReadinessDto = {
       status: canAcceptWork ? "ready" : "not_ready",
       service: "ponderosa",
       version: "0.0.0",
       canAcceptWork,
+      acceptingDurableIntake,
+      leasingRuns,
+      deploymentDrain: {
+        state: deploymentDraining ? "draining" : "accepting",
+        activeRuns: coordinationV3.activeRunCount(),
+      },
       checks: {
         daemon: { ok: !closed, detail: closed ? "daemon is shutting down" : "daemon request loop is running" },
         dataDirectory,
@@ -5510,15 +5925,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string; directReplyToAuthorAgentId?: string; attachments?: AssetDto[]; idempotencyKey?: string };
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
-    const text = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
+    const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
-    if (!text && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
+    if (!rawText && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
       return reply.code(400).send({ error: "broadcast text or an attachment is required" });
     }
     if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: "at most 4 assets are allowed" });
@@ -5532,19 +5946,51 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       validatedAssets.push({ ...publicAsset, state: "associated" });
     }
     if (validatedAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
-    const communication = recordCommunication({
-      eventId: randomUUID(),
+    const eventId = idempotencyKey
+      ? `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
+      : randomUUID();
+    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+    const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
+    try {
+      prepared = await prepareUserCommunicationText({ projectId: master.projectId, communicationId: eventId, text: rawText, createdAt });
+    } catch (error) {
+      const status = error instanceof AssetError ? error.statusCode : 409;
+      return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
+    }
+    const communicationInput: CommunicationEvent = {
+      eventId,
       schemaVersion: 2,
       projectId: master.projectId,
       conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" },
       intent: "broadcast",
       audience: { kind: "organization", organizationId: master.projectId },
-      text,
+      text: prepared.publishedText,
       ...(validatedAssets.length ? { attachments: validatedAssets } : {}),
-      createdAt: new Date().toISOString(),
+      ...(prepared.document ? { document: prepared.document } : {}),
+      createdAt,
       ...(idempotencyKey ? { idempotencyKey: `broadcast:${master.id}:${idempotencyKey}` } : {}),
+    };
+    try {
+      coordinationV3.recordRuntimeCommunication({
+        id: eventId,
+        projectId: master.projectId,
+        sender: communicationInput.sender,
+        intent: communicationInput.intent,
+        audience: communicationInput.audience,
+        payload: { communication: communicationInput },
+        ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
+        now: createdAt,
+      });
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast conflict" });
+    }
+    if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+      kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
     });
+    if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
+    const communication = recordCommunication(communicationInput);
     const replayedMessage = communication && idempotencyKey
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
@@ -5553,7 +5999,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     try {
       message = store.appendConversationMessage(request.params.id, {
         role: request.body.role,
-        text: renderScopedMessage("broadcast", text),
+        text: renderScopedMessage("broadcast", prepared.publishedText),
         replyToMessageId: request.body.replyToMessageId,
         attachments: validatedAssets,
       }, undefined, "main", undefined, undefined, communication?.eventId);
@@ -5572,7 +6018,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.post<{ Params: { id: string }; Body: CreateMultiAgentDirectMessageRequest }>(
     "/api/conversations/:id/direct-messages",
     async (request, reply) => {
-      const text = request.body?.text?.trim() ?? "";
+      const rawText = request.body?.text ?? "";
       const recipients = request.body?.recipients ?? [];
       const replyToMessageId = request.body?.replyToMessageId?.trim() || undefined;
       const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
@@ -5580,7 +6026,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
-      if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text is required and must be 65536 characters or fewer" });
+      if (!rawText.trim()) return reply.code(400).send({ error: "text is required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       if (!Array.isArray(recipients) || recipients.length === 0 || recipients.length > 100) {
         return reply.code(400).send({ error: "1 to 100 recipients are required" });
@@ -5620,12 +6066,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
         const existingRuntime = coordinationV3.runtimeCommunication(eventId);
         const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+        const prepared = await prepareUserCommunicationText({
+          projectId: master.projectId, communicationId: eventId, text: rawText, createdAt,
+        });
         const communication: CommunicationEvent = {
           eventId, schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
           sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
           audience: { kind: "user_agents", userId: "local-operator", agentIds: agentIds as [string, ...string[]] },
-          text,
+          text: prepared.publishedText,
           ...(attachmentsByAgent.some((items) => items.length) ? { attachments: attachmentsByAgent.flat() } : {}),
+          ...(prepared.document ? { document: prepared.document } : {}),
           createdAt, idempotencyKey: receiptKey,
         };
         const intents: ConversationDeliveryIntent[] = recipients.map((recipient) => ({
@@ -5642,7 +6092,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             communication,
             dispatch: {
               conversationId: master.id,
-              text,
+              text: prepared.publishedText,
+              ...(prepared.artifact ? {
+                artifactId: prepared.artifact.id,
+                resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
+              } : {}),
               activeRunDelivery,
               replyToMessageId: replyToMessageId ?? null,
               recipients: recipients.map((recipient, index) => ({
@@ -5653,6 +6107,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               })),
             },
           },
+          ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
           activations: recipients.map((recipient, index) => ({
             agentId: recipient.agentId,
             kind: "human_message",
@@ -5663,6 +6118,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           })),
           now: createdAt,
         });
+        if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+          kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
+        });
+        if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
         recordCommunication(communication);
         store.appendCommunicationProjection(master.projectId, {
           eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
@@ -5672,7 +6131,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           try {
             message = store.appendConversationMessage(
               master.id,
-              { text, replyToMessageId, attachments: attachmentsByAgent[0] },
+              { text: prepared.publishedText, replyToMessageId, attachments: attachmentsByAgent[0] },
               undefined,
               "main",
               intents,
@@ -5687,7 +6146,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (!intake.replayed) {
           await Promise.all(recipients.map((recipient) => assets.associate(master.projectId, recipient.agentId, recipient.attachmentIds ?? [])));
           recipients.forEach((recipient, index) =>
-            projectCommunicationToAgentAudit(recipient.agentId, communication, text, attachmentsByAgent[index]),
+            projectCommunicationToAgentAudit(recipient.agentId, communication, prepared.publishedText, attachmentsByAgent[index]),
           );
         }
         for (const recipient of recipients) publishCoordinationV3Changed(recipient.agentId);
@@ -5808,15 +6267,14 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
     "/api/conversations/:id/direct-replies",
     async (request, reply) => {
-      const text = request.body?.text?.trim() ?? "";
+      const rawText = request.body?.text ?? "";
       const replyToMessageId = request.body?.replyToMessageId?.trim() ?? "";
       const targetAuthorAgentId = request.body?.targetAuthorAgentId?.trim() ?? "";
       const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
       const attachmentIds = request.body?.attachmentIds ?? [];
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
-      if (!text && attachmentIds.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
-      if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+      if (!rawText.trim() && attachmentIds.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
       if (!replyToMessageId || !targetAuthorAgentId) return reply.code(400).send({ error: "reply target and author are required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
@@ -5833,11 +6291,22 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const eventId = `direct-reply-${createHash("sha256").update(receiptKey).digest("hex")}`;
       const existingRuntime = coordinationV3.runtimeCommunication(eventId);
       const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+      let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
+      try {
+        prepared = await prepareUserCommunicationText({
+          projectId: master.projectId, communicationId: eventId, text: rawText, createdAt,
+        });
+      } catch (error) {
+        const status = error instanceof AssetError ? error.statusCode : 409;
+        return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
+      }
       const communication: CommunicationEvent = {
         eventId, schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
         sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
-        text, createdAt, idempotencyKey: receiptKey,
+        text: prepared.publishedText,
+        ...(prepared.document ? { document: prepared.document } : {}),
+        createdAt, idempotencyKey: receiptKey,
       };
       let intake;
       try {
@@ -5851,7 +6320,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             communication,
             dispatch: {
               conversationId: master.id,
-              text,
+              text: prepared.publishedText,
+              ...(prepared.artifact ? {
+                artifactId: prepared.artifact.id,
+                resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
+              } : {}),
               activeRunDelivery,
               replyToMessageId,
               targetAuthorAgentId,
@@ -5860,6 +6333,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               })),
             },
           },
+          ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
           activation: {
             agentId: target.id,
             kind: "human_message",
@@ -5869,14 +6343,19 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           },
           now: createdAt,
         });
+        if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+          kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
+        });
+        if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
       } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "direct reply conflict" });
+        const status = error instanceof AssetError ? error.statusCode : 409;
+        return reply.code(status).send({ error: error instanceof Error ? error.message : "direct reply conflict" });
       }
       recordCommunication(communication);
       store.appendCommunicationProjection(master.projectId, {
         eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
       });
-      const renderedText = `#${agentMentionHandle(target.title)} ${text}`.trimEnd();
+      const renderedText = `#${agentMentionHandle(target.title)} ${prepared.publishedText}`.trimEnd();
       let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
       if (!message) {
         try {
@@ -5896,7 +6375,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!message) return reply.code(503).send({ error: "direct reply projection could not be recorded; retry is safe" });
       if (!intake.replayed) {
         await assets.associate(master.projectId, target.id, attachmentIds);
-        projectCommunicationToAgentAudit(target.id, communication, text, attachments);
+        projectCommunicationToAgentAudit(target.id, communication, prepared.publishedText, attachments);
       }
       publishCoordinationV3Changed(target.id);
       coordinationV3Scheduler.notify();
@@ -6141,12 +6620,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Params: { id: string };
     Body: CreateCollaborationMessageRequest & { directReplyToAuthorAgentId?: string };
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
-    const text = request.body?.text?.trim() ?? "";
+    const text = canonicalizeProviderText(request.body?.text ?? "").trim();
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
     if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
       return reply.code(400).send({ error: "text or an attachment is required" });
     }
-    if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+    if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
@@ -6222,13 +6701,28 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
         : randomUUID();
     const existingRuntime = coordinationV3.runtimeCommunication(eventId);
+    const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
+    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
+    try {
+      prepared = await prepareUserCommunicationText({
+        projectId: master.projectId, communicationId: eventId, text, createdAt,
+      });
+    } catch (error) {
+      const status = error instanceof AssetError ? error.statusCode : 409;
+      return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
+    }
+    const publishedRenderedText = text
+      ? `${renderedText.slice(0, renderedText.length - text.length)}${prepared.publishedText}`
+      : renderedText;
     const communication: CommunicationEvent = {
       eventId,
       schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
       audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
       audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
-      text, createdAt: existingRuntime?.createdAt ?? new Date().toISOString(),
+      text: prepared.publishedText,
+      ...(prepared.document ? { document: prepared.document } : {}),
+      createdAt,
       ...(canonicalAttachments.length ? { attachments: canonicalAttachments } : {}),
       ...(idempotencyKey ? { idempotencyKey: `collaboration:${master.id}:${idempotencyKey}` } : {}),
     };
@@ -6244,7 +6738,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           communication,
           dispatch: {
             conversationId: master.id,
-            text: renderedText,
+            text: publishedRenderedText,
+            ...(prepared.artifact ? {
+              artifactId: prepared.artifact.id,
+              resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
+            } : {}),
             replyToMessageId: request.body.replyToMessageId ?? null,
             recipients: routing.intents.map((intent) => ({
               agentId: intent.targetAgentId,
@@ -6254,6 +6752,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             })),
           },
         },
+        ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
         activations: routing.intents.map((intent, index) => ({
           agentId: intent.targetAgentId,
           kind: "human_message",
@@ -6264,8 +6763,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         })),
         now: communication.createdAt,
       });
+      if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+        kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
+      });
+      if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
     } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
+      const status = error instanceof AssetError ? error.statusCode : 409;
+      return reply.code(status).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
     }
     recordCommunication(communication);
     const replayedMessage = detail.messages.find((candidate) => candidate.communicationEventId === communication.eventId);
@@ -6279,7 +6783,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     let message;
     try { message = store.appendConversationMessage(
       request.params.id,
-      { role: "user", text: renderedText, replyToMessageId: request.body.replyToMessageId, attachments: canonicalAttachments },
+      { role: "user", text: publishedRenderedText, replyToMessageId: request.body.replyToMessageId, attachments: canonicalAttachments },
       // The canonical chat snapshot uses one copy; per-recipient copies stay in
       // dispatch/audit data and are never rendered as duplicates.
       undefined,
@@ -6297,7 +6801,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (!intake.replayed && recipientAttachments.length) {
         await assets.associate(master.projectId, intent.targetAgentId, recipientAttachments.map((item) => item.id));
       }
-      projectCommunicationToAgentAudit(intent.targetAgentId, communication, renderedText, recipientAttachments);
+      projectCommunicationToAgentAudit(intent.targetAgentId, communication, publishedRenderedText, recipientAttachments);
       publishCoordinationV3Changed(intent.targetAgentId);
     }
     if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
@@ -6417,6 +6921,24 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
         return reply.code(409).send({ error: error instanceof Error ? error.message : "first-turn attachments could not be committed" });
       }
+      const openingEventId = `agent-opening:${agent.id}`;
+      const openingCreatedAt = new Date().toISOString();
+      let openingPrepared: Awaited<ReturnType<typeof prepareUserCommunicationText>> | undefined;
+      if (hasInitialTurn) {
+        try {
+          openingPrepared = await prepareUserCommunicationText({
+            projectId: agent.projectId,
+            communicationId: openingEventId,
+            text: initialMessage,
+            createdAt: openingCreatedAt,
+          });
+        } catch (error) {
+          await Promise.allSettled(openingAttachments.map((attachment) => assets.remove(agent.projectId, agent.id, attachment.id)));
+          store.deleteAgent(agent.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
+          const status = error instanceof AssetError ? error.statusCode : 409;
+          return reply.code(status).send({ error: error instanceof Error ? error.message : "first-turn text could not be committed" });
+        }
+      }
       let managedOpening: { requestIds: string[]; joinId?: string } | undefined;
       if (hasInitialTurn && agent.managerAgentId) {
         try {
@@ -6425,7 +6947,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             requesterAgentId: agent.managerAgentId, actorScope: "user:local-operator",
             idempotencyKey: `managed-opening:${agent.id}`,
             requests: [{ requestId: `managed:${agent.id}:opening`, recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: {
-              text: initialMessage, managedAgentOpening: true,
+              text: openingPrepared!.publishedText,
+              ...(openingPrepared!.artifact ? {
+                artifactId: openingPrepared!.artifact.id,
+                resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
+              } : {}),
+              managedAgentOpening: true,
               ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
             } }],
             ...(request.body.awaitResult === false ? {} : { join: { id: `managed:${agent.id}:join`, mode: "all" as const } }),
@@ -6437,8 +6964,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       if (hasInitialTurn) {
-        const createdAt = new Date().toISOString();
-        const eventId = `agent-opening:${agent.id}`;
+        const createdAt = openingCreatedAt;
+        const eventId = openingEventId;
         const managed = Boolean(agent.managerAgentId);
         const sharedOpening = !managed && Boolean(agent.conversationId);
         const communication: CommunicationEvent = managed ? {
@@ -6446,14 +6973,18 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
           sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
           audience: { kind: "agents", agentIds: [agent.id] },
-          text: initialMessage, createdAt,
+          text: openingPrepared!.publishedText,
+          ...(openingPrepared!.document ? { document: openingPrepared!.document } : {}),
+          createdAt,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
           ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
         } : sharedOpening ? {
           eventId, schemaVersion: 2, projectId: agent.projectId, conversationId: agent.conversationId!,
           sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
           audience: { kind: "organization", organizationId: agent.projectId },
-          text: initialMessage, createdAt,
+          text: openingPrepared!.publishedText,
+          ...(openingPrepared!.document ? { document: openingPrepared!.document } : {}),
+          createdAt,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
           ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
         } : {
@@ -6461,10 +6992,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
           sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
           audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
-          text: initialMessage, createdAt,
+          text: openingPrepared!.publishedText,
+          ...(openingPrepared!.document ? { document: openingPrepared!.document } : {}),
+          createdAt,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
         };
-        if (!managedOpening) coordinationV3.recordRuntimeCommunication({
+        coordinationV3.recordRuntimeCommunication({
           id: eventId,
           projectId: agent.projectId,
           sender: communication.sender,
@@ -6479,7 +7012,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
                 sourceChannel: "main" as const,
                 shareWithOrganization: true,
               } : {}),
-              text: initialMessage,
+              text: openingPrepared!.publishedText,
+              ...(openingPrepared!.artifact ? {
+                artifactId: openingPrepared!.artifact.id,
+                resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
+              } : {}),
               replyToMessageId: request.body.replyToMessageId ?? null,
               attachments: openingAttachments.map((item) => ({
                 id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
@@ -6489,15 +7026,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               effort: request.body.effort ?? null,
             },
           },
-          activation: {
+          ...(openingPrepared!.artifact ? { artifacts: [openingPrepared!.artifact] } : {}),
+          ...(!managedOpening ? { activation: {
             agentId: agent.id,
             kind: "managed_agent_opening",
             priority: 100,
             dispatchPolicy: "steer_or_run",
             promptClass: "human",
-          },
+          } } : {}),
           now: createdAt,
         });
+        if (openingPrepared!.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+          kind: "communication", ownerId: eventId, artifactIds: [openingPrepared!.artifact.id],
+        });
+        if (openingPrepared!.artifact) projectCommunicationArtifact(agent.projectId, "local-operator", openingPrepared!.artifact);
         recordCommunication(communication);
         if (managedOpening) coordinationV3.attachRequestCommunication(managedOpening.requestIds[0]!, eventId, agent.projectId);
         if (communication.intent === "user_dm") {
@@ -6514,7 +7056,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
               // user-authored DM. Keep the spawned Agent association in the
               // canonical communication/activation instead of mutating the
               // user's visible prose with a stale display-name tag.
-              text: managed ? `#${agentMentionHandle(agent.title)} ${initialMessage}` : initialMessage,
+              text: managed
+                ? `#${agentMentionHandle(agent.title)} ${openingPrepared!.publishedText}`
+                : openingPrepared!.publishedText,
               replyToMessageId: request.body.replyToMessageId,
               attachments: openingAttachments,
             },
@@ -6526,7 +7070,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           );
         }
         const audit = sharedOpening ? undefined : store.appendEvent(agent.id, {
-          type: "user_message", text: initialMessage, communicationEventId: eventId,
+          type: "user_message", text: openingPrepared!.publishedText, communicationEventId: eventId,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
         });
         if (openingAttachments.length) await assets.associate(agent.projectId, agent.id, openingAttachments.map((item) => item.id));
@@ -6783,15 +7327,47 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     const included = new Set(nodes.map((agent) => agent.id));
     const project = store.getProject(root.projectId)!;
     let portableArtifactBytes = 0;
-    const agents = await Promise.all(nodes.map(async (agent) => {
-      const imported = store.getImportedHistory(agent.id)?.messages ?? [];
+    const canonicalUserDocuments = store.readCommunicationEvents(root.projectId).filter((event) =>
+      event.sender.kind === "user" && Boolean(event.document?.artifactId));
+    const histories = new Map(nodes.map((agent) => {
       const history = [
-        ...imported,
+        ...(store.getImportedHistory(agent.id)?.messages ?? []),
         ...agentMessages(agent.id).map((message) => ({ role: message.role, text: message.text, createdAt: message.createdAt })),
       ];
+      for (const event of canonicalUserDocuments) {
+        const visible = event.conversationId
+          ? agent.conversationIds.includes(event.conversationId)
+          : event.intent === "collaboration"
+            ? event.audience.agentIds.includes(agent.id)
+            : event.intent === "user_dm"
+              ? (event.audience.kind === "user_agent"
+                  ? event.audience.agentId === agent.id
+                  : event.audience.agentIds.includes(agent.id))
+              : false;
+        if (visible && !history.some((message) => message.text.includes(event.document!.artifactId!))) {
+          history.push({ role: "user" as const, text: event.text, createdAt: event.createdAt });
+        }
+      }
+      return [agent.id, history] as const;
+    }));
+    const artifactOwner = new Map<string, string>();
+    if (mode !== "template") {
+      for (const artifact of store.getProjectArtifacts(root.projectId)) {
+        if (artifact.originAgentId && included.has(artifact.originAgentId)) {
+          artifactOwner.set(artifact.id, artifact.originAgentId);
+          continue;
+        }
+        const referencingAgent = nodes.find((agent) =>
+          (histories.get(agent.id) ?? []).some((message) => message.text.includes(artifact.id)));
+        if (referencingAgent) artifactOwner.set(artifact.id, referencingAgent.id);
+      }
+    }
+    const agents = await Promise.all(nodes.map(async (agent) => {
+      const history = histories.get(agent.id) ?? [];
       const historyText = history.map((message) => message.text).join("\n");
       const projectArtifacts = mode === "template" ? [] : store.getProjectArtifacts(agent.projectId).filter((artifact) =>
-        artifact.originAgentId === agent.id && (mode === "full" || artifact.pinned || artifact.visibility === "published" || historyText.includes(artifact.id))
+        artifactOwner.get(artifact.id) === agent.id &&
+        (mode === "full" || artifact.pinned || artifact.visibility === "published" || historyText.includes(artifact.id))
       );
       const artifacts = await Promise.all(projectArtifacts.map(async (artifact) => {
         const data = await fs.readFile(managedArtifactContentPath(opts.dataDir, agent.projectId, artifact.id));
@@ -7187,6 +7763,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     Params: { id: string };
     Body: {
       text: string;
+      idempotencyKey?: string;
       model?: string;
       effort?: string;
       agentMentionDepth?: number;
@@ -7217,7 +7794,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const project = store.getProject(agent.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       const allowedMessageFields = new Set([
-        "text", "model", "effort", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
+        "text", "idempotencyKey", "model", "effort", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
         "shareWithOrganization", "activeRunDelivery", "sourceConversationId", "replyToMessageId",
         "attachmentIds", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
         "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
@@ -7228,6 +7805,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const engine = engines.get(agent.activeEngine);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim() ?? "";
+      const userMessageIdempotencyKey = request.body?.idempotencyKey?.trim();
+      if (userMessageIdempotencyKey && userMessageIdempotencyKey.length > 200) {
+        return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
+      }
       const internalV3Dispatch = request.headers["x-ponderosa-v3-dispatch"] === v3DispatchKey;
       const v3SchedulerRunId = request.body.v3SchedulerRunId;
       const v3FencingToken = request.body.v3FencingToken;
@@ -7280,7 +7861,12 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       const messageAttachments = (attached as NonNullable<(typeof attached)[number]>[]).map(({ projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...item }) => ({ ...item, state: "associated" as const })) as AssetDto[];
       if (messageAttachments.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
       if (!text && messageAttachments.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
-      if (text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "text must be 65536 characters or fewer" });
+      if (internalV3Dispatch && unicodeCodePointLength(text) > MAX_TEXT_LENGTH) {
+        return reply.code(400).send({ error: "internal dispatch text must be 65536 characters or fewer" });
+      }
+      if (!internalV3Dispatch && Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
+        return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
+      }
       const sourceConversationId = request.body.sourceConversationId;
       if (sourceConversationId !== undefined && !agent.conversationIds.includes(sourceConversationId)) {
         return reply.code(400).send({ error: "conversation does not belong to agent" });
@@ -7306,58 +7892,101 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       if (request.body.replyToMessageId && !directReplyTarget && !sourceMasterReply) {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
       }
+      const proposedCommunicationEventId = internalV3Dispatch
+        ? undefined
+        : userMessageIdempotencyKey
+          ? `user-message-${createHash("sha256").update(`${project.id}\0${agent.id}\0${userMessageIdempotencyKey}`).digest("hex")}`
+          : randomUUID();
+      const existingUserRuntime = proposedCommunicationEventId
+        ? coordinationV3.runtimeCommunication(`dispatch:${proposedCommunicationEventId}:${agent.id}`)
+        : undefined;
+      const communicationCreatedAt = existingUserRuntime?.createdAt ?? new Date().toISOString();
+      let userTextArtifact: PreparedCommunicationArtifact | undefined;
+      let publishedText = text;
+      let userDocument: CommunicationEvent["document"];
+      if (proposedCommunicationEventId) {
+        try {
+          const prepared = await prepareUserCommunicationText({
+            projectId: project.id, communicationId: proposedCommunicationEventId, text, createdAt: communicationCreatedAt,
+          });
+          publishedText = prepared.publishedText;
+          userTextArtifact = prepared.artifact;
+          userDocument = prepared.document;
+        } catch (error) {
+          const status = error instanceof AssetError ? error.statusCode : 409;
+          return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
+        }
+      }
       const proposedCommunication: CommunicationEvent | undefined = internalV3Dispatch
         ? undefined
         : shareWithOrganization ? {
-            eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
+            eventId: proposedCommunicationEventId!, schemaVersion: 2, projectId: project.id, conversationId: sourceConversationId!,
             sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
-            audience: { kind: "organization", organizationId: project.id }, text,
+            audience: { kind: "organization", organizationId: project.id }, text: publishedText,
             ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
-            createdAt: new Date().toISOString(),
+            ...(userDocument ? { document: userDocument } : {}),
+            createdAt: communicationCreatedAt,
+            ...(userMessageIdempotencyKey ? { idempotencyKey: `user-message:${agent.id}:${userMessageIdempotencyKey}` } : {}),
           } : {
-            eventId: randomUUID(), schemaVersion: 2, projectId: project.id,
+            eventId: proposedCommunicationEventId!, schemaVersion: 2, projectId: project.id,
             ...((sourceConversationId ?? agent.conversationId) ? { conversationId: sourceConversationId ?? agent.conversationId } : {}),
             sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
-            audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text,
+            audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, text: publishedText,
             ...(messageAttachments.length ? { attachments: messageAttachments } : {}),
-            createdAt: new Date().toISOString(),
+            ...(userDocument ? { document: userDocument } : {}),
+            createdAt: communicationCreatedAt,
+            ...(userMessageIdempotencyKey ? { idempotencyKey: `user-message:${agent.id}:${userMessageIdempotencyKey}` } : {}),
           };
       const intendedCommunicationEventId = proposedCommunication?.eventId;
       let v3Intake: ReturnType<CoordinationV3Store["recordRuntimeCommunication"]> | undefined;
       if (!internalV3Dispatch && intendedCommunicationEventId && proposedCommunication) {
-        v3Intake = coordinationV3.recordRuntimeCommunication({
-          id: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
-          projectId: project.id,
-          sender: proposedCommunication.sender,
-          intent: proposedCommunication.intent,
-          audience: { agentId: agent.id },
-          payload: {
-            communication: proposedCommunication,
-            dispatch: {
-              text,
-              communicationEventId: intendedCommunicationEventId,
-              sourceConversationId: sourceConversationId ?? null,
-              sourceChannel: request.body.sourceChannel ?? null,
-              shareWithOrganization,
-              activeRunDelivery,
-              replyToMessageId: request.body.replyToMessageId ?? null,
-              attachments: messageAttachments.map((item) => ({
-                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
-                localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
-              })),
-              model: request.body.model ?? null,
-              effort: request.body.effort ?? null,
+        try {
+          v3Intake = coordinationV3.recordRuntimeCommunication({
+            id: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
+            projectId: project.id,
+            sender: proposedCommunication.sender,
+            intent: proposedCommunication.intent,
+            audience: { agentId: agent.id },
+            payload: {
+              communication: proposedCommunication,
+              dispatch: {
+                text: publishedText,
+                ...(userTextArtifact ? {
+                  artifactId: userTextArtifact.id,
+                  resultRef: `ponderosa://artifact/${userTextArtifact.id}`,
+                } : {}),
+                communicationEventId: intendedCommunicationEventId,
+                sourceConversationId: sourceConversationId ?? null,
+                sourceChannel: request.body.sourceChannel ?? null,
+                shareWithOrganization,
+                activeRunDelivery,
+                replyToMessageId: request.body.replyToMessageId ?? null,
+                attachments: messageAttachments.map((item) => ({
+                  id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
+                  localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
+                })),
+                model: request.body.model ?? null,
+                effort: request.body.effort ?? null,
+              },
             },
-          },
-          activation: {
-            agentId: agent.id,
-            kind: "human_message",
-            priority: 100,
-            dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
-            promptClass: "human",
-          },
-          now: proposedCommunication?.createdAt,
+            ...(userTextArtifact ? { artifacts: [userTextArtifact] } : {}),
+            activation: {
+              agentId: agent.id,
+              kind: "human_message",
+              priority: 100,
+              dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
+              promptClass: "human",
+            },
+            now: proposedCommunication.createdAt,
+          });
+        } catch (error) {
+          return reply.code(409).send({ error: error instanceof Error ? error.message : "message intake failed" });
+        }
+        if (userTextArtifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
+          kind: "communication", ownerId: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
+          artifactIds: [userTextArtifact.id],
         });
+        if (userTextArtifact) projectCommunicationArtifact(project.id, agent.id, userTextArtifact);
       }
       const communicationEventId = internalV3Dispatch
         ? v3CommunicationEventId
@@ -7387,13 +8016,13 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         }
       }
       if (communicationEventId && directMessageConversationId) {
-        if (internalV3Dispatch) {
+        if (internalV3Dispatch || v3Intake?.replayed) {
           sourceMasterMessage = store.getConversationMessages(directMessageConversationId, "main")
             .find((message) => message.communicationEventId === communicationEventId);
         } else {
           sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
             role: "user",
-            text: sharedCommunication ? text : `#${agentMentionHandle(agent.title)} ${text}`,
+            text: sharedCommunication ? publishedText : `#${agentMentionHandle(agent.title)} ${publishedText}`,
             attachments: messageAttachments,
             replyToMessageId: sourceMasterReply?.id,
           }, undefined, "main", undefined, undefined, communicationEventId);
@@ -7423,7 +8052,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         });
       }
       const pendingTurn: PendingTurn = {
-        text,
+        text: publishedText,
         communicationEventId,
         model: request.body.model,
         effort: request.body.effort,
@@ -7438,7 +8067,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             })()
           : undefined,
       };
-      const auditText = text;
+      const auditText = publishedText;
       if (!internalV3Dispatch) {
         if (!v3Intake?.activationId) {
           return reply.code(500).send({ error: "actionable communication did not create an activation" });
@@ -7792,7 +8421,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       });
       const hasOneCanonicalReplySource = new Set(activationCommunicationEventIds).size === 1;
       const inheritedReplyAuthorities: Array<NonNullable<AgentMessageCapability["defaultReply"]>> =
-        manifestActivationPayloads.flatMap(({ payload }) => {
+        [
+          ...(manifestTriggerOccurrences.length ? [{ intent: "direct_to_user" as const }] : []),
+          ...manifestActivationPayloads.flatMap(({ payload }) => {
           if (!payload || typeof payload !== "object") return [];
           const authority = (payload as { replyAuthority?: unknown }).replyAuthority;
           if (!authority || typeof authority !== "object") return [];
@@ -7808,8 +8439,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           return [{
             intent: candidate.intent,
             ...(recipients.length > 0 ? { recipientAgentIds: [...recipients].sort() } : {}),
-          }] satisfies Array<NonNullable<AgentMessageCapability["defaultReply"]>>;
-        });
+            }] satisfies Array<NonNullable<AgentMessageCapability["defaultReply"]>>;
+          }),
+        ];
       const contextMessages = [...roomMessages, ...initialBroadcastContext];
       const contextCommunicationEventIds = contextMessages.flatMap((message) =>
         message.communicationEventId ? [message.communicationEventId] : []);

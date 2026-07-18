@@ -3,7 +3,14 @@ import { StrictMode } from "react";
 import { create, unstable_batchedUpdates } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
-import { Composer, filesFromClipboard, replyPreviewText, selectComposerFiles } from "../src/components/panes";
+import {
+  Composer,
+  composerSubmissionText,
+  filesFromClipboard,
+  replyPreviewText,
+  selectComposerFiles,
+  shouldExtractLongPaste,
+} from "../src/components/panes";
 
 const file = (name: string, type: string, size = 4) => {
   const value = new File([new Uint8Array(Math.min(size, 16))], name, { type });
@@ -11,13 +18,43 @@ const file = (name: string, type: string, size = 4) => {
   return value;
 };
 const clipboard = (files: File[]) => ({
-  clipboardData: { items: files.map((value) => ({ kind: "file", getAsFile: () => value })) },
+  clipboardData: {
+    items: files.map((value) => ({ kind: "file", getAsFile: () => value })),
+    files,
+    getData: () => "",
+  },
   preventDefault: () => undefined,
+});
+const textClipboard = (value: string) => ({
+  clipboardData: { items: [], files: [], getData: () => value },
+  preventDefault: vi.fn(),
 });
 const pasteTarget = (view: ReturnType<typeof create>) => view.root.findAll((node) => typeof node.props.onPaste === "function")[0]!;
 const renderComposer = (element: ReactElement) => create(<QueryClientProvider client={new QueryClient()}>{element}</QueryClientProvider>);
 
 describe("composer clipboard attachments", () => {
+  it("uses Unicode code points for the inclusive 10,000-character paste boundary", () => {
+    expect(shouldExtractLongPaste("😀".repeat(10_000))).toBe(false);
+    expect(shouldExtractLongPaste("😀".repeat(10_001))).toBe(true);
+    expect(composerSubmissionText("Please inspect this", "full pasted body")).toBe("Please inspect this\n\nfull pasted body");
+  });
+
+  it("turns long pasted text into a removable chip and submits its full content", async () => {
+    let sent = "";
+    const view = renderComposer(<Composer disabled={false} running={false} onSend={(text) => { sent = text; }} />);
+    const textarea = pasteTarget(view);
+    const longPaste = "p".repeat(10_001);
+    const paste = textClipboard(longPaste);
+    textarea.props.onPaste(paste);
+    expect(paste.preventDefault).toHaveBeenCalledOnce();
+    expect(view.root.findAll((node) => node.children.includes("Pasted text"))).not.toHaveLength(0);
+    textarea.props.onChange({ target: { value: "Summarize this", selectionStart: 14 } });
+    view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")[0]!.props.onClick();
+    await Promise.resolve();
+    expect(sent).toBe(`Summarize this\n\n${longPaste}`);
+    view.unmount();
+  });
+
   it("keeps context guidance and the capability trigger inside the shared composer shell", () => {
     const view = renderComposer(<Composer
       disabled={false}

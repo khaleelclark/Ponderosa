@@ -1,4 +1,5 @@
 import type { RuntimeDynamicToolSpec } from "./adapter.js";
+import { LONG_TEXT_MAX_UTF8_BYTES } from "./text-policy.js";
 
 const REQUEST_LIFETIME_SCHEMA = {
   oneOf: [
@@ -156,8 +157,8 @@ export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
         enum: ["progress", "waiting_dependency", "dependency_resolved", "question", "answer", "completed", "blocked", "failed", "cancelled", "superseded"],
         description: "Use completed for the recipient's result/reply. Use question only for a recipient's blocking follow-up; use answer only for the original requester's correlated response.",
       },
-      text: { type: "string", maxLength: 4000 },
-      question: { type: "string", minLength: 1, maxLength: 4000, description: "Common blocking follow-up to the original requester; maps to a correlated question update." },
+      text: { type: "string", description: `Canonical report text. UTF-8 content above 10,000 Unicode code points is stored as a durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
+      question: { type: "string", minLength: 1, description: `Common blocking follow-up to the original requester. Long UTF-8 content is artifact-backed; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
       inReplyToUpdateId: { type: "string", minLength: 1, maxLength: 200, description: "Required for kind answer. Copy the exact inReplyToUpdateId from the coordination_question Activation." },
     },
   },
@@ -175,7 +176,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         type: "string", enum: ["broadcast", "direct_to_user", "collaboration"],
         description: "Exact routing enum. Use direct_to_user for a private user reply; user_dm is not a tool value.",
       },
-      text: { type: "string", minLength: 1, maxLength: 4000 },
+      text: { type: "string", minLength: 1, description: `Complete message text. Content above 10,000 Unicode code points is stored as one durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
       steeringInjectionId: {
         type: "string", minLength: 1,
         description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt. Ponderosa rejects output fenced behind an acknowledged steer.",
@@ -190,7 +191,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         type: "object", additionalProperties: false, required: ["title", "content"],
         properties: {
           title: { type: "string", minLength: 1, maxLength: 160 },
-          content: { type: "string", minLength: 1 },
+          content: { type: "string", minLength: 1, description: `Full Markdown document content; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
           mediaType: { type: "string", enum: ["text/markdown"] },
         },
       },
