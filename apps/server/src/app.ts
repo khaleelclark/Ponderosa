@@ -377,6 +377,10 @@ export interface CreateServerOptions {
       artifactIds: string[];
     }) => void | Promise<void>;
   };
+  /** Deterministic Project-file replacement seam; never enabled in production configuration. */
+  projectFilePreviewFaults?: {
+    afterResolve?: (resolvedPath: string) => void | Promise<void>;
+  };
   /** Web Push configuration/test seams. Production reads host-only VAPID env. */
   webPush?: {
     publicKey?: string;
@@ -7550,9 +7554,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }>("/api/agents/:id/queued-messages/:deliveryId", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
-    const text = request.body?.text?.trim() ?? "";
+    const rawText = request.body?.text ?? "";
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-    if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "queued message text is required" });
+    if (!rawText.trim() || rawText.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "queued message text is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const activation = coordinationV3.pendingActivations(agent.projectId)
       .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
@@ -7562,11 +7566,51 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
       return reply.code(404).send({ error: "queued message not found" });
     }
+    const createdAt = new Date().toISOString();
+    const revisionId = `queued-edit-${createHash("sha256")
+      .update(`${agent.projectId}\0${activation.id}\0${idempotencyKey}`)
+      .digest("hex")}`;
+    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
+    try {
+      prepared = await prepareUserCommunicationText({
+        projectId: agent.projectId,
+        communicationId: revisionId,
+        text: rawText,
+        createdAt,
+      });
+    } catch (error) {
+      const status = error instanceof AssetError ? error.statusCode : 409;
+      return reply.code(status).send({ error: error instanceof Error ? error.message : "queued-message edit staging failed" });
+    }
+    const conversationId = payload.communication.conversationId ?? agent.conversationId;
+    if (!conversationId) return reply.code(409).send({ error: "queued message has no conversation" });
+    const revision: CommunicationRevisionEvent = {
+      eventId: revisionId,
+      schemaVersion: 1,
+      projectId: agent.projectId,
+      conversationId,
+      targetEventId: payload.communication.eventId,
+      kind: "edit",
+      sender: { kind: "user", userId: "local-operator" },
+      text: prepared.publishedText,
+      createdAt,
+      idempotencyKey: `queued-edit:${activation.id}:${idempotencyKey}`,
+    };
     const result = coordinationV3.editPendingActivationText({
-      activationId: activation.id, projectId: agent.projectId, text, idempotencyKey,
+      activationId: activation.id,
+      projectId: agent.projectId,
+      text: prepared.publishedText,
+      ...(prepared.document ? { document: prepared.document as unknown as Record<string, unknown> } : {}),
+      ...(prepared.artifact ? {
+        artifactId: prepared.artifact.id,
+        resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
+      } : {}),
+      commitRevision: () => { store.appendCommunicationRevision(revision); },
+      idempotencyKey,
+      now: createdAt,
     });
     if (!result.edited) return reply.code(409).send(result satisfies EditQueuedMessageResponse);
-    const conversationId = payload.communication.conversationId ?? agent.conversationId;
+    if (prepared.artifact) projectCommunicationArtifact(agent.projectId, "local-operator", prepared.artifact);
     if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "edited" });
     publishCoordinationV3Changed(agent.id);
     return result satisfies EditQueuedMessageResponse;
@@ -11162,9 +11206,68 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   });
 
-  async function projectFileForBrowser(projectId: string, input: string | undefined): Promise<{ body: Buffer; name: string; mediaType: string } | undefined> {
+  const PROJECT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
+  const PROJECT_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
+  const PROJECT_PREVIEW_GLOBAL_CONCURRENCY = 12;
+  const PROJECT_PREVIEW_PROJECT_CONCURRENCY = 4;
+  const PROJECT_PREVIEW_RATE_WINDOW_MS = 60_000;
+  const PROJECT_PREVIEW_RATE_LIMIT = 60;
+  let projectPreviewGlobalInFlight = 0;
+  const projectPreviewInFlight = new Map<string, number>();
+  const projectPreviewRequests = new Map<string, number[]>();
+  const projectPreviewMediaTypes = new Set(["image/png", "image/jpeg", "image/webp", "application/pdf"]);
+
+  function acquireProjectPreview(projectId: string): (() => void) | undefined {
+    const now = Date.now();
+    const recent = (projectPreviewRequests.get(projectId) ?? [])
+      .filter((timestamp) => timestamp > now - PROJECT_PREVIEW_RATE_WINDOW_MS);
+    if (recent.length >= PROJECT_PREVIEW_RATE_LIMIT || projectPreviewGlobalInFlight >= PROJECT_PREVIEW_GLOBAL_CONCURRENCY
+      || (projectPreviewInFlight.get(projectId) ?? 0) >= PROJECT_PREVIEW_PROJECT_CONCURRENCY) {
+      projectPreviewRequests.set(projectId, recent);
+      return undefined;
+    }
+    recent.push(now);
+    projectPreviewRequests.set(projectId, recent);
+    projectPreviewGlobalInFlight += 1;
+    projectPreviewInFlight.set(projectId, (projectPreviewInFlight.get(projectId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      projectPreviewGlobalInFlight = Math.max(0, projectPreviewGlobalInFlight - 1);
+      const next = Math.max(0, (projectPreviewInFlight.get(projectId) ?? 1) - 1);
+      if (next === 0) projectPreviewInFlight.delete(projectId);
+      else projectPreviewInFlight.set(projectId, next);
+    };
+  }
+
+  function projectFileMediaType(input: string | undefined): string | undefined {
+    if (!input?.trim()) return undefined;
+    try {
+      const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
+      return contentTypeForStatic(requested.toLowerCase());
+    } catch {
+      return undefined;
+    }
+  }
+
+  function validProjectPreviewMagic(mediaType: string, header: Buffer): boolean {
+    if (mediaType === "image/png") return header.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
+    if (mediaType === "image/jpeg") return header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+    if (mediaType === "image/webp") return header.subarray(0, 4).toString("ascii") === "RIFF"
+      && header.subarray(8, 12).toString("ascii") === "WEBP";
+    if (mediaType === "application/pdf") return header.subarray(0, 5).toString("ascii") === "%PDF-";
+    return false;
+  }
+
+  async function projectFileForBrowser(
+    projectId: string,
+    input: string | undefined,
+    options: { maxBytes: number; previewMediaType?: string },
+  ): Promise<{ body: Readable; name: string; mediaType: string; size: number } | undefined> {
     const project = store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
       const root = await fs.realpath(project.hostPath);
       const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
@@ -11175,23 +11278,63 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
       const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
       if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
-      const info = await fs.stat(resolved);
-      if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
-      return { body: await fs.readFile(resolved), name: path.basename(resolved), mediaType: contentTypeForStatic(resolved.toLocaleLowerCase()) };
+      await opts.projectFilePreviewFaults?.afterResolve?.(resolved);
+      handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      const openedPath = await fs.realpath(`/proc/self/fd/${handle.fd}`);
+      if (openedPath !== root && !openedPath.startsWith(`${root}${path.sep}`)) return undefined;
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > options.maxBytes) return undefined;
+      const mediaType = options.previewMediaType ?? contentTypeForStatic(resolved.toLowerCase());
+      if (options.previewMediaType) {
+        const header = Buffer.alloc(16);
+        const { bytesRead } = await handle.read(header, 0, header.length, 0);
+        if (!validProjectPreviewMagic(options.previewMediaType, header.subarray(0, bytesRead))) return undefined;
+      }
+      const openHandle = handle;
+      handle = undefined;
+      const body = Readable.from((async function* streamBoundedProjectFile() {
+        let position = 0;
+        try {
+          while (position < info.size) {
+            const requestedBytes = Math.min(64 * 1024, info.size - position);
+            const buffer = Buffer.allocUnsafe(requestedBytes);
+            const { bytesRead } = await openHandle.read(buffer, 0, requestedBytes, position);
+            if (bytesRead === 0) break;
+            position += bytesRead;
+            yield buffer.subarray(0, bytesRead);
+          }
+        } finally {
+          await openHandle.close().catch(() => undefined);
+        }
+      })());
+      return { body, name: path.basename(resolved), mediaType, size: info.size };
     } catch {
       return undefined;
+    } finally {
+      await handle?.close().catch(() => undefined);
     }
   }
 
   app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
     "/api/projects/:projectId/workspace-files/preview",
     async (request, reply) => {
-      const file = await projectFileForBrowser(request.params.projectId, request.query.path);
-      if (!file) return reply.code(404).send({ error: "project file not found" });
-      if (!["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(file.mediaType)) {
+      const mediaType = projectFileMediaType(request.query.path);
+      if (!mediaType || !projectPreviewMediaTypes.has(mediaType)) {
         return reply.code(415).send({ error: "this project file does not support an inline preview" });
       }
+      const release = acquireProjectPreview(request.params.projectId);
+      if (!release) return reply.code(429).header("Retry-After", "1").send({ error: "project preview capacity exceeded" });
+      const file = await projectFileForBrowser(request.params.projectId, request.query.path, {
+        maxBytes: PROJECT_PREVIEW_MAX_BYTES,
+        previewMediaType: mediaType,
+      });
+      if (!file) {
+        release();
+        return reply.code(404).send({ error: "project file not found" });
+      }
+      file.body.once("end", release).once("close", release).once("error", release);
       return reply.type(file.mediaType)
+        .header("Content-Length", String(file.size))
         .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
         .header("Cache-Control", "private, no-store")
         .header("X-Content-Type-Options", "nosniff")
@@ -11203,9 +11346,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
     "/api/projects/:projectId/workspace-files/download",
     async (request, reply) => {
-      const file = await projectFileForBrowser(request.params.projectId, request.query.path);
+      const file = await projectFileForBrowser(request.params.projectId, request.query.path, {
+        maxBytes: PROJECT_DOWNLOAD_MAX_BYTES,
+      });
       if (!file) return reply.code(404).send({ error: "project file not found" });
       return reply.type("application/octet-stream")
+        .header("Content-Length", String(file.size))
         .header("Content-Disposition", contentDisposition(file.name))
         .header("Cache-Control", "private, no-store")
         .header("X-Content-Type-Options", "nosniff")
