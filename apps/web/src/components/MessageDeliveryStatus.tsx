@@ -43,21 +43,10 @@ function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "war
   return "info";
 }
 
-function receiptHasActiveWork(receipt: MessageDeliveryReceiptDto): boolean {
-  return receipt.state === "steering"
-    || receipt.state === "started"
-    || receipt.state === "delivered"
-    || receipt.state === "unconfirmed"
-    || receipt.state === "waiting_for_run"
-    || receipt.state === "recovery_queued"
-    || receipt.state === "recovering";
-}
-
 export function MessageDeliveryStatus({
   receipts,
   recipientName,
   onOpenAgent,
-  onOpenWorkLog,
 }: {
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
@@ -128,13 +117,6 @@ export function MessageDeliveryStatus({
             {deliveryLabel(receipt, name, now)}
           </Typography>
         </ButtonBase>
-        {receiptHasActiveWork(receipt) && onOpenWorkLog ? <Button
-          color="inherit"
-          variant="text"
-          size="small"
-          onClick={() => onOpenWorkLog(receipt.targetAgentId)}
-          sx={{ minHeight: 28, py: 0.25, color: "text.secondary" }}
-        >View work log</Button> : null}
         {receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"
