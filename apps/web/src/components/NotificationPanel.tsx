@@ -35,9 +35,17 @@ export interface NotificationGroup {
   items: WorkspaceNotificationDto[];
 }
 
+function compareNotificationsNewestFirst(a: WorkspaceNotificationDto, b: WorkspaceNotificationDto): number {
+  return b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id);
+}
+
+export function notificationsNewestFirst(notifications: WorkspaceNotificationDto[]): WorkspaceNotificationDto[] {
+  return [...notifications].sort(compareNotificationsNewestFirst);
+}
+
 export function groupNotificationsByChat(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
   const groups = new Map<string, NotificationGroup>();
-  for (const item of notifications) {
+  for (const item of notificationsNewestFirst(notifications)) {
     const key = `${item.projectId ?? "workspace"}\u0000${item.conversationId ?? "project"}`;
     const current = groups.get(key) ?? {
       key,
@@ -49,10 +57,9 @@ export function groupNotificationsByChat(notifications: WorkspaceNotificationDto
     groups.set(key, current);
   }
   for (const group of groups.values()) {
-    group.items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    group.items.sort(compareNotificationsNewestFirst);
   }
-  const latest = (group: NotificationGroup) => group.items.reduce((value, item) => item.createdAt > value ? item.createdAt : value, "");
-  return [...groups.values()].sort((a, b) => latest(b).localeCompare(latest(a)));
+  return [...groups.values()].sort((a, b) => compareNotificationsNewestFirst(a.items[0]!, b.items[0]!));
 }
 
 function notificationTime(value: string): string {

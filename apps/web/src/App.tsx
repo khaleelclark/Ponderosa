@@ -56,7 +56,7 @@ import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, 
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
 import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
-import { engineAvailabilityPresentation, engineIsAvailable } from "./conversationEngine";
+import { effortOptionsForModel, engineAvailabilityPresentation, engineIsAvailable, resolveRuntimeSelection } from "./conversationEngine";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
   closeWorkspaceTab,
@@ -112,6 +112,8 @@ export default function App({
   const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("none");
   const [projectFolderName, setProjectFolderName] = useState("");
   const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
+  const [projectDefaultModel, setProjectDefaultModel] = useState("");
+  const [projectDefaultEffort, setProjectDefaultEffort] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
   const [operatorProfileOpen, setOperatorProfileOpen] = useState(false);
@@ -127,6 +129,9 @@ export default function App({
   const [settingsProjectId, setSettingsProjectId] = useState<string>();
   const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
   const [projectInstructions, setProjectInstructions] = useState("");
+  const [settingsProjectDefaultEngine, setSettingsProjectDefaultEngine] = useState("");
+  const [settingsProjectDefaultModel, setSettingsProjectDefaultModel] = useState("");
+  const [settingsProjectDefaultEffort, setSettingsProjectDefaultEffort] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
@@ -236,7 +241,15 @@ export default function App({
 
   const createProject = useMutation({
     mutationFn: () =>
-      api.createProject(createProjectRequest({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName, defaultEngine: projectDefaultEngine as ProjectDto["defaultEngine"] })),
+      api.createProject(createProjectRequest({
+        label: projectLabel,
+        mode: projectFolderMode,
+        existingPath: projectPath,
+        newFolderName: projectFolderName,
+        defaultEngine: projectDefaultEngine as ProjectDto["defaultEngine"],
+        defaultModel: projectDefaultModel,
+        defaultEffort: projectDefaultEffort,
+      })),
     onSuccess: (project) => {
       queryClient.setQueryData<ProjectDto[]>(["projects"], (current = []) =>
         current.some((item) => item.id === project.id) ? current : [...current, project],
@@ -248,6 +261,8 @@ export default function App({
       setProjectFolderName("");
       setProjectFolderMode("none");
       setProjectDefaultEngine("");
+      setProjectDefaultModel("");
+      setProjectDefaultEffort("");
       navigate(project.lastConversationId ? { kind: "conversation", projectId: project.id, conversationId: project.lastConversationId } : { kind: "project", projectId: project.id });
     },
   });
@@ -270,7 +285,13 @@ export default function App({
   });
 
   const updateProject = useMutation({
-    mutationFn: () => api.updateProject(settingsProjectId!, { label: renamedProjectLabel.trim(), instructions: projectInstructions }),
+    mutationFn: () => api.updateProject(settingsProjectId!, {
+      label: renamedProjectLabel.trim(),
+      instructions: projectInstructions,
+      defaultEngine: settingsProjectDefaultEngine,
+      defaultModel: settingsProjectDefaultModel || null,
+      defaultEffort: settingsProjectDefaultEffort || null,
+    }),
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["projects"] }); setProjectSettingsOpen(false); },
   });
 
@@ -316,7 +337,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
@@ -369,6 +390,23 @@ export default function App({
     setProfileAvatarDraft(preferences.profile.avatarId);
     setOperatorProfileOpen(true);
   };
+  const openProjectSettings = (project: ProjectDto) => {
+    setSettingsProjectId(project.id);
+    setRenamedProjectLabel(project.label);
+    setProjectInstructions(project.instructions ?? "");
+    setSettingsProjectDefaultEngine(project.defaultEngine);
+    setSettingsProjectDefaultModel(project.defaultModel ?? "");
+    setSettingsProjectDefaultEffort(project.defaultEffort ?? "");
+    setProjectSettingsOpen(true);
+  };
+  const newProjectEngine = engines.find((candidate) => candidate.id === projectDefaultEngine);
+  const newProjectInherited = resolveRuntimeSelection(newProjectEngine, preferences);
+  const newProjectModel = projectDefaultModel || newProjectInherited.model;
+  const newProjectEfforts = effortOptionsForModel(newProjectEngine, newProjectModel);
+  const settingsEngine = engines.find((candidate) => candidate.id === settingsProjectDefaultEngine);
+  const settingsInherited = resolveRuntimeSelection(settingsEngine, preferences);
+  const settingsModel = settingsProjectDefaultModel || settingsInherited.model;
+  const settingsEfforts = effortOptionsForModel(settingsEngine, settingsModel);
 
   return (
     <ProjectBrowserContext.Provider value={{ projectId: selectedProjectId, open: openProjectBrowser }}>
@@ -435,7 +473,7 @@ export default function App({
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
-            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
+            onManageProject={openProjectSettings}
             onPreferences={savePreferences}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
@@ -483,7 +521,7 @@ export default function App({
             preferences={preferences}
             onNavigate={goHome}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
-            onManageProject={(project) => { setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
+            onManageProject={openProjectSettings}
             onPreferences={savePreferences}
           />
         ) : selectedProjectId ? (
@@ -511,7 +549,7 @@ export default function App({
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
-          onManageProject={(project) => { setMobileNavOpen(false); setSettingsProjectId(project.id); setRenamedProjectLabel(project.label); setProjectInstructions(project.instructions ?? ""); setProjectSettingsOpen(true); }}
+          onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
           onPreferences={savePreferences}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
@@ -605,9 +643,19 @@ export default function App({
               autoFocus
               fullWidth
             />
-            <FormControl fullWidth><InputLabel id="project-default-engine-label">Default engine</InputLabel><Select labelId="project-default-engine-label" label="Default engine" value={projectDefaultEngine} onChange={(event) => setProjectDefaultEngine(event.target.value)}>
+            <FormControl fullWidth><InputLabel id="project-default-engine-label">Default engine</InputLabel><Select labelId="project-default-engine-label" label="Default engine" value={projectDefaultEngine} onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
               {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — unavailable" : " — not signed in"}</MenuItem>)}
             </Select></FormControl>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+              <FormControl fullWidth><InputLabel id="project-default-model-label">Project model</InputLabel><Select labelId="project-default-model-label" label="Project model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
+                <MenuItem value="">Use workspace setting — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
+                {(newProjectEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+              </Select></FormControl>
+              <FormControl fullWidth><InputLabel id="project-default-effort-label">Project effort</InputLabel><Select labelId="project-default-effort-label" label="Project effort" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
+                <MenuItem value="">Use workspace setting — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
+                {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+              </Select></FormControl>
+            </Stack>
             {engines.filter((engine) => engine.authenticated && !engineIsAvailable(engine)).map((engine) => <Alert
               key={engine.id}
               severity="warning"
@@ -700,7 +748,23 @@ export default function App({
             ) : null}
             <Typography variant="subtitle2">AI providers</Typography>
             <Typography variant="body2" color="text.secondary">Disabled providers finish active Runs, then hold queued work until re-enabled.</Typography>
-            {engines.map((engine) => <FormControlLabel key={engine.id} control={<Switch checked={engine.enabled !== false} disabled={updateEngine.isPending} onChange={(_, enabled) => updateEngine.mutate({ engineId: engine.id, enabled })} />} label={`${engine.displayName}${engine.available ? "" : ` — ${engine.availabilityDetail ?? "unavailable"}`}`} />)}
+            {engines.map((engine) => {
+              const resolved = resolveRuntimeSelection(engine, preferences);
+              const modelOptions = engine.models.filter((option) => option.id);
+              const effortOptions = effortOptionsForModel(engine, resolved.model);
+              return <Stack key={engine.id} spacing={1} sx={{ p: 1.5, borderRadius: 2, bgcolor: "background.default" }}>
+                <FormControlLabel control={<Switch checked={engine.enabled !== false} disabled={updateEngine.isPending} onChange={(_, enabled) => updateEngine.mutate({ engineId: engine.id, enabled })} />} label={`${engine.displayName}${engine.available ? "" : ` — ${engine.availabilityDetail ?? "unavailable"}`}`} />
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                  <FormControl fullWidth size="small"><InputLabel id={`workspace-model-${engine.id}`}>New-agent model</InputLabel><Select labelId={`workspace-model-${engine.id}`} label="New-agent model" value={resolved.model} onChange={(event) => {
+                    const model = event.target.value;
+                    const modelEfforts = effortOptionsForModel(engine, model);
+                    const effort = engine.models.find((option) => option.id === model)?.defaultEffort ?? engine.defaultEffort ?? modelEfforts[0]?.id;
+                    savePreferences({ engineDefaults: { ...preferences.engineDefaults, [engine.id]: { model, ...(effort ? { effort } : {}) } } });
+                  }}>{modelOptions.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}</Select></FormControl>
+                  <FormControl fullWidth size="small"><InputLabel id={`workspace-effort-${engine.id}`}>New-agent effort</InputLabel><Select labelId={`workspace-effort-${engine.id}`} label="New-agent effort" value={resolved.effort} onChange={(event) => savePreferences({ engineDefaults: { ...preferences.engineDefaults, [engine.id]: { model: resolved.model, effort: event.target.value } } })}>{effortOptions.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}</Select></FormControl>
+                </Stack>
+              </Stack>;
+            })}
             {engines.some((engine) => engine.enabled !== false && !engineIsAvailable(engine)) ? <Alert severity={engines.some(engineIsAvailable) ? "warning" : "error"}>
               {engineAvailability.detail} {engines.some(engineIsAvailable) ? "Ponderosa can continue through an available engine." : "Enable or restore at least one engine before starting new work."}
             </Alert> : null}
@@ -736,6 +800,17 @@ export default function App({
       <Dialog open={projectSettingsOpen} onClose={() => setProjectSettingsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Project settings</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
           <TextField label="Project name" value={renamedProjectLabel} onChange={(event) => setRenamedProjectLabel(event.target.value)} fullWidth />
+          <FormControl fullWidth><InputLabel id="settings-project-engine-label">Default engine</InputLabel><Select labelId="settings-project-engine-label" label="Default engine" value={settingsProjectDefaultEngine} onChange={(event) => { setSettingsProjectDefaultEngine(event.target.value); setSettingsProjectDefaultModel(""); setSettingsProjectDefaultEffort(""); }}>{engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</Select></FormControl>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+            <FormControl fullWidth><InputLabel id="settings-project-model-label">Project model</InputLabel><Select labelId="settings-project-model-label" label="Project model" value={settingsProjectDefaultModel} onChange={(event) => { setSettingsProjectDefaultModel(event.target.value); setSettingsProjectDefaultEffort(""); }}>
+              <MenuItem value="">Use workspace setting — {settingsEngine?.models.find((option) => option.id === settingsInherited.model)?.label ?? settingsInherited.model}</MenuItem>
+              {(settingsEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+            </Select></FormControl>
+            <FormControl fullWidth><InputLabel id="settings-project-effort-label">Project effort</InputLabel><Select labelId="settings-project-effort-label" label="Project effort" value={settingsProjectDefaultEffort} onChange={(event) => setSettingsProjectDefaultEffort(event.target.value)}>
+              <MenuItem value="">Use workspace setting — {settingsEfforts.find((option) => option.id === settingsInherited.effort)?.label ?? settingsInherited.effort}</MenuItem>
+              {settingsEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+            </Select></FormControl>
+          </Stack>
           <TextField label="Project master rules" value={projectInstructions} onChange={(event) => setProjectInstructions(event.target.value)} multiline minRows={5} helperText="These rules apply after global rules to every Agent working in this Project." fullWidth />
           {updateProject.isError ? <Alert severity="error">{String(updateProject.error)}</Alert> : null}
           <Button color="error" variant="outlined" onClick={() => setDeleteConfirmationOpen(true)}>Delete project permanently</Button>

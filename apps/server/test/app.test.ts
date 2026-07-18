@@ -1051,6 +1051,42 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("generated artifact endpoints", () => {
+  it("previews and downloads bounded project files without escaping the registered workspace", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Project file browser", hostPath: repoDir });
+    const png = Buffer.from("89504e470d0a1a0a", "hex");
+    writeFileSync(path.join(repoDir, "concept.png"), png);
+    writeFileSync(path.join(repoDir, "notes.md"), "# Notes\n");
+
+    const preview = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("concept.png")}`,
+    });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.headers["content-type"]).toContain("image/png");
+    expect(preview.headers["content-disposition"]).toContain("inline");
+    expect(preview.rawPayload).toEqual(png);
+
+    const unsupportedPreview = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("notes.md")}`,
+    });
+    expect(unsupportedPreview.statusCode).toBe(415);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("../outside.png")}`,
+    })).statusCode).toBe(404);
+
+    const download = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/download?path=${encodeURIComponent("notes.md")}`,
+    });
+    expect(download.statusCode, download.body).toBe(200);
+    expect(download.headers["content-disposition"]).toContain("attachment");
+    expect(download.body).toBe("# Notes\n");
+    await app.close();
+  });
+
   it("authorizes artifact references submitted through history and retained by the accepted provider session", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -3240,7 +3276,7 @@ describe("server chunk F", () => {
     });
     expect(changedModel.statusCode, changedModel.body).toBe(202);
     await waitForRun(agent.id, 1);
-    expect(adapter.seeds.at(-1)).toMatchObject({ model: "alternate", effort: undefined });
+    expect(adapter.seeds.at(-1)).toMatchObject({ model: "alternate", effort: "low" });
 
     const resetDefaults = await app.inject({
       method: "POST",
@@ -6908,6 +6944,27 @@ describe("server chunk F", () => {
     expect(retry.json()).toMatchObject({ replayed: true, queued: true, messageId: first.json<{ messageId: string }>().messageId });
     expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
 
+    const queued = (await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` }))
+      .json<Array<{ deliveryId: string; text: string }>>();
+    expect(queued).toEqual([expect.objectContaining({ text: "Queued follow up" })]);
+    const editedText = "Edited queued follow up";
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}`,
+      payload: { text: editedText, idempotencyKey: "edit-busy-reply" },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({ edited: true, replayed: false, status: "edited" });
+    expect((await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` })).json())
+      .toEqual([expect.objectContaining({ text: editedText })]);
+    const steered = await app.inject({
+      method: "POST",
+      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}/steer`,
+      payload: { idempotencyKey: "steer-busy-reply" },
+    });
+    expect(steered.statusCode, steered.body).toBe(200);
+    expect(steered.json()).toMatchObject({ steered: true, replayed: false, status: "steered" });
+
     adapter.mode = "normal";
     await app.inject({
       method: "POST", url: `/api/agents/${author.id}/cancel`,
@@ -6915,7 +6972,7 @@ describe("server chunk F", () => {
     });
     await expect.poll(() => adapter.seeds.length + adapter.continues.length).toBe(2);
     expect([...adapter.seeds, ...adapter.continues]
-      .filter((turn) => turn.agentId === author.id && turn.prompt.includes(payload.text))).toHaveLength(1);
+      .filter((turn) => turn.agentId === author.id && turn.prompt.includes(editedText))).toHaveLength(1);
     await app.close();
   });
 

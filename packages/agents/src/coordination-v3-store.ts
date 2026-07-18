@@ -901,6 +901,84 @@ export class CoordinationV3Store {
     })();
   }
 
+  editPendingActivationText(input: {
+    activationId: string;
+    projectId: string;
+    text: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { edited: boolean; replayed: boolean; status: "edited" | "delivery_started" } {
+    if (!input.idempotencyKey.trim()) throw new Error("edit idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    const hash = payloadHash({ activationId: input.activationId, text: input.text });
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ edited: boolean; status: "edited" | "delivery_started" }>(
+        input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const row = this.sqlite.prepare(`
+        SELECT payload_json FROM agent_activations
+        WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
+      `).get(input.activationId, input.projectId) as { payload_json: string } | undefined;
+      let edited = false;
+      if (row) {
+        const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+        const dispatch = payload.dispatch && typeof payload.dispatch === "object"
+          ? payload.dispatch as Record<string, unknown>
+          : {};
+        const communication = payload.communication && typeof payload.communication === "object"
+          ? payload.communication as Record<string, unknown>
+          : undefined;
+        const nextPayload = {
+          ...payload,
+          ...(communication ? { communication: { ...communication, text: input.text } } : {}),
+          dispatch: { ...dispatch, text: input.text },
+        };
+        edited = this.sqlite.prepare(`
+          UPDATE agent_activations SET payload_json = ?, updated_at = ?
+          WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
+        `).run(stableJson(nextPayload), now, input.activationId, input.projectId).changes === 1;
+      }
+      const result = edited
+        ? { edited: true, status: "edited" as const }
+        : { edited: false, status: "delivery_started" as const };
+      this.recordIdempotency(
+        input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
+  }
+
+  steerPendingActivation(input: {
+    activationId: string;
+    projectId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { steered: boolean; replayed: boolean; status: "steered" | "delivery_started" } {
+    if (!input.idempotencyKey.trim()) throw new Error("steering idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    const hash = payloadHash({ activationId: input.activationId });
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ steered: boolean; status: "steered" | "delivery_started" }>(
+        input.projectId, "user:local-operator", "steer_activation", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET dispatch_policy = 'steer_or_run', priority = CASE WHEN priority < 100 THEN 100 ELSE priority END,
+          updated_at = ?
+        WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
+      `).run(now, input.activationId, input.projectId).changes;
+      const result = changed === 1
+        ? { steered: true, status: "steered" as const }
+        : { steered: false, status: "delivery_started" as const };
+      this.recordIdempotency(
+        input.projectId, "user:local-operator", "steer_activation", input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
+  }
+
   activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
     id: string; kind: string; promptClass: ActivationPromptClass; payload: unknown;
   }> {

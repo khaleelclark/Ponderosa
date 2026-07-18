@@ -52,6 +52,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
   fontFamily: "inter",
   providerAvailability: {},
+  engineDefaults: {},
   globalInstructions: "",
   profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
   updatedAt: new Date(0).toISOString(),
@@ -92,6 +93,7 @@ export class WorkspaceStore {
       projectOrder: record.event.preferences.projectOrder ?? [],
       starredProjectIds: record.event.preferences.starredProjectIds ?? [],
       providerAvailability: record.event.preferences.providerAvailability ?? {},
+      engineDefaults: record.event.preferences.engineDefaults ?? {},
       globalInstructions: record.event.preferences.globalInstructions ?? "",
       profile: normalizeProfile(record.event.preferences.profile),
     };
@@ -201,6 +203,7 @@ export class WorkspaceStore {
       projectOrder: patch.projectOrder ?? this.preferences.projectOrder,
       starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
+      engineDefaults: patch.engineDefaults ?? this.preferences.engineDefaults,
       globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
       profile: patch.profile ? normalizeProfile(patch.profile) : this.preferences.profile,
       sidebarWidth: Math.max(220, Math.min(520, Math.round(patch.sidebarWidth ?? this.preferences.sidebarWidth))),

@@ -85,6 +85,14 @@ export class ClaudeAdapter implements Adapter {
     return DEFAULT_EFFORTS;
   }
 
+  defaultModel(): string {
+    return "sonnet";
+  }
+
+  defaultEffort(): string {
+    return "high";
+  }
+
   apiPriceProfile(model?: string): ApiPriceProfile | undefined {
     return claudeApiPriceProfile(model);
   }

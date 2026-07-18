@@ -5,6 +5,7 @@ export type WorkspaceTabRoute = Extract<Route,
   | { kind: "conversation" }
   | { kind: "agents" }
   | { kind: "agent" }
+  | { kind: "review" }
 >;
 
 export interface WorkspaceTabState {
@@ -27,6 +28,8 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
   if (candidate.kind === "project" || candidate.kind === "agents") return true;
   if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
   if (candidate.kind === "agent") return typeof candidate.agentId === "string" && Boolean(candidate.agentId);
+  if (candidate.kind === "review") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
+    && (candidate.path === undefined || typeof candidate.path === "string");
   return false;
 }
 
@@ -36,6 +39,7 @@ export function workspaceTabKey(route: Route): string | undefined {
     case "conversation": return `conversation:${route.projectId}:${route.conversationId}`;
     case "agents": return `agents:${route.projectId}`;
     case "agent": return `agent:${route.projectId}:${route.agentId}`;
+    case "review": return `review:${route.projectId}:${route.agentId}:${route.path ?? "all"}`;
     default: return undefined;
   }
 }

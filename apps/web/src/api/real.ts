@@ -262,6 +262,27 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request),
     });
   },
+  listQueuedAgentMessages(agentId) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages`);
+  },
+  cancelQueuedAgentMessage(agentId, deliveryId, request) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages/${encodeURIComponent(deliveryId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  editQueuedAgentMessage(agentId, deliveryId, request) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages/${encodeURIComponent(deliveryId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(request),
+    });
+  },
+  steerQueuedAgentMessage(agentId, deliveryId, request) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages/${encodeURIComponent(deliveryId)}/steer`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
   letCurrentRunFinish(injectionId, request) {
     return requestJson(`/api/message-deliveries/${encodeURIComponent(injectionId)}/let-current-run-finish`, {
       method: "POST",

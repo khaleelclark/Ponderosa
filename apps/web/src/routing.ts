@@ -20,7 +20,8 @@ export type Route =
   | { kind: "project"; projectId: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string }
   | { kind: "agents"; projectId: string }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string };
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string }
+  | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
 
@@ -28,6 +29,7 @@ export function parseRoute(pathname: string, search = ""): Route {
   const [cleanPathname, inlineSearch = ""] = pathname.split("?", 2);
   const query = new URLSearchParams(search || (inlineSearch ? `?${inlineSearch}` : ""));
   const focusMessageId = query.get("message")?.trim() || undefined;
+  const reviewPath = query.get("path")?.trim() || undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
@@ -40,6 +42,9 @@ export function parseRoute(pathname: string, search = ""): Route {
   }
   if (parts[2] === "agents" && parts[3]) {
     return { kind: "agent", projectId, agentId: decodeURIComponent(parts[3]), ...(focusMessageId ? { focusMessageId } : {}) };
+  }
+  if (parts[2] === "reviews" && parts[3]) {
+    return { kind: "review", projectId, agentId: decodeURIComponent(parts[3]), ...(reviewPath ? { path: reviewPath } : {}) };
   }
   if (parts[2] === "agents") {
     return { kind: "agents", projectId };
@@ -61,6 +66,8 @@ export function routeToPath(route: Route): string {
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
     case "agent":
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}` : ""}`;
+    case "review":
+      return `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${route.path ? `?path=${encodeURIComponent(route.path)}` : ""}`;
     default:
       return "/";
   }

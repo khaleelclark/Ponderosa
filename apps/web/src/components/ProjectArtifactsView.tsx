@@ -108,7 +108,7 @@ export function ProjectArtifactsView({
           const label = artifactDisplayLabel(artifact);
           const owner = agent?.title ?? "Project";
           const canOpen = Boolean(artifact.previewUrl || agent);
-          return <Box key={`${artifact.projectId ?? projectId}:${artifact.id}`} sx={{ display: "flex", alignItems: "center", borderRadius: 1.5, bgcolor: "background.paper", boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}`, overflow: "hidden" }}>
+          return <Box key={`${artifact.projectId ?? projectId}:${artifact.id}`} sx={{ display: "flex", alignItems: "center", minWidth: 0, borderRadius: 1.5, bgcolor: "background.paper", boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}`, overflow: "hidden" }}>
             <ListItemButton
               aria-label={`Open ${label} from ${owner}`}
               disabled={!canOpen}
@@ -125,13 +125,13 @@ export function ProjectArtifactsView({
                 primaryTypographyProps={{ fontWeight: 750, noWrap: true }}
                 secondaryTypographyProps={{ noWrap: true }}
               />
-              <Stack direction="row" spacing={1} sx={{ ml: 1, alignItems: "center", flexShrink: 0 }}>
+              <Stack direction="row" spacing={1} sx={{ ml: 1, alignItems: "center", flexShrink: 0, display: { xs: "none", lg: "flex" } }}>
                 <Chip size="small" variant="outlined" label={artifact.kind.replaceAll("_", " ")} />
-                <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{new Date(artifact.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Typography>
+                <Typography variant="caption" color="text.secondary">{new Date(artifact.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Typography>
               </Stack>
             </ListItemButton>
-            {artifact.previewUrl ? <Button aria-label={`Preview ${label}`} onClick={() => setPreviewArtifact(artifact)} size="small" startIcon={<OpenInNewOutlinedIcon />} sx={{ display: { xs: "none", md: "inline-flex" }, mr: .5 }}>Preview</Button> : null}
-            {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" startIcon={<DownloadOutlinedIcon />} sx={{ mr: 1 }}>Download</Button> : null}
+            {artifact.previewUrl ? <Button aria-label={`Preview ${label}`} onClick={() => setPreviewArtifact(artifact)} size="small" startIcon={<OpenInNewOutlinedIcon />} sx={{ display: { xs: "none", lg: "inline-flex" }, mr: .5, flexShrink: 0 }}>Preview</Button> : null}
+            {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" startIcon={<DownloadOutlinedIcon />} sx={{ mr: { xs: .5, sm: 1 }, px: { xs: .75, sm: 1 }, flexShrink: 0 }}><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Download</Box></Button> : null}
           </Box>;
         })}
       </List>

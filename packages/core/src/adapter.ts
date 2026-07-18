@@ -226,6 +226,10 @@ export interface Adapter {
   readonly modelSpecificEfforts?: boolean;
   listModels(): ModelOption[];
   listEfforts(model?: string): EffortOption[];
+  /** Concrete adapter-owned fallback used when no operator or Project override exists. */
+  defaultModel?(): string | undefined;
+  /** Concrete adapter-owned fallback for the selected model. */
+  defaultEffort?(model?: string): string | undefined;
 
   /** API list-price proxy only; Ponderosa never calls a provider billing API. */
   apiPriceProfile?(model?: string): ApiPriceProfile | undefined;

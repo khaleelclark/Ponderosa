@@ -54,6 +54,10 @@ import type {
   QueuedConversationMessageDto,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
+  EditQueuedMessageRequest,
+  EditQueuedMessageResponse,
+  SteerQueuedMessageRequest,
+  SteerQueuedMessageResponse,
   CorrectConversationMessageRequest,
   CorrectConversationMessageResponse,
   SseEventEnvelope,
@@ -824,6 +828,25 @@ function normalizedRuntimeSelection(adapter: Adapter, model?: string, effort?: s
   };
 }
 
+function concreteRuntimeSelection(
+  adapter: Adapter,
+  layers: Array<{ model?: string; effort?: string } | undefined>,
+): { model?: string; effort?: string } {
+  const models = adapter.listModels();
+  const model = layers.map((layer) => layer?.model?.trim()).find((candidate) => candidate && !runtimeSelectionError(adapter, candidate, undefined))
+    ?? adapter.defaultModel?.()
+    ?? models.find((option) => option.id)?.id;
+  const modelDefaultEffort = models.find((option) => option.id === model)?.defaultEffort;
+  const modelCatalogUnknown = models.length > 0 && !models.some((option) => Boolean(option.id));
+  const effort = !model && (adapter.modelSpecificEfforts || modelCatalogUnknown) ? undefined : [
+    ...layers.map((layer) => layer?.effort?.trim()),
+    modelDefaultEffort,
+    adapter.defaultEffort?.(model),
+    adapter.listEfforts(model)[0]?.id,
+  ].find((candidate) => candidate && !runtimeSelectionError(adapter, model, candidate));
+  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+}
+
 function sharedRequestCompletionPrompt(): string {
   return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
     "Before this Run ends, call ponderosa_message({text: \"<final answer>\"}) exactly once with the completed result or material blocker.",
@@ -996,6 +1019,8 @@ function contentTypeForStatic(file: string): string {
   if (file.endsWith(".svg")) return "image/svg+xml";
   if (file.endsWith(".png")) return "image/png";
   if (file.endsWith(".jpg") || file.endsWith(".jpeg")) return "image/jpeg";
+  if (file.endsWith(".webp")) return "image/webp";
+  if (file.endsWith(".pdf")) return "application/pdf";
   if (file.endsWith(".ico")) return "image/x-icon";
   if (file.endsWith(".woff")) return "font/woff";
   if (file.endsWith(".woff2")) return "font/woff2";
@@ -2088,6 +2113,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       };
     }
     const models = adapter.listModels();
+    const defaultModel = adapter.defaultModel?.() ?? models.find((model) => model.id)?.id;
+    const defaultEffort = adapter.defaultEffort?.(defaultModel)
+      ?? models.find((model) => model.id === defaultModel)?.defaultEffort
+      ?? adapter.listEfforts(defaultModel)[0]?.id;
     return {
       id: adapter.id,
       displayName: adapter.displayName,
@@ -2100,6 +2129,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             : {}),
       })),
       efforts: adapter.listEfforts(),
+      ...(defaultModel ? { defaultModel } : {}),
+      ...(defaultEffort ? { defaultEffort } : {}),
       modelCatalogKnown: !adapter.modelSpecificEfforts || models.some((model) => Boolean(model.id)),
       enabled: providerEnabled(adapter.id),
       ...status,
@@ -2719,7 +2750,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   function persistRuntimeEvent(agentId: string, run: ActiveRun, event: LogEvent): StoredLogEvent | undefined {
     if (!ownsActiveRun(agentId, run) || run.ownershipState === "cancelling") return undefined;
-    const stored = store.appendEvent(agentId, event);
+    const canonicalEvent = normalizeRuntimeFileChange(agentId, run, event);
+    const stored = store.appendEvent(agentId, canonicalEvent);
     const at = new Date().toISOString();
     run.lastEventPersistedAt = at;
     const recovered = run.ownershipState === "stalled";
@@ -2728,14 +2760,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state: "running" });
     }
     publish(agentId, stored);
-    if (event.type === "file_change" && event.kind !== "delete") {
+    if (canonicalEvent.type === "file_change" && canonicalEvent.kind !== "delete") {
       const agent = store.getAgent(agentId);
       const project = agent ? store.getProject(agent.projectId) : undefined;
-      const mediaType = generatedArtifactMediaType(event.path, event.kind);
+      const mediaType = generatedArtifactMediaType(canonicalEvent.path, canonicalEvent.kind);
       if (agent && project && mediaType) {
         try {
           const root = realpathSync(project.hostPath);
-          const candidate = realpathSync(path.isAbsolute(event.path) ? event.path : path.resolve(root, event.path));
+          const candidate = realpathSync(path.isAbsolute(canonicalEvent.path) ? canonicalEvent.path : path.resolve(root, canonicalEvent.path));
           if (candidate === root || !candidate.startsWith(`${root}${path.sep}`)) throw new Error("generated artifact escaped project root");
           const info = statSync(candidate);
           if (!info.isFile() || info.size > 64 * 1024 * 1024) throw new Error("generated artifact is not a bounded file");
@@ -2749,22 +2781,64 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           copyFileSync(candidate, projectDestination);
           const captured = store.appendEvent(agent.id, {
             type: "generated_artifact", artifactId, executionId: run.executionId, path: managedPath,
-            sourcePath: event.path, name: path.basename(candidate), mediaType, size: info.size,
+            sourcePath: canonicalEvent.path, name: path.basename(candidate), mediaType, size: info.size,
             visibility: "project",
           });
           store.recordProjectArtifact({
             id: artifactId, projectId: agent.projectId, agentId: agent.id, originAgentId: agent.id,
             executionId: run.executionId, kind: "generated_file", path: managedPath,
-            sourcePath: event.path, summary: path.basename(candidate), createdAt: captured.ts,
+            sourcePath: canonicalEvent.path, summary: path.basename(candidate), createdAt: captured.ts,
             mediaType, size: info.size, visibility: "project", pinned: false,
           });
           publish(agent.id, captured);
         } catch (error) {
-          app.log.warn({ err: error, agentId, path: event.path }, "generated artifact capture skipped");
+          app.log.warn({ err: error, agentId, path: canonicalEvent.path }, "generated artifact capture skipped");
         }
       }
     }
     return stored;
+  }
+
+  function normalizeRuntimeFileChange(agentId: string, run: ActiveRun, event: LogEvent): LogEvent {
+    if (event.type !== "file_change" || event.kind === "delete") return event;
+    const agent = store.getAgent(agentId);
+    const project = agent ? store.getProject(agent.projectId) : undefined;
+    if (!project) return event;
+    let kind = event.kind;
+    try {
+      const root = realpathSync(project.hostPath);
+      const candidate = realpathSync(path.isAbsolute(event.path) ? event.path : path.resolve(root, event.path));
+      if (candidate !== root && candidate.startsWith(`${root}${path.sep}`)) {
+        const info = statSync(candidate);
+        const runStartedAt = Date.parse(run.startedAt);
+        if (kind === "edit" && info.birthtimeMs > 0 && Number.isFinite(runStartedAt) && info.birthtimeMs >= runStartedAt - 1_000) {
+          kind = "create";
+        }
+      }
+    } catch {
+      // The canonical event remains useful even when the path disappeared or
+      // cannot be inspected. Workspace confinement is enforced again during
+      // managed-artifact capture.
+    }
+    const diff = normalizeProviderFileDiff(event.diff, kind, event.path);
+    return {
+      ...event,
+      kind,
+      ...(diff ? { diff } : {}),
+    };
+  }
+
+  function normalizeProviderFileDiff(diff: string | undefined, kind: "create" | "edit" | "delete", file: string): string | undefined {
+    if (!diff || kind !== "create" || /^(?:diff --git|--- |\+\+\+ |@@ )/mu.test(diff)) return diff;
+    const content = diff.endsWith("\n") ? diff.slice(0, -1) : diff;
+    const lines = content ? content.split(/\r?\n/u) : [];
+    const displayPath = file.replaceAll("\\", "/");
+    return [
+      "--- /dev/null",
+      `+++ b/${displayPath}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map((line) => `+${line}`),
+    ].join("\n");
   }
 
   function generatedArtifactMediaType(file: string, changeKind: "create" | "edit" | "delete"): string | undefined {
@@ -6475,6 +6549,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!label) return reply.code(400).send({ error: "label is required" });
     const defaultEngine = request.body?.defaultEngine;
     if (!defaultEngine || !engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
+    const selectionError = runtimeSelectionError(engines.get(defaultEngine)!.adapter, request.body.defaultModel, request.body.defaultEffort);
+    if (selectionError) return reply.code(400).send({ error: selectionError });
     if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
     let hostPath: string;
@@ -6505,7 +6581,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     let project;
     try {
-      project = store.createProject({ label, hostPath, defaultEngine });
+      project = store.createProject({
+        label,
+        hostPath,
+        defaultEngine,
+        ...(request.body.defaultModel ? { defaultModel: request.body.defaultModel } : {}),
+        ...(request.body.defaultEffort ? { defaultEffort: request.body.defaultEffort } : {}),
+      });
+      if (project.lastConversationId) {
+        const resolved = concreteRuntimeSelection(engines.get(defaultEngine)!.adapter, [
+          { model: project.defaultModel, effort: project.defaultEffort },
+          workspace.getPreferences().engineDefaults?.[defaultEngine],
+        ]);
+        store.updateConversation(project.lastConversationId, {
+          defaultEngine,
+          defaultModel: resolved.model ?? null,
+          defaultEffort: resolved.effort ?? null,
+        });
+      }
     } catch (error) {
       if (createdManagedFolder) await fs.rm(hostPath, { recursive: true, force: true });
       throw error;
@@ -6538,8 +6631,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const label = request.body?.label?.trim() ?? current.label;
     if (!label) return reply.code(400).send({ error: "label is required" });
     if (request.body.instructions !== undefined && typeof request.body.instructions !== "string") return reply.code(400).send({ error: "instructions must be a string" });
+    const defaultEngine = request.body.defaultEngine ?? current.defaultEngine;
+    const engineChanged = defaultEngine !== current.defaultEngine;
+    if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "unknown engine" });
+    const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? (engineChanged ? undefined : current.defaultModel);
+    const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? (engineChanged ? undefined : current.defaultEffort);
+    const selectionError = runtimeSelectionError(engines.get(defaultEngine)!.adapter, defaultModel, defaultEffort);
+    if (selectionError) return reply.code(400).send({ error: selectionError });
     const instructionsChanged = request.body.instructions !== undefined && request.body.instructions !== (current.instructions ?? "");
-    const project = store.updateProject(request.params.id, { label, ...(request.body.instructions !== undefined ? { instructions: request.body.instructions } : {}) });
+    const project = store.updateProject(request.params.id, {
+      label,
+      defaultEngine,
+      defaultModel: defaultModel ?? null,
+      defaultEffort: defaultEffort ?? null,
+      ...(request.body.instructions !== undefined ? { instructions: request.body.instructions } : {}),
+    });
     if (!project) return reply.code(404).send({ error: "project not found" });
     if (instructionsChanged) for (const agent of store.listAgents(project.id)) {
       organizationEnvelopeStates.delete(agent.id);
@@ -6739,7 +6845,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     Params: { id: string };
     Body: { title: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
   }>("/api/projects/:id/conversations", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
     const title = request.body?.title?.trim() || "New Chat";
     if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
       return reply.code(400).send({ error: "unknown engine" });
@@ -6747,15 +6854,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!request.body.defaultEngine && (request.body.defaultModel || request.body.defaultEffort)) {
       return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
     }
-    if (request.body.defaultEngine) {
-      const selectionError = runtimeSelectionError(
-        engines.get(request.body.defaultEngine)!.adapter,
-        request.body.defaultModel,
-        request.body.defaultEffort,
-      );
-      if (selectionError) return reply.code(400).send({ error: selectionError });
-    }
-    const conversation = store.createConversation(request.params.id, { ...request.body, title });
+    const defaultEngine = request.body.defaultEngine ?? project.defaultEngine;
+    const registration = engines.get(defaultEngine);
+    if (!registration) return reply.code(400).send({ error: "unknown engine" });
+    const selectionError = runtimeSelectionError(
+      registration.adapter,
+      request.body.defaultModel,
+      request.body.defaultEffort,
+    );
+    if (selectionError) return reply.code(400).send({ error: selectionError });
+    const resolved = concreteRuntimeSelection(registration.adapter, [
+      { model: request.body.defaultModel, effort: request.body.defaultEffort },
+      project.defaultEngine === defaultEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+      workspace.getPreferences().engineDefaults?.[defaultEngine],
+    ]);
+    const conversation = store.createConversation(request.params.id, {
+      title,
+      defaultEngine,
+      ...resolved,
+    });
     appendWorkspace({ type: "conversation_changed", projectId: request.params.id, conversationId: conversation.id, action: "created" });
     appendWorkspace({ type: "project_changed", projectId: request.params.id, action: "used" });
     return conversation;
@@ -7330,7 +7447,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         messageId: message?.id ?? communication.eventId,
         conversationId: conversation.id,
         targetAgentId: activation.agentId,
-        text: message?.text ?? payload.dispatch?.text ?? communication.text,
+        text: payload.dispatch?.text ?? message?.text ?? communication.text,
         position,
         createdAt: activation.createdAt,
         status: "queued",
@@ -7374,6 +7491,112 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     appendWorkspace({ type: "queued_message_changed", conversationId: conversation.id, deliveryId: activation.id, action: "cancelled" });
     publishCoordinationV3Changed(activation.agentId);
     return result satisfies CancelQueuedMessageResponse;
+  });
+
+  app.get<{ Params: { id: string } }>("/api/agents/:id/queued-messages", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    let position = 0;
+    return coordinationV3.pendingActivations(agent.projectId).flatMap((activation) => {
+      if (activation.agentId !== agent.id) return [];
+      const payload = activation.payload && typeof activation.payload === "object"
+        ? activation.payload as { communication?: CommunicationEvent; dispatch?: { text?: string; sourceConversationId?: string | null; conversationId?: string } }
+        : undefined;
+      const communication = payload?.communication;
+      if (communication?.sender.kind !== "user" || communication.sender.userId !== "local-operator") return [];
+      position += 1;
+      return [{
+        deliveryId: activation.id,
+        messageId: communication.eventId,
+        conversationId: payload?.dispatch?.sourceConversationId ?? payload?.dispatch?.conversationId ?? communication.conversationId ?? agent.conversationId ?? "",
+        targetAgentId: agent.id,
+        text: payload?.dispatch?.text ?? communication.text,
+        position,
+        createdAt: activation.createdAt,
+        status: "queued",
+      } satisfies QueuedConversationMessageDto];
+    });
+  });
+
+  app.post<{
+    Params: { id: string; deliveryId: string };
+    Body: CancelQueuedMessageRequest;
+  }>("/api/agents/:id/queued-messages/:deliveryId/cancel", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    const activation = coordinationV3.pendingActivations(agent.projectId)
+      .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
+    const payload = activation?.payload && typeof activation.payload === "object"
+      ? activation.payload as { communication?: CommunicationEvent }
+      : undefined;
+    if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    const result = coordinationV3.cancelPendingActivation({
+      activationId: activation.id, projectId: agent.projectId, idempotencyKey,
+    });
+    if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
+    const conversationId = payload.communication.conversationId ?? agent.conversationId;
+    if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "cancelled" });
+    publishCoordinationV3Changed(agent.id);
+    return result satisfies CancelQueuedMessageResponse;
+  });
+
+  app.patch<{
+    Params: { id: string; deliveryId: string };
+    Body: EditQueuedMessageRequest;
+  }>("/api/agents/:id/queued-messages/:deliveryId", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    const text = request.body?.text?.trim() ?? "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "queued message text is required" });
+    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    const activation = coordinationV3.pendingActivations(agent.projectId)
+      .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
+    const payload = activation?.payload && typeof activation.payload === "object"
+      ? activation.payload as { communication?: CommunicationEvent }
+      : undefined;
+    if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    const result = coordinationV3.editPendingActivationText({
+      activationId: activation.id, projectId: agent.projectId, text, idempotencyKey,
+    });
+    if (!result.edited) return reply.code(409).send(result satisfies EditQueuedMessageResponse);
+    const conversationId = payload.communication.conversationId ?? agent.conversationId;
+    if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "edited" });
+    publishCoordinationV3Changed(agent.id);
+    return result satisfies EditQueuedMessageResponse;
+  });
+
+  app.post<{
+    Params: { id: string; deliveryId: string };
+    Body: SteerQueuedMessageRequest;
+  }>("/api/agents/:id/queued-messages/:deliveryId/steer", async (request, reply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    const activation = coordinationV3.pendingActivations(agent.projectId)
+      .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
+    const payload = activation?.payload && typeof activation.payload === "object"
+      ? activation.payload as { communication?: CommunicationEvent }
+      : undefined;
+    if (!activation || payload?.communication?.sender.kind !== "user" || payload.communication.sender.userId !== "local-operator") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    const result = coordinationV3.steerPendingActivation({
+      activationId: activation.id, projectId: agent.projectId, idempotencyKey,
+    });
+    if (!result.steered) return reply.code(409).send(result satisfies SteerQueuedMessageResponse);
+    const conversationId = payload.communication.conversationId ?? agent.conversationId;
+    if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "steered" });
+    publishCoordinationV3Changed(agent.id);
+    coordinationV3Scheduler.notify();
+    return result satisfies SteerQueuedMessageResponse;
   });
 
   app.post<{
@@ -7768,7 +7991,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
-      if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+      const project = store.getProject(request.params.id);
+      if (!project) return reply.code(404).send({ error: "project not found" });
       if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
       if (!request.body?.title || !request.body?.engine) {
         return reply.code(400).send({ error: "title and engine are required" });
@@ -7803,6 +8027,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           return reply.code(400).send({ error: "reply target was not found in this conversation" });
         }
       }
+      const conversationDefaults = request.body.conversationId ? store.getConversation(request.body.conversationId) : undefined;
+      const resolvedRuntime = concreteRuntimeSelection(engines.get(request.body.engine)!.adapter, [
+        { model: request.body.model, effort: request.body.effort },
+        conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,
+        project.defaultEngine === request.body.engine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+        workspace.getPreferences().engineDefaults?.[request.body.engine],
+      ]);
+      request.body.model = resolvedRuntime.model;
+      request.body.effort = resolvedRuntime.effort;
       const initialMessage = request.body.initialMessage?.trim() ?? "";
       const draftAttachmentIds = request.body.draftAttachmentIds ?? [];
       if (!Array.isArray(draftAttachmentIds) || draftAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(draftAttachmentIds).size !== draftAttachmentIds.length) {
@@ -8783,11 +9016,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       const priorRuns = store.getRuns(agent.id);
       const latestRun = priorRuns.at(-1);
-      const recovered = normalizedRuntimeSelection(
-        engine.adapter,
-        latestRun ? latestRun.model : agent.model ?? agent.presetSnapshot?.model,
-        latestRun ? latestRun.effort : agent.effort ?? agent.presetSnapshot?.effort,
-      );
+      const recovered = concreteRuntimeSelection(engine.adapter, [
+        {
+          model: latestRun ? latestRun.model : agent.model ?? agent.presetSnapshot?.model,
+          effort: latestRun ? latestRun.effort : agent.effort ?? agent.presetSnapshot?.effort,
+        },
+        project.defaultEngine === agent.activeEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+        workspace.getPreferences().engineDefaults?.[agent.activeEngine],
+      ]);
       const hasModelOverride = request.body.model !== undefined;
       const requestedModel = request.body.model?.trim() || undefined;
       if (hasModelOverride) {
@@ -8804,7 +9040,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const effectiveEffort = hasEffortOverride
         ? requestedEffort
         : hasModelOverride
-          ? undefined
+          ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[agent.activeEngine]]).effort
           : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
       const attachmentIds = request.body?.attachmentIds ?? [];
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
@@ -10103,6 +10339,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
     if (patch.providerAvailability !== undefined && (typeof patch.providerAvailability !== "object" || patch.providerAvailability === null || Object.entries(patch.providerAvailability).some(([key, value]) => !engines.has(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "provider availability must contain configured engines and boolean values" });
+    if (patch.engineDefaults !== undefined) {
+      if (typeof patch.engineDefaults !== "object" || patch.engineDefaults === null) return reply.code(400).send({ error: "engine defaults must be an object" });
+      for (const [engineId, selection] of Object.entries(patch.engineDefaults)) {
+        const registration = engines.get(engineId);
+        if (!registration || !selection || typeof selection !== "object" || typeof selection.model !== "string" || !selection.model.trim() || (selection.effort !== undefined && typeof selection.effort !== "string")) {
+          return reply.code(400).send({ error: "engine defaults require a configured engine and concrete model" });
+        }
+        const selectionError = runtimeSelectionError(registration.adapter, selection.model, selection.effort);
+        if (selectionError) return reply.code(400).send({ error: selectionError });
+      }
+    }
     if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
     if (patch.profile !== undefined) {
       const profile = patch.profile;
@@ -10914,6 +11161,57 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(400).send({ error: err instanceof Error ? err.message : "invalid path" });
     }
   });
+
+  async function projectFileForBrowser(projectId: string, input: string | undefined): Promise<{ body: Buffer; name: string; mediaType: string } | undefined> {
+    const project = store.getProject(projectId);
+    if (!project || !input?.trim()) return undefined;
+    try {
+      const root = await fs.realpath(project.hostPath);
+      const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
+      const candidate = path.isAbsolute(requested)
+        ? requested
+        : path.resolve(root, safeRelativePath(requested));
+      const resolved = await fs.realpath(candidate);
+      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
+      const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
+      if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
+      const info = await fs.stat(resolved);
+      if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
+      return { body: await fs.readFile(resolved), name: path.basename(resolved), mediaType: contentTypeForStatic(resolved.toLocaleLowerCase()) };
+    } catch {
+      return undefined;
+    }
+  }
+
+  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
+    "/api/projects/:projectId/workspace-files/preview",
+    async (request, reply) => {
+      const file = await projectFileForBrowser(request.params.projectId, request.query.path);
+      if (!file) return reply.code(404).send({ error: "project file not found" });
+      if (!["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(file.mediaType)) {
+        return reply.code(415).send({ error: "this project file does not support an inline preview" });
+      }
+      return reply.type(file.mediaType)
+        .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
+        .header("Cache-Control", "private, no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .send(file.body);
+    },
+  );
+
+  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
+    "/api/projects/:projectId/workspace-files/download",
+    async (request, reply) => {
+      const file = await projectFileForBrowser(request.params.projectId, request.query.path);
+      if (!file) return reply.code(404).send({ error: "project file not found" });
+      return reply.type("application/octet-stream")
+        .header("Content-Disposition", contentDisposition(file.name))
+        .header("Cache-Control", "private, no-store")
+        .header("X-Content-Type-Options", "nosniff")
+        .send(file.body);
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/workspace", async (request, reply) => {
     const project = store.getProject(request.params.id);

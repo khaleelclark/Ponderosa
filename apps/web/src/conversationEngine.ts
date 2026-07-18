@@ -1,4 +1,4 @@
-import type { EffortOption, EngineDto } from "@ponderosa/core";
+import type { EffortOption, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 
 export function engineIsAvailable(engine: Pick<EngineDto, "authenticated" | "available" | "enabled"> | undefined): boolean {
   return Boolean(engine?.enabled !== false && engine?.authenticated && engine.available);
@@ -85,4 +85,40 @@ export function effortSelectionIsCompatible(engine: EngineDto | undefined, model
   const selectedModel = model ? engine?.models.find((option) => option.id === model) : undefined;
   if (selectedModel && selectedModel.efforts === undefined) return true;
   return effortOptionsForModel(engine, model).some((option) => option.id === effort);
+}
+
+export interface RuntimeSelection {
+  model: string;
+  effort: string;
+}
+
+/** Resolve inherited settings to concrete provider options before rendering or dispatch. */
+export function resolveRuntimeSelection(
+  engine: EngineDto | undefined,
+  preferences: Pick<WorkspacePreferencesDto, "engineDefaults"> | undefined,
+  project?: Pick<ProjectDto, "defaultEngine" | "defaultModel" | "defaultEffort">,
+  explicit?: { model?: string; effort?: string },
+): RuntimeSelection {
+  if (!engine) return { model: "", effort: "" };
+  const global = preferences?.engineDefaults?.[engine.id];
+  const projectApplies = project?.defaultEngine === engine.id;
+  const modelCandidates = [
+    explicit?.model,
+    projectApplies ? project?.defaultModel : undefined,
+    global?.model,
+    engine.defaultModel,
+    engine.models.find((option) => option.id)?.id,
+  ];
+  const model = modelCandidates.find((candidate) => Boolean(candidate) && modelSelectionIsCompatible(engine, candidate!)) ?? "";
+  const modelDefaultEffort = engine.models.find((option) => option.id === model)?.defaultEffort;
+  const effortCandidates = [
+    explicit?.effort,
+    projectApplies ? project?.defaultEffort : undefined,
+    global?.effort,
+    modelDefaultEffort,
+    engine.defaultEffort,
+    effortOptionsForModel(engine, model)[0]?.id,
+  ];
+  const effort = effortCandidates.find((candidate) => Boolean(candidate) && effortSelectionIsCompatible(engine, model, candidate!)) ?? "";
+  return { model, effort };
 }

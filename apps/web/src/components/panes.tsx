@@ -15,6 +15,10 @@ import TerminalIcon from "@mui/icons-material/Terminal";
 import LanguageIcon from "@mui/icons-material/Language";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import SearchIcon from "@mui/icons-material/Search";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
   Alert,
   Avatar,
@@ -29,6 +33,11 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  InputAdornment,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
   MenuItem,
   MenuList,
   Paper,
@@ -39,6 +48,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useTheme,
 } from "@mui/material";
 import {
   INLINE_TEXT_MAX_CODE_POINTS,
@@ -47,12 +57,12 @@ import {
   unifiedDiffLineTotals,
   utf8ByteLength,
 } from "@ponderosa/core";
-import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { copyText } from "../clipboard";
@@ -79,6 +89,12 @@ export function linkPresentation(href: string): { url: URL; hostname: string; de
 
 export interface LinkPreviewScope { projectId: string; agentId: string; runId: string; conversationId?: string }
 
+function projectFileHref(projectId: string | undefined, href: string | undefined, mode: "preview" | "download"): string | undefined {
+  if (!projectId || !href) return undefined;
+  if (/^(?:https?:|data:|blob:|ponderosa:|mailto:|#)/iu.test(href) || href.startsWith("/api/")) return undefined;
+  return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?path=${encodeURIComponent(href)}`;
+}
+
 export function linkPreviewScopeForMessage(
   message: Pick<MessageDto, "role" | "authorAgentId" | "executionId">,
   activeScope?: LinkPreviewScope,
@@ -88,13 +104,15 @@ export function linkPreviewScopeForMessage(
   return activeScope;
 }
 
-function ChatLink({ href, children, previewScope }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope }): JSX.Element {
+function ChatLink({ href, children, previewScope, projectId }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope; projectId?: string }): JSX.Element {
   const projectBrowser = useProjectBrowser();
+  const projectFilePreview = projectFileHref(projectId ?? previewScope?.projectId, href, "preview");
   const link = linkPresentation(href);
   const [chooserOpen, setChooserOpen] = useState(false);
   const [faviconFailed, setFaviconFailed] = useState(false);
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string>();
+  if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
   const activate = (event: React.MouseEvent) => { event.preventDefault(); setChooserOpen(true); setError(undefined); };
   const openInside = async () => {
@@ -470,9 +488,25 @@ export function codeBlockText(children: ReactNode): string {
   return "";
 }
 
+function fencedCodeLanguage(children: ReactNode): string {
+  const nodes = Array.isArray(children) ? children : [children];
+  for (const node of nodes) {
+    if (!node || typeof node !== "object" || !("props" in node)) continue;
+    const className = (node as { props: { className?: unknown } }).props.className;
+    if (typeof className !== "string") continue;
+    const match = /(?:^|\s)language-([^\s]+)/u.exec(className);
+    if (match?.[1]) return match[1].toLocaleLowerCase();
+  }
+  return "text";
+}
+
 function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const resetTimer = useRef<number>();
+  const theme = useTheme();
+  const code = codeBlockText(children).replace(/\n$/, "");
+  const language = fencedCodeLanguage(children);
+  const highlighted = !["text", "txt", "plaintext", "none"].includes(language);
 
   useEffect(
     () => () => {
@@ -485,7 +519,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
 
   async function copyCode(): Promise<void> {
     try {
-      await copyText(codeBlockText(children).replace(/\n$/, ""));
+      await copyText(code);
       setCopyState("copied");
     } catch {
       setCopyState("error");
@@ -500,19 +534,27 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
     copyState === "copied" ? "Copied code" : copyState === "error" ? "Copy failed" : "Copy code";
 
   return (
-    <Box sx={{ position: "relative", my: 1 }}>
-      <Tooltip title={label}>
-        <IconButton
-          aria-label={label}
-          size="small"
-          onClick={() => void copyCode()}
-          sx={{ position: "absolute", top: 6, right: 6, zIndex: 1, bgcolor: "background.paper" }}
-        >
-          {copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
-        </IconButton>
-      </Tooltip>
-      <Box component="pre" sx={{ m: 0, pr: 5 }}>
-        {children}
+    <Box sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ minHeight: 38, px: 1.5, color: "text.secondary", borderBottom: 1, borderColor: "divider" }}>
+        <Typography variant="caption" sx={{ fontFamily: "monospace", textTransform: "lowercase" }}>{language}</Typography>
+        <Tooltip title={label}>
+          <IconButton aria-label={label} size="small" onClick={() => void copyCode()}>
+            {copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}
+          </IconButton>
+        </Tooltip>
+      </Stack>
+      <Box sx={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}>
+        {highlighted ? <SyntaxHighlighter
+          language={language}
+          style={theme.palette.mode === "dark" ? vscDarkPlus : oneLight}
+          PreTag="div"
+          wrapLongLines={false}
+          customStyle={{ margin: 0, padding: "16px 18px", minWidth: "max-content", background: "transparent", fontSize: "0.875rem", lineHeight: 1.55 }}
+          codeTagProps={{ style: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" } }}
+        >{code}</SyntaxHighlighter> : <Box
+          component="pre"
+          sx={{ m: 0, p: 2, minWidth: "max-content", whiteSpace: "pre", fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", fontSize: "0.875rem", lineHeight: 1.55, color: "text.primary", bgcolor: "transparent" }}
+        >{code}</Box>}
       </Box>
     </Box>
   );
@@ -569,6 +611,7 @@ export function ChatMarkdown({
   onOpenAgent,
   onOpenBroadcast,
   previewScope,
+  projectId,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
@@ -576,10 +619,14 @@ export function ChatMarkdown({
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
+  projectId?: string;
 }): JSX.Element {
   return (
     <Box
       sx={{
+        width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
         overflowWrap: "anywhere",
         // Let Markdown own block separation. Preserving whitespace on the
         // container also renders the source newlines between paragraphs,
@@ -589,29 +636,37 @@ export function ChatMarkdown({
         "& > :last-child": { mb: 0 },
         fontSize: "0.9375rem",
         lineHeight: 1.48,
-        "& p": { my: 0.35, whiteSpace: "pre-wrap" },
+        "& p": { my: 0.35, maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: "1.35rem" },
         "& h2": { fontSize: "1.2rem" },
         "& h3, & h4": { fontSize: "1.05rem" },
         "& ul, & ol": { my: 0.45, pl: 2.75 },
-        "& li": { whiteSpace: "pre-wrap" },
+        "& li": { maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& li + li": { mt: 0.15 },
         "& blockquote": { my: 0.65, mx: 0, pl: 1.5, whiteSpace: "pre-wrap", borderLeft: 3, borderColor: "divider" },
         "& code": { fontFamily: "monospace", fontSize: "0.875em" },
         "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
-        "& pre": { my: 0.65, p: 1.1, overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
+        "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
+        "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
         "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
         "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider" },
-        "& a": { color: "inherit", textDecoration: "underline" },
+        "& a": { maxWidth: "100%", color: "inherit", textDecoration: "underline", overflowWrap: "anywhere", wordBreak: "break-word" },
       }}
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageTags]}
         components={{
           pre: ({ children: code }) => <CopyableCodeBlock>{code}</CopyableCodeBlock>,
+          img: ({ src, alt }) => {
+            const projectPreview = projectFileHref(projectId ?? previewScope?.projectId, src, "preview");
+            const image = <Box component="img" src={projectPreview ?? src} alt={alt ?? "Agent-provided image"} loading="lazy" sx={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: { xs: 320, md: 520 }, objectFit: "contain", borderRadius: 1.5 }} />;
+            return projectPreview
+              ? <Box component="a" href={projectPreview} target="_blank" rel="noreferrer" aria-label={`Open ${alt ?? "agent-provided image"} full size`} sx={{ display: "inline-block", maxWidth: "100%" }}>{image}</Box>
+              : image;
+          },
           a: ({ href, children: label }) => {
-            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope}>{label}</ChatLink>;
+            if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
             const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
               return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
@@ -632,15 +687,16 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope }: {
+export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
+  projectId?: string;
 }): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope}>{text}</ChatMarkdown>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
@@ -666,7 +722,7 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope }: {
+export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
   text: string;
   citations?: VerifiedCitationDto[];
   agentIdForHandle?(handle: string): string | undefined;
@@ -674,19 +730,25 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentio
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
+  projectId?: string;
 }): JSX.Element {
   const collapsible = isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
   return (
-    <Box>
+    <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0 }}>
       <Box
-        sx={collapsible && !expanded ? {
-          maxHeight: "22rem",
-          overflow: "hidden",
-          maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
-        } : undefined}
+        sx={{
+          width: "100%",
+          maxWidth: "100%",
+          minWidth: 0,
+          ...(collapsible && !expanded ? {
+            maxHeight: "22rem",
+            overflow: "hidden",
+            maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
+          } : {}),
+        }}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} />
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} />
       </Box>
       {collapsible ? (
         <Button
@@ -722,24 +784,28 @@ export function ChatPane({
   agentNameForId,
   agentIdForHandle,
   onOpenAgent,
+  onOpenWorkLog,
   onOpenBroadcast,
   onReact,
   onReply,
   previewScope,
   scrollStorageKey,
   operatorProfile,
+  projectId,
 }: {
   messages: MessageDto[];
   agentName?: string;
   agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
+  onOpenWorkLog?(agentId: string): void;
   onOpenBroadcast?(message: MessageDto): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
   operatorProfile?: OperatorProfileDto;
+  projectId?: string;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -816,7 +882,7 @@ export function ChatPane({
         >
           <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
             {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-            <Box sx={{ minWidth: 0, width: fromUser ? "fit-content" : "min(100%, 960px)", maxWidth: fromUser ? "min(78%, 780px)" : "100%" }}>
+            <Box sx={{ minWidth: 0, width: fromUser ? "fit-content" : "min(100%, 960px)", maxWidth: fromUser ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
               {!fromUser ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
                 <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
                 <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
@@ -862,12 +928,13 @@ export function ChatPane({
                 ? () => onOpenBroadcast?.(message)
                 : undefined}
               previewScope={linkPreviewScopeForMessage(message, previewScope)}
+              projectId={projectId ?? previewScope?.projectId}
             />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
               {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
                 {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
-                  ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 220, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
+                  ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", width: "auto", maxWidth: { xs: "100%", sm: 220 }, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
                   : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
               </Box>)}
             </Stack> : null}
@@ -880,6 +947,7 @@ export function ChatPane({
                   receipts={message.deliveryReceipts}
                   recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
                   onOpenAgent={onOpenAgent}
+                  onOpenWorkLog={onOpenWorkLog}
                 /> : undefined}
                 actions={<>
               {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
@@ -1012,6 +1080,7 @@ export function ResponseFileActivity({
                 <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
                   {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & results"}
                 </Typography>
+                <OpenInNewIcon sx={{ ml: 0.5, fontSize: 14, flexShrink: 0 }} />
               </Button>
               {root ? <>
                 <Button size="small" component="a" href={`${root}/preview`} target="_blank" rel="noreferrer" sx={{ minWidth: 0, px: .75 }}>Preview</Button>
@@ -1418,8 +1487,8 @@ export function WorkspaceReviewPane({ projectId, files, running, initialPath }: 
       : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
         : workspace.data && !workspace.data.isGitRepository ? <Alert severity="info" sx={{ m: 1.5 }}>This working folder is not a Git repository. Run-related file events remain available in Activity and Changed Files.</Alert>
           : changes.length === 0 ? <Alert severity="success" sx={{ m: 1.5 }}>Working tree clean. Files previously touched by this agent remain recorded in Activity and Artifacts.</Alert>
-            : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>
-              <Stack sx={{ overflowY: "auto", borderRight: { md: 1 }, borderBottom: { xs: 1, md: 0 }, borderColor: "divider", maxHeight: { xs: 220, md: "none" } }}>
+            : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>
+              <Stack sx={{ overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", maxHeight: { xs: 220, lg: "none" } }}>
                 {changes.map((change) => {
                   const touched = provenance.get(change.path);
                   return <Button
@@ -1637,21 +1706,30 @@ export function ArtifactsPane({
   timeline: ExecutionItem[];
   initialArtifactId?: string;
 }): JSX.Element {
+  const orderedArtifacts = [...artifacts].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
     initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)
       ? initialArtifactId
-      : artifacts[0]?.id,
+      : orderedArtifacts[0]?.id,
   );
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
-    if (initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)) {
-      setSelectedArtifactId(initialArtifactId);
-      return;
-    }
     if (!selectedArtifactId || !artifacts.some((artifact) => artifact.id === selectedArtifactId)) {
-      setSelectedArtifactId(artifacts[0]?.id);
+      setSelectedArtifactId(orderedArtifacts[0]?.id);
     }
-  }, [artifacts, initialArtifactId, selectedArtifactId]);
+  }, [artifacts, orderedArtifacts, selectedArtifactId]);
+
+  const normalizedFilter = filter.trim().toLocaleLowerCase();
+  const visibleArtifacts = orderedArtifacts.filter((artifact) => !normalizedFilter || [
+    artifactDisplayLabel(artifact), artifact.path, artifact.summary, artifact.kind,
+  ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter));
+  const groups = [
+    { label: "Files", kinds: new Set<ArtifactDto["kind"]>(["generated_file", "document", "screenshot", "diff"]) },
+    { label: "Results", kinds: new Set<ArtifactDto["kind"]>(["test_report", "pr_summary"]) },
+    { label: "Activity", kinds: new Set<ArtifactDto["kind"]>(["log"]) },
+  ].map((group) => ({ ...group, artifacts: visibleArtifacts.filter((artifact) => group.kinds.has(artifact.kind)) }))
+    .filter((group) => group.artifacts.length > 0);
 
   const selectedArtifact = artifacts.find((artifact) => artifact.id === selectedArtifactId);
   const liveSeq = selectedArtifact?.id.startsWith("live-artifact-")
@@ -1674,29 +1752,122 @@ export function ArtifactsPane({
   }
 
   return (
-    <Box sx={{ display: "grid", gridTemplateRows: "auto 1fr", minHeight: 0, pb: 3 }}>
-      <Tabs
-        value={selectedArtifactId ?? false}
-        onChange={(_event, value: string) => setSelectedArtifactId(value)}
-        variant="scrollable"
-        scrollButtons="auto"
-        sx={{ borderBottom: 1, borderColor: "divider", minHeight: 44 }}
-      >
-        {artifacts.map((artifact) => (
-          <Tab
-            key={artifact.id}
-            value={artifact.id}
-            icon={artifactIcon(artifact.kind)}
-            iconPosition="start"
-            label={artifactDisplayLabel(artifact)}
-            title={artifact.summary ?? artifact.path}
-            sx={{ minHeight: 44, maxWidth: 230 }}
-          />
-        ))}
-      </Tabs>
-      <ArtifactViewer artifact={selectedArtifact} agentId={agentId} liveContent={liveContent} />
+    <Box sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%", overflow: "hidden" }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, px: 1.5, py: 1.25, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="subtitle1" fontWeight={750}>Files &amp; results</Typography>
+          <Typography variant="caption" color="text.secondary">{artifacts.length} item{artifacts.length === 1 ? "" : "s"} from this agent</Typography>
+        </Box>
+        <TextField
+          size="small"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Search files and results"
+          inputProps={{ "aria-label": "Search agent files and results" }}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+          sx={{ width: { xs: "100%", sm: 280 } }}
+        />
+      </Stack>
+      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "minmax(260px, 320px) minmax(0, 1fr)" }, gridTemplateRows: { xs: "minmax(180px, 34%) minmax(0, 1fr)", lg: "minmax(0, 1fr)" }, minHeight: 0 }}>
+        <Box component="nav" aria-label="Agent files and results" sx={{ minHeight: 0, overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", bgcolor: "background.paper", p: 0.75 }}>
+          {groups.length === 0 ? <Alert severity="info" sx={{ m: 0.75 }}>No files or results match “{filter.trim()}”.</Alert> : groups.map((group) => <Box key={group.label} sx={{ mb: 1 }}>
+            <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 1, py: 0.5 }}>{group.label}</Typography>
+            <List disablePadding>
+              {group.artifacts.map((artifact) => {
+                const selected = artifact.id === selectedArtifactId;
+                return <ListItemButton
+                  key={artifact.id}
+                  selected={selected}
+                  onClick={() => setSelectedArtifactId(artifact.id)}
+                  aria-current={selected ? "true" : undefined}
+                  sx={{ borderRadius: 1.5, mb: 0.25, alignItems: "flex-start", px: 1, py: 0.75 }}
+                >
+                  <ListItemIcon sx={{ minWidth: 34, mt: 0.25, color: selected ? "primary.main" : "text.secondary" }}>{artifactIcon(artifact.kind)}</ListItemIcon>
+                  <ListItemText
+                    primary={artifactDisplayLabel(artifact)}
+                    secondary={<>{compactPath(artifact.path)}<br />{new Date(artifact.createdAt).toLocaleString()}</>}
+                    primaryTypographyProps={{ variant: "body2", fontWeight: selected ? 750 : 600, noWrap: true }}
+                    secondaryTypographyProps={{ variant: "caption", color: "text.secondary", component: "span", sx: { lineHeight: 1.35 } }}
+                    sx={{ minWidth: 0, m: 0 }}
+                  />
+                </ListItemButton>;
+              })}
+            </List>
+          </Box>)}
+        </Box>
+        <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
+          <ArtifactViewer artifact={selectedArtifact} agentId={agentId} liveContent={liveContent} />
+        </Box>
+      </Box>
     </Box>
   );
+}
+
+export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onEdit, onDelete }: {
+  messages: QueuedConversationMessageDto[];
+  agentNameForId?(agentId: string): string;
+  busy?: boolean;
+  onSteer(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
+  onEdit(message: QueuedConversationMessageDto, text: string): Promise<unknown> | unknown;
+  onDelete(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
+}): JSX.Element | null {
+  const [editingId, setEditingId] = useState<string>();
+  const [editingText, setEditingText] = useState("");
+  if (messages.length === 0) return null;
+  return <Paper
+    variant="outlined"
+    aria-label="Queued messages"
+    sx={{
+      width: "min(1180px, calc(100% - 16px))",
+      mx: "auto",
+      mb: -1,
+      pb: 1.25,
+      pt: 0.75,
+      px: { xs: 1, sm: 1.5 },
+      maxHeight: "min(38vh, 280px)",
+      overflowY: "auto",
+      borderRadius: "16px 16px 8px 8px",
+      bgcolor: "background.paper",
+      boxShadow: 2,
+    }}
+  >
+    <Stack spacing={0.25}>
+      {messages.map((message) => {
+        const editing = editingId === message.deliveryId;
+        return <Box key={message.deliveryId} sx={{ display: "flex", alignItems: "center", gap: 0.75, minHeight: 40, minWidth: 0 }}>
+          <SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 20, flex: "0 0 auto" }} />
+          {editing ? <TextField
+            value={editingText}
+            onChange={(event) => setEditingText(event.target.value)}
+            size="small"
+            fullWidth
+            autoFocus
+            multiline
+            maxRows={4}
+            inputProps={{ "aria-label": `Edit queued message ${message.position}` }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setEditingId(undefined);
+              if (event.key === "Enter" && !event.shiftKey && editingText.trim()) {
+                event.preventDefault();
+                void Promise.resolve(onEdit(message, editingText.trim())).then(() => setEditingId(undefined));
+              }
+            }}
+          /> : <Tooltip title={message.text}><Typography variant="body1" noWrap sx={{ flex: 1, minWidth: 0 }}>{message.text}</Typography></Tooltip>}
+          {!editing && agentNameForId ? <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 160 }}>
+            {agentNameForId(message.targetAgentId)}
+          </Typography> : null}
+          {editing ? <>
+            <Button size="small" disabled={busy || !editingText.trim()} onClick={() => void Promise.resolve(onEdit(message, editingText.trim())).then(() => setEditingId(undefined))}>Save</Button>
+            <Button size="small" color="inherit" onClick={() => setEditingId(undefined)}>Cancel</Button>
+          </> : <>
+            <Button size="small" color="inherit" disabled={busy} startIcon={<SubdirectoryArrowRightIcon />} onClick={() => void onSteer(message)}>Steer</Button>
+            <Tooltip title="Edit queued message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Delete queued message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position}`} onClick={() => void onDelete(message)}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+          </>}
+        </Box>;
+      })}
+    </Stack>
+  </Paper>;
 }
 
 export function Composer({

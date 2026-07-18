@@ -65,9 +65,9 @@ export function ComposerRuntimeSelector({
     options: ComposerRuntimeOption[];
     locked?: boolean;
   }> = [
-    { id: "engine", label: "Engine", value: selectedEngine?.label ?? "Default", options: engines, locked: engineLocked || !onEngineChange },
-    { id: "model", label: "Model", value: selectedModel?.label ?? "Default", options: [{ id: "", label: "Default" }, ...models] },
-    { id: "effort", label: "Effort", value: selectedEffort?.label ?? "Default", options: [{ id: "", label: "Default" }, ...efforts] },
+    { id: "engine", label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines, locked: engineLocked || !onEngineChange },
+    { id: "model", label: "Model", value: selectedModel?.label ?? "Model unavailable", options: models },
+    { id: "effort", label: "Effort", value: selectedEffort?.label ?? "Effort unavailable", options: efforts },
   ];
   const active = sections.find((item) => item.id === section);
   const select = (id: string) => {
@@ -96,8 +96,8 @@ export function ComposerRuntimeSelector({
     >
       <Stack direction="row" spacing={0.6} sx={{ alignItems: "baseline", minWidth: 0 }}>
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedEngine?.label ?? "Engine"}</Typography>
-        <Typography variant="body2" noWrap>{selectedModel?.label ?? "Default"}</Typography>
-        <Typography variant="body2" color="text.secondary" noWrap>{selectedEffort?.label ?? "Default"}</Typography>
+        <Typography variant="body2" noWrap>{selectedModel?.label ?? "Model unavailable"}</Typography>
+        <Typography variant="body2" color="text.secondary" noWrap>{selectedEffort?.label ?? "Effort unavailable"}</Typography>
         <KeyboardArrowDownIcon sx={{ alignSelf: "center", color: "text.secondary", fontSize: 20 }} />
       </Stack>
     </ButtonBase>
