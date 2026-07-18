@@ -722,9 +722,10 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
+export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
   text: string;
   citations?: VerifiedCitationDto[];
+  collapseLongMessage?: boolean;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
@@ -732,7 +733,7 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentio
   previewScope?: LinkPreviewScope;
   projectId?: string;
 }): JSX.Element {
-  const collapsible = isLongChatMessage(text);
+  const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
   return (
     <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0 }}>
@@ -917,6 +918,7 @@ export function ChatPane({
             <ChatMessageBody
               text={message.text}
               citations={message.citations}
+              collapseLongMessage={fromUser}
               agentIdForHandle={agentIdForHandle}
               agentMentionForHandle={(handle) => {
                 const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
