@@ -1,7 +1,50 @@
 import type { EffortOption, EngineDto } from "@ponderosa/core";
 
-export function engineIsAvailable(engine: Pick<EngineDto, "authenticated" | "available"> | undefined): boolean {
-  return Boolean(engine?.authenticated && engine.available);
+export function engineIsAvailable(engine: Pick<EngineDto, "authenticated" | "available" | "enabled"> | undefined): boolean {
+  return Boolean(engine?.enabled !== false && engine?.authenticated && engine.available);
+}
+
+function conciseAvailabilityDetail(detail: string | undefined): string | undefined {
+  if (!detail) return undefined;
+  const firstLine = detail.split("\n")[0]?.trim();
+  if (!firstLine) return undefined;
+  return firstLine.length > 140 ? `${firstLine.slice(0, 137)}…` : firstLine;
+}
+
+export function engineAvailabilityPresentation(engines: EngineDto[]): {
+  label: "Engine ready" | "Needs attention" | "Checking engines";
+  severity: "success" | "warning";
+  detail: string;
+} {
+  if (engines.length === 0) {
+    return { label: "Checking engines", severity: "warning", detail: "Ponderosa is still checking its AI providers." };
+  }
+
+  const enabled = engines.filter((engine) => engine.enabled !== false);
+  const available = enabled.filter(engineIsAvailable);
+  const unavailable = enabled.filter((engine) => !engineIsAvailable(engine));
+  const disabled = engines.filter((engine) => engine.enabled === false);
+  const availableSummary = available.length
+    ? `${available.map((engine) => engine.displayName).join(", ")} ${available.length === 1 ? "is" : "are"} ready.`
+    : "No enabled engine can currently run work.";
+  const unavailableSummary = unavailable.map((engine) => {
+    const state = engine.authenticated ? "unavailable" : "not signed in";
+    const detail = conciseAvailabilityDetail(engine.availabilityDetail ?? engine.authDetail);
+    return `${engine.displayName} is ${state}${detail ? `: ${detail}` : ""}.`;
+  }).join(" ");
+  const disabledSummary = disabled.length
+    ? `${disabled.map((engine) => engine.displayName).join(", ")} ${disabled.length === 1 ? "is" : "are"} disabled.`
+    : "";
+  const detail = [
+    `${available.length} of ${enabled.length} enabled ${enabled.length === 1 ? "engine" : "engines"} ready.`,
+    availableSummary,
+    unavailableSummary,
+    disabledSummary,
+  ].filter(Boolean).join(" ");
+
+  return available.length > 0
+    ? { label: "Engine ready", severity: "success", detail }
+    : { label: "Needs attention", severity: "warning", detail };
 }
 
 /**

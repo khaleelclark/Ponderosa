@@ -1,8 +1,8 @@
-import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { operatorInitials, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { operatorInitials, projectHealthDetail, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -15,6 +15,10 @@ const conversations: ConversationDto[] = [
 const agents: AgentDto[] = [
   { id: "agent-alpha", projectId: "alpha", title: "Reviewer", conversationIds: ["chat-alpha"], activeEngine: "codex", state: {}, createdAt: "2026-07-14T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", archived: false },
   { id: "agent-beta", projectId: "beta", title: "Reviewer", conversationIds: ["chat-beta"], activeEngine: "codex", state: {}, createdAt: "2026-07-15T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z", archived: false },
+];
+const engineRoster: EngineDto[] = [
+  { id: "codex", displayName: "Codex", models: [], efforts: [], configured: true, enabled: true, authenticated: true, available: true },
+  { id: "claude", displayName: "Claude", models: [], efforts: [], configured: true, enabled: true, authenticated: true, available: false, availabilityDetail: "Subscription access is inactive." },
 ];
 const preferences: WorkspacePreferencesDto = {
   projectSort: "last_used", projectOrder: [], starredProjectIds: ["alpha"], sidebarCollapsed: false, sidebarWidth: 320,
@@ -31,6 +35,16 @@ describe("responsive workspace sidebar flow", () => {
     expect(projectHealthPresentation([{ agentId: "a", childAgentIds: [], status: "stalled", statusTimestamp: "2026-07-18T00:00:00.000Z", reason: "runtime_event_consumer_stalled" }])).toEqual({ label: "Needs attention", color: "error.main" });
   });
 
+  it("does not let an inactive secondary provider make an operational project unhealthy", () => {
+    const claudeAgent: AgentDto = { ...agents[0]!, id: "claude-agent", activeEngine: "claude" };
+    const failed = [{ agentId: claudeAgent.id, childAgentIds: [], status: "failed" as const, statusTimestamp: "2026-07-18T00:00:00.000Z", reason: "runtime_error" }];
+    expect(projectHealthPresentation(failed, [claudeAgent], engineRoster)).toEqual({ label: "Healthy", color: "success.main" });
+    expect(projectHealthDetail(failed, [claudeAgent], engineRoster)).toContain("1 agent failure is tied to an unavailable engine");
+    expect(projectHealthDetail(failed, [claudeAgent], engineRoster)).toContain("Claude is unavailable");
+    expect(projectHealthPresentation(failed, [{ ...claudeAgent, activeEngine: "codex" }], engineRoster)).toEqual({ label: "Needs attention", color: "error.main" });
+    expect(projectHealthPresentation(failed, [claudeAgent], engineRoster.map((item) => ({ ...item, available: false })))).toEqual({ label: "Needs attention", color: "error.main" });
+  });
+
   it("keeps one project-scoped chat navigator and persistent global destinations", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     projects.forEach((project, index) => {
@@ -44,6 +58,7 @@ describe("responsive workspace sidebar flow", () => {
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
+      engines={engineRoster}
       preferences={preferences}
       route={{ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" }}
       notifications={[{ id: "unread", projectId: "beta", conversationId: "chat-beta", kind: "mentions", title: "Mention", body: "Review", createdAt: "2026-07-16T00:00:00.000Z" }]}
@@ -102,6 +117,7 @@ describe("responsive workspace sidebar flow", () => {
     const onOpenProfile = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
+      engines={engineRoster}
       preferences={{ ...preferences, profile: { ...preferences.profile, displayName: "Khaleel Clark" } }}
       route={{ kind: "projects" }}
       notifications={[]}
@@ -130,6 +146,7 @@ describe("responsive workspace sidebar flow", () => {
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
+      engines={engineRoster}
       preferences={preferences}
       route={{ kind: "projects" }}
       notifications={[]}
@@ -162,6 +179,7 @@ describe("responsive workspace sidebar flow", () => {
     const onPreferences = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
+      engines={engineRoster}
       preferences={preferences}
       route={{ kind: "projects" }}
       notifications={[]}

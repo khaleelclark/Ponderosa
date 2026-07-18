@@ -32,7 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { AgentHealthDto, ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { AgentDto, AgentHealthDto, ConversationDto, EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -40,6 +40,7 @@ import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import { chatStateKey, writeChatState } from "../chatState";
 import { conversationDisplayTitle } from "../conversationLabels";
+import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { routeProjectId, type Route } from "../routing";
 import { currentProjectSnapshot, projectDisambiguator, unreadByConversation, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
 
@@ -61,16 +62,57 @@ export function operatorInitials(displayName: string): string {
   return initials.toLocaleUpperCase();
 }
 
-export function projectHealthPresentation(health: AgentHealthDto[] | undefined): {
+function actionableProjectHealth(
+  health: AgentHealthDto[] | undefined,
+  agents: Pick<AgentDto, "id" | "activeEngine">[],
+  engines: EngineDto[],
+): { health: AgentHealthDto[] | undefined; unavailableEngineFailures: number } {
+  if (!health || engines.length === 0 || !engines.some(engineIsAvailable)) {
+    return { health, unavailableEngineFailures: 0 };
+  }
+  const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+  const enginesById = new Map(engines.map((engine) => [engine.id, engine]));
+  let unavailableEngineFailures = 0;
+  const actionable = health.filter((item) => {
+    if (item.status !== "failed" && item.status !== "stalled") return true;
+    const engine = enginesById.get(agentsById.get(item.agentId)?.activeEngine ?? "");
+    if (!engine || engineIsAvailable(engine)) return true;
+    unavailableEngineFailures += 1;
+    return false;
+  });
+  return { health: actionable, unavailableEngineFailures };
+}
+
+export function projectHealthPresentation(
+  health: AgentHealthDto[] | undefined,
+  agents: Pick<AgentDto, "id" | "activeEngine">[] = [],
+  engines: EngineDto[] = [],
+): {
   label: string;
   color: "success.main" | "info.main" | "warning.main" | "error.main" | "text.disabled";
 } {
-  if (!health) return { label: "Checking", color: "text.disabled" };
-  if (health.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
-  if (health.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
-  if (health.some((agent) => agent.status === "running" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
-  if (health.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
+  const actionable = actionableProjectHealth(health, agents, engines).health;
+  if (!actionable) return { label: "Checking", color: "text.disabled" };
+  if (actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
+  if (actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
+  if (actionable.some((agent) => agent.status === "running" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
+  if (actionable.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
   return { label: "Healthy", color: "success.main" };
+}
+
+export function projectHealthDetail(
+  health: AgentHealthDto[] | undefined,
+  agents: Pick<AgentDto, "id" | "activeEngine">[] = [],
+  engines: EngineDto[] = [],
+): string {
+  const presentation = projectHealthPresentation(health, agents, engines);
+  if (engines.length === 0) return `${presentation.label}. Engine availability is still loading.`;
+  const { unavailableEngineFailures } = actionableProjectHealth(health, agents, engines);
+  const providerDetail = engineAvailabilityPresentation(engines).detail;
+  const deferredDetail = unavailableEngineFailures > 0
+    ? ` ${unavailableEngineFailures} ${unavailableEngineFailures === 1 ? "agent failure is" : "agent failures are"} tied to an unavailable engine and ${unavailableEngineFailures === 1 ? "remains" : "remain"} visible in Agent details without blocking this Project.`
+    : "";
+  return `${presentation.label}. ${providerDetail}${deferredDetail}`;
 }
 
 function projectSnapshots(
@@ -131,6 +173,7 @@ function RailButton({ label, selected = false, badge, badgeColor = "primary", ch
 
 export function WorkspaceSidebar({
   projects,
+  engines,
   preferences,
   route,
   notifications,
@@ -147,6 +190,7 @@ export function WorkspaceSidebar({
   onOpenProfile,
 }: {
   projects: ProjectDto[];
+  engines: EngineDto[];
   preferences: WorkspacePreferencesDto;
   route: Route;
   notifications: WorkspaceNotificationDto[];
@@ -394,14 +438,16 @@ export function WorkspaceSidebar({
 
   const project = selected;
   const selectedProjectIndex = project ? projects.findIndex((candidate) => candidate.id === project.project.id) : -1;
-  const projectHealth = projectHealthPresentation(selectedProjectIndex >= 0 ? healthQueries[selectedProjectIndex]?.data?.agents : undefined);
+  const selectedHealth = selectedProjectIndex >= 0 ? healthQueries[selectedProjectIndex]?.data?.agents : undefined;
+  const projectHealth = projectHealthPresentation(selectedHealth, project?.agents ?? [], engines);
+  const projectHealthTooltip = projectHealthDetail(selectedHealth, project?.agents ?? [], engines);
   const activeConversations = (project?.conversations ?? []).filter((conversation) => !conversation.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const filteredConversations = activeConversations.filter((conversation) => !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
   const grouped = (["Today", "Yesterday", "Earlier"] as const).map((group) => ({ group, conversations: filteredConversations.filter((conversation) => conversationGroup(conversation.updatedAt) === group) }));
 
   const chatsPanel = project ? <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
     <Stack direction="row" sx={{ alignItems: "center", px: 1.25, pt: 1.25 }}><Button size="small" color="inherit" startIcon={<ArrowBackIcon />} onClick={showProjects} sx={{ color: "text.secondary", justifyContent: "flex-start" }}>All Projects</Button><IconButton aria-label={`Project settings for ${project.project.label}`} onClick={() => onManageProject(project.project)} sx={{ ml: "auto" }}><MoreHorizIcon /></IconButton></Stack>
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1, minWidth: 0 }} noWrap>{project.project.label}</Typography><Stack direction="row" spacing={.75} sx={{ alignItems: "center", flexShrink: 0 }}><Typography variant="caption" sx={{ color: projectHealth.color }}>{projectHealth.label}</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} /></Stack></Stack>
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1, minWidth: 0 }} noWrap>{project.project.label}</Typography><Tooltip title={projectHealthTooltip} arrow><Stack direction="row" spacing={.75} tabIndex={0} aria-label={`${projectHealth.label}. ${projectHealthTooltip}`} sx={{ alignItems: "center", flexShrink: 0, cursor: "help" }}><Typography variant="caption" sx={{ color: projectHealth.color }}>{projectHealth.label}</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} /></Stack></Tooltip></Stack>
     <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Project Chats" inputProps={{ "aria-label": "Search Project Chats" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Box component="kbd" sx={{ px: .75, py: .35, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>⌘K</Box> }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") onSearch?.(); }} /><Button fullWidth variant="contained" startIcon={<AddIcon />} onClick={() => void createChat(project.project)} sx={{ justifyContent: "flex-start" }}>New Project Chat</Button></Stack>
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
       {grouped.map(({ group, conversations }) => conversations.length ? <Box key={group} component="section" sx={{ mb: 1.75 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>{group}</Typography><List disablePadding>{conversations.map((conversation) => {
