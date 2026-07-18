@@ -235,7 +235,7 @@ export function WorkspaceSidebar({
     }}
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
-      <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 1.25, borderRadius: 1.25 }} /></Tooltip>
+      <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25 }} /></Tooltip>
       <RailButton label="Home" selected={!showingAgents && !showingTriggers && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
       <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} onClick={showAgents}><PersonOutlineIcon /></RailButton>
@@ -398,7 +398,6 @@ export function WorkspaceSidebar({
     <Box sx={{ boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}`, p: 1.5 }}>
       <Button fullWidth color="inherit" aria-label="Open project agents" aria-current={route.kind === "agents" ? "page" : undefined} onClick={() => onNavigate({ kind: "agents", projectId: project.project.id })} startIcon={<GroupsOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "agents" ? "text.primary" : "text.secondary", bgcolor: route.kind === "agents" ? "action.selected" : "transparent" }}>Project Agents</Button>
       <Button fullWidth color="inherit" aria-label="Open project files" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project files</Button>
-      <Button fullWidth color="inherit" onClick={() => onManageProject(project.project)} sx={{ justifyContent: "space-between", color: "text.secondary" }}>Manage {project.project.label}<Box component="span">›</Box></Button>
     </Box>
   </Box> : null;
 

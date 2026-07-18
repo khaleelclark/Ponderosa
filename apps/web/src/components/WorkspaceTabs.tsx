@@ -2,7 +2,6 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
@@ -55,10 +54,6 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
 
   return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, minHeight: { md: 62 }, px: 1, bgcolor: "background.paper", alignItems: "center", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
     <Stack direction="row" spacing={0.5} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, overflowX: "auto", alignItems: "center", py: 0.75 }}>
-      <ButtonBase onClick={() => navigate({ kind: "home" })} aria-current={route.kind === "home" ? "page" : undefined} sx={{ position: "relative", minWidth: 112, height: 48, px: 1.5, gap: 1, borderRadius: 1.25, border: 1, borderColor: route.kind === "home" ? "divider" : "transparent", bgcolor: route.kind === "home" ? "action.selected" : "transparent", color: route.kind === "home" ? "text.primary" : "text.secondary", justifyContent: "flex-start", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": route.kind === "home" ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}>
-        <HomeOutlinedIcon fontSize="small" />
-        <Typography variant="body2" fontWeight={route.kind === "home" ? 750 : 500}>Home</Typography>
-      </ButtonBase>
       {tabs.map((tab) => {
         const project = projects.find((candidate) => candidate.id === tab.route.projectId);
         const resources = resourcesByProject.get(tab.route.projectId);

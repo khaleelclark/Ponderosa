@@ -40,6 +40,7 @@ describe("workspace tab bar", () => {
     /></QueryClientProvider>);
 
     const rendered = JSON.stringify(view.toJSON());
+    expect(view.root.findAll((node) => node.props.children === "Home")).toHaveLength(0);
     expect(rendered).toContain("Release planning");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("QA Reviewer");
