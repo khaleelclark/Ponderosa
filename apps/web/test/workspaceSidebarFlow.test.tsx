@@ -67,6 +67,11 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search agents");
     expect(JSON.stringify(view.toJSON())).toContain("Reviewer");
+    await act(async () => view.root.findByProps({ "aria-label": "Triggers" }).props.onClick());
+    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
+    expect(JSON.stringify(view.toJSON())).toContain("Search triggers or agents");
+    act(() => view.root.findAllByProps({ "aria-label": "Manage triggers for Reviewer" })[0]!.props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha" });
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();

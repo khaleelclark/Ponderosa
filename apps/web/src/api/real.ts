@@ -1,4 +1,5 @@
 import type {
+  ArtifactDto,
   ArtifactContentDto,
   AgentHealthProjectionDto,
   CollaborationViewDto,
@@ -332,6 +333,9 @@ export const realApi: PonderosaApi = {
   getAgent(agentId) {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}`);
   },
+  listProjectArtifacts(projectId) {
+    return requestJson<ArtifactDto[]>(`/api/projects/${encodeURIComponent(projectId)}/artifacts`);
+  },
   exportAgent(agentId, mode, organization = false) {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
   },
@@ -340,6 +344,9 @@ export const realApi: PonderosaApi = {
   },
   listTriggers(agentId) {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
+  },
+  listAllTriggers() {
+    return requestJson("/api/triggers");
   },
   createTrigger(agentId, request) {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`, { method: "POST", body: JSON.stringify(request) });

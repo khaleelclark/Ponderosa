@@ -1,5 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -31,11 +32,12 @@ import {
   Typography,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
+import { chatStateKey, writeChatState } from "../chatState";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { routeProjectId, type Route } from "../routing";
 import { currentProjectSnapshot, projectDisambiguator, unreadByConversation, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
@@ -146,13 +148,20 @@ export function WorkspaceSidebar({
   const counts = workspaceCounts(snapshots, notifications);
   const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
   const insideProject = Boolean(selected && ["project", "conversation", "agents", "agent"].includes(route.kind));
-  const [sidebarSection, setSidebarSection] = useState<"navigation" | "projects" | "agents">(() => route.kind === "allAgents" ? "agents" : "navigation");
+  const [sidebarSection, setSidebarSection] = useState<"navigation" | "projects" | "agents" | "triggers">(() => route.kind === "allAgents" ? "agents" : "navigation");
   const [filter, setFilter] = useState("");
   const [menu, setMenu] = useState<{ anchor: HTMLElement; conversation: ConversationDto }>();
   const [sortMenuAnchor, setSortMenuAnchor] = useState<HTMLElement>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const showingAgents = sidebarSection === "agents";
   const showingProjects = sidebarSection === "projects";
+  const showingTriggers = sidebarSection === "triggers";
+  const allTriggersQuery = useQuery({
+    queryKey: ["triggers"],
+    queryFn: () => api.listAllTriggers(),
+    enabled: showingTriggers,
+    staleTime: 5_000,
+  });
   const showNavigation = (next?: Route) => {
     setSidebarSection("navigation");
     setFilter("");
@@ -165,6 +174,14 @@ export function WorkspaceSidebar({
   const showProjects = () => {
     setSidebarSection("projects");
     setFilter("");
+  };
+  const showTriggers = () => {
+    setSidebarSection("triggers");
+    setFilter("");
+  };
+  const openTriggerManager = (projectId: string, agentId: string) => {
+    writeChatState(chatStateKey("view", `agent.${agentId}`), "triggers");
+    onNavigate({ kind: "agent", projectId, agentId });
   };
 
   const openProject = (snapshot: WorkspaceProjectSnapshot) => {
@@ -207,9 +224,10 @@ export function WorkspaceSidebar({
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 1.25, borderRadius: 1.25 }} /></Tooltip>
-      <RailButton label="Home" selected={!showingAgents && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
-      <RailButton label="Projects" selected={!showingAgents && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
+      <RailButton label="Home" selected={!showingAgents && !showingTriggers && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
+      <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} onClick={showAgents}><PersonOutlineIcon /></RailButton>
+      <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
       <RailButton label="Inbox" badge={counts.unread || undefined} onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
     </Stack>
     <Box />
@@ -286,6 +304,69 @@ export function WorkspaceSidebar({
     <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={showProjects} sx={{ justifyContent: "flex-start", color: "text.secondary" }}>Browse projects</Button></Box>
   </Box>;
 
+  const triggerDestinations = workspaceAgents(snapshots);
+  const triggerAgentById = new Map(triggerDestinations.map((destination) => [destination.agent.id, destination] as const));
+  const filteredTriggers = (allTriggersQuery.data ?? []).filter((trigger) => {
+    const destination = triggerAgentById.get(trigger.agentId);
+    return !normalizedFilter || [
+      trigger.name,
+      trigger.instructions,
+      trigger.sourceKind,
+      destination?.agent.title,
+      destination?.project.label,
+    ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter);
+  });
+  const triggerManagers = triggerDestinations.filter(({ agent, project: triggerProject }) => !normalizedFilter
+    || `${agent.title} ${triggerProject.label} ${agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter));
+  const triggersPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", bgcolor: sidebarSurface }}>
+    <Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}>
+      <Box sx={{ width: 32, height: 32, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center", mr: 1 }}><BoltOutlinedIcon fontSize="small" /></Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800}>Triggers</Typography><Typography variant="caption" color="text.secondary">Automations across every project</Typography></Box>
+      <Typography variant="caption" color="text.secondary">{allTriggersQuery.data?.length ?? 0}</Typography>
+    </Stack>
+    <Box sx={{ px: 1.75, pb: 1.25 }}><TextField
+      fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search triggers or agents"
+      inputProps={{ "aria-label": "Search triggers" }}
+      InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
+    /></Box>
+    <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 2 }}>
+      {allTriggersQuery.isLoading ? <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>Loading triggers…</Typography> : null}
+      {allTriggersQuery.isError ? <Typography variant="body2" color="error" sx={{ p: 1 }}>Triggers could not be loaded.</Typography> : null}
+      <Box component="section" sx={{ mb: 2 }}>
+        <Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Configured triggers</Typography>
+        <List disablePadding sx={{ mt: .5 }}>{filteredTriggers.map((trigger) => {
+          const destination = triggerAgentById.get(trigger.agentId);
+          if (!destination) return null;
+          return <ListItemButton
+            key={trigger.id}
+            aria-label={`Manage trigger ${trigger.name}`}
+            onClick={() => openTriggerManager(destination.project.id, destination.agent.id)}
+            sx={{ borderRadius: 1.25, px: 1, py: .75, mb: .35, minWidth: 0 }}
+          >
+            <ListItemIcon sx={{ minWidth: 38 }}><BoltOutlinedIcon sx={{ fontSize: 18 }} /></ListItemIcon>
+            <ListItemText primary={trigger.name} secondary={`${destination.project.label} · ${destination.agent.title} · ${trigger.sourceKind}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
+            <Box title={trigger.enabled ? "Enabled" : "Disabled"} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: trigger.enabled ? "success.main" : "text.disabled" }} />
+          </ListItemButton>;
+        })}</List>
+        {!allTriggersQuery.isLoading && filteredTriggers.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 1 }}>{filter.trim() ? "No configured triggers match." : "No triggers configured yet."}</Typography> : null}
+      </Box>
+      <Box component="section">
+        <Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Create or edit by agent</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1, mb: .5 }}>Choose an agent to open its Trigger manager.</Typography>
+        <List disablePadding>{triggerManagers.map(({ agent, project: triggerProject }) => <ListItemButton
+          key={agent.id}
+          aria-label={`Manage triggers for ${agent.title}`}
+          onClick={() => openTriggerManager(triggerProject.id, agent.id)}
+          sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25, minWidth: 0 }}
+        >
+          <ListItemIcon sx={{ minWidth: 38 }}><SmartToyOutlinedIcon sx={{ fontSize: 17 }} /></ListItemIcon>
+          <ListItemText primary={agent.title} secondary={triggerProject.label} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
+          <Typography variant="caption" color="text.secondary">Manage</Typography>
+        </ListItemButton>)}</List>
+      </Box>
+    </Box>
+  </Box>;
+
   const project = selected;
   const activeConversations = (project?.conversations ?? []).filter((conversation) => !conversation.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const filteredConversations = activeConversations.filter((conversation) => !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
@@ -307,7 +388,7 @@ export function WorkspaceSidebar({
 
   return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state="expanded" sx={{ width: drawer ? "min(100vw, 390px)" : SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH, height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden" }}>
     {rail}
-    {showingAgents ? agentsPanel : showingProjects ? projectsPanel : insideProject ? chatsPanel : projectsPanel}
+    {showingAgents ? agentsPanel : showingTriggers ? triggersPanel : showingProjects ? projectsPanel : insideProject ? chatsPanel : projectsPanel}
     {menu ? <Menu anchorEl={menu.anchor} open onClose={() => setMenu(undefined)}><MenuItem onClick={() => { onRenameConversation(menu.conversation); setMenu(undefined); }}>Rename</MenuItem><MenuItem sx={{ color: "error.main" }} onClick={() => { onDeleteConversation(menu.conversation); setMenu(undefined); }}>Delete</MenuItem></Menu> : null}
   </Box>;
 }

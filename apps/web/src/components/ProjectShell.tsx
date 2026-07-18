@@ -276,7 +276,7 @@ export function ProjectShell({
       />
     );
   } else if (route.kind === "project") {
-    main = <ProjectArtifactsView agents={agents} detailByAgentId={detailByAgentId} onOpenArtifact={openProjectArtifact} />;
+    main = <ProjectArtifactsView projectId={projectId} agents={agents} detailByAgentId={detailByAgentId} onOpenArtifact={openProjectArtifact} />;
   } else {
     main = (
       <Box sx={{ p: 3 }}>

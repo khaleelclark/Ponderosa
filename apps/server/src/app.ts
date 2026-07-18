@@ -6434,6 +6434,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     };
   };
 
+  app.get("/api/triggers", async () => coordinationV3.listTriggerDefinitions());
+
   app.get<{ Params: { id: string } }>("/api/agents/:id/triggers", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     return coordinationV3.listTriggerDefinitions(request.params.id);

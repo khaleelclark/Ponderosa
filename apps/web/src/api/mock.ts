@@ -727,6 +727,12 @@ export const mockApi: PonderosaApi = {
       state: agent.state,
     });
   },
+  listProjectArtifacts(projectId) {
+    const projectAgentIds = new Set(agents.filter((agent) => agent.projectId === projectId).map((agent) => agent.id));
+    return delay(Object.entries(artifacts).flatMap(([agentId, entries]) => projectAgentIds.has(agentId)
+      ? entries.filter((artifact) => artifact.kind === "generated_file").map((artifact) => ({ ...artifact, projectId }))
+      : []));
+  },
   exportAgent(agentId, mode, organization = false) {
     const agent = agents.find((candidate) => candidate.id === agentId)!;
     return delay({ schema: "ponderosa.agent-package.v1", mode, kind: organization ? "organization" : "agent", exportedAt: new Date().toISOString(), sourceLabel: agent.title, rootRef: agent.id, agents: [{ ref: agent.id, title: agent.title, engine: agent.activeEngine }] });
@@ -734,6 +740,9 @@ export const mockApi: PonderosaApi = {
   importAgents(_projectId, request) { return delay({ rootAgentId: request.package.rootRef, agentIds: request.package.agents.map((node) => node.ref) }); },
   listTriggers(agentId) {
     return delay(triggers.filter((trigger) => trigger.agentId === agentId));
+  },
+  listAllTriggers() {
+    return delay([...triggers]);
   },
   createTrigger(agentId, request) {
     const agent = agents.find((candidate) => candidate.id === agentId);
