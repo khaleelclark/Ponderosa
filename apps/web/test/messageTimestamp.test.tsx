@@ -66,4 +66,16 @@ describe("message timestamps", () => {
     expect(markup.indexOf("Reply")).toBeLessThan(markup.indexOf("Reply Directly"));
     expect(markup.indexOf("Reply Directly")).toBeLessThan(markup.indexOf("<time"));
   });
+
+  it("keeps delivery status right of actions and the timestamp beneath it", () => {
+    const markup = renderToStaticMarkup(
+      <MessageActionsAndTimestamp
+        value="2026-07-11T14:05:06.789Z"
+        actions={<button>Copy</button>}
+        status={<button>Processed by Cabrillo</button>}
+      />,
+    );
+    expect(markup.indexOf("Copy")).toBeLessThan(markup.indexOf("Processed by Cabrillo"));
+    expect(markup.indexOf("Processed by Cabrillo")).toBeLessThan(markup.indexOf("<time"));
+  });
 });

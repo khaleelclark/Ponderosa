@@ -49,7 +49,9 @@ describe("workspace tab bar", () => {
     expect(onClose).toHaveBeenCalledWith("agent:beta:reviewer");
     const releaseTabContainer = view.root.findByProps({ "data-tab-key": "conversation:alpha:release" });
     expect(releaseTabContainer.props.onContextMenu).toEqual(expect.any(Function));
-    expect(releaseTabContainer.props.sx.borderRadius).toBe(1.25);
+    expect(releaseTabContainer.props.sx.borderRadius).toBe("12px 12px 0 0");
+    expect(releaseTabContainer.props.sx.borderColor).toBe("divider");
+    expect(releaseTabContainer.props.sx.borderBottom).toBe(0);
     expect(onCloseAll).not.toHaveBeenCalled();
     const releaseTab = view.root.findByProps({ "aria-label": "Open Release planning in Website" });
     act(() => releaseTab.props.onClick());

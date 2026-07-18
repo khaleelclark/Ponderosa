@@ -71,10 +71,12 @@ export function MessageTimestamp({ value, compact = false, align = "end" }: { va
 /** Keeps every chat surface's timestamp after its message actions. */
 export function MessageActionsAndTimestamp({
   actions,
+  status,
   value,
   showTimestamp = true,
 }: {
   actions?: ReactNode;
+  status?: ReactNode;
   value: string;
   showTimestamp?: boolean;
 }): JSX.Element {
@@ -82,9 +84,12 @@ export function MessageActionsAndTimestamp({
   const revealOnTouch = (event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") setTouchRevealed(true);
   };
-  return <Stack direction="row" spacing={0.25} className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ alignItems: "center", mt: 0.25, minHeight: 28, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
-    <Box className="chat-message-action-buttons" sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>{actions}</Box>
-    <Box sx={{ flex: 1 }} />
-    {showTimestamp ? <MessageTimestamp value={value} /> : null}
-  </Stack>;
+  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minHeight: 28, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
+    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", minHeight: 28 }}>
+      <Box className="chat-message-action-buttons" sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>{actions}</Box>
+      <Box sx={{ flex: 1 }} />
+      {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} /> : null}
+    </Stack>
+    {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} /></Box> : null}
+  </Box>;
 }

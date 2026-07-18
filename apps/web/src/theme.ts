@@ -73,9 +73,9 @@ export function createPonderosaTheme(mode: ColorMode) {
         contrastText: dark ? "#10231C" : "#F8F6EF",
       },
       secondary: {
-        main: dark ? "#8FA49A" : colors.accent,
-        dark: dark ? "#71877D" : "#456E50",
-        light: dark ? "#B2BBB4" : "#7AA382",
+        main: dark ? "#91AAB6" : "#607A87",
+        dark: dark ? "#708894" : "#48606C",
+        light: dark ? "#B8C8CF" : "#8FA5AF",
       },
       background: {
         default: colors.background,
@@ -96,8 +96,9 @@ export function createPonderosaTheme(mode: ColorMode) {
         focus: dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
       },
       success: { main: dark ? "#57C77A" : "#2E8B57" },
-      warning: { main: "#D8B85A" },
-      error: { main: "#D66A5C" },
+      info: { main: dark ? "#79B8D1" : "#356F8B" },
+      warning: { main: dark ? "#D8B85A" : "#8A6C22" },
+      error: { main: dark ? "#D66A5C" : "#B74D43" },
     },
     shape: {
       borderRadius: 12,

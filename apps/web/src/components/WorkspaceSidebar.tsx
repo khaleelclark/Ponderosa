@@ -93,10 +93,11 @@ function relativeChatTime(updatedAt: string): string {
   return new Date(updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function RailButton({ label, selected = false, badge, children, onClick }: {
+function RailButton({ label, selected = false, badge, badgeColor = "primary", children, onClick }: {
   label: string;
   selected?: boolean;
   badge?: number;
+  badgeColor?: "primary" | "info" | "error";
   children: ReactNode;
   onClick(): void;
 }): JSX.Element {
@@ -112,7 +113,7 @@ function RailButton({ label, selected = false, badge, children, onClick }: {
         bgcolor: selected ? "action.selected" : "transparent",
         "&:hover": { bgcolor: selected ? "action.focus" : "action.hover", color: "text.primary" },
       }}
-    ><Badge color="primary" badgeContent={badge} max={99}>{children}</Badge></IconButton>
+    ><Badge color={badgeColor} badgeContent={badge} max={99}>{children}</Badge></IconButton>
   </Tooltip>;
 }
 
@@ -238,9 +239,9 @@ export function WorkspaceSidebar({
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25 }} /></Tooltip>
       <RailButton label="Home" selected={!showingAgents && !showingTriggers && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
       <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
-      <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} onClick={showAgents}><PersonOutlineIcon /></RailButton>
+      <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
-      <RailButton label="Inbox" badge={counts.unread || undefined} onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
+      <RailButton label="Inbox" badge={counts.unread || undefined} badgeColor="error" onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
