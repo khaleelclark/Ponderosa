@@ -1887,6 +1887,8 @@ export function Composer({
   allowUnmentionedSend = true,
   onSend,
   onQueue,
+  preferQueue = false,
+  queuedMentionHandles,
   agentResponding = false,
   onCancel,
   replyTo,
@@ -1921,6 +1923,10 @@ export function Composer({
   onSend(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
   /** Explicitly enqueue this draft instead of steering the active agent turn. */
   onQueue?(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
+  /** Make the primary send action enqueue while this direct Agent already has pending work. */
+  preferQueue?: boolean;
+  /** Agent handles whose existing pending work should make a targeted follow-up enqueue by default. */
+  queuedMentionHandles?: string[];
   /** Canonical server-owned activity; used only to reveal the explicit Queue action. */
   agentResponding?: boolean;
   onCancel?(): void;
@@ -1967,6 +1973,11 @@ export function Composer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
+  const queuedHandles = new Set((queuedMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
+  const mentionedAgentsWithQueues = mentionedHandles.filter((handle) => queuedHandles.has(handle.toLocaleLowerCase()));
+  const defaultsToQueue = Boolean(onQueue) && (preferQueue || (
+    mentionedHandles.length > 0 && mentionedAgentsWithQueues.length === mentionedHandles.length
+  ));
   const busyHandles = new Set((busyMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedBusyHandles = mentionedHandles.filter((handle) => busyHandles.has(handle.toLocaleLowerCase()));
   const textCanSend = canSubmitComposerText({
@@ -2245,11 +2256,12 @@ export function Composer({
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
       .finally(() => { sendingRef.current = false; });
   };
-  const send = () => submit(onSend);
+  const steer = () => submit(onSend);
   const queue = () => {
     if (!onQueue) return;
     submit(onQueue);
   };
+  const send = () => defaultsToQueue ? queue() : steer();
   const showQueue = Boolean(onQueue) && shouldShowQueueControl({
     text: submissionText,
     hasAttachments: files.length > 0,
@@ -2535,33 +2547,33 @@ export function Composer({
           </Popper>
         </Box>
         {showQueue ? (
-          <Tooltip title="Steer the active response">
+          <Tooltip title={defaultsToQueue ? "Send after the active response finishes" : "Steer the active response"}>
             <span>
               <Button
                 size="small"
                 variant="contained"
                 disabled={!canSend}
                 onClick={send}
-                aria-label="Steer active response"
+                aria-label={defaultsToQueue ? "Queue message" : "Steer active response"}
                 sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
               >
-                Steer
+                {defaultsToQueue ? "Queue" : "Steer"}
               </Button>
             </span>
           </Tooltip>
         ) : null}
         {showQueue ? (
-          <Tooltip title="Send after the active response finishes">
+          <Tooltip title={defaultsToQueue ? "Steer the active response" : "Send after the active response finishes"}>
             <span>
               <Button
                 size="small"
                 variant="outlined"
                 disabled={!canSend}
-                onClick={queue}
-                aria-label="Queue message"
+                onClick={defaultsToQueue ? steer : queue}
+                aria-label={defaultsToQueue ? "Steer active response" : "Queue message"}
                 sx={{ minHeight: 40, px: 1.5 }}
               >
-                Queue
+                {defaultsToQueue ? "Steer" : "Queue"}
               </Button>
             </span>
           </Tooltip>

@@ -1143,6 +1143,11 @@ export function ConversationView({
               : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
           onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
+          preferQueue={Boolean(directReplyTargetId && (queuedMessagesQuery.data ?? []).some((message) => message.targetAgentId === directReplyTargetId))}
+          queuedMentionHandles={(queuedMessagesQuery.data ?? []).flatMap((message) => {
+            const agent = agents.find((candidate) => candidate.id === message.targetAgentId);
+            return agent ? [agentMentionHandle(agent.title)] : [];
+          })}
           agentResponding={Boolean(directReplyTargetId && statusByAgentId.get(directReplyTargetId) === "running")}
           replyTo={replyTo}
           replyLabel={directReplyTargetId ? `Replying directly to #${agentMentionHandle(agentTitle(directReplyTargetId))}` : undefined}
