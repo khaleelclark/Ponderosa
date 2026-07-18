@@ -500,6 +500,13 @@ function payloadHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+function runtimeArtifactMetadataIsValid(artifact: RuntimeArtifactInputV3): boolean {
+  return /^text-[a-f0-9]{64}$/.test(artifact.id) && artifact.blobPath === artifact.id &&
+    Boolean(artifact.title.trim()) && Boolean(artifact.mediaType.trim()) &&
+    /^[a-f0-9]{64}$/.test(artifact.blobHash) &&
+    Number.isSafeInteger(artifact.byteLength) && artifact.byteLength >= 0;
+}
+
 function isIso(value: string): boolean {
   return Number.isFinite(Date.parse(value));
 }
@@ -569,8 +576,7 @@ export class CoordinationV3Store {
         ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const artifact of input.artifacts ?? []) {
-        if (!artifact.id.trim() || !artifact.title.trim() || !artifact.mediaType.trim() || !artifact.blobPath.trim() ||
-            !/^[a-f0-9]{64}$/i.test(artifact.blobHash) || !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 0) {
+        if (!runtimeArtifactMetadataIsValid(artifact)) {
           throw new Error("runtime communication artifact metadata is invalid");
         }
         insertArtifact.run(
@@ -2404,8 +2410,7 @@ export class CoordinationV3Store {
         ) VALUES (?, 'request_update', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const artifact of input.artifacts ?? []) {
-        if (!artifact.id.trim() || !artifact.title.trim() || !artifact.mediaType.trim() || !artifact.blobPath.trim() ||
-            !/^[a-f0-9]{64}$/i.test(artifact.blobHash) || !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 0) {
+        if (!runtimeArtifactMetadataIsValid(artifact)) {
           throw new Error("request update artifact metadata is invalid");
         }
         insertArtifact.run(
