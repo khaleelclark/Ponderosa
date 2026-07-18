@@ -265,8 +265,10 @@ Ordinary runtime output → execution-scoped Work log
   confirm the server's exact cascade and commit every selected subtree in one
   transaction; a changed spawn or reporting edge returns `409` and deletes
   nothing. Once deletion commits, a durable receipt makes retries report success
-  while filesystem/runtime cleanup completes idempotently; cleanup failure must
-  never make a committed deletion look rolled back. Promotion or detachment is
+  while filesystem/runtime cleanup completes idempotently. Provider runtime
+  handles remain retryable until close succeeds; a failed close keeps cleanup
+  pending and raises an operational notification. Cleanup failure must never
+  make a committed deletion look rolled back. Promotion or detachment is
   always an explicit user action performed before deletion. A user may separately enable per-Agent authority to cancel
   and delete descendant branches or rearrange reporting lines inside that
   Agent's existing subtree without another Decision. Those settings default off,
@@ -288,7 +290,9 @@ Ordinary runtime output → execution-scoped Work log
   cancellation immediately fences execution, revokes runtime capabilities,
   interrupts the provider, and must never requeue or respawn the same
   Activation; later queued work remains eligible to run. Genuine runtime failures
-  may retain their separate bounded retry policy.
+  may retain their separate bounded retry policy. Managed `stop_agent` plans
+  capture that exact target Run at plan creation and fail with `409` if it has
+  ended or been replaced before apply.
 - Collaboration rejects exact replay within bounded recent causal lineage, and
   coalesced Activations preserve every constituent lineage. Do not add
   an arbitrary total-handoff or topology cap without an observed product need;
