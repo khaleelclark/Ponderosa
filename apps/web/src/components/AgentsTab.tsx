@@ -7,6 +7,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
@@ -45,6 +46,25 @@ import {
 
 type StatusFilter = "all" | "running" | "waiting" | "idle" | "unassigned";
 
+export function selectedAgentDeletion(agents: AgentDto[], selectedAgentIds: ReadonlySet<string>): {
+  roots: AgentDto[];
+  affectedIds: Set<string>;
+} {
+  const selectedAgents = agents.filter((agent) => selectedAgentIds.has(agent.id));
+  const roots = selectedAgents.filter((agent) => {
+    let managerId = agent.managerAgentId;
+    while (managerId) {
+      if (selectedAgentIds.has(managerId)) return false;
+      managerId = agents.find((candidate) => candidate.id === managerId)?.managerAgentId;
+    }
+    return true;
+  });
+  return {
+    roots,
+    affectedIds: new Set(roots.flatMap((agent) => [agent.id, ...agentDescendants(agent.id, agents).map((descendant) => descendant.id)])),
+  };
+}
+
 export function AgentsTab({
   agents,
   projectId,
@@ -71,8 +91,11 @@ export function AgentsTab({
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [bulkError, setBulkError] = useState<string>();
   const [stoppingAll, setStoppingAll] = useState(false);
-  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
-  const [deleteAllConfirmation, setDeleteAllConfirmation] = useState("");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
+  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
+  const [deleteSelectedConfirmation, setDeleteSelectedConfirmation] = useState("");
+  const [deletingSelected, setDeletingSelected] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   const deleteAgent = useMutation({
@@ -124,6 +147,19 @@ export function AgentsTab({
     { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
   );
   const activeAgentIds = agents.filter((agent) => ["running", "compacting", "waiting"].includes(statusByAgentId.get(agent.id) ?? "idle")).map((agent) => agent.id);
+  const { roots: selectedRoots, affectedIds: affectedAgentIds } = selectedAgentDeletion(agents, selectedAgentIds);
+  const toggleSelection = (agentId: string) => setSelectedAgentIds((current) => {
+    const next = new Set(current);
+    if (next.has(agentId)) next.delete(agentId);
+    else next.add(agentId);
+    return next;
+  });
+  const leaveSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedAgentIds(new Set());
+    setDeleteSelectedOpen(false);
+    setDeleteSelectedConfirmation("");
+  };
   const stopAll = async () => {
     setStoppingAll(true); setBulkError(undefined);
     const results = await Promise.allSettled(activeAgentIds.map((id) => api.cancelRun(id, `bulk-stop:${id}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`)));
@@ -132,21 +168,24 @@ export function AgentsTab({
     await queryClient.invalidateQueries({ queryKey: ["agents"] });
     setStoppingAll(false);
   };
-  const deleteAll = async () => {
+  const deleteSelected = async () => {
     setBulkError(undefined);
-    const roots = agents.filter((agent) => !agent.managerAgentId || !agents.some((candidate) => candidate.id === agent.managerAgentId));
-    const results = await Promise.allSettled(roots.map((agent) => api.deleteAgent(agent.id)));
+    setDeletingSelected(true);
+    const results = await Promise.allSettled(selectedRoots.map((agent) => api.deleteAgent(agent.id)));
     const failed = results.filter((item) => item.status === "rejected").length;
-    if (failed) setBulkError(`${roots.length - failed} agent trees deleted; ${failed} failed. Project-chat history was preserved.`);
-    setDeleteAllOpen(false); setDeleteAllConfirmation("");
+    if (failed) setBulkError(`${selectedRoots.length - failed} selected agent trees deleted; ${failed} failed. Project-chat history was preserved.`);
     await queryClient.invalidateQueries({ queryKey: ["agents"] });
     await queryClient.invalidateQueries({ queryKey: ["conversation"] });
+    setDeletingSelected(false);
+    leaveSelectionMode();
   };
 
   return (
     <Box data-testid="agent-roster" sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
       <Stack
         direction="row"
+        useFlexGap
+        flexWrap="wrap"
         spacing={1}
         sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}
       >
@@ -154,7 +193,19 @@ export function AgentsTab({
           Agents
         </Typography>
         <Button variant="outlined" size="small" disabled={activeAgentIds.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop all</Button>
-        <Button color="error" variant="outlined" size="small" disabled={agents.length === 0 || activeAgentIds.length > 0} onClick={() => setDeleteAllOpen(true)}>Delete all</Button>
+        {selectionMode ? <>
+          <Button color="inherit" size="small" onClick={() => {
+            const visibleIds = filtered.map(({ agent }) => agent.id);
+            const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedAgentIds.has(id));
+            setSelectedAgentIds((current) => {
+              const next = new Set(current);
+              visibleIds.forEach((id) => allVisibleSelected ? next.delete(id) : next.add(id));
+              return next;
+            });
+          }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear visible" : "Select all visible"}</Button>
+          <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete selected ({selectedAgentIds.size})</Button>
+          <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel selection</Button>
+        </> : <Button color="inherit" variant="outlined" size="small" disabled={agents.length === 0} onClick={() => setSelectionMode(true)}>Select agents</Button>}
         <Button variant="outlined" size="small" onClick={() => setImportOpen(true)}>Import Agent or organization</Button>
         <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
@@ -266,8 +317,14 @@ export function AgentsTab({
                     variant="outlined"
                     sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
                   >
+                  {selectionMode ? <Checkbox
+                    checked={selectedAgentIds.has(agent.id)}
+                    onChange={() => toggleSelection(agent.id)}
+                    inputProps={{ "aria-label": `Select ${agent.title}` }}
+                    sx={{ mt: 0.75, ml: 0.5 }}
+                  /> : null}
                   <ButtonBase
-                    onClick={() => onOpenAgent(agent.id)}
+                    onClick={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
                     aria-label={`Open agent ${agent.title}`}
                     sx={{ flex: 1, minWidth: 0, p: 1.5, display: "block", textAlign: "left" }}
                   >
@@ -313,7 +370,7 @@ export function AgentsTab({
                       </Typography>
                     ) : null}
                   </ButtonBase>
-                  <Tooltip title="Delete agent">
+                  {!selectionMode ? <Tooltip title="Delete agent">
                     <IconButton
                       size="small"
                       aria-label={`Delete agent ${agent.title}`}
@@ -322,7 +379,7 @@ export function AgentsTab({
                     >
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>
-                  </Tooltip>
+                  </Tooltip> : null}
                   {organizationParent ? (
                     <Tooltip title="Promote to top level">
                       <IconButton
@@ -389,10 +446,14 @@ export function AgentsTab({
           </Button>
         </DialogActions>
       </Dialog>
-      <Dialog open={deleteAllOpen} onClose={() => setDeleteAllOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Delete every agent?</DialogTitle>
-        <DialogContent><Alert severity="error" sx={{ mb: 2 }}>This permanently deletes all agent identities, runs, work logs, and artifacts. Main Project-chat history remains intact. This action is available only after every agent is stopped.</Alert><TextField fullWidth label="Type DELETE ALL" value={deleteAllConfirmation} onChange={(event) => setDeleteAllConfirmation(event.target.value)} /></DialogContent>
-        <DialogActions><Button onClick={() => setDeleteAllOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteAllConfirmation !== "DELETE ALL" || activeAgentIds.length > 0} onClick={() => void deleteAll()}>Delete all agents</Button></DialogActions>
+      <Dialog open={deleteSelectedOpen} onClose={() => { if (!deletingSelected) { setDeleteSelectedOpen(false); setDeleteSelectedConfirmation(""); } }} fullWidth maxWidth="xs">
+        <DialogTitle>Delete selected agents?</DialogTitle>
+        <DialogContent>
+          <Alert severity="error" sx={{ mb: 2 }}>This permanently deletes {affectedAgentIds.size} agent {affectedAgentIds.size === 1 ? "identity" : "identities"}, including runs, work logs, files, and any descendants of a selected manager. Active runs are stopped. Project-chat history remains intact.</Alert>
+          <Typography variant="body2" sx={{ mb: 2 }}>{selectedAgentIds.size} selected. {selectedRoots.length} deletion {selectedRoots.length === 1 ? "root" : "roots"} will be sent to preserve cascade semantics.</Typography>
+          <TextField fullWidth label="Type DELETE SELECTED" value={deleteSelectedConfirmation} onChange={(event) => setDeleteSelectedConfirmation(event.target.value)} />
+        </DialogContent>
+        <DialogActions><Button onClick={() => { setDeleteSelectedOpen(false); setDeleteSelectedConfirmation(""); }} disabled={deletingSelected}>Cancel</Button><Button color="error" variant="contained" disabled={deleteSelectedConfirmation !== "DELETE SELECTED" || deletingSelected} onClick={() => void deleteSelected()}>Delete selected agents</Button></DialogActions>
       </Dialog>
     </Box>
   );
