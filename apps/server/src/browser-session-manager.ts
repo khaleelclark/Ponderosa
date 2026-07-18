@@ -60,6 +60,9 @@ type BrowserAuditEvent = Extract<AgentEvent, {
 interface ManagedSession {
   dto: BrowserSessionDto;
   driver?: BrowserDriver;
+  /** Retained until driver shutdown succeeds so a timed-out Project deletion
+   * can retry without losing the browser authority handle. */
+  closingDriver?: BrowserDriver;
   queue: Promise<unknown>;
   lifecycleEpoch: number;
   opening?: Promise<BrowserSessionDto>;
@@ -246,7 +249,10 @@ export class BrowserSessionManager {
     if (!driver) return;
     const inProgress = this.closingDrivers.get(driver);
     if (inProgress) return inProgress;
-    const closing = driver.close().catch(() => undefined);
+    const closing = driver.close().catch((error) => {
+      this.closingDrivers.delete(driver);
+      throw error;
+    });
     this.closingDrivers.set(driver, closing);
     await closing;
   }
@@ -333,7 +339,7 @@ export class BrowserSessionManager {
     const opening = (async () => {
       let createdDriver: BrowserDriver | undefined;
       try {
-        await this.closeDriver(existing?.driver);
+        await this.closeDriver(existing?.driver ?? existing?.closingDriver);
         createdDriver = await this.createDriver(session.dto.id, (level, text) => {
           if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
           this.emit(scope, {
@@ -625,9 +631,10 @@ export class BrowserSessionManager {
 
   async close(scope: BrowserScope, reason = "explicit_close"): Promise<BrowserSessionDto> {
     const session = this.owned(scope);
-    if (session.dto.status === "closed") return publicDto(session);
-    const driver = session.driver;
+    if (session.dto.status === "closed" && !session.closingDriver) return publicDto(session);
+    const driver = session.driver ?? session.closingDriver;
     session.driver = undefined;
+    session.closingDriver = driver;
     session.lifecycleEpoch += 1;
     session.replayUrl = undefined;
     session.lastFrame = undefined;
@@ -638,6 +645,7 @@ export class BrowserSessionManager {
     };
     this.lifecycle(session, reason);
     await this.closeDriver(driver);
+    if (session.closingDriver === driver) session.closingDriver = undefined;
     return publicDto(session);
   }
 
@@ -923,7 +931,17 @@ class ChromeCdpDriver implements BrowserDriver {
   }
 
   async close(): Promise<void> {
-    await this.connection.send("Browser.close").catch(() => undefined);
+    let closeTimer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.connection.send("Browser.close").catch(() => undefined),
+        new Promise<void>((resolve) => {
+          closeTimer = setTimeout(resolve, 250);
+        }),
+      ]);
+    } finally {
+      if (closeTimer) clearTimeout(closeTimer);
+    }
     await terminateBrowserProcess(this.child);
     await removeBrowserProfile(this.profileDir);
   }

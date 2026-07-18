@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import type { RuntimeProcessHandle } from "@ponderosa/core";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
 
@@ -55,6 +56,8 @@ export interface JsonRpcProcessOptions {
   signal: AbortSignal;
   spawnFn?: SpawnFn;
   killGraceMs?: number;
+  /** Register authority immediately after spawn, before transport setup. */
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   handleServerRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 
@@ -78,6 +81,7 @@ export class JsonRpcProcess {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
+    opts.onRuntimeSpawned(this);
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {

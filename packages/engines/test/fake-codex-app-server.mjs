@@ -25,8 +25,16 @@ if (process.env.PONDEROSA_TEST_DESCENDANT_PID_FILE) {
 lines.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialized") return;
-  if (message.method === "initialize") return send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "linux" } });
+  if (message.method === "initialize") {
+    if (process.env.PONDEROSA_TEST_FAIL_INITIALIZE === "1") {
+      return send({ id: message.id, error: { code: -32000, message: "simulated initialize failure" } });
+    }
+    return send({ id: message.id, result: { userAgent: "fake", codexHome: "/tmp", platformFamily: "unix", platformOs: "linux" } });
+  }
   if (message.method === "thread/start" || message.method === "thread/resume") {
+    if (process.env.PONDEROSA_TEST_FAIL_THREAD_OPEN === "1") {
+      return send({ id: message.id, error: { code: -32000, message: "simulated thread open failure" } });
+    }
     dynamicToolEnabled = Array.isArray(message.params?.dynamicTools) && message.params.dynamicTools.length > 0;
     return send({ id: message.id, result: { thread: { id: "codex-thread-v1" } } });
   }

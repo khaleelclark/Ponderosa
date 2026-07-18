@@ -93,4 +93,41 @@ describe("observed process-group termination", () => {
       rmSync(temp, { recursive: true, force: true });
     }
   });
+
+  it.runIf(process.platform !== "win32")("terminates a descendant that retains stdout after the provider root exits", async () => {
+    const temp = mkdtempSync(path.join(tmpdir(), "ponderosa-root-exit-stream-"));
+    const pidFile = path.join(temp, "descendant.json");
+    const fake = fileURLToPath(new URL("./fake-root-exit-inherited-stdout.mjs", import.meta.url));
+    const controller = new AbortController();
+    const events: AgentEvent[] = [];
+    let rootAuthorityRevoked = false;
+    let settled = false;
+    try {
+      const collection = (async () => {
+        for await (const event of streamProcess({
+          bin: process.execPath,
+          args: [fake],
+          cwd: temp,
+          signal: controller.signal,
+          environment: { PONDEROSA_TEST_DESCENDANT_PID_FILE: pidFile },
+          spawnFn: spawn,
+          killGraceMs: 200,
+          label: "root-exit inherited-stdout",
+          map: () => [{ type: "session", sessionId: "root-exited" }],
+          onRuntimeRootExit: () => { rootAuthorityRevoked = true; },
+        })) events.push(event);
+      })().finally(() => { settled = true; });
+      await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow());
+      const descendantPid = JSON.parse(readFileSync(pidFile, "utf8")) as { descendantPid: number };
+      await vi.waitFor(() => expect(rootAuthorityRevoked).toBe(true));
+      expect(settled).toBe(false);
+      expect(processAlive(descendantPid.descendantPid)).toBe(true);
+      await collection;
+      expect(events).toContainEqual({ type: "session", sessionId: "root-exited" });
+      expect(processAlive(descendantPid.descendantPid)).toBe(false);
+    } finally {
+      controller.abort();
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
 });

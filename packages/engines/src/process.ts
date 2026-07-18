@@ -33,6 +33,8 @@ export interface StreamProcessOptions {
   args: string[];
   cwd: string;
   signal: AbortSignal;
+  /** Fence host capabilities as soon as the provider root exits. */
+  onRuntimeRootExit?: () => void;
   environment?: Record<string, string>;
   spawnFn: SpawnFn;
   /** ms to wait after SIGTERM before SIGKILL on cancel. */
@@ -45,6 +47,8 @@ export interface StreamProcessOptions {
   stdin?: string;
   faults?: RuntimeProcessFaults;
 }
+
+const POST_EXIT_STDOUT_DRAIN_MS = 250;
 
 /**
  * Spawn a CLI, parse its stdout as JSONL, and yield mapped AgentEvents. On abort,
@@ -59,6 +63,7 @@ export async function* streamProcess(
     args,
     cwd,
     signal,
+    onRuntimeRootExit,
     environment,
     spawnFn,
     killGraceMs,
@@ -121,12 +126,47 @@ export async function* streamProcess(
   child.on("error", (err: Error) => {
     spawnError = err;
   });
+  // `close` waits for inherited stdio to close. A background descendant can
+  // deliberately keep stdout open after the provider root exits, so observe
+  // `exit` independently and revoke the complete process group immediately.
+  const rootExit = waitForExit(child);
+  const rootTermination = rootExit.then(() => {
+    try { onRuntimeRootExit?.(); }
+    finally { return terminate(); }
+  });
+  void rootTermination.catch(() => undefined);
+  let stdoutDrainTimer: NodeJS.Timeout | undefined;
+  const stdoutDrainExpired = rootTermination.then(
+    () => undefined,
+    () => undefined,
+  ).then(() => new Promise<void>((resolve) => {
+    stdoutDrainTimer = setTimeout(resolve, POST_EXIT_STDOUT_DRAIN_MS);
+  }));
 
   try {
     const stdout = child.stdout;
     if (stdout) {
       stdout.setEncoding("utf8");
-      for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
+      const parsed = parseJsonlChunks(stdout as AsyncIterable<string>)[Symbol.asyncIterator]();
+      while (true) {
+        const next = parsed.next().then(
+          (value) => ({ kind: "stdout" as const, value }),
+          (error: unknown) => ({ kind: "stdout_error" as const, error }),
+        );
+        const outcome = await Promise.race([
+          next,
+          stdoutDrainExpired.then(() => ({ kind: "stdout_deadline" as const })),
+        ]);
+        if (outcome.kind === "stdout_deadline") {
+          // The provider group is already gone (or termination has produced a
+          // bounded failure). Do not let an inherited/out-of-group descriptor
+          // retain the Run forever.
+          stdout.destroy();
+          break;
+        }
+        if (outcome.kind === "stdout_error") throw outcome.error;
+        if (outcome.value.done) break;
+        const raw = outcome.value.value;
         await faults?.afterDecodeBeforeYield?.(raw, processSnapshot(child));
         for (const ev of map(raw, { cwd })) {
           yield ev;
@@ -134,11 +174,8 @@ export async function* streamProcess(
       }
     }
 
-    const code = await waitForClose(child);
-    // Root exit is insufficient: commands spawned by the CLI can remain in
-    // the detached process group. Resolve the Run only after the whole group
-    // is observed gone, escalating through SIGKILL when required.
-    await terminate();
+    const code = await rootExit;
+    await rootTermination;
 
     if (spawnError) {
       yield { type: "error", message: `failed to spawn ${bin}: ${spawnError.message}` };
@@ -152,6 +189,7 @@ export async function* streamProcess(
       };
     }
   } finally {
+    if (stdoutDrainTimer) clearTimeout(stdoutDrainTimer);
     signal.removeEventListener("abort", onAbort);
     await terminate();
   }
@@ -168,8 +206,8 @@ function processSnapshot(child: ChildProcess): ProcessStreamSnapshot {
   };
 }
 
-/** Resolve with the process exit code once it has fully closed (or failed to spawn). */
-function waitForClose(child: ChildProcess): Promise<number | null> {
+/** Resolve when the root exits, independently of descendant-owned stdio. */
+function waitForExit(child: ChildProcess): Promise<number | null> {
   if (child.exitCode !== null) return Promise.resolve(child.exitCode);
   return new Promise((resolve) => {
     let done = false;
@@ -178,7 +216,7 @@ function waitForClose(child: ChildProcess): Promise<number | null> {
       done = true;
       resolve(code);
     };
-    child.once("close", (code) => finish(code));
-    child.once("error", () => finish(null)); // ENOENT etc. — 'close' may not fire
+    child.once("exit", (code) => finish(code));
+    child.once("error", () => finish(null)); // ENOENT etc. — 'exit' may not fire
   });
 }

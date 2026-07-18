@@ -232,7 +232,7 @@ export class CodexAdapter implements Adapter {
       ...this.configArgs(opts.model, opts.effort),
       "-",
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, prompt);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, prompt, opts.onRuntimeRootExit);
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
@@ -245,7 +245,7 @@ export class CodexAdapter implements Adapter {
       ...this.configArgs(opts.model, opts.effort),
       "-",
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit);
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */
@@ -255,12 +255,14 @@ export class CodexAdapter implements Adapter {
     signal: AbortSignal,
     environment?: Record<string, string>,
     stdin?: string,
+    onRuntimeRootExit?: () => void,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
       args,
       cwd,
       signal,
+      onRuntimeRootExit,
       environment,
       spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,

@@ -32,6 +32,9 @@ export class ClaudeStreamSession implements RuntimeSession {
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
+    if (!opts.onRuntimeSpawned) {
+      throw new Error("persistent runtime opening requires a spawn-time termination registrar");
+    }
     assertPersistentRuntimeHostingSupported();
     this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
@@ -64,6 +67,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
+    opts.onRuntimeSpawned(this);
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {

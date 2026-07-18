@@ -2,12 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "@ponderosa/core";
+import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
 import { ClaudeStreamSession } from "../src/claude-stream-session.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-claude-stream.mjs");
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const retainOpeningHandleForTest = (_handle: RuntimeProcessHandle): void => undefined;
 const processAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
   catch { return false; }
@@ -20,6 +21,7 @@ describe("Claude persistent stream-json runtime", () => {
     const session = new ClaudeStreamSession({
       agentId: "history", cwd: here, history: [{ role: "assistant", text: "History marker" }],
       signal: controller.signal, bin: "claude", spawnFn, permissionMode: "bypassPermissions", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
     });
     const text: string[] = [];
     const collecting = (async () => { for await (const event of session.events) {
@@ -43,6 +45,7 @@ describe("Claude persistent stream-json runtime", () => {
       cwd: here,
       history: [],
       signal: controller.signal,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       bin: "claude",
       spawnFn,
       permissionMode: "bypassPermissions",
@@ -78,6 +81,7 @@ describe("Claude persistent stream-json runtime", () => {
     const session = new ClaudeStreamSession({
       agentId: "stubborn-claude", cwd: here, history: [], signal: controller.signal,
       bin: "claude", spawnFn, permissionMode: "bypassPermissions", killGraceMs: 80,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       environment: { PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
     });
     const pid = child!.pid!;
@@ -107,6 +111,7 @@ describe("Claude persistent stream-json runtime", () => {
       cwd: here,
       history: [],
       signal: controller.signal,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       bin: "claude",
       spawnFn,
       permissionMode: "bypassPermissions",

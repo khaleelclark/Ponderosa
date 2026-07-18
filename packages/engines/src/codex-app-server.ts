@@ -48,6 +48,9 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   static async open(opts: AppServerSessionOptions): Promise<CodexAppServerSession> {
+    if (!opts.onRuntimeSpawned) {
+      throw new Error("persistent runtime opening requires a spawn-time termination registrar");
+    }
     const rpc = new JsonRpcProcess({
       bin: opts.bin,
       args: [
@@ -61,6 +64,7 @@ export class CodexAppServerSession implements RuntimeSession {
       signal: opts.signal,
       spawnFn: opts.spawnFn,
       killGraceMs: opts.killGraceMs,
+      onRuntimeSpawned: opts.onRuntimeSpawned,
       handleServerRequest: async (method, params) => {
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);
