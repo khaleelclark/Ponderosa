@@ -93,7 +93,14 @@ but idle agents must not retain an unbounded process and MCP stack. Canonical
 provider session identity survives process teardown so a later turn can resume
 without making runtime residency part of the product's memory model. Process
 teardown is complete only after the provider's detached process group is observed
-gone; daemon shutdown waits through SIGTERM grace and SIGKILL escalation.
+gone. Every eviction, rollover, replacement, cancellation, and deletion first
+moves the process handle into one retryable teardown registry; a failed close
+blocks replacement and raises an operational notification. Project deletion
+keeps canonical Project state until every provider barrier succeeds. Production
+SIGTERM/SIGINT stops intake through Fastify shutdown, attempts every runtime
+group, and waits through SIGTERM grace and SIGKILL escalation before the daemon
+may exit. Persistent runtime hosting is explicitly unavailable on Windows until
+Ponderosa can contain and observe descendants with Job Objects.
 
 A stop action is scoped to the exact Run the user or managing Agent observed.
 If that Run has already ended or been replaced, Ponderosa reports the stale

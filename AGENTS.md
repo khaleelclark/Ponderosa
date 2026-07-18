@@ -286,8 +286,15 @@ Ordinary runtime output → execution-scoped Work log
   process does not erase the canonical provider session id; later turns may
   resume it without retaining one process/MCP stack per idle agent indefinitely.
   `RuntimeSession.close()` is a process-group termination barrier: SIGTERM grace,
-  SIGKILL escalation, then observed exit. Daemon shutdown awaits that same shared
-  barrier and fails closed if authority cannot be revoked.
+  SIGKILL escalation, then observed exit. Before any eviction, rollover,
+  replacement, cancellation, instruction refresh, or deletion removes a runtime
+  from the reusable pool, move its handle into the retryable teardown registry.
+  Failed teardown blocks replacement and raises an operational notification.
+  Project deletion must preserve Project state until all runtime barriers pass.
+  Production SIGTERM/SIGINT must call and await Fastify close; shutdown attempts
+  every process group before aggregating failures and closes canonical storage
+  only after the complete policy succeeds. Persistent runtime hosting fails
+  closed on Windows until Job Object descendant containment is implemented.
 - Explicit user cancellation targets the exact Run ID the caller observed and is
   terminal only for that Run and its claimed activation. A delayed or retried
   stop must return a conflict rather than cancel a successor Run. An accepted

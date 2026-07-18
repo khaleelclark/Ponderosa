@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
-import { terminateProcessGroup } from "../src/process-termination.js";
+import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "../src/process-termination.js";
 
 describe("observed process-group termination", () => {
+  it("fails before persistent runtime spawn on unsupported Windows hosting", () => {
+    expect(() => assertPersistentRuntimeHostingSupported("win32")).toThrow(/Job Object process-tree containment/);
+    expect(() => assertPersistentRuntimeHostingSupported("linux")).not.toThrow();
+  });
+
   it.runIf(process.platform !== "win32")("rejects and leaves the live handle retryable when signal delivery fails", async () => {
     const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], {
       detached: process.platform !== "win32",

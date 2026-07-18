@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "@ponderosa/core/config";
 import { defaultEngineRegistrations } from "@ponderosa/engines";
 import { createServer } from "./app.js";
+import { installProcessShutdownHandlers } from "./shutdown.js";
 
 const config = loadConfig();
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,7 @@ const app = createServer({
   buildRevision: process.env.PONDEROSA_BUILD_SHA,
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? `http://127.0.0.1:${config.port}`,
 });
+installProcessShutdownHandlers(app);
 
 try {
   await app.listen({ port: config.port, host: config.host });

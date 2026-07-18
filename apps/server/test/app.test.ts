@@ -736,6 +736,7 @@ class SteerableMockAdapter extends MockAdapter {
   closed = 0;
   interrupted = 0;
   closeFailuresRemaining = 0;
+  closeBarrier?: Promise<void>;
   failNextSteer = false;
   completeStartedTurns = false;
   completeSteers = true;
@@ -779,6 +780,7 @@ class SteerableMockAdapter extends MockAdapter {
       interrupt: async () => { this.interrupted += 1; },
       close: async () => {
         this.closed += 1;
+        await this.closeBarrier;
         if (this.closeFailuresRemaining > 0) {
           this.closeFailuresRemaining -= 1;
           throw new Error("simulated provider close failure");
@@ -2246,6 +2248,82 @@ describe("persistent engine steering", () => {
     expect(persistent.closed).toBe(1);
   });
 
+  it("retains a failed idle teardown and fences replacement until retry confirms exit", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    persistent.closeFailuresRemaining = 1;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    let idleCallback: (() => void) | undefined;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: {
+        idleTtlMs: 10,
+        maxIdleSessions: 1,
+        setTimer: (callback) => {
+          idleCallback = callback;
+          return { unref() {} } as unknown as NodeJS.Timeout;
+        },
+        clearTimer: () => undefined,
+      },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Retryable runtime teardown", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Retained", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first" } });
+    await waitForRun(agent.id);
+    idleCallback?.();
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `runtime-teardown:${agent.id}`, status: "open" }),
+      ]));
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "retry safely" } });
+    await waitForRun(agent.id, 2);
+    expect(persistent.closed).toBe(2);
+    expect(persistent.opened).toBe(2);
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `runtime-teardown:${agent.id}`, status: "resolved" }),
+      ]));
+    await app.close();
+  });
+
+  it("does not open a replacement while an earlier runtime termination is in flight", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    let releaseClose!: () => void;
+    persistent.closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    let idleCallback: (() => void) | undefined;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: {
+        idleTtlMs: 10,
+        maxIdleSessions: 1,
+        setTimer: (callback) => {
+          idleCallback = callback;
+          return { unref() {} } as unknown as NodeJS.Timeout;
+        },
+        clearTimer: () => undefined,
+      },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "In-flight runtime teardown", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Serialized", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first" } });
+    await waitForRun(agent.id);
+    idleCallback?.();
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "must wait" } });
+    await sleep(40);
+    expect(persistent.opened).toBe(1);
+    releaseClose();
+    await waitForRun(agent.id, 2);
+    expect(persistent.opened).toBe(2);
+    await app.close();
+  });
+
   it("closes idle persistent runtimes by default instead of retaining an implicit warm pool", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
@@ -2349,6 +2427,29 @@ describe("persistent engine steering", () => {
     expect(processAlive(pid)).toBe(true);
     await closing;
     expect(processAlive(pid)).toBe(false);
+  });
+
+  it("attempts every runtime barrier before reporting aggregate shutdown failure", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 2, idleTtlMs: 60_000 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Exhaustive shutdown", hostPath: repoDir });
+    const agents = ["First", "Second"].map((title) =>
+      store.createAgent(project.id, { title, engine: "codex" }));
+    for (const agent of agents) {
+      await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "finish" } });
+      await waitForRun(agent.id);
+    }
+    persistent.closeFailuresRemaining = 1;
+    await expect(app.close()).rejects.toThrow(/Provider runtime shutdown did not complete/);
+    expect(persistent.closed).toBe(2);
+    await app.retryProviderRuntimeShutdown();
+    expect(persistent.closed).toBe(3);
   });
 });
 
@@ -3123,6 +3224,40 @@ describe("server chunk F", () => {
       deleted: true, deletedAgentIds: [agent.id], deletionReceiptId: receiptId,
       cleanupPending: false, replayed: true,
     });
+    await app.close();
+  });
+
+  it("keeps Project data intact until every provider runtime termination barrier succeeds", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Project deletion barrier", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Retain until closed", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "finish" } });
+    await waitForRun(agent.id);
+    persistent.closeFailuresRemaining = 1;
+
+    const blocked = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ cleanupPending: true, retryable: true });
+    expect(store.getProject(project.id)).toBeDefined();
+    expect(store.getAgent(agent.id)).toBeDefined();
+    expect(persistent.closed).toBe(1);
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `runtime-teardown:${agent.id}`, status: "open" }),
+      ]));
+
+    const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(retried.json()).toEqual({ deleted: true });
+    expect(persistent.closed).toBe(2);
+    expect(store.getProject(project.id)).toBeUndefined();
     await app.close();
   });
 

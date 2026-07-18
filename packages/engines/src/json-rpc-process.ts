@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { SpawnFn } from "./process.js";
-import { terminateProcessGroup } from "./process-termination.js";
+import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -71,6 +71,7 @@ export class JsonRpcProcess {
   readonly notifications: AsyncIterable<JsonRpcNotification> = this.queue;
 
   constructor(private readonly opts: JsonRpcProcessOptions) {
+    assertPersistentRuntimeHostingSupported();
     this.child = (opts.spawnFn ?? nodeSpawn)(opts.bin, opts.args, {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.environment },
