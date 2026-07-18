@@ -567,12 +567,14 @@ export function ChatMarkdown({
   agentIdForHandle,
   agentMentionForHandle,
   onOpenAgent,
+  onOpenBroadcast,
   previewScope,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
+  onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
 }): JSX.Element {
   return (
@@ -611,6 +613,9 @@ export function ChatMarkdown({
           a: ({ href, children: label }) => {
             if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope}>{label}</ChatLink>;
             const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
+            if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
+              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
+            }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
             const visibleLabel = boundMention ? `#${boundMention.label}` : label;
@@ -627,14 +632,15 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, previewScope }: {
+export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
+  onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
 }): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope}>{text}</ChatMarkdown>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
@@ -660,12 +666,13 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, previewScope }: {
+export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope }: {
   text: string;
   citations?: VerifiedCitationDto[];
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
   onOpenAgent?(agentId: string): void;
+  onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
 }): JSX.Element {
   const collapsible = isLongChatMessage(text);
@@ -679,7 +686,7 @@ export function ChatMessageBody({ text, citations, agentIdForHandle, agentMentio
           maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
         } : undefined}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} previewScope={previewScope} />
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} />
       </Box>
       {collapsible ? (
         <Button
@@ -715,6 +722,7 @@ export function ChatPane({
   agentNameForId,
   agentIdForHandle,
   onOpenAgent,
+  onOpenBroadcast,
   onReact,
   onReply,
   previewScope,
@@ -726,6 +734,7 @@ export function ChatPane({
   agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
+  onOpenBroadcast?(message: MessageDto): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
   previewScope?: LinkPreviewScope;
@@ -849,6 +858,9 @@ export function ChatPane({
                 return binding && title ? { agentId: binding.agentId, label: agentMentionHandle(title) } : undefined;
               }}
               onOpenAgent={onOpenAgent}
+              onOpenBroadcast={message.role === "assistant" && message.conversationId && message.communicationEventId && /^\s*#broadcast(?:\s|$)/iu.test(message.text)
+                ? () => onOpenBroadcast?.(message)
+                : undefined}
               previewScope={linkPreviewScopeForMessage(message, previewScope)}
             />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}

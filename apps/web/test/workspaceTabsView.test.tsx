@@ -30,6 +30,7 @@ describe("workspace tab bar", () => {
     const navigate = vi.fn();
     const onClose = vi.fn();
     const onCloseAll = vi.fn();
+    const onReorder = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={projects}
@@ -37,6 +38,7 @@ describe("workspace tab bar", () => {
       navigate={navigate}
       onClose={onClose}
       onCloseAll={onCloseAll}
+      onReorder={onReorder}
     /></QueryClientProvider>);
 
     const rendered = JSON.stringify(view.toJSON());
@@ -58,6 +60,19 @@ describe("workspace tab bar", () => {
     const releaseTab = view.root.findByProps({ "aria-label": "Open Release planning in Website" });
     act(() => releaseTab.props.onClick());
     expect(navigate).toHaveBeenCalledWith(releaseRoute);
+
+    const dataTransfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn(),
+      getData: vi.fn(() => "conversation:alpha:release"),
+    };
+    act(() => releaseTabContainer.props.onDragStart({ dataTransfer }));
+    const reviewerTabContainer = view.root.findByProps({ "data-tab-key": "agent:beta:reviewer" });
+    expect(reviewerTabContainer.props.draggable).toBe(true);
+    act(() => reviewerTabContainer.props.onDragOver({ preventDefault: vi.fn(), dataTransfer }));
+    act(() => view.root.findByProps({ "data-tab-key": "agent:beta:reviewer" }).props.onDrop({ preventDefault: vi.fn(), dataTransfer }));
+    expect(onReorder).toHaveBeenCalledWith("conversation:alpha:release", "agent:beta:reviewer");
     view.unmount();
     client.clear();
   });

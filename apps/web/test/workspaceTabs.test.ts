@@ -4,6 +4,7 @@ import {
   mostRecentWorkspaceTab,
   openWorkspaceTab,
   removeProjectWorkspaceTabs,
+  reorderWorkspaceTabs,
   restoreWorkspaceTabs,
   serializeWorkspaceTabs,
   workspaceTabKey,
@@ -42,5 +43,19 @@ describe("persistent cross-project workspace tabs", () => {
     const beta = { kind: "agent", projectId: "beta", agentId: "two" } as const;
     const tabs = openWorkspaceTab(openWorkspaceTab([], alpha, 1), beta, 2);
     expect(removeProjectWorkspaceTabs(tabs, new Set(["beta"]))).toEqual([tabs[1]]);
+  });
+
+  it("reorders tabs without changing their stable routes or activation history", () => {
+    const alpha = { kind: "conversation", projectId: "alpha", conversationId: "one" } as const;
+    const beta = { kind: "agent", projectId: "beta", agentId: "two" } as const;
+    const gamma = { kind: "project", projectId: "gamma" } as const;
+    const tabs = openWorkspaceTab(openWorkspaceTab(openWorkspaceTab([], alpha, 1), beta, 2), gamma, 3);
+    const reordered = reorderWorkspaceTabs(tabs, tabs[0]!.key, tabs[2]!.key);
+
+    expect(reordered.map((tab) => tab.key)).toEqual([tabs[1]!.key, tabs[2]!.key, tabs[0]!.key]);
+    expect(reordered.find((tab) => tab.key === tabs[0]!.key)).toEqual(tabs[0]);
+    expect(restoreWorkspaceTabs(serializeWorkspaceTabs(reordered))).toEqual(reordered);
+    expect(reorderWorkspaceTabs(reordered, "missing", tabs[1]!.key)).toBe(reordered);
+    expect(reorderWorkspaceTabs(reordered, tabs[1]!.key, tabs[1]!.key)).toBe(reordered);
   });
 });

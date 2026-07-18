@@ -179,6 +179,7 @@ export function AgentDetail({
   conversations,
   onBack,
   onOpenAgent,
+  onOpenBroadcast,
   onOpenMaster,
   onNewSubagent,
   onDeleted,
@@ -194,6 +195,7 @@ export function AgentDetail({
   conversations: ConversationDto[];
   onBack(): void;
   onOpenAgent(agentId: string): void;
+  onOpenBroadcast(conversationId: string, communicationEventId: string): void;
   onOpenMaster(conversationId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
@@ -528,7 +530,7 @@ export function AgentDetail({
     };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ minHeight: 0, overflow: "auto" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} operatorProfile={preferencesQuery.data?.profile} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ minHeight: 0, overflow: "auto" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,

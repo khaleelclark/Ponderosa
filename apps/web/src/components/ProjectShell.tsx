@@ -276,6 +276,7 @@ export function ProjectShell({
           navigate(destination);
         }}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenBroadcast={(conversationId, communicationEventId) => navigate({ kind: "conversation", projectId, conversationId, focusMessageId: communicationEventId })}
         onOpenMaster={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
         onNewSubagent={openNewSubagent}
         onDeleted={() => {
