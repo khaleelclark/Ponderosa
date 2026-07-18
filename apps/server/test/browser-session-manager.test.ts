@@ -86,6 +86,25 @@ describe("run-scoped browser sessions", () => {
     expect(await manager.open(scope, "https://example.com/next", "operator")).toMatchObject({ controlOwner: "operator", url: "https://example.com/next" });
   });
 
+  it("retains a failed browser close handle for an exact cleanup retry", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const driver = fakeDriver();
+    let failClose = true;
+    driver.close = vi.fn(async () => {
+      if (failClose) throw new Error("simulated browser close failure");
+    });
+    const manager = new BrowserSessionManager(dataDir, async () => driver, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+    await manager.open(scope);
+
+    await expect(manager.close(scope, "project_deleted")).rejects.toThrow(/simulated browser close failure/);
+    expect(manager.get(scope.agentId)).toMatchObject({ status: "closed" });
+    failClose = false;
+    await expect(manager.close(scope, "project_deleted")).resolves.toMatchObject({ status: "closed" });
+    expect(driver.close).toHaveBeenCalledTimes(2);
+  });
+
   it("accepts only non-credentialed http(s) navigation", () => {
     expect(validateBrowserUrl("https://example.com/a")).toBe("https://example.com/a");
     expect(() => validateBrowserUrl("file:///etc/passwd")).toThrow(BrowserSessionError);

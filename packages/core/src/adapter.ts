@@ -81,6 +81,9 @@ export interface RunOptionsBase {
   environment?: Record<string, string>;
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
   signal: AbortSignal;
+  /** Called when a non-persistent provider root exits, before descendant
+   * termination or stdout drain completes. Hosts revoke Run capabilities here. */
+  onRuntimeRootExit?: () => void;
 }
 
 /** Options for continuing an agent's already-active runtime session. */
@@ -140,17 +143,20 @@ export type RuntimeSteerResult =
  * New signals steer an active turn or start a turn while idle; callers retain a
  * durable mailbox only for the short intervals where neither operation is safe.
  */
-export interface RuntimeSession {
-  readonly engineAgentId: string;
-  readonly events: AsyncIterable<AgentEvent>;
-  /** True while the persistent engine transport is still owned and running. */
+export interface RuntimeProcessHandle {
+  /** True while the provider process group is still owned and running. */
   isAlive(): boolean;
-  startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
-  steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
-  interrupt(): Promise<void>;
   /** Resolve only after the owned provider process group has exited. A failed
    * termination attempt rejects while retaining enough authority to retry. */
   close(): Promise<void>;
+}
+
+export interface RuntimeSession extends RuntimeProcessHandle {
+  readonly engineAgentId: string;
+  readonly events: AsyncIterable<AgentEvent>;
+  startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
+  steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
+  interrupt(): Promise<void>;
 }
 
 export interface OpenRuntimeSessionOptions {
@@ -164,6 +170,10 @@ export interface OpenRuntimeSessionOptions {
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];
   handleDynamicToolCall?: RuntimeDynamicToolHandler;
+  /** Called synchronously after the adapter spawns a provider process and
+   * before it awaits initialization/readiness. The host retains this authority
+   * handle even when opening later rejects. */
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   signal: AbortSignal;
 }
 

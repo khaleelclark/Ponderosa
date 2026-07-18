@@ -289,14 +289,24 @@ Ordinary runtime output → execution-scoped Work log
   SIGKILL escalation, then observed exit. Before any eviction, rollover,
   replacement, cancellation, instruction refresh, or deletion removes a runtime
   from the reusable pool, move its handle into the retryable teardown registry.
-  Register persistent runtime openings before calling the Adapter and route every
-  late result into teardown once its Run, Project, or daemon has lost authority.
+  Register persistent runtime openings before calling the Adapter; the Adapter
+  must synchronously publish a termination handle at process spawn, before any
+  initialization or session-open await. Failed readiness retains that handle
+  until observed process-group exit. Route every late result into teardown once
+  its Run, Project, or daemon has lost authority. A non-persistent provider root
+  exit synchronously revokes its Run callback capability and starts whole-group
+  termination independently of stdout draining; inherited pipes receive only a
+  bounded post-exit drain interval.
   Project deletion and daemon shutdown must drain openings, active Run completion
   barriers, reusable sessions, and failed teardowns to a fixed point before
   deleting storage or exiting. Non-persistent Adapter Runs obey the same observed
   whole-process-group termination contract.
   Failed teardown blocks replacement and raises an operational notification.
   Project deletion must preserve Project state until all runtime barriers pass.
+  It quarantines the Project, fences scheduler ownership, and revokes Run/tool
+  capabilities synchronously before browser cleanup. Browser and provider cleanup
+  are independent bounded barriers; failure leaves the Project quarantined and
+  retryable rather than restoring Agent authority.
   Production SIGTERM/SIGINT must call and await Fastify close; shutdown attempts
   every process group before aggregating failures and closes canonical storage
   only after the complete policy succeeds. Persistent runtime hosting fails

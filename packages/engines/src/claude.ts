@@ -144,6 +144,7 @@ export class ClaudeAdapter implements Adapter {
       opts.cwd,
       opts.signal,
       opts.environment,
+      opts.onRuntimeRootExit,
     );
   }
 
@@ -153,7 +154,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.onRuntimeRootExit);
   }
 
   private run(
@@ -161,12 +162,14 @@ export class ClaudeAdapter implements Adapter {
     cwd: string,
     signal: AbortSignal,
     environment?: Record<string, string>,
+    onRuntimeRootExit?: () => void,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
       args,
       cwd,
       signal,
+      onRuntimeRootExit,
       environment,
       spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,

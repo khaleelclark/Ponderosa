@@ -747,6 +747,7 @@ class SteerableMockAdapter extends MockAdapter {
   closeFailuresRemaining = 0;
   closeBarrier?: Promise<void>;
   openBarrier?: Promise<void>;
+  openFailure?: Error;
   failNextSteer = false;
   completeStartedTurns = false;
   completeSteers = true;
@@ -760,14 +761,15 @@ class SteerableMockAdapter extends MockAdapter {
   async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
     this.opened += 1;
     this.openedOptions.push(opts);
-    await this.openBarrier;
     const queue = new TestEventQueue();
     this.queues.push(queue);
     queue.push({ type: "session", sessionId: "persistent-session" });
-    return {
+    let alive = true;
+    let closePromise: Promise<void> | undefined;
+    const session: RuntimeSession = {
       engineAgentId: "persistent-session",
       events: queue,
-      isAlive: () => true,
+      isAlive: () => alive,
       startTurn: async (input) => {
         this.starts.push(input);
         if (this.completeStartedTurns) {
@@ -789,16 +791,29 @@ class SteerableMockAdapter extends MockAdapter {
         return { status: "accepted", turnId: "persistent-turn" };
       },
       interrupt: async () => { this.interrupted += 1; },
-      close: async () => {
+      close: () => {
+        if (closePromise) return closePromise;
         this.closed += 1;
-        await this.closeBarrier;
-        if (this.closeFailuresRemaining > 0) {
-          this.closeFailuresRemaining -= 1;
-          throw new Error("simulated provider close failure");
-        }
-        queue.close();
+        const attempt = (async () => {
+          await this.closeBarrier;
+          if (this.closeFailuresRemaining > 0) {
+            this.closeFailuresRemaining -= 1;
+            throw new Error("simulated provider close failure");
+          }
+          alive = false;
+          queue.close();
+        })();
+        closePromise = attempt.catch((error) => {
+          closePromise = undefined;
+          throw error;
+        });
+        return closePromise;
       },
     };
+    opts.onRuntimeSpawned?.(session);
+    await this.openBarrier;
+    if (this.openFailure) throw this.openFailure;
+    return session;
   }
 }
 
@@ -1708,6 +1723,37 @@ describe("interactive browser API", () => {
     await app.close();
   });
 
+  it("quarantines a Project before bounded browser cleanup and permits a safe retry", async () => {
+    let releaseClose!: () => void;
+    const closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const driver = trackedBrowserDriver();
+    driver.close = vi.fn(() => closeBarrier);
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      browserDriverFactory: async () => driver,
+      projectDeletionCleanupTimeoutMs: 30,
+    });
+    const project = store.createProject({ label: "Quarantined browser", hostPath: repoDir });
+    expect((await app.inject({ method: "POST", url: `/api/projects/${project.id}/browser` })).statusCode).toBe(200);
+
+    const blocked = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ cleanupPending: true, quarantined: true, retryable: true });
+    expect(store.getProject(project.id)).toBeDefined();
+    expect((await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Must not start", engine: "codex" },
+    })).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: `/api/projects/${project.id}/browser` })).statusCode).toBe(409);
+
+    releaseClose();
+    const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
   it("tears down the browser before deleting its owning agent", async () => {
     adapter.mode = "hang";
     const driver = trackedBrowserDriver();
@@ -2545,6 +2591,50 @@ describe("persistent engine steering", () => {
     releaseOpen();
     await closing;
     expect(persistent.closed).toBe(1);
+  });
+
+  it("retains a rejected opening handle for Project-deletion cleanup retry", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.openFailure = new Error("simulated thread/start rejection");
+    persistent.closeFailuresRemaining = 1;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxDeliveryFailures: 1 },
+    });
+    const project = store.createProject({ label: "Rejected open deletion", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Opening", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Fail readiness" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    expect(persistent.openedOptions[0]?.onRuntimeSpawned).toEqual(expect.any(Function));
+
+    const deleted = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(persistent.closed).toBe(2);
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("retains a rejected opening handle for daemon-shutdown cleanup retry", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.openFailure = new Error("simulated initialize rejection");
+    persistent.closeFailuresRemaining = 1;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxDeliveryFailures: 1 },
+    });
+    const project = store.createProject({ label: "Rejected open shutdown", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Opening", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Fail readiness" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+
+    await app.close();
+    expect(persistent.closed).toBe(2);
   });
 
   it("revokes provider authority even when an earlier shutdown cleanup fails", async () => {

@@ -62,6 +62,7 @@ import type {
   AgentDto,
   MessageDto,
   MessageReferenceDto,
+  RuntimeProcessHandle,
   RuntimeSession,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
@@ -385,6 +386,9 @@ export interface CreateServerOptions {
   };
   /** Test seam or host override for the engine-agnostic browser driver. */
   browserDriverFactory?: BrowserDriverFactory;
+  /** Bound each fallible Project-deletion cleanup barrier. Production defaults
+   * to five seconds; tests may shorten the quarantine path. */
+  projectDeletionCleanupTimeoutMs?: number;
 }
 
 const nonPublicFaviconAddresses = new BlockList();
@@ -489,6 +493,12 @@ interface OpeningPersistentRuntime {
   /** Registered before Adapter.openSession() begins, so deletion and shutdown
    * cannot miss a provider process whose handle has not returned yet. */
   operation: Promise<PersistentRuntime>;
+  /** Registered synchronously at provider spawn, before adapter readiness. */
+  handle?: RuntimeProcessHandle;
+  settled?: boolean;
+  terminationConfirmed?: boolean;
+  terminationOperation?: Promise<void>;
+  lastError?: string;
 }
 
 /**
@@ -1783,6 +1793,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (timer) clearTimeout(timer);
     }
   };
+  const projectDeletionCleanupTimeoutMs = Math.max(1, opts.projectDeletionCleanupTimeoutMs ?? 5_000);
+  const awaitProjectDeletionBarrier = async (operation: Promise<unknown>, label: string): Promise<void> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        operation.then(() => undefined),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out`)), projectDeletionCleanupTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   const runtimeTerminationAttempts = new Map<object, Promise<string | undefined>>();
   const terminateRuntimeHandle = async (
     agentId: string,
@@ -2191,6 +2215,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const directReplyClaims = new Set<string>();
   const deletingAgentIds = new Set<string>();
   const deletingProjectIds = new Set<string>();
+  const projectDeletionInFlightIds = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
@@ -2333,11 +2358,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return operation;
   }
 
-  function retryPendingRuntimeTeardown(agentId: string): Promise<void> | undefined {
+  async function retryPendingRuntimeTeardown(agentId: string): Promise<void> {
     const pending = runtimeTeardowns.get(agentId);
-    return pending
-      ? teardownPersistentRuntime(agentId, pending.runtime, pending.reason, pending.projectId)
-      : undefined;
+    if (pending) await teardownPersistentRuntime(agentId, pending.runtime, pending.reason, pending.projectId);
+    const opening = openingRuntimes.get(agentId);
+    if (!opening) return;
+    await opening.operation.catch(() => undefined);
+    if (opening.handle && !opening.terminationConfirmed) {
+      await teardownOpeningRuntime(agentId, opening, "provider readiness cleanup retry");
+    }
+    if (openingRuntimes.get(agentId) === opening) {
+      throw new Error(`provider runtime readiness cleanup remains pending for ${agentId}`);
+    }
   }
 
   function persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined {
@@ -2352,6 +2384,44 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     void teardownPersistentRuntime(agentId, runtime, reason).catch((error) => {
       app.log.error({ err: error, agentId, reason }, "persistent runtime termination remains pending");
     });
+  }
+
+  function teardownOpeningRuntime(
+    agentId: string,
+    state: OpeningPersistentRuntime,
+    reason: string,
+  ): Promise<void> {
+    if (!state.handle || state.terminationConfirmed) return Promise.resolve();
+    if (state.terminationOperation) return state.terminationOperation;
+    state.lastError = undefined;
+    const operation = Promise.resolve()
+      .then(() => state.handle!.close())
+      .then(() => {
+        state.terminationConfirmed = true;
+        if (state.settled && openingRuntimes.get(agentId) === state) openingRuntimes.delete(agentId);
+        try { resolveOperationalNotification(runtimeTeardownNotificationKey(agentId)); }
+        catch { /* observed process-group exit remains authoritative */ }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        state.lastError = message;
+        try {
+          createOperationalNotification({
+            dedupeKey: runtimeTeardownNotificationKey(agentId),
+            category: "system",
+            severity: "urgent",
+            title: "Provider runtime cleanup needs attention",
+            body: `Ponderosa could not confirm that ${agentId}'s opening provider process group exited after ${reason}. New provider work for this Agent is blocked while cleanup retries. ${message}`.slice(0, 1_000),
+            projectId: state.projectId,
+          });
+        } catch { /* the retained opening handle is the fail-closed authority */ }
+        throw error;
+      })
+      .finally(() => {
+        if (state.terminationOperation === operation) state.terminationOperation = undefined;
+      });
+    state.terminationOperation = operation;
+    return operation;
   }
 
   async function drainProviderRuntimeAuthority(
@@ -2376,10 +2446,46 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
       const openingSnapshot = [...openingRuntimes]
         .filter(([agentId, opening]) => relevant(agentId) || (!agentIds && Boolean(opening.projectId)));
+      // A registered spawn-time handle is actionable before readiness settles.
+      // Close it first so a stalled initialize/thread-open request cannot hold
+      // deletion or shutdown hostage through its own unresolved Promise.
+      const spawnedOpeningEntries = openingSnapshot.filter(([, opening]) =>
+        opening.handle && !opening.terminationConfirmed
+      );
+      const spawnedTerminationResults = await Promise.allSettled(spawnedOpeningEntries.map(([agentId, opening]) =>
+        teardownOpeningRuntime(agentId, opening, reason)
+      ));
+      const spawnedTerminationFailures = spawnedTerminationResults.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [new Error(`${spawnedOpeningEntries[index]![0]} opening provider runtime did not terminate: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`)]
+          : []
+      );
+      if (spawnedTerminationFailures.length) {
+        throw new AggregateError(spawnedTerminationFailures, "Provider runtime authority drain did not complete");
+      }
       // Rejections here are expected for opens fenced by cancellation. If a
-      // returned process failed to close, its handle is now in runtimeTeardowns
-      // and the authoritative teardown pass below reports that failure.
+      // ready runtime failed to close, its handle is in runtimeTeardowns. A
+      // readiness failure retains its spawn-time handle directly on the opening
+      // state so this pass can retry it without relying on Adapter success.
       await Promise.allSettled(openingSnapshot.map(([, opening]) => opening.operation));
+      const openingTerminationEntries = openingSnapshot.filter(([, opening]) =>
+        opening.settled && opening.handle && !opening.terminationConfirmed
+      );
+      const openingTerminationResults = await Promise.allSettled(openingTerminationEntries.map(([agentId, opening]) =>
+        teardownOpeningRuntime(agentId, opening, reason)
+      ));
+      const openingTerminationFailures = openingTerminationResults.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [new Error(`${openingTerminationEntries[index]![0]} opening provider runtime did not terminate: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`)]
+          : []
+      );
+      if (openingTerminationFailures.length) {
+        throw new AggregateError(openingTerminationFailures, "Provider runtime authority drain did not complete");
+      }
 
       const completionSnapshot = [...activeRuns].filter(([agentId]) => relevant(agentId));
       const runtimes = new Map<string, PersistentRuntime>();
@@ -6443,31 +6549,43 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
-    if (deletingProjectIds.has(project.id) || agents.some((agent) => deletingAgentIds.has(agent.id))) {
+    const quarantined = deletingProjectIds.has(project.id);
+    if (projectDeletionInFlightIds.has(project.id) ||
+        (!quarantined && agents.some((agent) => deletingAgentIds.has(agent.id)))) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
     const agentIds = new Set(agents.map((agent) => agent.id));
+    projectDeletionInFlightIds.add(project.id);
     deletingProjectIds.add(project.id);
     for (const agentId of agentIds) deletingAgentIds.add(agentId);
+    let deleted = false;
     try {
+      // Quarantine synchronously before any browser/provider await. From this
+      // point no Agent in the Project can retain or reacquire scheduler/tool
+      // authority, even when a browser close hangs or rejects.
       projectBrowserGrants.delete(project.id);
-      const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
-      if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
-      // Fence scheduler ownership before touching provider processes. Project
-      // data remains intact until every provider authority barrier succeeds, so
-      // a failed deletion is safely retryable instead of half-committed.
       coordinationV3.prepareProjectDeletion(project.id);
       const browserClosures: Promise<void>[] = [];
       for (const agentId of agentIds) {
         closeLinkPreviewsForAgent(agentId, "project deleted");
         const active = activeRuns.get(agentId);
         if (active) {
-          browserClosures.push(closeRunBrowser(agentId, active, "project_deleted"));
           clearRunLeaseTimer(active);
           clearRunLivenessTimer(active);
           agentMessageCapabilities.delete(active.messageCapability);
           active.controller.abort();
+          browserClosures.push(awaitProjectDeletionBarrier(
+            closeRunBrowser(agentId, active, "project_deleted"),
+            `${agentId} Run browser cleanup`,
+          ));
         }
+      }
+      const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
+      if (projectBrowser) {
+        browserClosures.push(awaitProjectDeletionBarrier(
+          projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted"),
+          "Project browser cleanup",
+        ));
       }
       const barriers = await Promise.allSettled([
         ...browserClosures,
@@ -6493,16 +6611,33 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       store.deleteProject(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
       engineCapabilityFingerprints.clear();
+      deleted = true;
+      try { resolveOperationalNotification(`project-deletion:${project.id}`); }
+      catch { /* completed deletion remains authoritative */ }
       return { deleted: true };
     } catch (error) {
+      try {
+        createOperationalNotification({
+          dedupeKey: `project-deletion:${project.id}`,
+          category: "system",
+          severity: "urgent",
+          title: "Project deletion needs attention",
+          body: `Ponderosa quarantined ${project.label} and revoked Agent authority, but cleanup has not completed. Retry deletion after the cleanup problem is resolved. ${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
+          projectId: project.id,
+        });
+      } catch { /* in-memory quarantine remains fail closed */ }
       return reply.code(503).send({
         error: error instanceof Error ? error.message : "Project deletion is waiting for provider runtime cleanup",
         cleanupPending: true,
+        quarantined: true,
         retryable: true,
       });
     } finally {
-      deletingProjectIds.delete(project.id);
-      for (const agentId of agentIds) deletingAgentIds.delete(agentId);
+      projectDeletionInFlightIds.delete(project.id);
+      if (deleted) {
+        deletingProjectIds.delete(project.id);
+        for (const agentId of agentIds) deletingAgentIds.delete(agentId);
+      }
     }
   });
 
@@ -9476,7 +9611,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             PONDEROSA_AGENT_ROLLOVER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-session/rollover`,
             PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
           };
-          const openPersistentRuntime = async (sessionResumeId?: string): Promise<PersistentRuntime> => {
+          const openPersistentRuntime = async (
+            sessionResumeId: string | undefined,
+            onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
+          ): Promise<PersistentRuntime> => {
             const session = await engine.adapter.openSession!({
               agentId: agent.id,
               cwd: project.hostPath,
@@ -9542,6 +9680,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   text: response.body,
                 };
               },
+              onRuntimeSpawned,
               signal: controller.signal,
             });
             return {
@@ -9559,7 +9698,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             // is visible to Project deletion and shutdown before openSession()
             // can spawn or await anything.
             const operation = Promise.resolve()
-              .then(() => openPersistentRuntime(sessionResumeId))
+              .then(() => openPersistentRuntime(sessionResumeId, (handle) => {
+                if (state.handle && state.handle !== handle) {
+                  void handle.close().catch((error) => {
+                    app.log.error({ err: error, agentId: agent.id }, "duplicate opening provider handle failed to terminate");
+                  });
+                  throw new Error(`provider adapter registered multiple opening handles for ${agent.id}`);
+                }
+                state.handle = handle;
+              }))
               .then(async (runtime) => {
                 const currentAgent = store.getAgent(agent.id);
                 const stillAuthoritative = !closed && !deletingProjectIds.has(project.id) && !deletingAgentIds.has(agent.id) &&
@@ -9572,8 +9719,28 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 runtimeSessions.set(agent.id, runtime);
                 return runtime;
               })
+              .catch(async (error: unknown) => {
+                // Adapter readiness can reject after the provider has spawned.
+                // Retain and close that spawn-time handle before propagating the
+                // open failure; a failed close leaves the state retryable.
+                if (state.handle && !state.terminationConfirmed && !runtimeTeardowns.has(agent.id)) {
+                  try {
+                    await teardownOpeningRuntime(agent.id, state, "provider readiness failed");
+                  } catch (closeError) {
+                    throw new AggregateError(
+                      [error, closeError],
+                      `provider runtime readiness and cleanup failed for ${agent.id}`,
+                    );
+                  }
+                }
+                throw error;
+              })
               .finally(() => {
-                if (openingRuntimes.get(agent.id) === state) openingRuntimes.delete(agent.id);
+                state.settled = true;
+                if (openingRuntimes.get(agent.id) === state &&
+                    (!state.handle || state.terminationConfirmed || runtimeSessions.has(agent.id) || runtimeTeardowns.has(agent.id))) {
+                  openingRuntimes.delete(agent.id);
+                }
               });
             state.projectId = project.id;
             state.operation = operation;
@@ -9624,6 +9791,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   effort: effectiveEffort,
                   environment,
                   signal: controller.signal,
+                  onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
                 })
             : persistentRuntime
               ? {
@@ -9659,6 +9827,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   effort: effectiveEffort,
                   environment,
                   signal: controller.signal,
+                  onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
                 });
 
           const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
@@ -10277,6 +10446,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{ Params: { projectId: string }; Body: Partial<ProjectBrowserNavigateRequest> }>(projectBrowserRoute, async (request, reply) => {
     if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     try {
       const scope = projectBrowserScope(request.params.projectId);
       const session = await projectBrowserSessions.open(scope, request.body?.url, "operator");
@@ -10288,6 +10458,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{ Params: { projectId: string }; Body: ProjectBrowserNavigateRequest }>(`${projectBrowserRoute}/navigate`, async (request, reply) => {
     if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     try {
       if (typeof request.body?.url !== "string") return reply.code(400).send({ error: "url is required" });
       const scope = projectBrowserScope(request.params.projectId);
@@ -10300,6 +10471,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{ Params: { projectId: string } }>(`${projectBrowserRoute}/reconnect`, async (request, reply) => {
     if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     try {
       const scope = projectBrowserScope(request.params.projectId);
       const session = await projectBrowserSessions.reconnect(scope);
@@ -10323,6 +10495,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.put<{ Params: { projectId: string }; Body: ProjectBrowserControlRequest }>(`${projectBrowserRoute}/control`, async (request, reply) => {
     const project = store.getProject(request.params.projectId);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
     if ((request.body?.owner !== "agent" && request.body?.owner !== "operator") || !Number.isSafeInteger(request.body?.expectedControlEpoch)) {
       return reply.code(400).send({ error: "owner and expectedControlEpoch are required" });
     }
@@ -10361,6 +10534,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{ Params: { projectId: string }; Body: BrowserOperatorInputRequest }>(`${projectBrowserRoute}/input`, async (request, reply) => {
     if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     try {
       if (!request.body || !["click", "type", "key", "scroll"].includes(request.body.kind) || !Number.isSafeInteger(request.body.expectedControlEpoch)) {
         return reply.code(400).send({ error: "valid input and expectedControlEpoch are required" });

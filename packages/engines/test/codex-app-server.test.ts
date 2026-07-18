@@ -2,12 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "@ponderosa/core";
+import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
 import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, reconcileProviderRequestUsage, subtractUsage, sumProviderRequestUsage } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const retainOpeningHandleForTest = (_handle: RuntimeProcessHandle): void => undefined;
 const processAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
   catch { return false; }
@@ -20,6 +21,7 @@ describe("Codex app-server persistent runtime", () => {
     const session = await CodexAppServerSession.open({
       agentId: "history", cwd: here, history: [{ role: "assistant", text: "History marker" }],
       signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
     });
     const text: string[] = [];
     const collecting = (async () => { for await (const event of session.events) {
@@ -88,6 +90,7 @@ describe("Codex app-server persistent runtime", () => {
       cwd: here,
       history: [],
       signal: controller.signal,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       bin: "codex",
       spawnFn,
       sandboxMode: "danger-full-access",
@@ -132,6 +135,7 @@ describe("Codex app-server persistent runtime", () => {
     const session = await CodexAppServerSession.open({
       agentId: "stubborn-codex", cwd: here, history: [], signal: controller.signal,
       bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 80,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       environment: { PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
     });
     const pid = child!.pid!;
@@ -147,6 +151,29 @@ describe("Codex app-server persistent runtime", () => {
     expect(processAlive(pid)).toBe(false);
   });
 
+  it.each([
+    ["initialize", { PONDEROSA_TEST_FAIL_INITIALIZE: "1" }],
+    ["thread open", { PONDEROSA_TEST_FAIL_THREAD_OPEN: "1" }],
+  ])("registers the provider process before a rejected %s handshake", async (_label, environment) => {
+    const controller = new AbortController();
+    let child: ChildProcess | undefined;
+    let openingHandle: RuntimeProcessHandle | undefined;
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => {
+      child = spawn(process.execPath, [fake], opts);
+      return child;
+    }) as unknown as typeof spawn;
+    await expect(CodexAppServerSession.open({
+      agentId: "failed-open", cwd: here, history: [], signal: controller.signal,
+      bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 50,
+      environment,
+      onRuntimeSpawned: (handle) => { openingHandle = handle; },
+    })).rejects.toThrow(/simulated (initialize|thread open) failure/);
+    expect(openingHandle).toBeDefined();
+    expect(processAlive(child!.pid!)).toBe(true);
+    await openingHandle!.close();
+    expect(processAlive(child!.pid!)).toBe(false);
+  });
+
   it("costs the first resumed turn from per-request checkpoints when no cumulative baseline is replayed", async () => {
     const controller = new AbortController();
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
@@ -154,6 +181,7 @@ describe("Codex app-server persistent runtime", () => {
     const session = await CodexAppServerSession.open({
       agentId: "ponderosa-thread", cwd: here, history: [], resumeSessionId: "codex-thread-v1",
       signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
     });
     const events: AgentEvent[] = [];
     const collecting = (async () => {
@@ -186,6 +214,7 @@ describe("Codex app-server persistent runtime", () => {
       cwd: here,
       history: [],
       signal: controller.signal,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       bin: "codex",
       spawnFn,
       sandboxMode: "workspace-write",
