@@ -729,6 +729,7 @@ class SteerableMockAdapter extends MockAdapter {
   opened = 0;
   closed = 0;
   interrupted = 0;
+  closeFailuresRemaining = 0;
   failNextSteer = false;
   completeStartedTurns = false;
   completeSteers = true;
@@ -770,7 +771,13 @@ class SteerableMockAdapter extends MockAdapter {
         return { status: "accepted", turnId: "persistent-turn" };
       },
       interrupt: async () => { this.interrupted += 1; },
-      close: async () => { this.closed += 1; },
+      close: async () => {
+        this.closed += 1;
+        if (this.closeFailuresRemaining > 0) {
+          this.closeFailuresRemaining -= 1;
+          throw new Error("simulated provider close failure");
+        }
+      },
     };
   }
 }
@@ -3062,6 +3069,59 @@ describe("server chunk F", () => {
       deleted: true, deletedAgentIds: [agent.id], deletionReceiptId: receiptId,
       cleanupPending: false, replayed: true,
     });
+    await app.close();
+  });
+
+  it("retains a failed provider runtime close for durable deletion cleanup retry", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      agentDeletionCleanupFaults: { runtimeTerminationTimeoutMs: 50 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Provider cleanup retry", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Delete with runtime", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Finish and stay warm" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    await vi.waitFor(() => expect(new CoordinationV3Store(store.sqlite).agentSnapshot(agent.id).activeRun).toBeUndefined());
+    expect(persistent.closed).toBe(0);
+    persistent.closeFailuresRemaining = 1;
+
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, payload: { rootAgentIds: [agent.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const committed = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    const receiptId = committed.json<{ deletionReceiptId: string }>().deletionReceiptId;
+    expect(store.sqlite.prepare(`SELECT server_cleanup_completed, last_error FROM agent_deletion_receipts WHERE id = ?`).get(receiptId)).toMatchObject({
+      server_cleanup_completed: 0,
+      last_error: expect.stringContaining("simulated provider close failure"),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: `agent-deletion:${receiptId}:cleanup-pending`, status: "open" }),
+    ]));
+
+    const replay = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({ deleted: true, cleanupPending: false, replayed: true });
+    expect(persistent.closed).toBe(2);
+    expect(store.sqlite.prepare(`SELECT server_cleanup_completed, last_error FROM agent_deletion_receipts WHERE id = ?`).get(receiptId)).toEqual({
+      server_cleanup_completed: 1,
+      last_error: null,
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: `agent-deletion:${receiptId}:cleanup-pending`, status: "resolved" }),
+    ]));
     await app.close();
   });
 
@@ -6687,6 +6747,72 @@ describe("V3.3 Decisions, management, and portability", () => {
     await app.inject({ method: "POST", url: `/api/decisions/${scopedPlan.approvalDecisionId}/respond`, payload: { optionId: "approve" } });
     expect((await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: scopedPlan.planId } })).success).toBe(true);
     expect(store.getAgent(leaf.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("binds a managed stop plan to the exact Run active at planning time", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5, maxConcurrentRuns: 4 } });
+    const project = store.createProject({ label: "Exact managed stop", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Team" });
+    const owner = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const child = store.createAgent(project.id, {
+      title: "Worker", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id,
+    });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${owner.id}/messages`,
+      payload: { text: "Manage the worker", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${child.id}/messages`, payload: { text: "Run A" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const ownerRuntime = persistent.openedOptions[0]!;
+    const runA = new CoordinationV3Store(store.sqlite).agentSnapshot(child.id).activeRun!.id;
+    const planned = await ownerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: {
+        action: "plan", idempotencyKey: "stop-run-a",
+        operations: [{ kind: "stop_agent", targetAgentId: child.id }],
+      },
+    });
+    expect(planned.success, planned.text).toBe(true);
+    const plan = JSON.parse(planned.text) as { planId: string; operations: Array<Record<string, unknown>> };
+    expect(plan.operations[0]).not.toHaveProperty("targetRunId");
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${child.id}/cancel`,
+      payload: { targetRunId: runA, idempotencyKey: "replace-run-a" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${child.id}/messages`, payload: { text: "Run B" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    const runB = new CoordinationV3Store(store.sqlite).agentSnapshot(child.id).activeRun!.id;
+    expect(runB).not.toBe(runA);
+
+    const staleApply = await ownerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: plan.planId },
+    });
+    expect(staleApply.success).toBe(false);
+    expect(staleApply.text).toContain("exact Run bound to this stop_agent plan is no longer active");
+    expect(new CoordinationV3Store(store.sqlite).agentSnapshot(child.id).activeRun?.id).toBe(runB);
+
+    const currentPlan = await ownerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: {
+        action: "plan", idempotencyKey: "stop-run-b",
+        operations: [{ kind: "stop_agent", targetAgentId: child.id }],
+      },
+    });
+    expect(currentPlan.success, currentPlan.text).toBe(true);
+    const currentApply = await ownerRuntime.handleDynamicToolCall!({
+      name: "ponderosa_manage", arguments: { action: "apply", planId: JSON.parse(currentPlan.text).planId },
+    });
+    expect(currentApply.success, currentApply.text).toBe(true);
+    expect(new CoordinationV3Store(store.sqlite).agentSnapshot(child.id).activeRun).toBeUndefined();
     await app.close();
   });
 

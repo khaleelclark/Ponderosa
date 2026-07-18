@@ -97,6 +97,8 @@ A stop action is scoped to the exact Run the user or managing Agent observed.
 If that Run has already ended or been replaced, Ponderosa reports the stale
 target instead of cancelling its successor. Accepted cancellation remains
 idempotent, immediately fences the Run, and leaves later queued work eligible.
+Managed stop plans bind this target when the plan is created, not when it is
+eventually applied.
 
 Runtime configuration, subscription authentication, and current provider
 availability are separate facts. A real entitlement denial remains authoritative
@@ -210,9 +212,11 @@ off, Ponderosa asks for a single-use approval tied to the exact active Run and
 exact destructive plan; old or unrelated approvals never authorize later work.
 Imported packages disclose elevated permissions and require explicit user
 acknowledgement. Committed deletion remains successful while durable cleanup
-finishes or retries. A user promotes or re-parents any agent they want to keep
-before deletion. Changing the organization never rewrites creator, communication,
-or execution history.
+finishes or retries. Provider cleanup is not complete until runtime termination
+is confirmed; failed closes retain a retryable handle and surface an operational
+warning. A user promotes or re-parents any agent they want to keep before deletion.
+Changing the organization never rewrites creator, communication, or execution
+history.
 
 Parents can inspect and manage only their visible descendant subtree through a
 Run-scoped describe/plan/apply capability. Creation, rename, and stop may be

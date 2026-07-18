@@ -342,6 +342,7 @@ export interface CreateServerOptions {
   /** Deterministic post-commit deletion cleanup fault seam for recovery tests. */
   agentDeletionCleanupFaults?: {
     beforeServerCleanup?: (receiptId: string) => void | Promise<void>;
+    runtimeTerminationTimeoutMs?: number;
   };
   /** Communication V3 scheduler tuning. V3 is unconditional. */
   communicationV3?: {
@@ -456,6 +457,9 @@ interface ActiveRun {
   v3SchedulerRunId?: string;
   v3FencingToken?: number;
   conversationId?: string;
+  /** Settles only after the provider event loop has stopped. Deletion keeps
+   * this handle until a non-session runtime acknowledges cancellation. */
+  completion?: Promise<void>;
 }
 
 interface PersistentRuntime {
@@ -1648,6 +1652,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     model?: string;
     effort?: string;
     instructions?: string;
+    /** Server-captured authority for stop_agent. Provider input cannot set it. */
+    targetRunId?: string;
   };
   type ManagementPlan = {
     id: string;
@@ -1664,6 +1670,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     result?: unknown;
   };
   const managementPlans = new Map<string, ManagementPlan>();
+  const publicManagementOperations = (operations: ManagementOperation[]): ManagementOperation[] => operations.map((operation) => {
+    const providerOperation = { ...operation };
+    delete providerOperation.targetRunId;
+    return providerOperation;
+  });
   const linkPreviews = new Map<string, LinkPreviewRegistration>();
   const linkPreviewTtlMs = opts.linkPreviewScheduling?.registrationTtlMs ?? 4 * 60 * 60 * 1000;
   const linkPreviewHandshakeTimeoutMs = opts.linkPreviewScheduling?.upstreamHandshakeTimeoutMs ?? 10_000;
@@ -1724,6 +1735,66 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     publishWorkspaceSince(cursor);
   };
+  const deletionRuntimeTerminationTimeoutMs = Math.max(
+    1,
+    opts.agentDeletionCleanupFaults?.runtimeTerminationTimeoutMs ?? 5_000,
+  );
+  const awaitRuntimeTerminationOperation = async (operation: Promise<void>, label: string): Promise<void> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out`)), deletionRuntimeTerminationTimeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const runtimeTerminationAttempts = new Map<object, Promise<string | undefined>>();
+  const terminateRuntimeHandle = async (
+    agentId: string,
+    run: ActiveRun | undefined,
+    runtime: PersistentRuntime | undefined,
+  ): Promise<string | undefined> => {
+    const session = runtime?.session ?? run?.runtimeSession;
+    const handle = session ?? run?.completion;
+    if (!handle) return undefined;
+    const existing = runtimeTerminationAttempts.get(handle);
+    if (existing) return existing;
+    const attempt = (async (): Promise<string | undefined> => {
+      if (!session) {
+        try {
+          await awaitRuntimeTerminationOperation(run!.completion!, `${agentId} runtime cancellation`);
+          return undefined;
+        } catch (error) {
+          return error instanceof Error ? error.message : "runtime cancellation was not acknowledged";
+        }
+      }
+      let interruptError: string | undefined;
+      try {
+        await awaitRuntimeTerminationOperation(session.interrupt(), `${agentId} runtime interrupt`);
+      } catch (error) {
+        // close() is the authoritative termination acknowledgement. Retain
+        // interrupt detail only when close also fails.
+        interruptError = error instanceof Error ? error.message : "runtime interrupt failed";
+      }
+      try {
+        await awaitRuntimeTerminationOperation(session.close(), `${agentId} runtime close`);
+        return undefined;
+      } catch (error) {
+        const closeError = error instanceof Error ? error.message : "runtime close failed";
+        return interruptError ? `${interruptError}; ${closeError}` : closeError;
+      }
+    })();
+    runtimeTerminationAttempts.set(handle, attempt);
+    try { return await attempt; }
+    finally {
+      if (runtimeTerminationAttempts.get(handle) === attempt) runtimeTerminationAttempts.delete(handle);
+    }
+  };
   const processAgentDeletionCleanup = async (receipt: import("@ponderosa/agents").AgentDeletionReceipt): Promise<boolean> => {
     if (receipt.serverCleanupCompleted) return true;
     try { await opts.agentDeletionCleanupFaults?.beforeServerCleanup?.(receipt.id); }
@@ -1739,17 +1810,20 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       try {
         const run = activeRuns.get(agentId);
         if (run) {
-          activeRuns.delete(agentId);
           clearRunLeaseTimer(run);
           clearRunLivenessTimer(run);
           agentMessageCapabilities.delete(run.messageCapability);
           run.controller.abort();
         }
         const runtime = runtimeSessions.get(agentId);
-        if (runtime) {
-          removePersistentRuntime(agentId, runtime);
-          await runtime.session.interrupt().catch(() => undefined);
-          await runtime.session.close().catch(() => undefined);
+        const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
+        if (terminationError) {
+          // Retain both handles so the receipt sweep can retry provider
+          // termination. Capabilities and output are already fenced above.
+          errors.push(`${agentId}: ${terminationError}`);
+        } else {
+          if (runtime) removePersistentRuntime(agentId, runtime);
+          if (run && activeRuns.get(agentId) === run) activeRuns.delete(agentId);
         }
         subscribers.delete(agentId);
         scheduledSessionRollovers.delete(agentId);
@@ -1770,6 +1844,16 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (errors.length > 0) {
       try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
       catch { /* the durable receipt remains pending for startup reconciliation */ }
+      try {
+        createOperationalNotification({
+          dedupeKey: `agent-deletion:${receipt.id}:cleanup-pending`,
+          category: "system",
+          severity: "attention",
+          title: "Agent deletion cleanup needs attention",
+          body: `The Agents were deleted, but runtime or background cleanup is still retrying. ${errors.join("; ").slice(0, 1_000)}`,
+          projectId: receipt.projectId,
+        });
+      } catch { /* the durable receipt remains the authoritative retry signal */ }
       return false;
     }
     try { store.markAgentDeletionServerCleanupComplete(receipt.id); }
@@ -1778,6 +1862,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       catch { /* startup reconciliation will retry */ }
       return false;
     }
+    try { resolveOperationalNotification(`agent-deletion:${receipt.id}:cleanup-pending`); }
+    catch { /* notification repair cannot reopen completed provider cleanup */ }
     try { coordinationV3Scheduler.notify(); }
     catch { /* scheduler polling and restart reconciliation remain authoritative */ }
     // Live invalidation is best effort after the durable cleanup receipt is
@@ -3171,7 +3257,6 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         if (!entry) return { accepted: true };
         const [agentId, run] = entry;
         void closeRunBrowser(agentId, run, "run_cancelled");
-        activeRuns.delete(agentId);
         closeLinkPreviewsForAgent(agentId, "run cancelled");
         clearRunLeaseTimer(run);
         clearRunLivenessTimer(run);
@@ -3179,11 +3264,10 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         scheduledSessionRollovers.delete(agentId);
         run.controller.abort();
         const runtime = runtimeSessions.get(agentId);
-        if (runtime) {
-          removePersistentRuntime(agentId, runtime);
-          await runtime.session.interrupt().catch(() => undefined);
-          await runtime.session.close().catch(() => undefined);
-        }
+        const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
+        if (terminationError) return { accepted: false, retryable: true, error: terminationError };
+        if (runtime) removePersistentRuntime(agentId, runtime);
+        if (activeRuns.get(agentId) === run) activeRuns.delete(agentId);
         return { accepted: true };
       },
       blockedAgentIds: () => store.listProjects().flatMap((project) =>
@@ -4129,8 +4213,11 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
             store.updateAgent(targetId, { title: title.slice(0, 80) });
             changedAgentIds.add(targetId);
           } else if (operation.kind === "stop_agent") {
-            const targetRunId = coordinationV3.agentSnapshot(targetId).activeRun?.id;
-            if (!targetRunId) throw new Error("stop_agent target no longer has an active Run");
+            const targetRunId = operation.targetRunId;
+            const currentRunId = coordinationV3.agentSnapshot(targetId).activeRun?.id;
+            if (!targetRunId || currentRunId !== targetRunId) {
+              throw new Error("the exact Run bound to this stop_agent plan is no longer active");
+            }
             const response = await app.inject({
               method: "POST", url: `/api/agents/${encodeURIComponent(targetId)}/cancel`, headers: internalHeaders,
               payload: { targetRunId, idempotencyKey: `${plan.id}:${index}` },
@@ -4178,7 +4265,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     if (replay) return {
       planId: replay.id,
       replayed: true,
-      operations: replay.operations,
+      operations: publicManagementOperations(replay.operations),
       ...(replay.approvalDecisionId ? {
         approvalDecisionId: replay.approvalDecisionId,
         approvalStatus: workspace.getDecision(replay.approvalDecisionId)?.status ?? "pending",
@@ -4202,6 +4289,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       }
       if (!operation.targetAgentId || (!descendantIds.has(operation.targetAgentId) && !refs.has(operation.targetAgentId))) return reply.code(403).send({ error: "management target is outside the descendant subtree" });
       if (operation.kind === "rename_agent" && !operation.title?.trim()) return reply.code(400).send({ error: "rename_agent requires title" });
+      if (operation.kind === "stop_agent" && !coordinationV3.agentSnapshot(operation.targetAgentId).activeRun?.id) {
+        return reply.code(409).send({ error: "stop_agent target does not have an active Run to bind" });
+      }
       if (operation.kind === "set_manager") {
         const managerId = operation.managerAgentId;
         if (!managerId) return reply.code(403).send({ error: "Agents cannot detach or promote descendants" });
@@ -4224,27 +4314,29 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     }
     const createdAt = new Date().toISOString();
     const planId = `management-${createHash("sha256").update(`${owner.id}\0${active.runId}\0${idempotencyKey}`).digest("hex")}`;
-    const operationKinds = [...new Set(operations.flatMap((operation) =>
+    const plannedOperations = operations.map((operation) => operation.kind === "stop_agent"
+      ? { ...operation, targetRunId: coordinationV3.agentSnapshot(operation.targetAgentId!).activeRun!.id }
+      : operation);
+    const operationKinds = [...new Set(plannedOperations.flatMap((operation) =>
       operation.kind === "delete_agent" || operation.kind === "set_manager" ? [operation.kind] : [],
     ))] as Array<"delete_agent" | "set_manager">;
-    const targetAgentIds = [...new Set(operations.flatMap((operation) =>
+    const targetAgentIds = [...new Set(plannedOperations.flatMap((operation) =>
       operation.kind === "delete_agent" || operation.kind === "set_manager" ? [operation.targetAgentId!] : [],
     ))].sort();
-    const scopeHash = operationKinds.length > 0
-      ? createHash("sha256").update(JSON.stringify({
-          planId,
-          projectId: owner.projectId,
-          conversationId: capability.conversationId,
-          ownerAgentId: owner.id,
-          runId: active.runId,
-          operations: operations.map((operation) => ({
-            kind: operation.kind,
-            targetAgentId: operation.targetAgentId ?? null,
-            managerAgentId: operation.managerAgentId ?? null,
-          })),
-          previewHash: deletionPreview?.previewHash ?? null,
-        })).digest("hex")
-      : undefined;
+    const scopeHash = createHash("sha256").update(JSON.stringify({
+      planId,
+      projectId: owner.projectId,
+      conversationId: capability.conversationId,
+      ownerAgentId: owner.id,
+      runId: active.runId,
+      operations: plannedOperations.map((operation) => ({
+        kind: operation.kind,
+        targetAgentId: operation.targetAgentId ?? null,
+        targetRunId: operation.targetRunId ?? null,
+        managerAgentId: operation.managerAgentId ?? null,
+      })),
+      previewHash: deletionPreview?.previewHash ?? null,
+    })).digest("hex");
     const requiresApproval = deleteOperations.length > 0
       ? !owner.managementPermissions.allowAutomaticDescendantDeletion
       : reorganizationOperations.length > 0
@@ -4256,9 +4348,9 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
       runId: active.runId,
       conversationId: capability.conversationId,
       idempotencyKey,
-      operations: structuredClone(operations),
+      operations: structuredClone(plannedOperations),
       ...(deletionPreview ? { deletionPreview } : {}),
-      ...(scopeHash ? { scopeHash } : {}),
+      scopeHash,
       createdAt,
     };
     if (requiresApproval) {
@@ -4326,7 +4418,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
     return {
       planId: plan.id,
       replayed: false,
-      operations: plan.operations,
+      operations: publicManagementOperations(plan.operations),
       ...(plan.approvalDecisionId ? { approvalDecisionId: plan.approvalDecisionId, approvalStatus: "pending" } : {}),
       instruction: plan.approvalDecisionId
         ? "Ponderosa asked the user to approve this exact plan. Do not call apply until the Decision response resumes this Run."
@@ -9086,7 +9178,7 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
         ...(defaultReply ? { defaultReply } : {}),
       });
 
-      void (async () => {
+      const execution = (async () => {
         // Consolidate ordinary response deltas into one durable, execution-scoped
         // Work log entry. Communication is created only by explicit intent calls.
         let runError: string | undefined;
@@ -9510,6 +9602,8 @@ export function createServer(opts: CreateServerOptions): FastifyInstance {
           if (released) coordinationV3Scheduler.notify();
         }
       })();
+      activeRun.completion = execution;
+      void execution;
 
       return { queued: false, runId, mode, communicationEventId };
     },
