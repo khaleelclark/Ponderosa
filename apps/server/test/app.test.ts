@@ -1072,6 +1072,11 @@ describe("generated artifact endpoints", () => {
       url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("notes.md")}`,
     });
     expect(unsupportedPreview.statusCode).toBe(415);
+    writeFileSync(path.join(repoDir, "fake.png"), "not really a png");
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("fake.png")}`,
+    })).statusCode).toBe(404);
     expect((await app.inject({
       method: "GET",
       url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("../outside.png")}`,
@@ -1084,6 +1089,54 @@ describe("generated artifact endpoints", () => {
     expect(download.statusCode, download.body).toBe(200);
     expect(download.headers["content-disposition"]).toContain("attachment");
     expect(download.body).toBe("# Notes\n");
+    await app.close();
+  });
+
+  it("rejects a Project-file replacement race after resolution", async () => {
+    const project = store.createProject({ label: "Project file replacement", hostPath: repoDir });
+    const candidate = path.join(repoDir, "replace.png");
+    const outside = path.join(dataDir, "outside.png");
+    writeFileSync(candidate, Buffer.from("89504e470d0a1a0a", "hex"));
+    writeFileSync(outside, Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("private")]));
+    let replaced = false;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      projectFilePreviewFaults: {
+        afterResolve: (resolved) => {
+          if (replaced || resolved !== candidate) return;
+          replaced = true;
+          rmSync(candidate);
+          symlinkSync(outside, candidate);
+        },
+      },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("replace.png")}`,
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.rawPayload).not.toContain(Buffer.from("private"));
+    await app.close();
+  });
+
+  it("bounds concurrent Project-file previews per Project", async () => {
+    const project = store.createProject({ label: "Project preview concurrency", hostPath: repoDir });
+    writeFileSync(path.join(repoDir, "concept.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+    let entered = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      projectFilePreviewFaults: { afterResolve: async () => { entered += 1; await barrier; } },
+    });
+    const url = `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("concept.png")}`;
+    const active = Array.from({ length: 4 }, () => app.inject({ method: "GET", url }));
+    await vi.waitFor(() => expect(entered).toBe(4));
+    const saturated = await app.inject({ method: "GET", url });
+    expect(saturated.statusCode).toBe(429);
+    expect(saturated.headers["retry-after"]).toBe("1");
+    release();
+    expect((await Promise.all(active)).map((response) => response.statusCode)).toEqual([200, 200, 200, 200]);
     await app.close();
   });
 
@@ -6973,6 +7026,81 @@ describe("server chunk F", () => {
     await expect.poll(() => adapter.seeds.length + adapter.continues.length).toBe(2);
     expect([...adapter.seeds, ...adapter.continues]
       .filter((turn) => turn.agentId === author.id && turn.prompt.includes(editedText))).toHaveLength(1);
+    await app.close();
+  });
+
+  it("revisions a queued long message without exposing superseded content or artifacts", async () => {
+    const { app, project } = await createProjectAndAgent();
+    const master = store.createConversation(project.id, { title: "Sensitive edit room" });
+    const author = store.createAgent(project.id, { title: "Sensitive author", engine: "codex", conversationId: master.id });
+    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Working" }, author.id)!;
+    adapter.mode = "hang";
+    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
+    await waitForSeedCount(1);
+
+    const supersededMarker = "SUPERSEDED-SECRET-INSTRUCTION";
+    const originalText = `${supersededMarker}\n${"s".repeat(100_000)}`;
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${master.id}/direct-replies`,
+      payload: {
+        text: originalText,
+        replyToMessageId: report.id,
+        targetAuthorAgentId: author.id,
+        idempotencyKey: "sensitive-queued-reply",
+        activeRunDelivery: "queue",
+      },
+    });
+    expect(sent.statusCode, sent.body).toBe(200);
+    const queued = (await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` }))
+      .json<Array<{ deliveryId: string; text: string }>>();
+    const before = new CoordinationV3Store(store.sqlite).pendingActivations(project.id)
+      .find((activation) => activation.id === queued[0]!.deliveryId)!;
+    const beforePayload = before.payload as { communication?: { eventId?: string }; dispatch?: { artifactId?: string } };
+    const communicationEventId = beforePayload.communication?.eventId;
+    const originalArtifactId = beforePayload.dispatch?.artifactId;
+    expect(originalArtifactId).toMatch(/^text-/);
+    if (!communicationEventId || !originalArtifactId) throw new Error("expected queued communication and long-text artifact identity");
+
+    const replacement = "Use only this safe replacement";
+    const edited = await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}`,
+      payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-reply" },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    const after = new CoordinationV3Store(store.sqlite).pendingActivations(project.id)
+      .find((activation) => activation.id === queued[0]!.deliveryId)!;
+    const serializedAfter = JSON.stringify(after.payload);
+    expect(serializedAfter).toContain(replacement);
+    expect(serializedAfter).not.toContain(supersededMarker);
+    expect(serializedAfter).not.toContain(originalArtifactId);
+
+    for (const surface of ["conversation", "direct_agent_audit"] as const) {
+      const projectionKey = surface === "conversation" ? master.id : author.id;
+      const current = store.readProjectedCommunicationMessages(project.id, surface, projectionKey)
+        .find((message) => message.eventId === communicationEventId);
+      expect(current?.text).toContain(replacement);
+      expect(current?.text).not.toContain(supersededMarker);
+      expect(current?.document).toBeUndefined();
+    }
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}/steer`,
+      payload: { idempotencyKey: "steer-revised-sensitive-reply" },
+    })).statusCode).toBe(200);
+    adapter.mode = "normal";
+    await app.inject({
+      method: "POST", url: `/api/agents/${author.id}/cancel`,
+      payload: activeRunCancellationPayload(store, author.id, "sensitive-reply-stop"),
+    });
+    await expect.poll(() => store.getRuns(author.id).length).toBe(2);
+    const providerInput = store.getProviderInput(store.getRuns(author.id).at(-1)!.id, true)!;
+    expect(providerInput.exactPrompt).toContain(replacement);
+    expect(providerInput.exactPrompt).not.toContain(supersededMarker);
+    expect(providerInput.exactPrompt).not.toContain(originalArtifactId);
+    expect(providerInput.sourceManifest.artifactIds).not.toContain(originalArtifactId);
     await app.close();
   });
 

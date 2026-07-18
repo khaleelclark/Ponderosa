@@ -905,12 +905,22 @@ export class CoordinationV3Store {
     activationId: string;
     projectId: string;
     text: string;
+    document?: Record<string, unknown>;
+    artifactId?: string;
+    resultRef?: string;
+    commitRevision?: () => void;
     idempotencyKey: string;
     now?: string;
   }): { edited: boolean; replayed: boolean; status: "edited" | "delivery_started" } {
     if (!input.idempotencyKey.trim()) throw new Error("edit idempotency key is required");
     const now = input.now ?? new Date().toISOString();
-    const hash = payloadHash({ activationId: input.activationId, text: input.text });
+    const hash = payloadHash({
+      activationId: input.activationId,
+      text: input.text,
+      document: input.document,
+      artifactId: input.artifactId,
+      resultRef: input.resultRef,
+    });
     return this.sqlite.transaction(() => {
       const replay = this.idempotentReplay<{ edited: boolean; status: "edited" | "delivery_started" }>(
         input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash,
@@ -929,15 +939,33 @@ export class CoordinationV3Store {
         const communication = payload.communication && typeof payload.communication === "object"
           ? payload.communication as Record<string, unknown>
           : undefined;
+        const { document: _oldDocument, ...communicationWithoutDocument } = communication ?? {};
+        const {
+          artifactId: _oldArtifactId,
+          resultRef: _oldResultRef,
+          ...dispatchWithoutArtifact
+        } = dispatch;
         const nextPayload = {
           ...payload,
-          ...(communication ? { communication: { ...communication, text: input.text } } : {}),
-          dispatch: { ...dispatch, text: input.text },
+          ...(communication ? {
+            communication: {
+              ...communicationWithoutDocument,
+              text: input.text,
+              ...(input.document ? { document: input.document } : {}),
+            },
+          } : {}),
+          dispatch: {
+            ...dispatchWithoutArtifact,
+            text: input.text,
+            ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+            ...(input.resultRef ? { resultRef: input.resultRef } : {}),
+          },
         };
         edited = this.sqlite.prepare(`
           UPDATE agent_activations SET payload_json = ?, updated_at = ?
           WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
         `).run(stableJson(nextPayload), now, input.activationId, input.projectId).changes === 1;
+        if (edited) input.commitRevision?.();
       }
       const result = edited
         ? { edited: true, status: "edited" as const }

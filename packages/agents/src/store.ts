@@ -789,7 +789,6 @@ export class AgentStore {
     if (input.schemaVersion !== 1 || input.kind !== "edit" || !input.eventId || !input.idempotencyKey || !input.createdAt) {
       throw new Error("communication revision is incomplete");
     }
-    if (target.intent !== "broadcast") throw new Error("only broadcasts support passive edits");
     if (target.sender.kind !== "user" || input.sender.kind !== "user" || target.sender.userId !== input.sender.userId) {
       throw new Error("communication revision author does not own its target");
     }
@@ -994,7 +993,7 @@ export class AgentStore {
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
           ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-          ...(event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
+          ...(!latestRevision && event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
           ...(event.citations?.length ? { citations: event.citations } : {}),
         }];
       })
