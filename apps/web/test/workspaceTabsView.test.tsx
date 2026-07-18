@@ -30,6 +30,7 @@ describe("workspace tab bar", () => {
     const navigate = vi.fn();
     const onClose = vi.fn();
     const onCloseAll = vi.fn();
+    const onReorder = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={projects}
@@ -37,6 +38,7 @@ describe("workspace tab bar", () => {
       navigate={navigate}
       onClose={onClose}
       onCloseAll={onCloseAll}
+      onReorder={onReorder}
     /></QueryClientProvider>);
 
     const rendered = JSON.stringify(view.toJSON());
@@ -49,13 +51,28 @@ describe("workspace tab bar", () => {
     expect(onClose).toHaveBeenCalledWith("agent:beta:reviewer");
     const releaseTabContainer = view.root.findByProps({ "data-tab-key": "conversation:alpha:release" });
     expect(releaseTabContainer.props.onContextMenu).toEqual(expect.any(Function));
-    expect(releaseTabContainer.props.sx.borderRadius).toBe("12px 12px 0 0");
+    expect(releaseTabContainer.props.sx.borderRadius).toBe("13px 13px 0 0");
     expect(releaseTabContainer.props.sx.borderColor).toBe("divider");
     expect(releaseTabContainer.props.sx.borderBottom).toBe(0);
+    expect(releaseTabContainer.props.sx.ml).toBe(0);
+    expect(view.root.findByProps({ "data-tab-key": "agent:beta:reviewer" }).props.sx.ml).toBe("-6px");
     expect(onCloseAll).not.toHaveBeenCalled();
     const releaseTab = view.root.findByProps({ "aria-label": "Open Release planning in Website" });
     act(() => releaseTab.props.onClick());
     expect(navigate).toHaveBeenCalledWith(releaseRoute);
+
+    const dataTransfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn(),
+      getData: vi.fn(() => "conversation:alpha:release"),
+    };
+    act(() => releaseTabContainer.props.onDragStart({ dataTransfer }));
+    const reviewerTabContainer = view.root.findByProps({ "data-tab-key": "agent:beta:reviewer" });
+    expect(reviewerTabContainer.props.draggable).toBe(true);
+    act(() => reviewerTabContainer.props.onDragOver({ preventDefault: vi.fn(), dataTransfer }));
+    act(() => view.root.findByProps({ "data-tab-key": "agent:beta:reviewer" }).props.onDrop({ preventDefault: vi.fn(), dataTransfer }));
+    expect(onReorder).toHaveBeenCalledWith("conversation:alpha:release", "agent:beta:reviewer");
     view.unmount();
     client.clear();
   });

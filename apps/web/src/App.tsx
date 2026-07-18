@@ -64,6 +64,7 @@ import {
   openWorkspaceTab,
   removeProjectWorkspaceTabs,
   removeWorkspaceRoute,
+  reorderWorkspaceTabs,
   restoreWorkspaceTabs,
   serializeWorkspaceTabs,
   workspaceTabKey,
@@ -350,6 +351,9 @@ export default function App({
     setWorkspaceTabs([]);
     navigate({ kind: "home" });
   };
+  const reorderWorkspaceViews = (draggedKey: string, targetKey: string) => {
+    setWorkspaceTabs((current) => reorderWorkspaceTabs(current, draggedKey, targetKey));
+  };
   const removeWorkspaceView = (removedRoute: Route) => {
     setWorkspaceTabs((current) => removeWorkspaceRoute(current, removedRoute));
   };
@@ -435,7 +439,7 @@ export default function App({
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
-        <WorkspaceTabs tabs={workspaceTabs} projects={projects} route={route} navigate={goHome} onClose={closeWorkspaceView} onCloseAll={closeAllWorkspaceViews} />
+        <WorkspaceTabs tabs={workspaceTabs} projects={projects} route={route} navigate={goHome} onClose={closeWorkspaceView} onCloseAll={closeAllWorkspaceViews} onReorder={reorderWorkspaceViews} />
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>

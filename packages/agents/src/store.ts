@@ -2434,12 +2434,18 @@ export class AgentStore {
     agentId: string,
     status: ResponseFileActivityDto["status"],
   ): Map<string, ResponseFileActivityDto[]> {
-    const artifactById = new Map(this.getArtifacts(agentId).map((artifact) => [artifact.id, artifact] as const));
+    const artifacts = this.getArtifacts(agentId);
+    const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact] as const));
+    const generatedByExecutionAndPath = new Map(artifacts.flatMap((artifact) =>
+      artifact.kind === "generated_file" && artifact.executionId && artifact.sourcePath
+        ? [[`${artifact.executionId}\0${artifact.sourcePath}`, artifact] as const]
+        : []));
     const byExecution = new Map<string, Map<string, ResponseFileActivityDto>>();
     for (const item of this.getActivity(agentId)) {
       if (!item.executionId || item.event.type !== "file_change") continue;
       const projectedArtifactId = artifactId(agentId, item.seq, 0);
-      const artifact = artifactById.get(projectedArtifactId);
+      const artifact = generatedByExecutionAndPath.get(`${item.executionId}\0${item.event.path}`)
+        ?? artifactById.get(projectedArtifactId);
       const totals = unifiedDiffLineTotals(item.event.diff);
       const byPath = byExecution.get(item.executionId) ?? new Map<string, ResponseFileActivityDto>();
       byPath.set(item.event.path, {
@@ -2447,7 +2453,7 @@ export class AgentStore {
         kind: item.event.kind,
         status,
         sourceSeq: item.seq,
-        ...(artifact ? { artifactId: artifact.id } : {}),
+        ...(artifact ? { artifactId: artifact.id, artifactKind: artifact.kind } : {}),
         previewable: Boolean(item.event.diff && artifact?.kind === "diff"),
         ...(totals ? totals : {}),
       });

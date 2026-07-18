@@ -47,7 +47,7 @@ import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, 
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
-import { ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
+import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
@@ -145,8 +145,8 @@ export function ConversationMessage({
       sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
-        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#22312B" : "#F1EEE5", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-        <Box sx={{ minWidth: 0, width: fromManager ? "min(78%, 780px)" : "min(100%, 960px)" }}>
+        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+        <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? "min(78%, 780px)" : "100%" }}>
           {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
             <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
             <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
@@ -165,7 +165,7 @@ export function ConversationMessage({
               px: fromManager ? { xs: 1.25, sm: 1.5 } : 0,
               py: fromManager ? { xs: 1, sm: 1.15 } : 0,
               borderRadius: 2,
-              bgcolor: fromManager ? (theme) => theme.palette.mode === "dark" ? "#24352E" : "#F1EEE5" : "transparent",
+              bgcolor: fromManager ? (theme) => theme.palette.mode === "dark" ? "#27332F" : "#EFF0EB" : "transparent",
               color: "text.primary",
               border: 0,
             }}
@@ -197,6 +197,7 @@ export function ConversationMessage({
         {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
         {message.fileActivity?.length ? <ResponseFileActivity
           files={message.fileActivity}
+          projectId={projectId}
           onOpenFile={message.authorAgentId && onOpenFileActivity
             ? (file) => onOpenFileActivity(message.authorAgentId!, file)
             : undefined}
@@ -369,6 +370,11 @@ export function ConversationView({
   const agents = compactDefined(detailQuery.data?.agents ?? []);
   const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
   const operationalEvents = compactDefined(collaborationQuery.data?.operations ?? []).slice(-150);
+  const messageLayoutKey = chatMessageLayoutKey(messages);
+  const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
+  const operationalLayoutKey = operationalEvents.length
+    ? `${operationalEvents.length}:${operationalEvents.at(-1)?.id ?? ""}`
+    : "0";
   useEffect(() => {
     if (!focusMessageId || focusedMessage.current === focusMessageId) return;
     if (activeView !== "main") {
@@ -407,7 +413,7 @@ export function ConversationView({
       scrollChatToBottom(chatScrollRef.current);
       setShowScrollToLatest(false);
     }
-  }, [conversationId, activeView, messages, collaborationMessages]);
+  }, [conversationId, activeView, messageLayoutKey, collaborationLayoutKey, operationalLayoutKey]);
 
   useEffect(() => {
     if (!conversation || initializedFor.current === conversation.id) {

@@ -6,7 +6,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import { routeProjectId } from "../routing";
@@ -21,15 +21,19 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   return <FolderOutlinedIcon fontSize="small" />;
 }
 
-export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onCloseAll }: {
+export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onCloseAll, onReorder }: {
   tabs: WorkspaceTabState[];
   projects: ProjectDto[];
   route: Route;
   navigate(route: Route): void;
   onClose(key: string): void;
   onCloseAll(): void;
+  onReorder(draggedKey: string, targetKey: string): void;
 }): JSX.Element {
   const [contextMenu, setContextMenu] = useState<{ anchor: HTMLElement; key: string; label: string }>();
+  const [draggedKey, setDraggedKey] = useState<string>();
+  const [dragTargetKey, setDragTargetKey] = useState<string>();
+  const activeTabElement = useRef<HTMLDivElement>(null);
   const projectIds = [...new Set(tabs.map((tab) => tab.route.projectId))];
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
@@ -52,9 +56,13 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
   const activeKey = workspaceTabKey(route);
   const activeProjectId = routeProjectId(route);
 
-  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 56 }, px: 1, pt: 0.75, bgcolor: "background.paper", alignItems: "flex-end", overflow: "hidden", boxShadow: (theme) => `inset 0 -1px 0 ${theme.palette.divider}` }}>
-    <Stack direction="row" spacing={0.5} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, height: "100%", overflowX: "auto", overflowY: "hidden", alignItems: "flex-end", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
-      {tabs.map((tab) => {
+  useEffect(() => {
+    activeTabElement.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [activeKey, tabs.length]);
+
+  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 56 }, px: 1, pt: 0.75, bgcolor: "background.paper", alignItems: "flex-end", overflow: "hidden", borderBottom: 1, borderColor: "divider" }}>
+    <Stack direction="row" spacing={0} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, height: "100%", overflowX: "auto", overflowY: "hidden", alignItems: "flex-end", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
+      {tabs.map((tab, index) => {
         const project = projects.find((candidate) => candidate.id === tab.route.projectId);
         const resources = resourcesByProject.get(tab.route.projectId);
         const conversationId = tab.route.kind === "conversation" ? tab.route.conversationId : undefined;
@@ -66,7 +74,39 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
             : tab.route.kind === "agents" ? "Agents" : "Project files";
         const selected = tab.key === activeKey;
         const projectLabel = project?.label ?? "Unavailable project";
-        return <Box key={tab.key} data-tab-key={tab.key} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }} sx={{ position: "relative", minWidth: 168, maxWidth: 240, height: 48, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: "12px 12px 0 0", border: 1, borderBottom: 0, borderColor: "divider", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "background.default", "&:hover": { bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}>
+        return <Box
+          ref={selected ? activeTabElement : undefined}
+          key={tab.key}
+          data-tab-key={tab.key}
+          data-tab-dragging={draggedKey === tab.key ? "true" : undefined}
+          draggable
+          onDragStart={(event) => {
+            setDraggedKey(tab.key);
+            setDragTargetKey(undefined);
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", tab.key);
+          }}
+          onDragOver={(event) => {
+            if (!draggedKey || draggedKey === tab.key) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setDragTargetKey(tab.key);
+          }}
+          onDragLeave={() => setDragTargetKey((current) => current === tab.key ? undefined : current)}
+          onDrop={(event) => {
+            event.preventDefault();
+            const sourceKey = draggedKey ?? event.dataTransfer.getData("text/plain");
+            if (sourceKey && sourceKey !== tab.key) onReorder(sourceKey, tab.key);
+            setDraggedKey(undefined);
+            setDragTargetKey(undefined);
+          }}
+          onDragEnd={() => {
+            setDraggedKey(undefined);
+            setDragTargetKey(undefined);
+          }}
+          onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }}
+          sx={{ position: "relative", zIndex: selected ? tabs.length + 2 : Math.max(1, tabs.length - index), ml: index === 0 ? 0 : "-6px", minWidth: 174, maxWidth: 240, height: selected ? 49 : 46, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: "13px 13px 0 0", border: 1, borderBottom: 0, borderColor: dragTargetKey === tab.key ? "primary.main" : "divider", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "background.default", boxShadow: dragTargetKey === tab.key ? (theme) => `inset 3px 0 0 ${theme.palette.primary.main}` : selected ? (theme) => `0 -4px 14px ${theme.palette.mode === "dark" ? "rgba(2,8,6,.16)" : "rgba(30,42,36,.07)"}` : "none", opacity: draggedKey === tab.key ? 0.55 : 1, cursor: draggedKey === tab.key ? "grabbing" : "grab", "&:hover": { zIndex: tabs.length + 3, bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}
+        >
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={600}>
             <ButtonBase onClick={() => navigate(tab.route)} aria-label={`Open ${label} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{ minWidth: 0, flex: 1, px: 1.25, gap: 1, justifyContent: "flex-start" }}>
               <TabIcon kind={tab.route.kind} />
@@ -80,7 +120,7 @@ export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onClos
         </Box>;
       })}
     </Stack>
-    <Box sx={{ pl: 1.25, display: "flex", alignItems: "center" }}>
+    <Box sx={{ ml: 1, pl: 1.25, pr: .25, height: 40, alignSelf: "center", display: "flex", alignItems: "center", borderLeft: 1, borderColor: "divider", bgcolor: "background.paper", flexShrink: 0 }}>
       {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project" /> : <TokenUsageButton scope="overall" label="Overall" />}
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>

@@ -2,7 +2,7 @@ import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } f
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { operatorInitials, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { operatorInitials, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -23,6 +23,13 @@ const preferences: WorkspacePreferencesDto = {
 };
 describe("responsive workspace sidebar flow", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("derives project health labels from the canonical health projection", () => {
+    expect(projectHealthPresentation(undefined)).toEqual({ label: "Checking", color: "text.disabled" });
+    expect(projectHealthPresentation([])).toEqual({ label: "Healthy", color: "success.main" });
+    expect(projectHealthPresentation([{ agentId: "a", childAgentIds: [], status: "running", statusTimestamp: "2026-07-18T00:00:00.000Z", reason: "active_run" }])).toEqual({ label: "Active", color: "info.main" });
+    expect(projectHealthPresentation([{ agentId: "a", childAgentIds: [], status: "stalled", statusTimestamp: "2026-07-18T00:00:00.000Z", reason: "runtime_event_consumer_stalled" }])).toEqual({ label: "Needs attention", color: "error.main" });
+  });
 
   it("keeps one project-scoped chat navigator and persistent global destinations", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

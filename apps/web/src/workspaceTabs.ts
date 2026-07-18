@@ -53,6 +53,22 @@ export function closeWorkspaceTab(current: WorkspaceTabState[], key: string): Wo
   return current.filter((tab) => tab.key !== key);
 }
 
+/** Move one open workspace tab to another tab's position without changing either tab's identity. */
+export function reorderWorkspaceTabs(
+  current: WorkspaceTabState[],
+  draggedKey: string,
+  targetKey: string,
+): WorkspaceTabState[] {
+  if (draggedKey === targetKey) return current;
+  const draggedIndex = current.findIndex((tab) => tab.key === draggedKey);
+  const targetIndex = current.findIndex((tab) => tab.key === targetKey);
+  if (draggedIndex < 0 || targetIndex < 0) return current;
+  const next = [...current];
+  const [dragged] = next.splice(draggedIndex, 1);
+  next.splice(targetIndex, 0, dragged!);
+  return next;
+}
+
 export function mostRecentWorkspaceTab(current: WorkspaceTabState[], excludingKey?: string): WorkspaceTabState | undefined {
   return current
     .filter((tab) => tab.key !== excludingKey)

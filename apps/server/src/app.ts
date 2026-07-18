@@ -2731,7 +2731,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (event.type === "file_change" && event.kind !== "delete") {
       const agent = store.getAgent(agentId);
       const project = agent ? store.getProject(agent.projectId) : undefined;
-      const mediaType = generatedArtifactMediaType(event.path);
+      const mediaType = generatedArtifactMediaType(event.path, event.kind);
       if (agent && project && mediaType) {
         try {
           const root = realpathSync(project.hostPath);
@@ -2767,12 +2767,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return stored;
   }
 
-  function generatedArtifactMediaType(file: string): string | undefined {
-    return ({
+  function generatedArtifactMediaType(file: string, changeKind: "create" | "edit" | "delete"): string | undefined {
+    const extension = path.extname(file).toLowerCase();
+    const durableMedia = ({
       ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
       ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    } as Record<string, string>)[path.extname(file).toLowerCase()];
+    } as Record<string, string>)[extension];
+    if (durableMedia) return durableMedia;
+    // Text deliverables are common, but edits to source/config files should not
+    // continually republish the whole repository into Project files.
+    if (changeKind !== "create") return undefined;
+    return ({
+      ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
+      ".json": "application/json", ".html": "text/html", ".zip": "application/zip",
+    } as Record<string, string>)[extension];
   }
 
   function clearRunLeaseTimer(run: ActiveRun): void {
