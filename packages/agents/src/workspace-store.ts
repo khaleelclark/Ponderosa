@@ -389,16 +389,23 @@ export class WorkspaceStore {
     return next;
   }
 
+  cancelDecision(id: string, at = new Date().toISOString()): DecisionDto | undefined {
+    const current = this.decisions.get(id);
+    if (!current || current.status !== "pending") return current;
+    const next: DecisionDto = { ...current, status: "cancelled", updatedAt: at };
+    const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === id)?.[0] ?? `decision:${id}`;
+    this.append(
+      { type: "notification_changed", action: "read", conversationId: current.conversationId },
+      { kind: "decision", decision: next, idempotencyKey: key },
+    );
+    return next;
+  }
+
   cancelDecisionsForAgent(agentId: string, at = new Date().toISOString()): DecisionDto[] {
     const cancelled: DecisionDto[] = [];
     for (const current of this.listDecisions({ agentId, status: "pending" })) {
-      const next: DecisionDto = { ...current, status: "cancelled", updatedAt: at };
-      const key = [...this.decisionIdempotency.entries()].find(([, decisionId]) => decisionId === current.id)?.[0] ?? `decision:${current.id}`;
-      this.append(
-        { type: "notification_changed", action: "read", conversationId: current.conversationId },
-        { kind: "decision", decision: next, idempotencyKey: key },
-      );
-      cancelled.push(next);
+      const next = this.cancelDecision(current.id, at);
+      if (next) cancelled.push(next);
     }
     return cancelled;
   }

@@ -740,7 +740,12 @@ export const mockApi: PonderosaApi = {
       agentSeq.delete(agentId);
       subscribers.delete(agentId);
     }
-    return delay({ deleted: true as const, deletedAgentIds: preview.affectedAgents.map((agent) => agent.id) }, 80);
+    return delay({
+      deleted: true as const,
+      deletedAgentIds: preview.affectedAgents.map((agent) => agent.id),
+      deletionReceiptId: `mock-receipt:${request.previewHash}`,
+      cleanupPending: false,
+    }, 80);
   },
   getAgent(agentId) {
     const agent = agents.find((candidate) => candidate.id === agentId);
@@ -882,7 +887,7 @@ export const mockApi: PonderosaApi = {
     uploadedAttachments.delete(attachmentId);
     return Promise.resolve();
   },
-  async cancelRun(agentId): Promise<CancelAgentRunResponse> {
+  async cancelRun(agentId, _request): Promise<CancelAgentRunResponse> {
     emit(agentId, { type: "error", message: "Mock run cancelled." });
     emit(agentId, { type: "turn_done" });
     await delay(undefined, 80);

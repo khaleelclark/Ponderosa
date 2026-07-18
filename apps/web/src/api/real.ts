@@ -434,10 +434,10 @@ export const realApi: PonderosaApi = {
     const response = await fetch(`/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
-  cancelRun(agentId, idempotencyKey) {
+  cancelRun(agentId, request) {
     return requestJson<CancelAgentRunResponse>(`/api/agents/${encodeURIComponent(agentId)}/cancel`, {
       method: "POST",
-      ...(idempotencyKey ? { body: JSON.stringify({ idempotencyKey }) } : {}),
+      body: JSON.stringify(request),
     });
   },
   compactSession(agentId) {

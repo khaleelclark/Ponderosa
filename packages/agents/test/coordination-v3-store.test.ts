@@ -1140,6 +1140,30 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.claimProviderOperations("supervisor-2")).toHaveLength(0);
   });
 
+  it("never lets a stale targeted cancellation stop a successor Run", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "first-cancel-target", kind: "human", payload: { text: "First" },
+    });
+    const first = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(first);
+    expect(store.cancelAgentRun({
+      agentId: recipientA, expectedRunId: first.runId, idempotencyKey: "cancel-first",
+    })).toMatchObject({ cancelled: true, runId: first.runId });
+
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "successor-cancel-target", kind: "human", payload: { text: "Successor" },
+    });
+    const successor = store.leaseNextRun({ workerId: "worker-2" })!;
+    acknowledgeLease(successor);
+    expect(store.cancelAgentRun({
+      agentId: recipientA, expectedRunId: first.runId, idempotencyKey: "stale-cancel",
+    })).toEqual({ cancelled: false, replayed: false });
+    expect(store.agentSnapshot(recipientA).activeRun?.id).toBe(successor.runId);
+    expect(store.cancelAgentRun({
+      agentId: recipientA, expectedRunId: successor.runId, idempotencyKey: "cancel-successor",
+    })).toMatchObject({ cancelled: true, runId: successor.runId });
+  });
+
   it("settles the attached Request and reevaluates its Join when a child Run is cancelled", () => {
     store.coordinate({
       projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,

@@ -193,7 +193,12 @@ describe("enforced execution leases", () => {
     expect(events.some((item) => item.event.type === "text" && item.event.delta === "late event from expired generation")).toBe(false);
     expect(events.some((item) => item.event.type === "text" && item.event.delta === "new generation completed")).toBe(true);
     expect(events.filter((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toHaveLength(1);
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: false });
+    const staleStop = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: { targetRunId: "already-finished", idempotencyKey: "late-lease-stop" },
+    });
+    expect(staleStop.statusCode).toBe(409);
+    expect(staleStop.json()).toMatchObject({ cancelled: false, replayed: false });
     await app.close();
   });
 

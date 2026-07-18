@@ -292,6 +292,7 @@ export function ProjectShell({
         engines={engines}
         conversations={conversations}
         statusByAgentId={statusByAgentId}
+        healthByAgentId={healthByAgentId}
         detailByAgentId={detailByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={(managerAgentId) => managerAgentId

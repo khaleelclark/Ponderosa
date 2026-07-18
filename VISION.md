@@ -93,6 +93,11 @@ but idle agents must not retain an unbounded process and MCP stack. Canonical
 provider session identity survives process teardown so a later turn can resume
 without making runtime residency part of the product's memory model.
 
+A stop action is scoped to the exact Run the user or managing Agent observed.
+If that Run has already ended or been replaced, Ponderosa reports the stale
+target instead of cancelling its successor. Accepted cancellation remains
+idempotent, immediately fences the Run, and leaves later queued work eligible.
+
 Runtime configuration, subscription authentication, and current provider
 availability are separate facts. A real entitlement denial remains authoritative
 across time and restarts, and queued work for that engine remains unleased. The
@@ -200,8 +205,12 @@ remaining descendants through one server-previewed atomic cascade; stale
 confirmation deletes nothing. Per-Agent settings may let that Agent delete
 descendant branches (including cancelling active work) or rearrange reporting
 lines within its subtree without another Decision. These permissions default off
-and never permit promotion, detachment, or cross-Project movement. A user promotes
-or re-parents any agent they want to keep
+and never permit promotion, detachment, or cross-Project movement. When they are
+off, Ponderosa asks for a single-use approval tied to the exact active Run and
+exact destructive plan; old or unrelated approvals never authorize later work.
+Imported packages disclose elevated permissions and require explicit user
+acknowledgement. Committed deletion remains successful while durable cleanup
+finishes or retries. A user promotes or re-parents any agent they want to keep
 before deletion. Changing the organization never rewrites creator, communication,
 or execution history.
 

@@ -32,6 +32,8 @@ describe("Agent deletion confirmation", () => {
     const commit = vi.spyOn(api, "commitAgentDeletion").mockResolvedValue({
       deleted: true,
       deletedAgentIds: ["manager", "late-child"],
+      deletionReceiptId: "receipt-1",
+      cleanupPending: false,
     });
     const onDeleted = vi.fn();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });

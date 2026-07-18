@@ -55,6 +55,38 @@ export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", 
   createdAt: text("created_at").notNull(),
 });
 
+/** Durable receipt for an irreversible Agent deletion and its retryable
+ * secondary cleanup. */
+export const agentDeletionReceipts = sqliteTable("agent_deletion_receipts", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull(),
+  previewHash: text("preview_hash").notNull(),
+  rootAgentIdsJson: text("root_agent_ids_json").notNull(),
+  deletedAgentIdsJson: text("deleted_agent_ids_json").notNull(),
+  storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  serverCleanupCompleted: integer("server_cleanup_completed").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  completedAt: text("completed_at"),
+});
+
+/** Server-owned, plan-bound destructive approval. A Decision supplies the
+ * human response; this row supplies exact scope and single-use enforcement. */
+export const agentManagementApprovals = sqliteTable("agent_management_approvals", {
+  decisionId: text("decision_id").primaryKey(),
+  planId: text("plan_id").notNull(),
+  projectId: text("project_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  ownerAgentId: text("owner_agent_id").notNull(),
+  runId: text("run_id").notNull(),
+  scopeHash: text("scope_hash").notNull(),
+  status: text("status").notNull(),
+  createdAt: text("created_at").notNull(),
+  resolvedAt: text("resolved_at"),
+  consumedAt: text("consumed_at"),
+});
+
 export const conversations = sqliteTable("conversations", {
   id: text("id").primaryKey(),
   projectId: text("project_id").notNull(),

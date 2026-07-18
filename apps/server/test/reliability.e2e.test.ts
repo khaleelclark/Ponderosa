@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Adapter, AgentEvent, ContinueOptions, EffortOption, ModelOption, SeedOptions } from "@ponderosa/core";
-import { AgentStore } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { createServer, PROVIDER_TOOL_CONTRACT_HASH } from "../src/app.js";
 
 function deferred<T = void>() {
@@ -78,7 +78,11 @@ describe("V1 reliability safety net", () => {
     expect(queued.statusCode).toBe(202);
     expect(queued.json()).toMatchObject({ queued: true, position: 1, communicationEventId: expect.any(String) });
 
-    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/cancel` })).json()).toEqual({ cancelled: true });
+    const targetRunId = new CoordinationV3Store(store.sqlite).agentSnapshot(agent.id).activeRun!.id;
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`,
+      payload: { targetRunId, idempotencyKey: "reliability-stop" },
+    })).json()).toEqual({ cancelled: true, replayed: false });
     await adapter.seedAborted.promise;
     const continued = await adapter.continueStarted.promise;
     expect(continued.prompt).toContain("second turn");

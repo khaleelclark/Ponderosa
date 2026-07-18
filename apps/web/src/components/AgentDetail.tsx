@@ -309,7 +309,8 @@ export function AgentDetail({
 
   const stopRequestId = useRef<string>();
   const cancelRun = useMutation({
-    mutationFn: ({ idempotencyKey }: { idempotencyKey: string }) => api.cancelRun(agentId, idempotencyKey),
+    mutationFn: ({ idempotencyKey, targetRunId }: { idempotencyKey: string; targetRunId: string }) =>
+      api.cancelRun(agentId, { idempotencyKey, targetRunId }),
     onSettled: () => {
       stopRequestId.current = undefined;
       void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
@@ -324,9 +325,10 @@ export function AgentDetail({
     },
   });
   const stopActiveRun = () => {
+    if (!runtimeActivity?.executionId) return Promise.reject(new Error("The active Run changed before it could be stopped."));
     const idempotencyKey = stopRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     stopRequestId.current = idempotencyKey;
-    return cancelRun.mutateAsync({ idempotencyKey });
+    return cancelRun.mutateAsync({ idempotencyKey, targetRunId: runtimeActivity.executionId });
   };
   const copyAgentPackage = async (mode: "template" | "full", organization = false) => {
     const portable = await api.exportAgent(agentId, mode, organization);
@@ -341,8 +343,19 @@ export function AgentDetail({
   const quickCopyIntoHomeChat = async () => {
     if (!detail?.agent.conversationId) return;
     const portable = await api.exportAgent(agentId, "full", false);
+    const elevated = portable.agents.some((node) =>
+      node.managementPermissions.allowAutomaticDescendantDeletion ||
+      node.managementPermissions.allowAutomaticDescendantReorganization);
+    if (elevated && !globalThis.confirm(
+      "This Agent has autonomous descendant deletion or reorganization permissions. Copy it with those elevated permissions?",
+    )) return;
     const engineMapping = Object.fromEntries([...new Set(portable.agents.map((node) => node.engine))].map((engineId) => [engineId, engineId]));
-    const imported = await api.importAgents(detail.agent.projectId, { package: portable, conversationId: detail.agent.conversationId, engineMapping });
+    const imported = await api.importAgents(detail.agent.projectId, {
+      package: portable,
+      conversationId: detail.agent.conversationId,
+      engineMapping,
+      ...(elevated ? { acknowledgeElevatedManagementPermissions: true } : {}),
+    });
     await queryClient.invalidateQueries({ queryKey: ["agents", detail.agent.projectId] });
     onOpenAgent(imported.rootAgentId);
   };

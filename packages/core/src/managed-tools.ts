@@ -255,7 +255,7 @@ export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_manage",
-  description: "Safely inspect or manage your visible Ponderosa descendant organization. Call describe first: it reports whether the user enabled automatic descendant deletion and/or reorganization for this Agent. Then plan an exact operation list and apply its planId. Deletion atomically cancels and removes confirmed descendant subtrees. set_manager may only rearrange descendants inside this subtree; it cannot detach or promote them. Without the corresponding setting, delete_agent or set_manager requires a resolved approval Decision ID. Plans are scoped to this Run, idempotent, and audited; this never manages provider-native helpers or arbitrary Projects.",
+  description: "Safely inspect or manage your visible Ponderosa descendant organization. Call describe first, then plan an exact operation list and apply its planId. Deletion atomically cancels and removes confirmed descendant subtrees. set_manager may only rearrange descendants inside this subtree; it cannot detach or promote them. If the corresponding automatic permission is off, planning creates a server-owned Decision bound to this exact Run, operation, target set, and deletion preview. Wait for that Decision to resume the Run before applying. Plans are scoped, idempotent, and audited; this never manages provider-native helpers or arbitrary Projects.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {
@@ -275,7 +275,6 @@ export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
           model: { type: "string" },
           effort: { type: "string" },
           instructions: { type: "string", maxLength: 4000 },
-          decisionId: { type: "string", maxLength: 200 },
         },
       } },
     },

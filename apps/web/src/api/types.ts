@@ -64,6 +64,7 @@ import type {
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
   CancelAgentRunResponse,
+  CancelAgentRunRequest,
   GlobalChatSearchResponseDto,
   BrowserSessionDto,
   BrowserControlRequest,
@@ -211,7 +212,7 @@ export interface PonderosaApi {
   sendMessage(agentId: string, request: SendMessageRequest): Promise<SendMessageResponse>;
   uploadAttachment(agentId: string, file: File): Promise<ImageAttachmentDto>;
   deleteAttachment(agentId: string, attachmentId: string): Promise<void>;
-  cancelRun(agentId: string, idempotencyKey?: string): Promise<CancelAgentRunResponse>;
+  cancelRun(agentId: string, request: CancelAgentRunRequest): Promise<CancelAgentRunResponse>;
   compactSession(agentId: string): Promise<{ compacted: boolean }>;
   getBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto>;
   openBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto>;

@@ -2596,6 +2596,18 @@ export class CoordinationV3Store {
         actor: { kind: "system", id: "agent-deletion" },
         now,
       });
+      const requested = this.sqlite.prepare(`
+        SELECT id FROM coordination_requests WHERE requester_agent_id = ?
+          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+      `).all(agentId) as Array<{ id: string }>;
+      for (const request of requested) this.updateRequest({
+        requestId: request.id,
+        updateId: `user:requester-deleted:${request.id}`,
+        kind: "cancelled",
+        actor: { kind: "user", id: "agent-deletion" },
+        payload: { reason: "requester_agent_deleted" },
+        now,
+      });
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'failed', terminal_outcome = 'recipient_unavailable',
           terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
