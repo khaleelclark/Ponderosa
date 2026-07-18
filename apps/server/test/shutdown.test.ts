@@ -31,7 +31,10 @@ describe("OS shutdown handlers", () => {
       on: (event, listener) => { listeners.set(event, listener); },
       off: (event, listener) => { if (listeners.get(event) === listener) listeners.delete(event); },
     };
-    const close = vi.fn(async () => { throw new AggregateError([], "Provider runtime shutdown did not complete"); });
+    const providerError = Object.assign(new AggregateError([], "Provider runtime shutdown did not complete"), {
+      providerRuntimeOnly: true,
+    });
+    const close = vi.fn(async () => { throw providerError; });
     const retryProviderRuntimeShutdown = vi.fn()
       .mockRejectedValueOnce(new Error("provider group still alive"))
       .mockResolvedValueOnce(undefined);
@@ -47,5 +50,28 @@ describe("OS shutdown handlers", () => {
     await vi.waitFor(() => expect(host.exitCode).toBe(0));
     expect(close).toHaveBeenCalledTimes(1);
     expect(retryProviderRuntimeShutdown).toHaveBeenCalledTimes(2);
+  });
+
+  it("always retries provider teardown but never masks an unrelated Fastify cleanup failure", async () => {
+    const listeners = new Map<string, (signal: "SIGINT" | "SIGTERM") => void>();
+    const host: ProcessSignalHost = {
+      on: (event, listener) => { listeners.set(event, listener); },
+      off: (event, listener) => { if (listeners.get(event) === listener) listeners.delete(event); },
+    };
+    const close = vi.fn(async () => { throw new Error("trigger watcher shutdown failed"); });
+    const retryProviderRuntimeShutdown = vi.fn(async () => undefined);
+    installProcessShutdownHandlers({
+      close,
+      retryProviderRuntimeShutdown,
+      log: { info: vi.fn(), error: vi.fn() },
+    } as never, host);
+
+    listeners.get("SIGTERM")!("SIGTERM");
+    await vi.waitFor(() => expect(host.exitCode).toBe(1));
+    expect(retryProviderRuntimeShutdown).toHaveBeenCalledTimes(1);
+    listeners.get("SIGTERM")!("SIGTERM");
+    await vi.waitFor(() => expect(retryProviderRuntimeShutdown).toHaveBeenCalledTimes(2));
+    expect(host.exitCode).toBe(1);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });

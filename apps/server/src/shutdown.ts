@@ -19,6 +19,7 @@ export function installProcessShutdownHandlers(
 ): () => void {
   let shutdown: Promise<void> | undefined;
   let fastifyCloseAttempted = false;
+  let unrecoverableCloseError: unknown;
   const handle = (signal: ShutdownSignal): void => {
     if (shutdown) return;
     app.log.info({ signal }, "Ponderosa received an OS shutdown signal");
@@ -28,15 +29,24 @@ export function installProcessShutdownHandlers(
         try {
           await app.close();
         } catch (error) {
-          if (!app.retryProviderRuntimeShutdown || !/Provider runtime shutdown/.test(error instanceof Error ? error.message : "")) {
-            throw error;
+          const providerRuntimeOnly = (error as { providerRuntimeOnly?: unknown } | null)?.providerRuntimeOnly === true;
+          if (!providerRuntimeOnly) unrecoverableCloseError = error;
+          if (app.retryProviderRuntimeShutdown) {
+            app.log.error({ err: error, signal }, "Ponderosa is retrying provider shutdown after Fastify close failed");
+            try {
+              await app.retryProviderRuntimeShutdown();
+            } catch (retryError) {
+              throw new AggregateError([error, retryError], "Ponderosa shutdown and provider retry did not complete");
+            }
           }
-          app.log.error({ err: error, signal }, "Ponderosa is retrying retained provider shutdown handles");
-          await app.retryProviderRuntimeShutdown();
+          if (!providerRuntimeOnly) {
+            throw new AggregateError([error], "Ponderosa shutdown failed outside provider cleanup");
+          }
         }
       } else if (app.retryProviderRuntimeShutdown) {
         await app.retryProviderRuntimeShutdown();
       }
+      if (unrecoverableCloseError) throw unrecoverableCloseError;
       host.exitCode = 0;
     };
     shutdown = attempt().catch((error: unknown) => {

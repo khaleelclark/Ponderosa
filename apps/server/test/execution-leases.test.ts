@@ -51,16 +51,26 @@ class LeaseAdapter implements Adapter {
 class PersistentEventQueue implements AsyncIterable<AgentEvent> {
   private values: AgentEvent[] = [];
   private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
+  private closed = false;
 
   push(value: AgentEvent): void {
+    if (this.closed) return;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value, done: false }); else this.values.push(value);
+  }
+
+  close(): void {
+    this.closed = true;
+    this.values = [];
+    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
   }
 
   [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
     return { next: () => {
       const value = this.values.shift();
-      return value ? Promise.resolve({ value, done: false }) : new Promise((resolve) => this.waiters.push(resolve));
+      return value ? Promise.resolve({ value, done: false })
+        : this.closed ? Promise.resolve({ value: undefined, done: true })
+        : new Promise((resolve) => this.waiters.push(resolve));
     } };
   }
 }
@@ -87,7 +97,7 @@ class PersistentLeaseAdapter implements Adapter {
       startTurn: async () => ({ turnId: "persistent-turn" }),
       steer: async () => ({ status: "accepted", turnId: "persistent-turn" }),
       interrupt: async () => undefined,
-      close: async () => { this.alive = false; },
+      close: async () => { this.alive = false; this.queue.close(); },
     };
   }
 
@@ -252,7 +262,14 @@ describe("enforced execution leases", () => {
     const app = server();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "hang" } });
     await eventually(() => adapter.seeds.length === 1);
-    await app.close();
+    const closing = app.close();
+    await eventually(() => adapter.aborts === 1);
+    let settled = false;
+    void closing.then(() => { settled = true; }, () => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    adapter.releaseAllLateEvents();
+    await closing;
     await clock.advance(2_000);
     store = new AgentStore(dataDir);
     expect(store.readEvents(agent.id).some((item) => item.event.type === "agent_lifecycle" && item.event.reason === "execution_lease_expired")).toBe(false);

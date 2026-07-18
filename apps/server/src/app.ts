@@ -333,6 +333,10 @@ export interface CreateServerOptions {
     setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimer?: (timer: NodeJS.Timeout) => void;
   };
+  /** Deterministic shutdown fault seam; never enabled in production. */
+  shutdownFaults?: {
+    backgroundCleanup?: () => void | Promise<void>;
+  };
   /** Deterministic same-process event-consumer fault seam; never enabled in production configuration. */
   runtimeEventFaults?: {
     beforePersist?: (context: { agentId: string; runId: string; generation: number; event: AgentEvent }) => void | Promise<void>;
@@ -478,6 +482,13 @@ interface PersistentRuntimeTeardown {
   projectId?: string;
   operation?: Promise<void>;
   lastError?: string;
+}
+
+interface OpeningPersistentRuntime {
+  projectId: string;
+  /** Registered before Adapter.openSession() begins, so deletion and shutdown
+   * cannot miss a provider process whose handle has not returned yet. */
+  operation: Promise<PersistentRuntime>;
 }
 
 /**
@@ -1714,6 +1725,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
   let linkPreviewSweep: NodeJS.Timeout | undefined;
   const runtimeSessions = new Map<string, PersistentRuntime>();
+  const openingRuntimes = new Map<string, OpeningPersistentRuntime>();
   // A runtime moves here before it leaves the reusable pool. Failed or
   // in-flight termination therefore retains the only process handle and fences
   // every replacement until the operating system confirms exit.
@@ -2178,6 +2190,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const subscribers = new Map<string, Set<Subscriber>>();
   const directReplyClaims = new Set<string>();
   const deletingAgentIds = new Set<string>();
+  const deletingProjectIds = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
@@ -2339,6 +2352,89 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     void teardownPersistentRuntime(agentId, runtime, reason).catch((error) => {
       app.log.error({ err: error, agentId, reason }, "persistent runtime termination remains pending");
     });
+  }
+
+  async function drainProviderRuntimeAuthority(
+    reason: string,
+    agentIds?: ReadonlySet<string>,
+  ): Promise<void> {
+    const relevant = (agentId: string): boolean => !agentIds || agentIds.has(agentId);
+    for (let pass = 0; pass < 100; pass += 1) {
+      // Revoke capabilities and cancellation authority before awaiting any
+      // opening operation. An adapter that returns late is then routed through
+      // retained teardown instead of becoming reusable.
+      const activeSnapshot = [...activeRuns].filter(([agentId]) => relevant(agentId));
+      for (const [agentId, run] of activeSnapshot) {
+        agentMessageCapabilities.delete(run.messageCapability);
+        clearRunLeaseTimer(run);
+        clearRunLivenessTimer(run);
+        run.controller.abort();
+        void closeRunBrowser(agentId, run, reason).catch((error) => {
+          app.log.error({ err: error, agentId, reason }, "Run browser cleanup failed during provider drain");
+        });
+      }
+
+      const openingSnapshot = [...openingRuntimes]
+        .filter(([agentId, opening]) => relevant(agentId) || (!agentIds && Boolean(opening.projectId)));
+      // Rejections here are expected for opens fenced by cancellation. If a
+      // returned process failed to close, its handle is now in runtimeTeardowns
+      // and the authoritative teardown pass below reports that failure.
+      await Promise.allSettled(openingSnapshot.map(([, opening]) => opening.operation));
+
+      const completionSnapshot = [...activeRuns].filter(([agentId]) => relevant(agentId));
+      const runtimes = new Map<string, PersistentRuntime>();
+      for (const [agentId, state] of runtimeTeardowns) if (relevant(agentId)) runtimes.set(agentId, state.runtime);
+      for (const [agentId, runtime] of runtimeSessions) if (relevant(agentId)) runtimes.set(agentId, runtime);
+      const runtimeEntries = [...runtimes];
+      // Persistent event loops often settle only after session.close(). Start
+      // their teardown and the active Run completion barriers together.
+      const completionOperation = Promise.allSettled(completionSnapshot.map(([, run]) =>
+        run.completion ?? Promise.reject(new Error("active provider Run has no completion barrier"))
+      ));
+      const terminationResults = await Promise.allSettled(runtimeEntries.map(([agentId, runtime]) =>
+        teardownPersistentRuntime(agentId, runtime, reason)
+      ));
+      const terminationFailures = terminationResults.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [new Error(`${runtimeEntries[index]![0]} provider runtime did not terminate: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`)]
+          : []
+      );
+      // A failed persistent close may intentionally leave its event loop live.
+      // Preserve that completion handle and report the retained teardown now;
+      // a later retry will close the process and then await completion.
+      if (terminationFailures.length) {
+        void completionOperation;
+        throw new AggregateError(terminationFailures, "Provider runtime authority drain did not complete");
+      }
+      const completionResults = await completionOperation;
+      const completionFailures = completionResults.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [new Error(`${completionSnapshot[index]![0]} provider Run did not terminate: ${
+            result.reason instanceof Error ? result.reason.message : String(result.reason)
+          }`)]
+          : []
+      );
+      completionResults.forEach((result, index) => {
+        if (result.status !== "fulfilled") return;
+        const [agentId, run] = completionSnapshot[index]!;
+        if (activeRuns.get(agentId) === run) activeRuns.delete(agentId);
+      });
+
+      if (completionFailures.length) {
+        throw new AggregateError(
+          completionFailures,
+          "Provider runtime authority drain did not complete",
+        );
+      }
+
+      const pending = [...openingRuntimes.keys()].some(relevant) ||
+        [...activeRuns.keys()].some(relevant) || [...runtimeSessions.keys()].some(relevant) ||
+        [...runtimeTeardowns.keys()].some(relevant);
+      if (!pending) return;
+    }
+    throw new Error("Provider runtime authority drain did not reach a fixed point");
   }
 
   function trimIdleRuntimeSessions(): void {
@@ -3775,45 +3871,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   let providerRuntimeShutdownFinalized = false;
-  const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
-    if (providerRuntimeShutdownFinalized) return;
-    const shutdownRuntimes = new Map<string, PersistentRuntime>([
-      ...[...runtimeTeardowns].map(([agentId, state]) => [agentId, state.runtime] as const),
-      ...runtimeSessions,
-    ]);
-    for (const runtime of shutdownRuntimes.values()) cancelRuntimeIdleClose(runtime);
-    // Attempt every process group even when one fails. The retained teardown
-    // registry remains retryable and storage remains open until the complete
-    // authority-revocation policy succeeds.
-    const terminationResults = await Promise.allSettled([...shutdownRuntimes].map(([agentId, runtime]) =>
-      teardownPersistentRuntime(agentId, runtime, "server shutdown")
-    ));
-    const terminationFailures = terminationResults.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : []
-    );
-    if (terminationFailures.length) {
-      throw new AggregateError(terminationFailures, "Provider runtime shutdown did not complete");
-    }
-    activeRuns.clear();
-    runtimeSessions.clear();
-    runtimeTeardowns.clear();
+  let shutdownBackgroundCleanupSucceeded = false;
+  let shutdownStorageClosed = false;
+  const closeShutdownStorageIfReady = (): void => {
+    if (!providerRuntimeShutdownFinalized || !shutdownBackgroundCleanupSucceeded || shutdownStorageClosed) return;
     assets.close();
     store.close();
-    providerRuntimeShutdownFinalized = true;
+    shutdownStorageClosed = true;
+  };
+  const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
+    if (!providerRuntimeShutdownFinalized) {
+      await drainProviderRuntimeAuthority("server_shutdown");
+      runtimeSessions.clear();
+      runtimeTeardowns.clear();
+      openingRuntimes.clear();
+      activeRuns.clear();
+      providerRuntimeShutdownFinalized = true;
+    }
+    closeShutdownStorageIfReady();
   };
   app.retryProviderRuntimeShutdown = finalizeProviderRuntimeShutdown;
 
   app.addHook("onClose", async () => {
     closed = true;
-    await webPushDelivery?.stop();
-    await triggerSources.stop();
-    await coordinationV3Scheduler.stop();
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
+    const runBrowserClosures: Promise<void>[] = [];
     for (const [agentId, run] of activeRuns) {
-      await closeRunBrowser(agentId, run, "server_shutdown");
+      runBrowserClosures.push(closeRunBrowser(agentId, run, "server_shutdown"));
       clearRunLeaseTimer(run);
       clearRunLivenessTimer(run);
+      agentMessageCapabilities.delete(run.messageCapability);
       if (run.v3SchedulerRunId && run.v3FencingToken !== undefined) {
         try {
           coordinationV3.failRun({
@@ -3826,10 +3914,45 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       run.controller.abort();
     }
-    await browserSessions.closeAll("server_shutdown");
     projectBrowserGrants.clear();
-    await projectBrowserSessions.closeAll("server_shutdown");
-    await finalizeProviderRuntimeShutdown();
+    const backgroundOperation = Promise.allSettled([
+      Promise.resolve().then(() => webPushDelivery?.stop()),
+      Promise.resolve().then(() => triggerSources.stop()),
+      Promise.resolve().then(() => coordinationV3Scheduler.stop()),
+      ...runBrowserClosures,
+      Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
+      Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
+      Promise.resolve().then(() => opts.shutdownFaults?.backgroundCleanup?.()),
+    ]);
+    // Provider authority revocation is an independent barrier. No earlier
+    // watcher, scheduler, push, or browser failure can skip it.
+    const [backgroundResults, providerResult] = await Promise.all([
+      backgroundOperation,
+      finalizeProviderRuntimeShutdown().then(
+        () => ({ status: "fulfilled" as const }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      ),
+    ]);
+    const backgroundFailures = backgroundResults.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []
+    );
+    shutdownBackgroundCleanupSucceeded = backgroundFailures.length === 0;
+    const failures = [
+      ...backgroundFailures,
+      ...(providerResult.status === "rejected" ? [providerResult.reason] : []),
+    ];
+    if (!failures.length) {
+      try { closeShutdownStorageIfReady(); }
+      catch (error) { failures.push(error); }
+    }
+    if (failures.length) {
+      const error = new AggregateError(failures, "Ponderosa server shutdown did not complete") as AggregateError & {
+        providerRuntimeOnly?: boolean;
+      };
+      error.providerRuntimeOnly = backgroundFailures.length === 0 &&
+        providerResult.status === "rejected";
+      throw error;
+    }
   });
 
   function publish(agentId: string, stored: StoredLogEvent): void {
@@ -6320,42 +6443,45 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
-    if (agents.some((agent) => deletingAgentIds.has(agent.id))) {
+    if (deletingProjectIds.has(project.id) || agents.some((agent) => deletingAgentIds.has(agent.id))) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
-    projectBrowserGrants.delete(project.id);
-    const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
-    if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
     const agentIds = new Set(agents.map((agent) => agent.id));
+    deletingProjectIds.add(project.id);
     for (const agentId of agentIds) deletingAgentIds.add(agentId);
     try {
+      projectBrowserGrants.delete(project.id);
+      const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
+      if (projectBrowser) await projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted");
       // Fence scheduler ownership before touching provider processes. Project
       // data remains intact until every provider authority barrier succeeds, so
       // a failed deletion is safely retryable instead of half-committed.
       coordinationV3.prepareProjectDeletion(project.id);
-      const terminations = await Promise.allSettled([...agentIds].map(async (agentId) => {
+      const browserClosures: Promise<void>[] = [];
+      for (const agentId of agentIds) {
         closeLinkPreviewsForAgent(agentId, "project deleted");
         const active = activeRuns.get(agentId);
         if (active) {
-          await closeRunBrowser(agentId, active, "project_deleted");
+          browserClosures.push(closeRunBrowser(agentId, active, "project_deleted"));
           clearRunLeaseTimer(active);
           clearRunLivenessTimer(active);
           agentMessageCapabilities.delete(active.messageCapability);
           active.controller.abort();
         }
-        const runtime = persistentRuntimeForTermination(agentId);
-        const terminationError = await terminateRuntimeHandle(
-          agentId,
-          active,
-          runtime,
-          "Project deletion",
-          project.id,
-        );
-        if (terminationError) throw new Error(`${agentId}: ${terminationError}`);
-        if (active && activeRuns.get(agentId) === active) activeRuns.delete(agentId);
-      }));
-      const failures = terminations.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      }
+      const barriers = await Promise.allSettled([
+        ...browserClosures,
+        drainProviderRuntimeAuthority("Project deletion", agentIds),
+      ]);
+      const failures = barriers.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
+
+      // The drain rescans after every late open/completion. Keep this explicit
+      // final assertion beside the irreversible storage boundary.
+      if ([...openingRuntimes.keys(), ...activeRuns.keys(), ...runtimeSessions.keys(), ...runtimeTeardowns.keys()]
+        .some((agentId) => agentIds.has(agentId))) {
+        throw new Error("Project deletion provider authority changed after draining");
+      }
 
       cancelAgentDecisions(agentIds);
       for (const agentId of agentIds) {
@@ -6375,6 +6501,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         retryable: true,
       });
     } finally {
+      deletingProjectIds.delete(project.id);
       for (const agentId of agentIds) deletingAgentIds.delete(agentId);
     }
   });
@@ -7498,6 +7625,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     "/api/projects/:id/agents",
     async (request, reply) => {
       if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+      if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
       if (!request.body?.title || !request.body?.engine) {
         return reply.code(400).send({ error: "title and engine are required" });
       }
@@ -7550,6 +7678,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(400).send({ error: "a managed agent opening message requires its manager to belong to a Project chat" });
       }
       let agent;
+      if (deletingProjectIds.has(request.params.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
       try {
         agent = store.createAgent(request.params.id, request.body);
       } catch (error) {
@@ -8076,6 +8205,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const body = request.body;
     const conversation = body?.conversationId ? store.getConversation(body.conversationId) : undefined;
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
     if (!conversation || conversation.projectId !== project.id) return reply.code(400).send({ error: "destination Project chat is required" });
     if (body?.package?.schema !== "ponderosa.agent-package.v1" || !Array.isArray(body.package.agents) || body.package.agents.length < 1 || body.package.agents.length > 100) return reply.code(400).send({ error: "invalid Ponderosa Agent package" });
     const invalidPermissions = body.package.agents.some((node) => {
@@ -8124,6 +8254,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const created = new Map<string, AgentDto>();
     try {
       for (const node of body.package.agents) {
+        if (deletingProjectIds.has(project.id)) throw new Error("Project deletion is already in progress");
         const targetEngine = body.engineMapping[node.engine]!;
         const selectionError = runtimeSelectionError(engines.get(targetEngine)!.adapter, node.model, node.effort);
         if (selectionError) throw new Error(`${node.title}: ${selectionError}`);
@@ -9419,10 +9550,39 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               messageCapability,
             };
           };
+          const openRegisteredPersistentRuntime = (sessionResumeId?: string): Promise<PersistentRuntime> => {
+            if (openingRuntimes.has(agent.id)) {
+              throw new Error(`provider runtime is already opening for ${agent.id}`);
+            }
+            const state = {} as OpeningPersistentRuntime;
+            // Defer the adapter call by one microtask so the opening operation
+            // is visible to Project deletion and shutdown before openSession()
+            // can spawn or await anything.
+            const operation = Promise.resolve()
+              .then(() => openPersistentRuntime(sessionResumeId))
+              .then(async (runtime) => {
+                const currentAgent = store.getAgent(agent.id);
+                const stillAuthoritative = !closed && !deletingProjectIds.has(project.id) && !deletingAgentIds.has(agent.id) &&
+                  !controller.signal.aborted && currentAgent?.projectId === project.id &&
+                  activeRuns.get(agent.id) === activeRun && ownsActiveRun(agent.id, activeRun);
+                if (!stillAuthoritative) {
+                  await teardownPersistentRuntime(agent.id, runtime, "provider open lost Run authority", project.id);
+                  throw new Error(`provider runtime open lost authority for ${agent.id}`);
+                }
+                runtimeSessions.set(agent.id, runtime);
+                return runtime;
+              })
+              .finally(() => {
+                if (openingRuntimes.get(agent.id) === state) openingRuntimes.delete(agent.id);
+              });
+            state.projectId = project.id;
+            state.operation = operation;
+            openingRuntimes.set(agent.id, state);
+            return operation;
+          };
           let persistentRuntime = reusablePersistentRuntime;
           if (engine.adapter.openSession && !persistentRuntime) {
-            persistentRuntime = await openPersistentRuntime(resumeSessionId);
-            runtimeSessions.set(agent.id, persistentRuntime);
+            persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
           }
           if (persistentRuntime) {
             activeRun.runtimeSession = persistentRuntime.session;
@@ -9553,8 +9713,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 if (persistentRuntime) {
                   const staleRuntime = persistentRuntime;
                   await teardownPersistentRuntime(agent.id, staleRuntime, "failed resume replacement", project.id);
-                  persistentRuntime = await openPersistentRuntime();
-                  runtimeSessions.set(agent.id, persistentRuntime);
+                  persistentRuntime = await openRegisteredPersistentRuntime();
                   activeRun.runtimeSession = persistentRuntime.session;
                   persistentTurnStarted = false;
                 }
@@ -9737,7 +9896,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             }
           }
           const retainedRuntime = runtimeSessions.get(agent.id);
-          if (released && retainedRuntime && !closed) scheduleRuntimeIdleClose(agent.id, retainedRuntime);
+          if (released && retainedRuntime && !closed && !controller.signal.aborted &&
+              !deletingAgentIds.has(agent.id) && store.getAgent(agent.id)?.projectId === project.id) {
+            scheduleRuntimeIdleClose(agent.id, retainedRuntime);
+          } else if (released && retainedRuntime && (closed || controller.signal.aborted || deletingAgentIds.has(agent.id))) {
+            teardownPersistentRuntimeInBackground(agent.id, retainedRuntime, "Run authority ended during teardown");
+          }
           if (released) coordinationV3Scheduler.notify();
         }
       })();
