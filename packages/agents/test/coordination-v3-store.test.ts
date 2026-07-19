@@ -125,12 +125,39 @@ function runtimeMutationState() {
   const count = (table: string) => (opened.client.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
   return {
     communications: count("runtime_communications"),
+    artifacts: count("runtime_artifacts"),
     activations: count("agent_activations"),
     outbox: count("activation_outbox"),
     retryLineage: count("activation_delivery_retry_lineage"),
     idempotency: count("coordination_idempotency"),
     promptInjections: count("scheduler_prompt_injections"),
     runs: count("scheduler_runs"),
+  };
+}
+
+function runtimeArtifactInput(
+  sequence: number,
+  overrides: Partial<{
+    originAgentId: string;
+    executionId: string;
+    role: "long_text" | "document";
+    title: string;
+    mediaType: string;
+    blobHash: string;
+    byteLength: number;
+  }> = {},
+) {
+  const digest = sequence.toString(16).padStart(64, "0");
+  const id = `text-${digest}`;
+  return {
+    id,
+    role: "document" as const,
+    title: `Artifact ${sequence}`,
+    mediaType: "text/markdown",
+    blobPath: id,
+    blobHash: "a".repeat(64),
+    byteLength: 8,
+    ...overrides,
   };
 }
 
@@ -1932,6 +1959,208 @@ describe("CoordinationV3Store scheduler", () => {
     expect(runtimeMutationState()).toEqual(before);
     expect(store.leaseNextRun({ workerId: "mismatch-worker" })).toBeUndefined();
     expect(runtimeMutationState()).toEqual(before);
+  });
+
+  it("admits runtime artifact provenance only from authoritative same-Project identities before mutation", () => {
+    const foreign = seedAdditionalProject("Foreign artifact provenance");
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "local-artifact-run",
+      kind: "ordinary", payload: { text: "local artifact authority" },
+    });
+    const localRun = store.leaseNextRun({ workerId: "local-artifact-worker" })!;
+    store.enqueueMessageActivation({
+      projectId: foreign.projectId, agentId: foreign.agentId, messageId: "foreign-artifact-run",
+      kind: "ordinary", payload: { text: "foreign artifact authority" },
+    });
+    const foreignRun = store.leaseNextRun({ workerId: "foreign-artifact-worker" })!;
+    expect(localRun).toMatchObject({ projectId, agentId: recipientA });
+    expect(foreignRun).toMatchObject({ projectId: foreign.projectId, agentId: foreign.agentId });
+
+    const broadcastInput = (id: string, artifact: ReturnType<typeof runtimeArtifactInput>) => ({
+      id,
+      projectId,
+      sender: { kind: "user" as const, userId: "local-operator" },
+      intent: "broadcast" as const,
+      audience: { kind: "organization" as const, organizationId: projectId },
+      payload: { text: `Artifact admission ${id}` },
+      artifacts: [artifact],
+    });
+    const rejected = [
+      broadcastInput("artifact-foreign-origin", runtimeArtifactInput(1, { originAgentId: foreign.agentId })),
+      broadcastInput("artifact-foreign-execution", runtimeArtifactInput(2, { executionId: foreignRun.runId })),
+      broadcastInput("artifact-mismatched-identities", runtimeArtifactInput(3, {
+        originAgentId: recipientB, executionId: localRun.runId,
+      })),
+      broadcastInput("artifact-malformed-origin", runtimeArtifactInput(4, { originAgentId: "not-a-uuid" })),
+      broadcastInput("artifact-malformed-execution", runtimeArtifactInput(5, { executionId: "not-a-uuid" })),
+    ];
+    const before = runtimeMutationState();
+    for (const input of rejected) {
+      expect(() => store.recordRuntimeCommunication(input)).toThrow(
+        "runtime communication artifact metadata or provenance is invalid",
+      );
+      expect(runtimeMutationState()).toEqual(before);
+    }
+
+    const matching = runtimeArtifactInput(6, {
+      originAgentId: recipientA,
+      executionId: localRun.runId,
+    });
+    expect(store.recordRuntimeCommunication(broadcastInput("artifact-matching-identities", matching)))
+      .toMatchObject({ artifactIds: [matching.id], replayed: false });
+    expect(store.runtimeArtifact(matching.id)).toMatchObject({
+      projectId,
+      originAgentId: recipientA,
+      executionId: localRun.runId,
+    });
+
+    const userArtifact = runtimeArtifactInput(7);
+    expect(store.recordRuntimeCommunication(broadcastInput("artifact-user-without-provenance", userArtifact)))
+      .toMatchObject({ artifactIds: [userArtifact.id], replayed: false });
+    expect(store.runtimeArtifact(userArtifact.id)).toMatchObject({ projectId });
+    expect(store.runtimeArtifact(userArtifact.id)).not.toHaveProperty("originAgentId");
+    expect(store.runtimeArtifact(userArtifact.id)).not.toHaveProperty("executionId");
+  });
+
+  it("applies the same artifact provenance admission before request-update and queued-edit mutation", () => {
+    const foreign = seedAdditionalProject("Foreign alternate artifact path");
+    const foreignArtifact = runtimeArtifactInput(8, { originAgentId: foreign.agentId });
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "artifact-request",
+      requests: [{ requestId: "artifact-request", recipientAgentId: recipientA, lifetime: indefinite }],
+    });
+    const beforeUpdate = runtimeMutationState();
+    expect(() => store.updateRequest({
+      requestId: "artifact-request",
+      updateId: "artifact-request-update",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "Result" },
+      artifacts: [foreignArtifact],
+    })).toThrow("request update artifact metadata or provenance is invalid");
+    expect(runtimeMutationState()).toEqual(beforeUpdate);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM coordination_request_updates WHERE id = 'artifact-request-update'
+    `).get()).toEqual({ count: 0 });
+    expect(store.getRequest("artifact-request")).toMatchObject({ state: "open", version: 0 });
+
+    const communication = userDmEvent({
+      eventId: "artifact-queued-edit", agentId: recipientB, text: "Original",
+    });
+    const intake = store.recordRuntimeCommunication({
+      id: communication.eventId,
+      projectId,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      payload: { communication, dispatch: { text: communication.text } },
+      activation: {
+        agentId: recipientB,
+        kind: "human_message",
+        priority: 100,
+        dispatchPolicy: "next_run",
+        promptClass: "human",
+      },
+    });
+    const beforeEdit = runtimeMutationState();
+    const activationBefore = opened.client.prepare(`
+      SELECT payload_json FROM agent_activations WHERE id = ?
+    `).get(intake.activationId) as { payload_json: string };
+    expect(() => store.editPendingActivationText({
+      activationId: intake.activationId!,
+      projectId,
+      requestText: "Edited",
+      text: "Edited",
+      revisionOwnerId: "artifact-queued-edit-revision",
+      artifact: runtimeArtifactInput(9, { originAgentId: foreign.agentId }),
+      revisionOutboxPayload: { revision: "artifact-queued-edit-revision" },
+      idempotencyKey: "artifact-queued-edit",
+    })).toThrow("queued edit artifact metadata or provenance is invalid");
+    expect(runtimeMutationState()).toEqual(beforeEdit);
+    expect(opened.client.prepare(`
+      SELECT payload_json FROM agent_activations WHERE id = ?
+    `).get(intake.activationId)).toEqual(activationBefore);
+  });
+
+  it("rejects malformed top-level and per-recipient dispatch attachments before durable intake", () => {
+    const validAttachment = {
+      id: randomUUID(), name: "evidence.pdf", mediaType: "application/pdf", size: 42,
+    };
+    const input = (id: string, dispatch: unknown) => {
+      const communication = userDmEvent({
+        eventId: id, agentId: recipientA, conversation: conversationId,
+      });
+      return {
+        id,
+        projectId,
+        sender: communication.sender,
+        intent: communication.intent,
+        audience: communication.audience,
+        payload: { communication, dispatch },
+        activation: {
+          agentId: recipientA,
+          kind: "human_message",
+          priority: 100,
+          dispatchPolicy: "next_run" as const,
+          promptClass: "human" as const,
+        },
+      };
+    };
+    const duplicate = [{ ...validAttachment }, { ...validAttachment, name: "duplicate.pdf" }];
+    const rejected = [
+      input("top-level-attachments-non-array", { attachments: {} }),
+      input("top-level-attachment-non-record", { attachments: [null] }),
+      input("top-level-attachment-incomplete", { attachments: [{ ...validAttachment, name: undefined }] }),
+      input("top-level-attachment-malformed-metadata", {
+        attachments: [{ ...validAttachment, mediaType: "text/html" }],
+      }),
+      input("top-level-attachment-unknown-metadata", {
+        attachments: [{ ...validAttachment, agentId: recipientA }],
+      }),
+      input("top-level-attachment-duplicate", { attachments: duplicate }),
+      input("recipients-non-array", { recipients: {} }),
+      input("recipient-non-record", { recipients: [null] }),
+      input("recipient-attachments-non-array", {
+        recipients: [{ agentId: recipientA, attachments: {} }],
+      }),
+      input("recipient-attachment-non-record", {
+        recipients: [{ agentId: recipientA, attachments: [null] }],
+      }),
+      input("recipient-attachment-incomplete", {
+        recipients: [{ agentId: recipientA, attachments: [{ ...validAttachment, size: undefined }] }],
+      }),
+      input("recipient-attachment-malformed-metadata", {
+        recipients: [{ agentId: recipientA, attachments: [{ ...validAttachment, id: "not-a-uuid" }] }],
+      }),
+      input("recipient-attachment-unknown-metadata", {
+        recipients: [{ agentId: recipientA, attachments: [{ ...validAttachment, url: "/not-dispatch-metadata" }] }],
+      }),
+      input("recipient-attachment-duplicate", {
+        recipients: [{ agentId: recipientA, attachments: duplicate }],
+      }),
+    ];
+    const before = runtimeMutationState();
+    for (const candidate of rejected) {
+      expect(() => store.recordRuntimeCommunication(candidate as never)).toThrow(
+        "runtime communication authority does not agree on one Project",
+      );
+      expect(runtimeMutationState()).toEqual(before);
+    }
+
+    expect(store.recordRuntimeCommunication(input("top-level-empty-attachments", { attachments: [] })).activationId)
+      .toBeTruthy();
+    expect(store.recordRuntimeCommunication(input("recipient-empty-attachments", {
+      recipients: [{ agentId: recipientA, attachments: [] }],
+    })).activationId).toBeTruthy();
+    expect(store.recordRuntimeCommunication(input("top-level-valid-attachment", {
+      attachments: [{ ...validAttachment, localPath: "/validated/evidence.pdf" }],
+    })).activationId).toBeTruthy();
+    expect(store.recordRuntimeCommunication(input("recipient-valid-attachment", {
+      recipients: [{ agentId: recipientA, attachments: [validAttachment] }],
+    })).activationId).toBeTruthy();
   });
 
   it("accepts current canonical and closed internal RuntimeCommunication variants", () => {

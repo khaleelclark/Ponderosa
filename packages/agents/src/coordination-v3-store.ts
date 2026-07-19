@@ -525,11 +525,51 @@ function payloadHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
-function runtimeArtifactMetadataIsValid(artifact: RuntimeArtifactInputV3): boolean {
-  return /^text-[a-f0-9]{64}$/.test(artifact.id) && artifact.blobPath === artifact.id &&
-    Boolean(artifact.title.trim()) && Boolean(artifact.mediaType.trim()) &&
-    /^[a-f0-9]{64}$/.test(artifact.blobHash) &&
-    Number.isSafeInteger(artifact.byteLength) && artifact.byteLength >= 0;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const RUNTIME_ATTACHMENT_MEDIA_TYPES = new Set([
+  "image/png", "image/jpeg", "image/webp", "application/pdf",
+  "text/plain", "application/json", "application/zip",
+]);
+const RUNTIME_ATTACHMENT_FIELDS = new Set(["id", "name", "mediaType", "size", "localPath"]);
+
+interface RuntimeDispatchAttachmentV3 {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  localPath?: string;
+}
+
+function runtimeArtifactMetadataIsValid(artifact: unknown): artifact is RuntimeArtifactInputV3 {
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return false;
+  const candidate = artifact as Record<string, unknown>;
+  return typeof candidate.id === "string" && /^text-[a-f0-9]{64}$/.test(candidate.id) &&
+    (candidate.role === "long_text" || candidate.role === "document") &&
+    typeof candidate.blobPath === "string" && candidate.blobPath === candidate.id &&
+    typeof candidate.title === "string" && Boolean(candidate.title.trim()) &&
+    typeof candidate.mediaType === "string" && Boolean(candidate.mediaType.trim()) &&
+    typeof candidate.blobHash === "string" && /^[a-f0-9]{64}$/.test(candidate.blobHash) &&
+    Number.isSafeInteger(candidate.byteLength) && (candidate.byteLength as number) >= 0 &&
+    (candidate.originAgentId === undefined || typeof candidate.originAgentId === "string") &&
+    (candidate.executionId === undefined || typeof candidate.executionId === "string");
+}
+
+function runtimeDispatchAttachmentsAreValid(value: unknown): value is RuntimeDispatchAttachmentV3[] {
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const attachment = item as Record<string, unknown>;
+    if (Object.keys(attachment).some((field) => !RUNTIME_ATTACHMENT_FIELDS.has(field)) ||
+        typeof attachment.id !== "string" || !UUID_PATTERN.test(attachment.id) || ids.has(attachment.id) ||
+        typeof attachment.name !== "string" || !attachment.name.trim() ||
+        typeof attachment.mediaType !== "string" || !RUNTIME_ATTACHMENT_MEDIA_TYPES.has(attachment.mediaType) ||
+        !Number.isSafeInteger(attachment.size) || (attachment.size as number) < 1 ||
+        (attachment.localPath !== undefined &&
+          (typeof attachment.localPath !== "string" || !attachment.localPath.trim()))) return false;
+    ids.add(attachment.id);
+  }
+  return true;
 }
 
 function isIso(value: string): boolean {
@@ -568,6 +608,7 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
       this.requireProject(input.projectId);
+      this.requireRuntimeArtifacts(input.projectId, input.artifacts, "runtime communication");
       if (!this.runtimeCommunicationAuthorityAgrees({
         projectId: input.projectId,
         sender: input.sender,
@@ -619,9 +660,6 @@ export class CoordinationV3Store {
         ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const artifact of input.artifacts ?? []) {
-        if (!runtimeArtifactMetadataIsValid(artifact)) {
-          throw new Error("runtime communication artifact metadata is invalid");
-        }
         insertArtifact.run(
           artifact.id, input.id, input.projectId, artifact.role, artifact.title, artifact.mediaType,
           artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
@@ -1191,6 +1229,7 @@ export class CoordinationV3Store {
       requestText: input.requestText,
     });
     return this.sqlite.transaction(() => {
+      if (input.artifact) this.requireRuntimeArtifacts(input.projectId, [input.artifact], "queued edit");
       const replay = this.idempotentReplay<{ edited: boolean; status: "edited" | "delivery_started" }>(
         input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash,
       );
@@ -1236,7 +1275,6 @@ export class CoordinationV3Store {
         `).run(stableJson(nextPayload), now, input.activationId, input.projectId).changes === 1;
         if (edited) {
           if (input.artifact) {
-            if (!runtimeArtifactMetadataIsValid(input.artifact)) throw new Error("queued edit artifact metadata is invalid");
             this.sqlite.prepare(`
               INSERT INTO runtime_artifacts (
                 id, owner_kind, owner_id, project_id, role, title, media_type,
@@ -2782,6 +2820,7 @@ export class CoordinationV3Store {
           throw new Error("request is not attached to the authoritative run");
         }
       }
+      this.requireRuntimeArtifacts(request.project_id, input.artifacts, "request update");
       const existing = this.sqlite.prepare(`
         SELECT request_id, actor_kind, actor_id, payload_hash, resulting_state, resulting_version
         FROM coordination_request_updates WHERE id = ?
@@ -2832,9 +2871,6 @@ export class CoordinationV3Store {
         ) VALUES (?, 'request_update', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const artifact of input.artifacts ?? []) {
-        if (!runtimeArtifactMetadataIsValid(artifact)) {
-          throw new Error("request update artifact metadata is invalid");
-        }
         insertArtifact.run(
           artifact.id, input.updateId, request.project_id, artifact.role, artifact.title, artifact.mediaType,
           artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
@@ -4234,6 +4270,37 @@ export class CoordinationV3Store {
     }
   }
 
+  private requireRuntimeArtifacts(
+    projectId: string,
+    artifacts: RuntimeArtifactInputV3[] | undefined,
+    ownerLabel: string,
+  ): void {
+    if (artifacts === undefined) return;
+    if (!Array.isArray(artifacts) || artifacts.some((artifact) => !this.runtimeArtifactAgreesWithProject(
+      projectId,
+      artifact,
+    ))) {
+      throw new Error(`${ownerLabel} artifact metadata or provenance is invalid`);
+    }
+  }
+
+  private runtimeArtifactAgreesWithProject(projectId: string, artifact: unknown): artifact is RuntimeArtifactInputV3 {
+    if (!runtimeArtifactMetadataIsValid(artifact)) return false;
+    const originAgentId = artifact.originAgentId;
+    const executionId = artifact.executionId;
+    if (originAgentId !== undefined) {
+      if (!UUID_PATTERN.test(originAgentId) || !this.sqlite.prepare(`
+        SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND archived = 0
+      `).get(originAgentId, projectId)) return false;
+    }
+    if (executionId === undefined) return true;
+    if (!UUID_PATTERN.test(executionId)) return false;
+    const run = this.sqlite.prepare(`
+      SELECT agent_id FROM scheduler_runs WHERE id = ? AND project_id = ?
+    `).get(executionId, projectId) as { agent_id: string } | undefined;
+    return Boolean(run && (originAgentId === undefined || run.agent_id === originAgentId));
+  }
+
   private coordinationScopeKey(conversationId: string | null, agentId: string): string {
     return conversationId ? `conversation:${conversationId}` : `agent:${agentId}`;
   }
@@ -4360,11 +4427,15 @@ export class CoordinationV3Store {
       identityAgentIds.add(dispatch.targetAuthorAgentId);
       if (audience.kind !== "organization" && !audienceAgentIds.has(dispatch.targetAuthorAgentId)) return false;
     }
+    if (dispatch && Object.prototype.hasOwnProperty.call(dispatch, "attachments") &&
+        !runtimeDispatchAttachmentsAreValid(dispatch.attachments)) return false;
     if (dispatch?.recipients !== undefined) {
       if (!Array.isArray(dispatch.recipients)) return false;
       for (const candidate of dispatch.recipients) {
         const recipient = record(candidate);
         if (!recipient || typeof recipient.agentId !== "string" || !recipient.agentId) return false;
+        if (Object.prototype.hasOwnProperty.call(recipient, "attachments") &&
+            !runtimeDispatchAttachmentsAreValid(recipient.attachments)) return false;
         identityAgentIds.add(recipient.agentId);
         if (audience.kind !== "organization" && !audienceAgentIds.has(recipient.agentId)) return false;
       }

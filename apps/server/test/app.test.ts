@@ -6659,7 +6659,7 @@ describe("server chunk F", () => {
       now: event.createdAt,
     });
     const malformedEventId = randomUUID();
-    new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+    expect(() => new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
       id: `dispatch:${malformedEventId}:${agent.id}`,
       projectId: project.id,
       sender: event.sender,
@@ -6670,7 +6670,9 @@ describe("server chunk F", () => {
         dispatch: { text: "", attachments: [{ id: "missing" }] },
       },
       now: event.createdAt,
-    });
+    })).toThrow("runtime communication authority does not agree on one Project");
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunication(`dispatch:${malformedEventId}:${agent.id}`))
+      .toBeUndefined();
 
     const recoveredApp = createServer({
       dataDir, store, engines, logger: false,
