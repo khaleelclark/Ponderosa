@@ -55,6 +55,7 @@ import type {
   FilesResponse,
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
+  AllChatPageDto,
   HistoryPageDto,
   HostFolderBrowseDto,
   ImageAttachmentDto,
@@ -206,6 +207,9 @@ export const realApi = {
   },
   searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto> {
     return requestJson<GlobalChatSearchResponseDto>(`/api/search${toQuery({ q: query, limit })}`);
+  },
+  getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
+    return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
   },
   listConversations(projectId: string): Promise<ConversationDto[]> {
     return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");

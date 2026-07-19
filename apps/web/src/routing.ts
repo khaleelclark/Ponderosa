@@ -12,7 +12,7 @@
 // the server.
 
 import { useCallback, useEffect, useState } from "react";
-import type { AgentTelemetryStream } from "@ponderosa/core";
+import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
 
 export interface AgentTelemetryFocus {
   stream: AgentTelemetryStream;
@@ -22,9 +22,10 @@ export interface AgentTelemetryFocus {
 export type Route =
   | { kind: "home" }
   | { kind: "projects" }
+  | { kind: "allChat" }
   | { kind: "allAgents" }
   | { kind: "project"; projectId: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
@@ -41,15 +42,21 @@ export function parseRoute(pathname: string, search = ""): Route {
     ? { stream: telemetryStream as AgentTelemetryStream, id: telemetryId }
     : undefined;
   const reviewPath = query.get("path")?.trim() || undefined;
+  const channel = query.get("view") === "team" ? "collaboration" as const : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
+  if (parts.length === 1 && parts[0] === "chats") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
   }
   const projectId = decodeURIComponent(parts[1]);
   if (parts[2] === "chats" && parts[3]) {
-    return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]), ...(focusMessageId ? { focusMessageId } : {}) };
+    return {
+      kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]),
+      ...(focusMessageId ? { focusMessageId } : {}),
+      ...(channel ? { channel } : {}),
+    };
   }
   if (parts[2] === "agents" && parts[3]) {
     return {
@@ -71,12 +78,19 @@ export function routeToPath(route: Route): string {
   switch (route.kind) {
     case "projects":
       return "/projects";
+    case "allChat":
+      return "/chats";
     case "allAgents":
       return "/agents";
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
-    case "conversation":
-      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}` : ""}`;
+    case "conversation": {
+      const query = new URLSearchParams();
+      if (route.focusMessageId) query.set("message", route.focusMessageId);
+      if (route.channel === "collaboration") query.set("view", "team");
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${suffix}`;
+    }
     case "agents":
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
     case "agent":

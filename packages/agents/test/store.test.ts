@@ -800,6 +800,68 @@ describe("AgentStore — multi-conversation membership", () => {
   });
 });
 
+describe("AgentStore — All Chat", () => {
+  it("deduplicates canonical messages, prefers source chats, and pages by a stable workspace cursor", () => {
+    const project = store.createProject({ label: "All Chat", hostPath: "/all-chat" });
+    const room = store.createConversation(project.id, { title: "Planning" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: room.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
+    const append = (event: CommunicationEvent, placements: Array<{ surface: "conversation" | "collaboration_view" | "direct_agent_audit"; key: string }>) => {
+      store.appendCommunicationEvent(event);
+      for (const placement of placements) store.appendCommunicationProjection(project.id, {
+        eventId: event.eventId, surface: placement.surface, projectionKey: placement.key, projectedAt: event.createdAt,
+        message: { messageId: `message-${event.eventId}`, role: event.sender.kind === "agent" ? "assistant" : "user", createdAt: event.createdAt },
+      });
+    };
+    append({
+      eventId: "broadcast", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Shared plan", createdAt: "2026-07-19T10:00:00.000Z",
+    }, [{ surface: "conversation", key: room.id }]);
+    append({
+      eventId: "agent-update", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "run-author" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "Agent update", createdAt: "2026-07-19T10:01:00.000Z",
+    }, [{ surface: "conversation", key: room.id }, { surface: "direct_agent_audit", key: author.id }]);
+    append({
+      eventId: "team-note", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "run-team" }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Team note", createdAt: "2026-07-19T10:02:00.000Z",
+    }, [
+      { surface: "collaboration_view", key: room.id },
+      { surface: "direct_agent_audit", key: author.id },
+      { surface: "direct_agent_audit", key: recipient.id },
+    ]);
+    append({
+      eventId: "private-question", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id }, text: "Private question", createdAt: "2026-07-19T10:03:00.000Z",
+    }, [{ surface: "conversation", key: room.id }, { surface: "direct_agent_audit", key: recipient.id }]);
+
+    const recent = store.getAllChatPage({ limit: 2 });
+    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["team-note", "private-question"]);
+    expect(recent.items[0]).toMatchObject({
+      source: { kind: "team", conversationId: room.id },
+      directMessageAgent: { id: author.id, title: "Author" },
+    });
+    expect(recent.items[1]).toMatchObject({
+      source: { kind: "project", conversationId: room.id },
+      directMessageAgent: { id: recipient.id, title: "Recipient" },
+    });
+    expect(recent.history).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
+
+    const older = store.getAllChatPage({ limit: 2, cursor: recent.history.cursor });
+    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast", "agent-update"]);
+    expect(older.items[0]?.directMessageAgent).toBeUndefined();
+    expect(older.items[1]).toMatchObject({
+      source: { kind: "project", conversationId: room.id },
+      directMessageAgent: { id: author.id, title: "Author" },
+    });
+    expect(older.history).toEqual({ limit: 2, hasMore: false });
+    expect(() => store.getAllChatPage({ cursor: `${recent.history.cursor}x` })).toThrow("invalid history cursor");
+  });
+});
+
 const RUN: LogEvent[] = [
   { type: "user_message", text: "Refactor authentication" },
   { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1", wakeCause: "direct_message" },

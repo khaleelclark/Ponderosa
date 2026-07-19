@@ -93,6 +93,7 @@ import type {
   CreateLinkPreviewRequest,
   LinkPreviewDto,
   GlobalChatSearchResponseDto,
+  AllChatPageDto,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
   ProjectBrowserSessionDto,
@@ -9698,6 +9699,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return globalChatSearch(request.query);
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
+    }
+  });
+
+  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/all-chat", async (request, reply) => {
+    const requestedLimit = Number(request.query.limit ?? 50);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, Math.floor(requestedLimit))) : 50;
+    if (request.query.cursor !== undefined && (!request.query.cursor || request.query.cursor.length > 4096)) {
+      return reply.code(400).send({ error: "cursor must be a non-empty opaque string of at most 4096 characters" });
+    }
+    try {
+      return store.getAllChatPage({ limit, cursor: request.query.cursor }) satisfies AllChatPageDto;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
     }
   });
 

@@ -7786,6 +7786,41 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("serves bounded All Chat pages and rejects cursors from another history scope", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "All Chat API", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Workspace timeline" });
+    for (let index = 0; index < 3; index += 1) {
+      const createdAt = new Date(Date.UTC(2026, 6, 19, 12, 0, index)).toISOString();
+      const eventId = `all-chat-api-${index}`;
+      store.appendCommunicationEvent({
+        eventId, schemaVersion: 2, projectId: project.id, conversationId: room.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id }, text: `All Chat ${index}`, createdAt,
+      });
+      store.appendCommunicationProjection(project.id, {
+        eventId, surface: "conversation", projectionKey: room.id, projectedAt: createdAt,
+        message: { messageId: eventId, role: "user", createdAt },
+      });
+    }
+
+    const recentResponse = await app.inject({ method: "GET", url: "/api/all-chat?limit=2" });
+    expect(recentResponse.statusCode, recentResponse.body).toBe(200);
+    const recent = recentResponse.json<{ items: Array<{ communicationEventId: string }>; history: { cursor: string; hasMore: boolean; limit: number } }>();
+    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["all-chat-api-1", "all-chat-api-2"]);
+    expect(recent.history).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
+
+    const older = (await app.inject({
+      method: "GET", url: `/api/all-chat?limit=2&cursor=${encodeURIComponent(recent.history.cursor)}`,
+    })).json<{ items: Array<{ communicationEventId: string }>; history: { hasMore: boolean } }>();
+    expect(older.items.map((item) => item.communicationEventId)).toEqual(["all-chat-api-0"]);
+    expect(older.history.hasMore).toBe(false);
+
+    const conversationCursor = store.getProjectedConversationMessagePage(room.id, "main", { limit: 1 }).cursor!;
+    expect((await app.inject({ method: "GET", url: `/api/all-chat?cursor=${encodeURIComponent(conversationCursor)}` })).statusCode).toBe(400);
+    await app.close();
+  });
+
   it("pages Agent telemetry and Team operations independently and retrieves exact large tool output", async () => {
     const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 } });
     const project = store.createProject({ label: "Paged telemetry", hostPath: repoDir });

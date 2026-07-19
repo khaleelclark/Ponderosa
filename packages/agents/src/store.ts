@@ -66,6 +66,8 @@ import type {
   TokenUsage,
   GlobalChatSearchAuthorDto,
   GlobalChatSearchResponseDto,
+  AllChatItemDto,
+  AllChatPageDto,
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
@@ -3038,6 +3040,147 @@ export class AgentStore {
     return {
       ...searched,
       recentChats: query ? [] : recentChats,
+    };
+  }
+
+  /**
+   * Read one deduplicated, workspace-wide page of authored communication.
+   * Project and Team placements are preferred over their duplicate Agent audit
+   * projections. The rebuildable index supplies only bounded placement keys;
+   * text is rematerialized from the canonical Communication ledger so edits are
+   * reflected without making SQLite authoritative.
+   */
+  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+    const limit = Math.max(1, Math.min(100, input.limit ?? 50));
+    const boundary = input.cursor
+      ? this.decodeHistoryCursor(input.cursor, "all-chat", "workspace")
+      : undefined;
+    type AllChatRow = {
+      rowKey: string;
+      projectId: string;
+      projectLabel: string;
+      chatKind: "conversation" | "collaboration" | "agent";
+      chatId: string;
+      chatTitle: string;
+      messageId: string;
+      eventId: string;
+      role: "user" | "assistant" | "system";
+      authorAgentId: string | null;
+      authorTitle: string | null;
+      orderKey: string;
+    };
+    const rows = this.client.prepare(`
+      WITH eligible AS (
+        SELECT
+          search.row_key AS rowKey,
+          search.project_id AS projectId,
+          project.label AS projectLabel,
+          search.chat_kind AS chatKind,
+          search.chat_id AS chatId,
+          COALESCE(conversation.title, chat_agent.title) AS chatTitle,
+          search.message_id AS messageId,
+          search.communication_event_id AS eventId,
+          search.role AS role,
+          search.author_agent_id AS authorAgentId,
+          author_agent.title AS authorTitle,
+          search.order_key AS orderKey
+        FROM chat_search_messages search
+        JOIN projects project ON project.id = search.project_id
+        LEFT JOIN conversations conversation
+          ON search.chat_kind IN ('conversation', 'collaboration')
+          AND conversation.id = search.chat_id AND conversation.archived = 0
+        LEFT JOIN agents chat_agent
+          ON search.chat_kind = 'agent'
+          AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+        LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
+        WHERE conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL
+      ), ranked AS (
+        SELECT eligible.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY projectId, eventId
+            ORDER BY CASE chatKind
+              WHEN 'conversation' THEN 0
+              WHEN 'collaboration' THEN 1
+              ELSE CASE WHEN chatId = authorAgentId THEN 2 ELSE 3 END
+            END, chatId ASC, rowKey ASC
+          ) AS sourceRank
+        FROM eligible
+      )
+      SELECT rowKey, projectId, projectLabel, chatKind, chatId, chatTitle,
+        messageId, eventId, role, authorAgentId, authorTitle, orderKey
+      FROM ranked
+      WHERE sourceRank = 1
+        ${boundary ? "AND (orderKey < ? OR (orderKey = ? AND rowKey < ?))" : ""}
+      ORDER BY orderKey DESC, rowKey DESC
+      LIMIT ?
+    `).all(...(boundary
+      ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [limit + 1])) as AllChatRow[];
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const items = selected.flatMap((row): AllChatItemDto[] => {
+      const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
+        ? "conversation"
+        : row.chatKind === "collaboration"
+          ? "collaboration_view"
+          : "direct_agent_audit";
+      const projection = this.projectionIndex(row.projectId).byTuple.get(
+        `${row.eventId}\u0000${surface}\u0000${row.chatId}`,
+      );
+      const message = projection
+        ? this.materializeProjectedCommunicationMessages(row.projectId, [projection])[0]
+        : undefined;
+      const event = this.communicationIndex(row.projectId).byId.get(row.eventId);
+      if (!message || !event) return [];
+      const activeAgents = this.listAgents(row.projectId).filter((agent) => !agent.archived);
+      const exactAudienceAgentId = event.schemaVersion === 2 && event.intent === "user_dm"
+        ? event.audience.kind === "user_agent"
+          ? event.audience.agentId
+          : event.audience.agentIds.length === 1 ? event.audience.agentIds[0] : undefined
+        : undefined;
+      const targetAgentId = row.chatKind === "agent"
+        ? row.chatId
+        : row.authorAgentId ?? exactAudienceAgentId;
+      const directMessageAgent = targetAgentId
+        ? activeAgents.find((agent) => agent.id === targetAgentId)
+        : undefined;
+      const author: GlobalChatSearchAuthorDto = row.authorAgentId
+        ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
+        : row.role === "user"
+          ? { kind: "user", label: "User" }
+          : row.role === "system"
+            ? { kind: "system", label: "System" }
+            : { kind: "agent", label: "Agent" };
+      const source: AllChatItemDto["source"] = row.chatKind === "conversation"
+        ? { kind: "project", conversationId: row.chatId, title: row.chatTitle }
+        : row.chatKind === "collaboration"
+          ? { kind: "team", conversationId: row.chatId, title: row.chatTitle }
+          : { kind: "agent", agentId: row.chatId, title: row.chatTitle };
+      return [{
+        communicationEventId: row.eventId,
+        messageId: message.messageId,
+        project: { id: row.projectId, label: row.projectLabel },
+        source,
+        author,
+        text: message.text,
+        createdAt: message.createdAt,
+        ...(directMessageAgent ? {
+          directMessageAgent: { id: directMessageAgent.id, title: directMessageAgent.title },
+        } : {}),
+      }];
+    }).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore && oldest ? {
+          cursor: this.encodeHistoryCursor({
+            stream: "all-chat", scope: "workspace", orderKey: oldest.orderKey, rowKey: oldest.rowKey,
+          }),
+        } : {}),
+      },
     };
   }
 

@@ -41,6 +41,7 @@ import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
+import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
@@ -236,7 +237,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (route.kind === "home" || route.kind === "projects" || route.kind === "allAgents") return;
+    if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents") return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project files intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
@@ -594,6 +595,8 @@ export default function App({
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
             </Stack>
           </Box>
+        ) : route.kind === "allChat" ? (
+          <AllChatView onNavigate={goHome} />
         ) : route.kind === "projects" || route.kind === "home" || route.kind === "allAgents" ? (
           <AllProjectsView
             projects={projects}

@@ -4,10 +4,12 @@ import { parseRoute, routeToPath, type Route } from "../src/routing";
 describe("mobile-critical durable navigation", () => {
   it.each<Route>([
     { kind: "projects" },
+    { kind: "allChat" },
     { kind: "allAgents" },
     { kind: "project", projectId: "project / one" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1" },
+    { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1", channel: "collaboration" },
     { kind: "agents", projectId: "project / one" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", focusTelemetry: { stream: "activity", id: "agent #1:activity:7" } },
@@ -22,8 +24,18 @@ describe("mobile-critical durable navigation", () => {
 
   it("keeps global list routes distinct from project-scoped detail routes", () => {
     expect(routeToPath({ kind: "projects" })).toBe("/projects");
+    expect(routeToPath({ kind: "allChat" })).toBe("/chats");
     expect(routeToPath({ kind: "allAgents" })).toBe("/agents");
     expect(parseRoute("/agents")).toEqual({ kind: "allAgents" });
+  });
+
+  it("deep-links Team Chat without conflating it with Project Chat", () => {
+    const route: Route = {
+      kind: "conversation", projectId: "project", conversationId: "planning",
+      focusMessageId: "team-message", channel: "collaboration",
+    };
+    expect(routeToPath(route)).toBe("/projects/project/chats/planning?message=team-message&view=team");
+    expect(parseRoute(routeToPath(route))).toEqual(route);
   });
 
   it("uses the Project-chat URL vocabulary and rejects the retired route", () => {

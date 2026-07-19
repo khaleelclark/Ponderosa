@@ -16,6 +16,14 @@ export function useNotifications() {
   return useQuery({ queryKey: ["notifications"], queryFn: () => api.listNotifications() });
 }
 
+export function useAllChat(limit = 50) {
+  return useQuery({
+    queryKey: ["all-chat", limit],
+    queryFn: () => api.getAllChat(limit),
+    refetchInterval: 5_000,
+  });
+}
+
 export function useProjectFolders(open: boolean) {
   return useQuery({
     queryKey: ["project-folders"],
