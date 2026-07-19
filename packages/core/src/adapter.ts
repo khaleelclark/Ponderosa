@@ -22,11 +22,12 @@ export interface ChatMessage {
     name: string;
     mediaType: string;
     size: number;
-    localPath: string;
+    /** Present only for ordinary immutable uploaded attachments delivered by path. */
+    localPath?: string;
     available: boolean;
     /** Stable Ponderosa artifact identity for referenced generated output. */
     artifactId?: string;
-    /** Project-scoped retrieval location supplied to fresh provider sessions. */
+    /** Run-scoped stable retrieval reference supplied to fresh provider sessions. */
     retrievalUrl?: string;
   }>;
 }

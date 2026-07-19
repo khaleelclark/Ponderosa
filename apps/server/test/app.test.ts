@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
+import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
@@ -15,13 +16,46 @@ import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContent
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
-import { AssetStore } from "../src/assets.js";
+import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const processAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
   catch { return false; }
 };
+
+function registerTestGeneratedArtifact(dataDir: string, artifact: RegisteredGeneratedArtifact): void {
+  const authority = new AssetStore(dataDir);
+  try { authority.registerGeneratedArtifact(artifact); }
+  finally { authority.close(); }
+}
+
+function durableMutationState(store: AgentStore, dataDir: string, projectId: string) {
+  const count = (table: string, predicate?: string) => (store.sqlite.prepare(
+    `SELECT COUNT(*) AS count FROM ${table}${predicate ? ` WHERE ${predicate}` : ""}`,
+  ).get() as { count: number }).count;
+  const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true, fileMustExist: true });
+  try {
+    const authorityCount = (table: string) => (authority.prepare(
+      `SELECT COUNT(*) AS count FROM ${table}`,
+    ).get() as { count: number }).count;
+    return {
+      communications: count("runtime_communications"),
+      projectArtifacts: store.getProjectArtifacts(projectId).length,
+      runtimeArtifacts: count("runtime_artifacts"),
+      activations: count("agent_activations"),
+      outbox: count("activation_outbox"),
+      retryLineage: count("activation_delivery_retry_lineage"),
+      idempotency: count("coordination_idempotency"),
+      promptInjections: count("scheduler_prompt_injections"),
+      runs: count("scheduler_runs"),
+      activeLeases: count("scheduler_runs", "status IN ('leased','running')"),
+      assetReservations: authorityCount("asset_reservations"),
+      attachmentAssociations: authorityCount("runtime_attachment_associations"),
+      generatedAuthorities: authorityCount("generated_artifact_authority"),
+    };
+  } finally { authority.close(); }
+}
 
 function activeRunCancellationPayload(store: AgentStore, agentId: string, idempotencyKey: string) {
   const targetRunId = new CoordinationV3Store(store.sqlite).agentSnapshot(agentId).activeRun?.id;
@@ -4486,12 +4520,14 @@ describe("server chunk F", () => {
       sourcePath: "output.png", name: "output.png", mediaType: "image/png", size: body.length,
       visibility: "project", pinned: true,
     });
-    store.recordProjectArtifact({
+    const catalogArtifact = {
       id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
       executionId: "run-art", kind: "generated_file", path: relativePath, sourcePath: "output.png",
       summary: "output.png", createdAt: captured.ts, mediaType: "image/png", size: body.length,
-      visibility: "project", pinned: true,
-    });
+      sha256: createHash("sha256").update(body).digest("hex"), visibility: "project" as const, pinned: true,
+    } as const;
+    registerTestGeneratedArtifact(dataDir, catalogArtifact);
+    store.recordProjectArtifact(catalogArtifact);
 
     store.rebuildProjections();
     expect(readFileSync(legacyFile)).toEqual(body);
@@ -4514,12 +4550,14 @@ describe("server chunk F", () => {
     const managedFile = managedArtifactContentPath(dataDir, project.id, artifactId);
     mkdirSync(path.dirname(managedFile), { recursive: true });
     writeFileSync(managedFile, body);
-    store.recordProjectArtifact({
+    const catalogArtifact = {
       id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
       executionId: "run-html", kind: "generated_file", path: relativePath, sourcePath: "report.html",
       summary: "report.html", createdAt: new Date().toISOString(), mediaType: "text/html", size: body.length,
-      visibility: "project", pinned: false,
-    });
+      sha256: createHash("sha256").update(body).digest("hex"), visibility: "project" as const, pinned: false,
+    } as const;
+    registerTestGeneratedArtifact(dataDir, catalogArtifact);
+    store.recordProjectArtifact(catalogArtifact);
     store.appendEvent(agent.id, { type: "test_result", passed: true, summary: "Accessibility checks passed" });
 
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json<{ items: ArtifactDto[] }>().items)
@@ -4544,6 +4582,90 @@ describe("server chunk F", () => {
     });
     expect(download.headers["content-disposition"]).toMatch(/^attachment/);
     expect(download.headers["content-security-policy"]).not.toContain("sandbox");
+    await app.close();
+  });
+
+  it("fails every generated-file read surface closed on byte or catalog substitution and permits exact restore", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Generated authority", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    const artifactId = randomUUID();
+    const bytes = Buffer.from("authoritative generated result");
+    const managedFile = managedArtifactContentPath(dataDir, project.id, artifactId);
+    mkdirSync(path.dirname(managedFile), { recursive: true });
+    writeFileSync(managedFile, bytes, { mode: 0o600 });
+    const artifact = {
+      id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
+      executionId: "run-generated", kind: "generated_file", path: `generated/${artifactId}.txt`,
+      sourcePath: "result.txt", summary: "result.txt", createdAt: "2026-07-19T00:00:00.000Z",
+      mediaType: "text/plain", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
+      visibility: "project" as const, pinned: true,
+    } as const;
+    registerTestGeneratedArtifact(dataDir, artifact);
+    store.recordProjectArtifact(artifact);
+    appendBroadcast(store, project.id, conversation.id, `Read ponderosa://artifact/${artifactId}`);
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: `Retrieve ${artifactId}`, sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const resultRef = `ponderosa://artifact/${artifactId}`;
+    const providerInput = store.getProviderInput(store.getRuns(agent.id)[0]!.id, true)!;
+    expect(providerInput.exactPrompt).toContain(`artifactId=${artifactId}`);
+    expect(providerInput.exactPrompt).toContain(`retrieval=${resultRef}`);
+    expect(providerInput.exactPrompt).not.toContain(managedFile);
+    expect(providerInput.exactPrompt).not.toContain("managedPath");
+    expect(providerInput.sourceManifest.artifactIds).toContain(artifactId);
+    const retrieve = () => runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [resultRef], maxBytes: 4096 },
+    });
+    expect(JSON.parse((await retrieve()).text)).toMatchObject({
+      items: [{ ref: resultRef, content: bytes.toString("utf8"), complete: true }],
+    });
+    for (const url of [
+      `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/download`,
+    ]) expect((await app.inject({ method: "GET", url })).rawPayload).toEqual(bytes);
+
+    const countsBefore = durableMutationState(store, dataDir, project.id);
+    const replacement = Buffer.from("substituted generated result!!");
+    expect(replacement.length).toBe(bytes.length);
+    writeFileSync(managedFile, replacement);
+    expect((await retrieve()).success).toBe(false);
+    for (const url of [
+      `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/download`,
+    ]) expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(countsBefore);
+
+    rmSync(managedFile);
+    expect((await retrieve()).success).toBe(false);
+    writeFileSync(managedFile, bytes, { mode: 0o600 });
+    expect(JSON.parse((await retrieve()).text)).toMatchObject({
+      items: [{ content: bytes.toString("utf8"), complete: true }],
+    });
+    store.recordProjectArtifact({ ...artifact, summary: "contradictory.txt" });
+    expect((await retrieve()).success).toBe(false);
+    expect((await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    })).statusCode).toBe(404);
+    store.recordProjectArtifact(artifact);
+    expect((await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    })).rawPayload).toEqual(bytes);
+    persistent.completeTurn(0);
     await app.close();
   });
 
@@ -6782,6 +6904,8 @@ describe("server chunk F", () => {
           recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           recoveryAssets.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          recoveryAssets.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     recoveryCoordination.recordRuntimeCommunication({
@@ -6839,13 +6963,383 @@ describe("server chunk F", () => {
     await recoveredApp.close();
   });
 
+  it("compensates only this attempt's attachment reservation when the in-transaction Run fence rejects", async () => {
+    const project = store.createProject({ label: "Fence receipt", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const sender = store.createAgent(project.id, {
+      title: "Sender", engine: "codex", conversationId: conversation.id,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const assets = new AssetStore(dataDir);
+    const staged = await Promise.all(["preexisting", "new-attempt"].map((label) => assets.stage({
+      projectId: project.id,
+      agentId: recipient.id,
+      body: Buffer.from(`%PDF-1.7\n${label}`),
+      name: `${label}.pdf`,
+      declaredType: "application/pdf",
+    })));
+    const authorities = staged.map((attachment) =>
+      assets.authoritativeRuntimeAttachment(project.id, recipient.id, attachment.id)!);
+    const bindings = staged.map((attachment, index) => ({
+      projectId: project.id,
+      agentId: recipient.id,
+      attachmentId: attachment.id,
+      contentHash: authorities[index]!.contentHash,
+      byteLength: authorities[index]!.byteLength,
+    }));
+    const communicationId = "runtime-fence-reservation-receipt";
+    const preexistingReceipt = assets.reserveRuntimeCommunication(communicationId, [bindings[0]!]);
+
+    const seed = new CoordinationV3Store(store.sqlite);
+    seed.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: sender.id,
+      messageId: "fence-receipt-seed",
+      kind: "human",
+      payload: { text: "seed" },
+    });
+    const rejectedLease = seed.leaseNextRun({ workerId: "fence-receipt" })!;
+    const event: CommunicationEvent = {
+      eventId: communicationId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "agent", agentId: sender.id },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] },
+      text: "fenced attachment delivery",
+      attachments: staged.map((attachment) => ({ ...attachment, state: "associated" as const })),
+      createdAt: "2026-07-19T00:00:00.000Z",
+    };
+    const input = {
+      id: communicationId,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: event.audience,
+      payload: { communication: event },
+      activation: {
+        agentId: recipient.id,
+        kind: "coordination_request",
+        priority: 60,
+        dispatchPolicy: "next_run" as const,
+        promptClass: "coordination" as const,
+      },
+    };
+    const authorization = {
+      runId: rejectedLease.runId,
+      agentId: sender.id,
+      fencingToken: rejectedLease.fencingToken,
+    };
+    const secondScheduler = new Database(path.join(dataDir, "ponderosa.db"), { timeout: 1 });
+    secondScheduler.pragma("foreign_keys = ON");
+    let concurrentReservationCalls = 0;
+    const concurrent = new CoordinationV3Store(secondScheduler, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) => {
+          concurrentReservationCalls += 1;
+          return assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings);
+        },
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    let concurrentError: unknown;
+    let rejectedReceipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3 | undefined;
+    const beforeRejectedAttempt = durableMutationState(store, dataDir, project.id);
+    const racing = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) => {
+          try {
+            concurrent.recordRuntimeCommunication({ ...input, runAuthorization: authorization });
+          } catch (error) {
+            concurrentError = error;
+          }
+          store.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled' WHERE id=?").run(rejectedLease.runId);
+          rejectedReceipt = assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings);
+          return rejectedReceipt;
+        },
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    expect(() => racing.recordRuntimeCommunication({
+      ...input,
+      runAuthorization: authorization,
+    })).toThrow("run is no longer authoritative");
+    expect(String(concurrentError)).toMatch(/database is locked/);
+    expect(concurrentReservationCalls).toBe(0);
+    secondScheduler.close();
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforeRejectedAttempt);
+    expect(store.getCommunicationEvent(project.id, communicationId)).toBeUndefined();
+    expect(rejectedReceipt).toMatchObject({
+      communicationId,
+      bindings: [expect.objectContaining({
+        communicationId,
+        projectId: project.id,
+        agentId: recipient.id,
+        attachmentId: staged[1]!.id,
+        contentHash: authorities[1]!.contentHash,
+        byteLength: authorities[1]!.byteLength,
+      })],
+    });
+    expect(rejectedReceipt!.bindings[0]!.attemptId).toBe(rejectedReceipt!.attemptId);
+    assets.compensateRuntimeCommunicationReservation(rejectedReceipt!);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforeRejectedAttempt);
+    const authorityDb = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+    expect(authorityDb.prepare(`
+      SELECT asset_id assetId, reservation_attempt_id attemptId
+      FROM runtime_attachment_associations WHERE communication_id=?
+    `).all(communicationId)).toEqual([{
+      assetId: staged[0]!.id,
+      attemptId: preexistingReceipt.attemptId,
+    }]);
+    authorityDb.close();
+
+    expect(await assets.recoverRuntimeCommunicationAssociations(() => false))
+      .toEqual({ associated: 0, released: 1, unavailable: 0 });
+    const afterSweep = durableMutationState(store, dataDir, project.id);
+    expect(await assets.recoverRuntimeCommunicationAssociations(() => false))
+      .toEqual({ associated: 0, released: 0, unavailable: 0 });
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(afterSweep);
+
+    const valid = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) =>
+          assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings),
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    expect(valid.recordRuntimeCommunication({ ...input, runAuthorization: authorization })).toMatchObject({
+      id: communicationId,
+      replayed: false,
+    });
+    const afterRetry = durableMutationState(store, dataDir, project.id);
+    expect(valid.recordRuntimeCommunication({ ...input, runAuthorization: authorization })).toMatchObject({
+      id: communicationId,
+      replayed: true,
+    });
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(afterRetry);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) count FROM activation_sources
+      WHERE source_kind='communication' AND source_id=?
+    `).get(communicationId)).toEqual({ count: 1 });
+    assets.close();
+    const verificationAssets = new AssetStore(dataDir);
+    expect(await verificationAssets.recoverRuntimeCommunicationAssociations((candidateId, candidateProjectId) =>
+      candidateProjectId === project.id && Boolean(new CoordinationV3Store(store.sqlite).runtimeCommunication(candidateId)),
+    )).toEqual({ associated: 2, released: 0, unavailable: 0 });
+    expect(verificationAssets.authoritativeRuntimeCommunicationAttachments(communicationId)).toHaveLength(2);
+    verificationAssets.close();
+  });
+
+  it("compensates attachment authority after post-insert rollback and scheduler COMMIT failure", async () => {
+    const project = store.createProject({ label: "Publication rollback boundaries", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const sender = store.createAgent(project.id, {
+      title: "Sender", engine: "codex", conversationId: conversation.id,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const assets = new AssetStore(dataDir);
+    const attachment = await assets.stage({
+      projectId: project.id,
+      agentId: recipient.id,
+      body: Buffer.from("%PDF-1.7\nrollback-boundary"),
+      name: "rollback-boundary.pdf",
+      declaredType: "application/pdf",
+    });
+    const authorityOptions = {
+      resolve: (candidateProjectId: string, candidateAgentId: string, attachmentId: string) =>
+        assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+      reserveCommunication: (
+        communicationId: string,
+        bindings: Parameters<AssetStore["reserveRuntimeCommunication"]>[1],
+      ) => assets.reserveRuntimeCommunication(communicationId, bindings),
+      compensateCommunication: (receipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3) =>
+        assets.compensateRuntimeCommunicationReservation(receipt),
+    };
+    const competingHash = "f".repeat(64);
+    const insertCompetingCommunication = (id: string, payload: unknown = {}): void => {
+      store.sqlite.prepare(`
+        INSERT INTO runtime_communications (
+          id, project_id, sender_json, intent, audience_json, payload_json,
+          payload_hash, actionable, created_at
+        ) VALUES (?, ?, '{}', 'broadcast', '{}', ?, ?, 0, ?)
+      `).run(id, project.id, JSON.stringify(payload), competingHash, "2026-07-19T00:00:00.000Z");
+    };
+    const schedulerWithImmediateHook = (hook: (attempt: number) => void): Database.Database => {
+      let attempts = 0;
+      return new Proxy(store.sqlite, {
+        get(target, property) {
+          if (property === "transaction") {
+            return (callback: () => unknown) => {
+              const transaction = target.transaction(callback);
+              return {
+                immediate: () => {
+                  attempts += 1;
+                  hook(attempts);
+                  return transaction.immediate();
+                },
+              };
+            };
+          }
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }) as Database.Database;
+    };
+    const saturated = new CoordinationV3Store(store.sqlite, {
+      maxPendingActivationsPerAgent: 1,
+      attachmentAuthority: authorityOptions,
+    });
+    saturated.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: recipient.id,
+      messageId: "occupy-recipient-capacity",
+      kind: "ordinary",
+      payload: { text: "already pending" },
+    });
+    const postInsertId = "runtime-post-insert-rollback";
+    const postInsertEvent: CommunicationEvent = {
+      eventId: postInsertId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "agent", agentId: sender.id },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] },
+      text: "must roll back after insert",
+      attachments: [{ ...attachment, state: "associated" }],
+      createdAt: "2026-07-19T00:00:00.000Z",
+    };
+    const beforePostInsertFailure = durableMutationState(store, dataDir, project.id);
+    expect(() => saturated.recordRuntimeCommunication({
+      id: postInsertId,
+      projectId: project.id,
+      sender: postInsertEvent.sender,
+      intent: postInsertEvent.intent,
+      audience: postInsertEvent.audience,
+      payload: { communication: postInsertEvent },
+      activation: {
+        agentId: recipient.id,
+        kind: "coordination_request",
+        priority: 60,
+        dispatchPolicy: "next_run",
+        promptClass: "coordination",
+      },
+    })).toThrow("pending activation limit reached");
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunication(postInsertId)).toBeUndefined();
+    expect(assets.authoritativeRuntimeCommunicationAttachments(postInsertId)).toEqual([]);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforePostInsertFailure);
+
+    const collisionId = "runtime-distinct-payload-wins-before-fence";
+    const collisionEvent: CommunicationEvent = {
+      ...postInsertEvent,
+      eventId: collisionId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "losing payload must release its attachment",
+    };
+    const collisionBaseline = durableMutationState(store, dataDir, project.id);
+    const collisionStore = new CoordinationV3Store(schedulerWithImmediateHook((attempt) => {
+      if (attempt === 1) insertCompetingCommunication(collisionId);
+    }), { attachmentAuthority: authorityOptions });
+    expect(() => collisionStore.recordRuntimeCommunication({
+      id: collisionId,
+      projectId: project.id,
+      sender: collisionEvent.sender,
+      intent: collisionEvent.intent,
+      audience: collisionEvent.audience,
+      payload: { communication: collisionEvent },
+    })).toThrow("runtime communication ID collision");
+    expect(store.sqlite.prepare(`
+      SELECT payload_hash payloadHash FROM runtime_communications WHERE id=?
+    `).get(collisionId)).toEqual({ payloadHash: competingHash });
+    expect(assets.authoritativeRuntimeCommunicationAttachments(collisionId)).toEqual([]);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual({
+      ...collisionBaseline,
+      communications: collisionBaseline.communications + 1,
+    });
+
+    const commitFailureId = "runtime-commit-failure";
+    store.sqlite.exec(`
+      CREATE TABLE pr246_commit_failure_parent (id TEXT PRIMARY KEY);
+      CREATE TABLE pr246_commit_failure_child (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT NOT NULL,
+        FOREIGN KEY (parent_id) REFERENCES pr246_commit_failure_parent(id)
+          DEFERRABLE INITIALLY DEFERRED
+      );
+      CREATE TEMP TRIGGER pr246_fail_runtime_communication_commit
+      AFTER INSERT ON runtime_communications
+      WHEN NEW.id = '${commitFailureId}'
+      BEGIN
+        INSERT INTO pr246_commit_failure_child (id, parent_id)
+        VALUES (NEW.id, 'missing-parent');
+      END;
+    `);
+    const commitFailureEvent: CommunicationEvent = {
+      ...postInsertEvent,
+      eventId: commitFailureId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "must roll back at commit",
+    };
+    const commitFailureScheduler = schedulerWithImmediateHook((attempt) => {
+      if (attempt !== 2) return;
+      store.sqlite.exec("DROP TRIGGER pr246_fail_runtime_communication_commit");
+      insertCompetingCommunication(commitFailureId, {
+        communication: {
+          ...commitFailureEvent,
+          text: "different winning payload using the same attachment",
+        },
+      });
+    });
+    const commitFailure = new CoordinationV3Store(commitFailureScheduler, {
+      attachmentAuthority: authorityOptions,
+    });
+    const beforeCommitFailure = durableMutationState(store, dataDir, project.id);
+    expect(() => commitFailure.recordRuntimeCommunication({
+      id: commitFailureId,
+      projectId: project.id,
+      sender: commitFailureEvent.sender,
+      intent: commitFailureEvent.intent,
+      audience: commitFailureEvent.audience,
+      payload: { communication: commitFailureEvent },
+    })).toThrow(/FOREIGN KEY constraint failed/);
+    expect(store.sqlite.prepare(`
+      SELECT payload_hash payloadHash FROM runtime_communications WHERE id=?
+    `).get(commitFailureId)).toEqual({ payloadHash: competingHash });
+    expect(assets.authoritativeRuntimeCommunicationAttachments(commitFailureId)).toHaveLength(1);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual({
+      ...beforeCommitFailure,
+      communications: beforeCommitFailure.communications + 1,
+      attachmentAssociations: beforeCommitFailure.attachmentAssociations + 1,
+    });
+    assets.close();
+  });
+
   it("keeps a canonical-only passive Broadcast attachment reachable across commit, crash, restart, and sweep", async () => {
     const project = store.createProject({ label: "Passive attachment recovery", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
     const owner = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
     const staging = new AssetStore(dataDir);
+    const originalBytes = Buffer.from("%PDF-1.7\npassive durable");
     const attachment = await staging.stage({
-      projectId: project.id, agentId: owner.id, body: Buffer.from("%PDF-1.7\npassive durable"),
+      projectId: project.id, agentId: owner.id, body: originalBytes,
       name: "passive.pdf", declaredType: "application/pdf",
     });
     const event: CommunicationEvent = {
@@ -6860,6 +7354,8 @@ describe("server chunk F", () => {
           staging.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           staging.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          staging.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     expect(coordination.recordRuntimeCommunication({
@@ -6869,9 +7365,61 @@ describe("server chunk F", () => {
     expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
     expect((await staging.read(project.id, owner.id, attachment.id))?.state).toBe("staged");
     expect(await staging.reconcile(project.id, owner.id, new Set(), Date.now() + 25 * 60 * 60 * 1000)).toBe(0);
+    const attachmentFile = path.join(
+      dataDir, "projects", project.id, "agents", owner.id, "attachments", `${attachment.id}.bin`,
+    );
+    const replacement = Buffer.from("%PDF-1.7\npassive changed");
+    expect(replacement.length).toBe(originalBytes.length);
+    writeFileSync(attachmentFile, replacement);
+    const schedulerState = () => durableMutationState(store, dataDir, project.id);
+    const committedState = schedulerState();
+    expect(() => coordination.recordRuntimeCommunication({
+      id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent,
+      audience: event.audience, payload: { communication: event }, now: event.createdAt,
+    })).toThrow(/attachment authority mismatch/);
+    expect(schedulerState()).toEqual(committedState);
     staging.close();
 
-    const recoveredApp = createServer({
+    let recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(0);
+    expect(schedulerState()).toEqual(committedState);
+    await recoveredApp.close();
+    store = new AgentStore(dataDir);
+
+    rmSync(attachmentFile);
+    recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+    expect(schedulerState()).toEqual(committedState);
+    await recoveredApp.close();
+    store = new AgentStore(dataDir);
+
+    writeFileSync(attachmentFile, originalBytes);
+    const retryAssets = new AssetStore(dataDir);
+    const retryCoordination = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          retryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (communicationId, bindings) =>
+          retryAssets.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          retryAssets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    expect(retryCoordination.recordRuntimeCommunication({
+      id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent,
+      audience: event.audience, payload: { communication: event }, now: event.createdAt,
+    })).toEqual({ id: event.eventId, replayed: true });
+    retryAssets.close();
+    recoveredApp = createServer({
       dataDir, store, engines, logger: false,
       communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
     });
@@ -6883,6 +7431,18 @@ describe("server chunk F", () => {
     expect((await verificationStore.read(project.id, owner.id, attachment.id))?.state).toBe("associated");
     verificationStore.close();
     expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
+    await recoveredApp.close();
+    store = new AgentStore(dataDir);
+
+    const canonicalBytes = JSON.stringify(store.getCommunicationEvent(project.id, event.eventId));
+    recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(JSON.stringify(store.getCommunicationEvent(project.id, event.eventId))).toBe(canonicalBytes);
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(1);
+    expect(schedulerState()).toEqual(committedState);
     await recoveredApp.close();
   });
 
@@ -6911,6 +7471,8 @@ describe("server chunk F", () => {
           staging.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           staging.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          staging.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     const accepted = coordination.recordRuntimeCommunication({
@@ -6989,6 +7551,8 @@ describe("server chunk F", () => {
           recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           recoveryAssets.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          recoveryAssets.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     const eventIds = new Map<string, string>();
@@ -8773,11 +9337,14 @@ describe("V3.3 Decisions, management, and portability", () => {
     const artifactFile = managedArtifactContentPath(dataDir, project.id, artifactId);
     mkdirSync(path.dirname(artifactFile), { recursive: true });
     writeFileSync(artifactFile, bytes);
-    store.recordProjectArtifact({
+    const catalogArtifact = {
       id: artifactId, projectId: project.id, agentId: source.id, originAgentId: source.id,
       kind: "generated_file", path: `generated/${artifactId}.txt`, summary: "result.txt", createdAt: "2026-07-16T00:00:00.000Z",
-      mediaType: "text/plain", visibility: "project", pinned: false, size: bytes.length,
-    });
+      mediaType: "text/plain", visibility: "project" as const, pinned: false, size: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    } as const;
+    registerTestGeneratedArtifact(dataDir, catalogArtifact);
+    store.recordProjectArtifact(catalogArtifact);
     store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
     const exported = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=full` });
     expect(exported.statusCode, exported.body).toBe(200);
@@ -8839,11 +9406,15 @@ describe("V3.3 Decisions, management, and portability", () => {
     await waitForSeedCount(1);
     expect(adapter.seeds[0]!.prompt).toContain("Destination-safe Project rule");
     expect(JSON.stringify(adapter.seeds[0])).not.toContain("SOURCE-RULE-MUST-NOT-ENTER-PROVIDER-CONTEXT");
-    expect(adapter.seeds[0]!.history?.flatMap((message) => message.attachments ?? [])).toContainEqual(expect.objectContaining({
+    const importedHistoryAttachment = adapter.seeds[0]!.history
+      ?.flatMap((message) => message.attachments ?? [])
+      .find((attachment) => attachment.artifactId === importedArtifacts[0]!.id);
+    expect(importedHistoryAttachment).toEqual(expect.objectContaining({
       artifactId: importedArtifacts[0]!.id,
-      localPath: managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id),
-      available: true,
+      retrievalUrl: `ponderosa://artifact/${importedArtifacts[0]!.id}`,
+      available: false,
     }));
+    expect(importedHistoryAttachment).not.toHaveProperty("localPath");
     await app.inject({
       method: "POST", url: `/api/agents/${importedAgentId}/cancel`,
       payload: activeRunCancellationPayload(store, importedAgentId, "stop-import-inspection"),

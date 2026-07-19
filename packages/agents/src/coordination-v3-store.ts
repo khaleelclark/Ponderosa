@@ -314,6 +314,24 @@ export interface RuntimeAttachmentAuthorityV3 {
   byteLength: number;
 }
 
+export interface RuntimeAttachmentReservationBindingV3 {
+  communicationId: string;
+  projectId: string;
+  agentId: string;
+  attachmentId: string;
+  contentHash: string;
+  byteLength: number;
+  attemptId: string;
+}
+
+/** Exact immutable ownership receipt for association rows inserted by one
+ * reservation attempt. Matching rows that predated the attempt are excluded. */
+export interface RuntimeAttachmentReservationReceiptV3 {
+  communicationId: string;
+  attemptId: string;
+  bindings: readonly Readonly<RuntimeAttachmentReservationBindingV3>[];
+}
+
 /** Runtime attachment authority is deliberately richer than a lookup callback:
  * passive canonical Communications must reserve their staged assets durably
  * before the scheduler commits the Communication. */
@@ -322,7 +340,8 @@ export interface RuntimeAttachmentAuthorityProviderV3 {
   reserveCommunication(
     communicationId: string,
     bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
-  ): void;
+  ): RuntimeAttachmentReservationReceiptV3;
+  compensateCommunication(receipt: RuntimeAttachmentReservationReceiptV3): void;
 }
 
 export interface RuntimeArtifactAuthorityV3 {
@@ -718,91 +737,165 @@ export class CoordinationV3Store {
     if (preexisting && (preexisting.project_id !== input.projectId || preexisting.payload_hash !== hash)) {
       throw new Error("runtime communication ID collision");
     }
-    this.options.attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings);
-    return this.sqlite.transaction(() => {
-      if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
-      this.requireProject(input.projectId);
-      this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
-      if (!this.runtimeCommunicationAuthorityAgrees({
-        projectId: input.projectId,
-        sender: input.sender,
-        intent: input.intent,
-        audience: input.audience,
-        payload,
-        activations: activationInputs.map((activation, index) => ({
-          agentId: activation.agentId,
-          kind: activation.kind,
-          scopeKey: activationScopeKeys[index]!,
-        })),
-      })) throw new Error("runtime communication authority does not agree on one Project");
-      const existing = this.sqlite.prepare(`
-        SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
-      `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
-      if (existing) {
-        if (existing.project_id !== input.projectId || existing.payload_hash !== hash) {
-          throw new Error("runtime communication ID collision");
+    const attachmentAuthority = this.options.attachmentAuthority;
+    let reservationReceipt: RuntimeAttachmentReservationReceiptV3 | undefined;
+    let result: RuntimeCommunicationV3Result;
+    try {
+      result = this.sqlite.transaction((): RuntimeCommunicationV3Result => {
+        let insertedCommunication = false;
+        try {
+        // The scheduler write fence must precede the separately committed asset
+        // reservation. Otherwise two attempts can share one association, let
+        // the rejected attempt compensate it, and commit the second attempt
+        // without durable attachment authority.
+        reservationReceipt = preparedAttachments.bindings.length
+          ? attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings)
+          : undefined;
+        if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
+        this.requireProject(input.projectId);
+        this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
+        if (!this.runtimeCommunicationAuthorityAgrees({
+          projectId: input.projectId,
+          sender: input.sender,
+          intent: input.intent,
+          audience: input.audience,
+          payload,
+          activations: activationInputs.map((activation, index) => ({
+            agentId: activation.agentId,
+            kind: activation.kind,
+            scopeKey: activationScopeKeys[index]!,
+          })),
+        })) throw new Error("runtime communication authority does not agree on one Project");
+        const existing = this.sqlite.prepare(`
+          SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
+        `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
+        if (existing) {
+          if (existing.project_id !== input.projectId || existing.payload_hash !== hash) {
+            throw new Error("runtime communication ID collision");
+          }
+          const activations = this.sqlite.prepare(`
+            SELECT a.id FROM agent_activations a
+            JOIN activation_sources source ON source.activation_id = a.id
+            WHERE source.source_kind = 'communication' AND source.source_id = ?
+              AND a.project_id = ?
+            ORDER BY a.created_at, a.id
+          `).all(input.id, input.projectId) as Array<{ id: string }>;
+          return {
+            id: input.id,
+            ...(activations[0] ? { activationId: activations[0].id } : {}),
+            ...(activations.length ? { activationIds: activations.map((activation) => activation.id) } : {}),
+            ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
+            replayed: true,
+          };
         }
-        const activations = this.sqlite.prepare(`
-          SELECT a.id FROM agent_activations a
-          JOIN activation_sources source ON source.activation_id = a.id
-          WHERE source.source_kind = 'communication' AND source.source_id = ?
-            AND a.project_id = ?
-          ORDER BY a.created_at, a.id
-        `).all(input.id, input.projectId) as Array<{ id: string }>;
+        this.sqlite.prepare(`
+          INSERT INTO runtime_communications (
+            id, project_id, sender_json, intent, audience_json, payload_json,
+            payload_hash, actionable, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          input.id, input.projectId, stableJson(input.sender), input.intent,
+          stableJson(input.audience), stableJson(payload), hash,
+          activationInputs.length ? 1 : 0, now,
+        );
+        insertedCommunication = true;
+        const insertArtifact = this.sqlite.prepare(`
+          INSERT INTO runtime_artifacts (
+            id, owner_kind, owner_id, project_id, role, title, media_type,
+            blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
+          ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const artifact of artifacts) {
+          insertArtifact.run(
+            artifact.id, input.id, input.projectId, artifact.role, artifact.title, artifact.mediaType,
+            artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
+            artifact.originAgentId ?? null, artifact.executionId ?? null, now,
+          );
+        }
+        const activationIds = activationInputs.map((activation, index) => this.createActivation({
+          projectId: input.projectId,
+          agentId: activation.agentId,
+          scopeKey: activationScopeKeys[index]!,
+          kind: activation.kind,
+          priority: activation.priority,
+          dispatchPolicy: activation.dispatchPolicy,
+          promptClass: activation.promptClass,
+          dedupeKey: activation.dedupeKey ?? `communication:${input.id}:${activation.agentId}:${index}`,
+          payload,
+          sourceKind: "communication",
+          sourceId: input.id,
+          externalIntake: true,
+          now,
+        }));
         return {
           id: input.id,
-          ...(activations[0] ? { activationId: activations[0].id } : {}),
-          ...(activations.length ? { activationIds: activations.map((activation) => activation.id) } : {}),
+          ...(activationIds[0] ? { activationId: activationIds[0] } : {}),
+          ...(activationIds.length ? { activationIds } : {}),
           ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
-          replayed: true,
+          replayed: false,
         };
+        } catch (schedulerError) {
+          if (reservationReceipt && attachmentAuthority) {
+            try {
+            // Compensation remains inside the same scheduler fence as
+            // reservation and publication, so another attempt cannot observe
+            // or reuse an association that this attempt may release.
+            const committed = this.sqlite.prepare(`
+              SELECT project_id, payload_hash, payload_json FROM runtime_communications WHERE id = ?
+            `).get(input.id) as { project_id: string; payload_hash: string; payload_json: string } | undefined;
+            // A row inserted by this callback is still visible here but will
+            // roll back when the callback throws. Only a genuinely pre-existing
+            // committed replay owns its association across this failure.
+            const compensationReceipt = insertedCommunication
+              ? reservationReceipt
+              : this.compensationReceiptForCommittedRuntimeCommunication(
+                reservationReceipt, committed, input.projectId, hash,
+              );
+            if (compensationReceipt) attachmentAuthority.compensateCommunication(compensationReceipt);
+            } catch (compensationError) {
+              throw new AggregateError(
+                [schedulerError, compensationError],
+                "runtime Communication attachment compensation failed",
+                { cause: schedulerError },
+              );
+            }
+          }
+          throw schedulerError;
+        }
+      }).immediate();
+    } catch (transactionError) {
+      if (reservationReceipt && attachmentAuthority) {
+        try {
+          // better-sqlite3 performs COMMIT after the callback returns. A COMMIT
+          // failure therefore bypasses the callback catch above; reacquire the
+          // scheduler fence and release only this attempt's exact reservation
+          // when no concurrent attempt committed the Communication.
+          this.sqlite.transaction(() => {
+            const committed = this.sqlite.prepare(`
+              SELECT project_id, payload_hash, payload_json FROM runtime_communications WHERE id = ?
+            `).get(input.id) as { project_id: string; payload_hash: string; payload_json: string } | undefined;
+            const compensationReceipt = this.compensationReceiptForCommittedRuntimeCommunication(
+              reservationReceipt!, committed, input.projectId, hash,
+            );
+            if (compensationReceipt) attachmentAuthority.compensateCommunication(compensationReceipt);
+          }).immediate();
+        } catch (compensationError) {
+          throw new AggregateError(
+            [transactionError, compensationError],
+            "runtime Communication attachment compensation failed",
+            { cause: transactionError },
+          );
+        }
       }
-      this.sqlite.prepare(`
-        INSERT INTO runtime_communications (
-          id, project_id, sender_json, intent, audience_json, payload_json,
-          payload_hash, actionable, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        input.id, input.projectId, stableJson(input.sender), input.intent,
-        stableJson(input.audience), stableJson(payload), hash,
-        activationInputs.length ? 1 : 0, now,
-      );
-      const insertArtifact = this.sqlite.prepare(`
-        INSERT INTO runtime_artifacts (
-          id, owner_kind, owner_id, project_id, role, title, media_type,
-          blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
-        ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const artifact of artifacts) {
-        insertArtifact.run(
-          artifact.id, input.id, input.projectId, artifact.role, artifact.title, artifact.mediaType,
-          artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
-          artifact.originAgentId ?? null, artifact.executionId ?? null, now,
-        );
-      }
-      const activationIds = activationInputs.map((activation, index) => this.createActivation({
-        projectId: input.projectId,
-        agentId: activation.agentId,
-        scopeKey: activationScopeKeys[index]!,
-        kind: activation.kind,
-        priority: activation.priority,
-        dispatchPolicy: activation.dispatchPolicy,
-        promptClass: activation.promptClass,
-        dedupeKey: activation.dedupeKey ?? `communication:${input.id}:${activation.agentId}:${index}`,
-        payload,
-        sourceKind: "communication",
-        sourceId: input.id,
-        externalIntake: true,
-        now,
-      }));
-      return {
-        id: input.id,
-        ...(activationIds[0] ? { activationId: activationIds[0] } : {}),
-        ...(activationIds.length ? { activationIds } : {}),
-        ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
-        replayed: false,
-      };
-    })();
+      throw transactionError;
+    }
+    // The filesystem-backed authority commits separately from scheduler SQLite.
+    // Re-read every accepted attachment after the passive transaction commits;
+    // callers must not project the canonical Communication when immutable bytes
+    // disappeared or changed in that crash window. The scheduler row remains an
+    // idempotent recovery boundary and an exact-byte restore can retry safely.
+    this.revalidateRuntimeAttachments(input.projectId, preparedAttachments.bindings);
+    return result;
   }
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
@@ -4432,6 +4525,72 @@ export class CoordinationV3Store {
     }
 
     const authority = this.options.attachmentAuthority;
+    const canonicalAttachments = hasCanonicalAttachments
+      ? communication!.attachments as AssetDto[]
+      : [];
+    const canonicalOwnerById = new Map(canonicalAttachments.map((attachment) =>
+      [attachment.id, attachment.agentId] as const));
+    const targets = [...new Set(activationAgentIds)];
+    const topLevelAttachments = hasTopLevelAttachments
+      ? dispatch!.attachments as RuntimeDispatchAttachmentV3[]
+      : [];
+    const canonicalTargets = [...new Set(topLevelAttachments.flatMap((attachment) => {
+      const owner = canonicalOwnerById.get(attachment.id);
+      return owner ? [owner] : [];
+    }))];
+    const topLevelOwner = topLevelAttachments.length === 0
+      ? undefined
+      : targets.length === 1
+        ? targets[0]
+        : targets.length === 0 && canonicalTargets.length === 1 &&
+            topLevelAttachments.every((attachment) => canonicalOwnerById.has(attachment.id))
+          ? canonicalTargets[0]
+          : undefined;
+    if (topLevelAttachments.length > 0 && !topLevelOwner) {
+      throw new Error("runtime communication attachment owner is ambiguous");
+    }
+
+    // Bound structural work before the authority resolver opens or hashes any
+    // file. Canonical and dispatch appearances of the same Project+owner+ID are
+    // one candidate; contradictory owners and dispatch duplicates fail closed.
+    const candidateKeys = new Set<string>();
+    const ownerById = new Map<string, string>();
+    const dispatchIds = new Set<string>();
+    const addCandidate = (agentId: string, attachmentId: string, dispatchAppearance: boolean): void => {
+      if (dispatchAppearance) {
+        if (dispatchIds.has(attachmentId)) throw new Error("runtime communication attachments are invalid");
+        dispatchIds.add(attachmentId);
+      }
+      const priorOwner = ownerById.get(attachmentId);
+      if (priorOwner !== undefined && priorOwner !== agentId) {
+        throw new Error("runtime communication attachment identity conflicts across canonical and dispatch appearances");
+      }
+      ownerById.set(attachmentId, agentId);
+      candidateKeys.add(`${projectId}\0${agentId}\0${attachmentId}`);
+      if (candidateKeys.size > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE) {
+        throw new Error("runtime communication attachments are invalid");
+      }
+    };
+    for (const attachment of canonicalAttachments) addCandidate(attachment.agentId, attachment.id, false);
+    for (const attachment of topLevelAttachments) addCandidate(topLevelOwner!, attachment.id, true);
+    if (Array.isArray(recipients)) {
+      for (const candidate of recipients) {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+          if (hasRecipientAttachments) throw new Error("runtime communication attachments are invalid");
+          continue;
+        }
+        const recipient = candidate as Record<string, unknown>;
+        if (!Object.prototype.hasOwnProperty.call(recipient, "attachments")) continue;
+        if (typeof recipient.agentId !== "string" || !UUID_PATTERN.test(recipient.agentId) ||
+            !runtimeDispatchAttachmentsAreValid(recipient.attachments)) {
+          throw new Error("runtime communication attachments are invalid");
+        }
+        for (const attachment of recipient.attachments as RuntimeDispatchAttachmentV3[]) {
+          addCandidate(recipient.agentId, attachment.id, true);
+        }
+      }
+    }
+
     const resolvedByOwner = new Map<string, RuntimeAttachmentAuthorityV3>();
     const meaningById = new Map<string, string>();
     const resolveAuthority = (agentId: string, attachmentId: string): RuntimeAttachmentAuthorityV3 => {
@@ -4466,10 +4625,7 @@ export class CoordinationV3Store {
       }
       return resolved.attachment;
     };
-    const dispatchIds = new Set<string>();
     const resolveSnapshot = (attachment: RuntimeDispatchAttachmentV3, agentId: string): RuntimeDispatchAttachmentV3 => {
-      if (dispatchIds.has(attachment.id)) throw new Error("runtime communication attachments are invalid");
-      dispatchIds.add(attachment.id);
       const resolved = resolveAuthority(agentId, attachment.id);
       if (!resolved || attachment.name !== resolved.attachment.name ||
           attachment.mediaType !== resolved.attachment.mediaType || attachment.size !== resolved.attachment.size ||
@@ -4494,31 +4650,12 @@ export class CoordinationV3Store {
         attachments: (communication!.attachments as AssetDto[]).map(resolveCanonical),
       };
     }
-    const canonicalOwners = new Map<string, string>(
-      (nextCommunication?.attachments as AssetDto[] | undefined)?.map((attachment) =>
-        [attachment.id, attachment.agentId] as const) ?? [],
-    );
     let nextDispatch = dispatch;
     if (dispatch) {
       nextDispatch = { ...dispatch };
       if (hasTopLevelAttachments) {
-        const topLevelAttachments = dispatch.attachments as RuntimeDispatchAttachmentV3[];
-        const targets = [...new Set(activationAgentIds)];
-        const canonicalTargets = [...new Set(topLevelAttachments.flatMap((attachment) => {
-          const owner = canonicalOwners.get(attachment.id);
-          return owner ? [owner] : [];
-        }))];
-        const target = targets.length === 1
-          ? targets[0]
-          : targets.length === 0 && canonicalTargets.length === 1 &&
-              topLevelAttachments.every((attachment) => canonicalOwners.has(attachment.id))
-            ? canonicalTargets[0]
-            : undefined;
-        if (topLevelAttachments.length > 0 && !target) {
-          throw new Error("runtime communication attachment owner is ambiguous");
-        }
         nextDispatch.attachments = topLevelAttachments.length
-          ? topLevelAttachments.map((attachment) => resolveSnapshot(attachment, target!))
+          ? topLevelAttachments.map((attachment) => resolveSnapshot(attachment, topLevelOwner!))
           : [];
       }
       if (Array.isArray(recipients)) {
@@ -4562,6 +4699,64 @@ export class CoordinationV3Store {
     }, bindings };
     if (communication === payload) return { payload: nextCommunication, bindings };
     return { payload: nextDispatch ? { ...payload, dispatch: nextDispatch } : payloadValue, bindings };
+  }
+
+  private compensationReceiptForCommittedRuntimeCommunication(
+    receipt: RuntimeAttachmentReservationReceiptV3,
+    committed: { project_id: string; payload_hash: string; payload_json: string } | undefined,
+    expectedProjectId: string,
+    expectedPayloadHash: string,
+  ): RuntimeAttachmentReservationReceiptV3 | undefined {
+    if (!committed) return receipt;
+    if (committed.project_id === expectedProjectId && committed.payload_hash === expectedPayloadHash) {
+      return undefined;
+    }
+    try {
+      const activationAgents = this.sqlite.prepare(`
+        SELECT activation.agent_id agentId
+        FROM agent_activations activation
+        JOIN activation_sources source ON source.activation_id = activation.id
+        WHERE source.source_kind = 'communication' AND source.source_id = ?
+          AND activation.project_id = ?
+        ORDER BY activation.created_at, activation.id
+      `).all(receipt.communicationId, committed.project_id) as Array<{ agentId: string }>;
+      const requiredBindings = this.bindRuntimeAttachments(
+        committed.project_id,
+        JSON.parse(committed.payload_json) as unknown,
+        activationAgents.map((row) => row.agentId),
+      ).bindings;
+      const requiredKeys = new Set(requiredBindings.map((binding) => stableJson(binding)));
+      const unusedBindings = receipt.bindings.filter((binding) => !requiredKeys.has(stableJson({
+        projectId: binding.projectId,
+        agentId: binding.agentId,
+        attachmentId: binding.attachmentId,
+        contentHash: binding.contentHash,
+        byteLength: binding.byteLength,
+      })));
+      return unusedBindings.length ? { ...receipt, bindings: unusedBindings } : undefined;
+    } catch {
+      // A committed payload whose attachment requirements cannot be proven
+      // must not inherit authority from a different failed publication.
+      return receipt;
+    }
+  }
+
+  private revalidateRuntimeAttachments(
+    projectId: string,
+    bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
+  ): void {
+    if (!bindings.length) return;
+    const authority = this.options.attachmentAuthority;
+    if (!authority) throw new Error("runtime communication attachment authority mismatch");
+    for (const binding of bindings) {
+      const resolved = authority.resolve(projectId, binding.agentId, binding.attachmentId);
+      if (!resolved || binding.projectId !== projectId ||
+          resolved.attachment.agentId !== binding.agentId || resolved.attachment.id !== binding.attachmentId ||
+          resolved.contentHash !== binding.contentHash || resolved.byteLength !== binding.byteLength ||
+          resolved.attachment.sha256 !== binding.contentHash || resolved.attachment.size !== binding.byteLength) {
+        throw new Error("runtime communication attachment authority mismatch after scheduler commit");
+      }
+    }
   }
 
   private resolveRuntimeArtifacts(
