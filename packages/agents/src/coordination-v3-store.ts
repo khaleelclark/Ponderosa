@@ -4542,7 +4542,13 @@ export class CoordinationV3Store {
       }
     }
 
-    const bindings = [...resolvedByOwner.values()].map((resolved) => ({
+    const resolvedAttachments = [...resolvedByOwner.values()];
+    if (resolvedAttachments.length > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE ||
+        resolvedAttachments.reduce((total, resolved) => total + resolved.byteLength, 0) >
+          RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES) {
+      throw new Error("runtime communication attachments are invalid");
+    }
+    const bindings = resolvedAttachments.map((resolved) => ({
       projectId,
       agentId: resolved.attachment.agentId,
       attachmentId: resolved.attachment.id,

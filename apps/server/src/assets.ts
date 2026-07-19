@@ -15,6 +15,7 @@ const MAX_PIXELS = 25_000_000;
 const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
 const UPLOAD_LEASE_MS = 5 * 60 * 1000;
 const ID = /^[a-f0-9-]{36}$/;
+const RUNTIME_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const BIDI_AND_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 
@@ -37,6 +38,7 @@ export interface AuthoritativeRuntimeAttachment {
 
 export interface AuthoritativeRuntimeArtifact {
   artifact: RuntimeArtifactInputV3;
+  body: Buffer;
   localPath: string;
   contentHash: string;
   byteLength: number;
@@ -590,14 +592,43 @@ export class AssetStore {
     projectId: string,
     expected: RuntimeArtifactInputV3,
   ): AuthoritativeRuntimeArtifact | undefined {
+    const registered = this.authority.runtimeArtifact(projectId, expected.id);
+    if (!registered || registered.projectId !== projectId) return undefined;
+    const { createdAt: _createdAt, ...registeredIdentity } = registered;
+    const expectedIdentity = { projectId, ...expected };
+    if (!runtimeArtifactIdentityMatches(registeredIdentity, expectedIdentity)) return undefined;
+    return this.readAuthoritativeRuntimeArtifact(registered);
+  }
+
+  /** Read one registered managed artifact through its immutable ledger entry.
+   * The returned Buffer is read from the already-opened no-follow descriptor,
+   * so callers never reopen a pathname after verification. */
+  authoritativeRuntimeArtifactById(
+    projectId: string,
+    id: string,
+  ): AuthoritativeRuntimeArtifact | undefined {
+    const registered = this.authority.runtimeArtifact(projectId, id);
+    return registered?.projectId === projectId
+      ? this.readAuthoritativeRuntimeArtifact(registered)
+      : undefined;
+  }
+
+  private readAuthoritativeRuntimeArtifact(
+    registered: RegisteredRuntimeArtifact,
+  ): AuthoritativeRuntimeArtifact | undefined {
     let contentFd: number | undefined;
     try {
-      const registered = this.authority.runtimeArtifact(projectId, expected.id);
-      if (!registered || registered.projectId !== projectId) return undefined;
-      const { createdAt: _createdAt, ...registeredIdentity } = registered;
-      const expectedIdentity = { projectId, ...expected };
-      if (!runtimeArtifactIdentityMatches(registeredIdentity, expectedIdentity)) return undefined;
-      const { projectId: _projectId, ...authoritativeMetadata } = registeredIdentity;
+      const { projectId, createdAt: _createdAt, ...authoritativeMetadata } = registered;
+      const artifact = authoritativeMetadata as RuntimeArtifactInputV3;
+      if (!/^text-[a-f0-9]{64}$/.test(artifact.id) ||
+          (artifact.role !== "long_text" && artifact.role !== "document") ||
+          !artifact.title.trim() || artifact.mediaType !== "text/markdown" ||
+          artifact.blobPath !== artifact.id || !/^[a-f0-9]{64}$/.test(artifact.blobHash) ||
+          !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 1 ||
+          artifact.byteLength > ASSET_LIMITS.maxFileBytes ||
+          ((artifact.originAgentId === undefined) !== (artifact.executionId === undefined)) ||
+          (artifact.originAgentId !== undefined &&
+            (!RUNTIME_UUID.test(artifact.originAgentId) || !RUNTIME_UUID.test(artifact.executionId!)))) return undefined;
       const root = this.root ??= realpathSync(this.dataDir);
       const contentDirectory = path.join(managedArtifactsDir(this.dataDir, projectId), "content");
       const actualDirectory = realpathSync(contentDirectory);
@@ -612,18 +643,60 @@ export class AssetStore {
         const info = lstatSync(ancestor);
         if (info.isSymbolicLink() || !info.isDirectory()) return undefined;
       }
-      const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, expected.id);
-      if (canonicalPath !== path.join(actualDirectory, expected.id) || expected.blobPath !== expected.id) return undefined;
+      const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, artifact.id);
+      if (canonicalPath !== path.join(actualDirectory, artifact.id)) return undefined;
       contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const contentInfo = fstatSync(contentFd);
-      if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== expected.byteLength ||
+      if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== artifact.byteLength ||
           contentInfo.size < 1 || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
       const contentHash = createHash("sha256").update(body).digest("hex");
       try { new TextDecoder("utf-8", { fatal: true }).decode(body); }
       catch { return undefined; }
-      if (contentHash !== expected.blobHash) return undefined;
-      return { artifact: authoritativeMetadata, localPath: canonicalPath, contentHash, byteLength: body.length };
+      if (contentHash !== artifact.blobHash || body.length !== artifact.byteLength) return undefined;
+      return { artifact, body, localPath: canonicalPath, contentHash, byteLength: body.length };
+    } catch { return undefined; }
+    finally { if (contentFd !== undefined) closeSync(contentFd); }
+  }
+
+  /** Read a non-runtime generated artifact from its Project-owned managed
+   * location without following a replacement leaf. Its catalog metadata still
+   * supplies the expected byte length at the route boundary. */
+  managedArtifactContent(
+    projectId: string,
+    id: string,
+    expectedByteLength: number,
+    maxBytes = 64 * 1024 * 1024,
+  ): Buffer | undefined {
+    let contentFd: number | undefined;
+    try {
+      if (!OWNER_ID.test(projectId) || !OWNER_ID.test(id) || !Number.isSafeInteger(expectedByteLength) ||
+          expectedByteLength < 1 || expectedByteLength > maxBytes) return undefined;
+      const root = this.root ??= realpathSync(this.dataDir);
+      const contentDirectory = path.join(managedArtifactsDir(this.dataDir, projectId), "content");
+      const actualDirectory = realpathSync(contentDirectory);
+      if (actualDirectory !== path.join(root, "projects", projectId, "artifacts", "content")) return undefined;
+      for (const ancestor of [
+        path.join(this.dataDir, "projects"),
+        path.join(this.dataDir, "projects", projectId),
+        managedArtifactsDir(this.dataDir, projectId),
+        contentDirectory,
+      ]) {
+        const info = lstatSync(ancestor);
+        if (info.isSymbolicLink() || !info.isDirectory()) return undefined;
+      }
+      const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, id);
+      if (canonicalPath !== path.join(actualDirectory, id)) return undefined;
+      contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const before = fstatSync(contentFd);
+      if (!before.isFile() || before.nlink !== 1 || before.size !== expectedByteLength || before.size > maxBytes) {
+        return undefined;
+      }
+      const body = readFileSync(contentFd);
+      const after = fstatSync(contentFd);
+      if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
+          after.size !== before.size || body.length !== expectedByteLength) return undefined;
+      return body;
     } catch { return undefined; }
     finally { if (contentFd !== undefined) closeSync(contentFd); }
   }

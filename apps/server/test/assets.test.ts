@@ -90,18 +90,21 @@ describe("secure staged assets", () => {
     };
     assets.registerRuntimeArtifact({ ...artifact, projectId, createdAt: "2026-07-19T00:00:00.000Z" });
     expect(assets.authoritativeRuntimeArtifact(projectId, artifact)).toMatchObject({
-      artifact, localPath: file, contentHash: artifact.blobHash, byteLength: body.length,
+      artifact, body, localPath: file, contentHash: artifact.blobHash, byteLength: body.length,
     });
+    expect(assets.authoritativeRuntimeArtifactById(projectId, id)).toMatchObject({ artifact, body });
     expect(assets.authoritativeRuntimeArtifact(projectId, { ...artifact, title: "Drift" })).toBeUndefined();
     expect(assets.authoritativeRuntimeArtifact(projectId, { ...artifact, blobPath: `../${id}` })).toBeUndefined();
     expect(assets.authoritativeRuntimeArtifact(projectId, { ...artifact, blobHash: "0".repeat(64) })).toBeUndefined();
     writeFileSync(file, Buffer.alloc(body.length, 0x78));
     expect(assets.authoritativeRuntimeArtifact(projectId, artifact)).toBeUndefined();
+    expect(assets.authoritativeRuntimeArtifactById(projectId, id)).toBeUndefined();
     rmSync(file);
     const outside = path.join(dataDir, "outside-markdown");
     writeFileSync(outside, body);
     symlinkSync(outside, file);
     expect(assets.authoritativeRuntimeArtifact(projectId, artifact)).toBeUndefined();
+    expect(assets.authoritativeRuntimeArtifactById(projectId, id)).toBeUndefined();
   });
 
   it("reserves passive Communication assets before commit and recovers or releases them after restart", async () => {

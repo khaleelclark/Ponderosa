@@ -1375,6 +1375,102 @@ describe("generated artifact endpoints", () => {
     await app.close();
   });
 
+  it("revalidates artifact-backed document bytes on every managed read route", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+    });
+    const project = store.createProject({ label: "Managed read authority", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Document recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const original = `Managed document\n${"a".repeat(10_100)}`;
+    const payload = {
+      text: original, idempotencyKey: "managed-read-authority",
+      sourceChannel: "main" as const, sourceConversationId: conversation.id,
+    };
+    const accepted = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload,
+    });
+    expect(accepted.statusCode, accepted.body).toBe(202);
+    const communicationEventId = accepted.json<{ communicationEventId: string }>().communicationEventId;
+    const event = store.getCommunicationEvent(project.id, communicationEventId)!;
+    const artifactId = event.document!.artifactId!;
+    const blob = managedArtifactContentPath(dataDir, project.id, artifactId);
+    const documentRoot = `/api/projects/${project.id}/communication-documents/${artifactId}`;
+    const generatedRoot = `/api/projects/${project.id}/artifacts/${artifactId}`;
+    const agentGeneratedRoot = `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}`;
+    const mutationState = () => {
+      const count = (table: string) => (store.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+      return {
+        communications: store.readCommunicationEvents(project.id).length,
+        projectArtifacts: store.getProjectArtifacts(project.id).length,
+        runtimeCommunications: count("runtime_communications"),
+        runtimeArtifacts: count("runtime_artifacts"),
+        activations: count("agent_activations"),
+        outbox: count("activation_outbox"),
+        idempotency: count("coordination_idempotency"),
+        promptInjections: count("scheduler_prompt_injections"),
+        runs: count("scheduler_runs"),
+      };
+    };
+    const acceptedState = mutationState();
+
+    const retry = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload,
+    });
+    expect(retry.statusCode, retry.body).toBe(202);
+    expect(retry.json<{ communicationEventId: string }>().communicationEventId).toBe(communicationEventId);
+    expect(mutationState()).toEqual(acceptedState);
+
+    const preview = await app.inject({ method: "GET", url: documentRoot });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json<{ content: string }>().content).toBe(original);
+    const documentDownload = await app.inject({ method: "GET", url: `${documentRoot}/download` });
+    expect(documentDownload.statusCode, documentDownload.body).toBe(200);
+    expect(documentDownload.rawPayload).toEqual(Buffer.from(original));
+    for (const suffix of ["preview", "download"]) {
+      for (const root of [generatedRoot, agentGeneratedRoot]) {
+        const generated = await app.inject({ method: "GET", url: `${root}/${suffix}` });
+        expect(generated.statusCode, generated.body).toBe(200);
+        expect(generated.rawPayload).toEqual(Buffer.from(original));
+      }
+    }
+    expect(mutationState()).toEqual(acceptedState);
+
+    const replacement = `Managed document\n${"z".repeat(10_100)}`;
+    expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original));
+    writeFileSync(blob, replacement);
+    for (const url of [
+      documentRoot, `${documentRoot}/download`, `${generatedRoot}/preview`, `${generatedRoot}/download`,
+      `${agentGeneratedRoot}/preview`, `${agentGeneratedRoot}/download`,
+    ]) {
+      const rejected = await app.inject({ method: "GET", url });
+      expect(rejected.statusCode, rejected.body).toBe(404);
+      expect(rejected.rawPayload).not.toEqual(Buffer.from(replacement));
+      expect(rejected.rawPayload).not.toEqual(Buffer.from(original));
+    }
+    expect(mutationState()).toEqual(acceptedState);
+
+    rmSync(blob);
+    for (const url of [
+      documentRoot, `${documentRoot}/download`, `${generatedRoot}/preview`, `${generatedRoot}/download`,
+      `${agentGeneratedRoot}/preview`, `${agentGeneratedRoot}/download`,
+    ]) {
+      expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
+    }
+    expect(mutationState()).toEqual(acceptedState);
+
+    writeFileSync(blob, original, { mode: 0o600 });
+    expect((await app.inject({ method: "GET", url: documentRoot })).json<{ content: string }>().content).toBe(original);
+    expect((await app.inject({ method: "GET", url: `${documentRoot}/download` })).rawPayload).toEqual(Buffer.from(original));
+    expect((await app.inject({ method: "GET", url: `${generatedRoot}/download` })).rawPayload).toEqual(Buffer.from(original));
+    expect((await app.inject({ method: "GET", url: `${agentGeneratedRoot}/download` })).rawPayload).toEqual(Buffer.from(original));
+    expect(mutationState()).toEqual(acceptedState);
+    await app.close();
+  });
+
   it("uses the same artifact-backed long-text contract on every shared composer route", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];

@@ -5405,14 +5405,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(404).send({ error: `artifact is unavailable: ${ref}` });
       }
       let content: Buffer;
-      try {
-        content = await fs.readFile(managedArtifactContentPath(
-          opts.dataDir,
-          author.projectId,
-          runtimeArtifact?.blobPath ?? artifact!.id,
-        ));
+      if (runtimeArtifact?.projectId === author.projectId) {
+        const authoritative = assets.authoritativeRuntimeArtifact(author.projectId, runtimeArtifact);
+        if (!authoritative) {
+          return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` });
+        }
+        content = authoritative.body;
+      } else {
+        const managed = artifact?.size === undefined
+          ? undefined
+          : assets.managedArtifactContent(author.projectId, artifact.id, artifact.size);
+        if (!managed) return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` });
+        content = managed;
       }
-      catch { return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` }); }
       sources.push({
         ref,
         title: runtimeArtifact?.title ?? artifact!.summary ?? path.basename(artifact!.path),
@@ -6614,6 +6619,50 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return event.sender.kind === "agent" && event.sender.agentId === agentId;
   }
 
+  function managedProjectArtifactAgreesWithRuntime(
+    managed: ArtifactDto,
+    runtime: import("@ponderosa/agents").RuntimeArtifactInputV3,
+  ): boolean {
+    const provenanceAgrees = runtime.originAgentId
+      ? managed.agentId === runtime.originAgentId && managed.originAgentId === runtime.originAgentId &&
+        managed.executionId === runtime.executionId
+      : managed.agentId === managed.originAgentId && managed.executionId === undefined;
+    return managed.id === runtime.id && managed.kind === "document" &&
+      managed.path === `communication/${runtime.id}.md` &&
+      managed.summary === runtime.title && managed.mediaType === runtime.mediaType &&
+      managed.size === runtime.byteLength && provenanceAgrees;
+  }
+
+  function authoritativeCommunicationDocument(projectId: string, documentId: string) {
+    if (!store.getProject(projectId)) return undefined;
+    const event = store.readCommunicationEvents(projectId)
+      .find((candidate) => candidate.document?.id === documentId);
+    const document = event?.document;
+    if (!event || !document || document.mediaType !== "text/markdown" || !document.title.trim()) return undefined;
+    const validAuthor = event.sender.kind === "agent"
+      ? document.authorAgentId === event.sender.agentId &&
+        document.executionId === event.sender.executionId && !document.authorUserId
+      : event.sender.kind === "user"
+        ? document.authorUserId === event.sender.userId && !document.authorAgentId && !document.executionId
+        : false;
+    if (!validAuthor) return undefined;
+    if (document.content !== undefined) {
+      if (document.artifactId || document.byteLength !== Buffer.byteLength(document.content, "utf8")) return undefined;
+      return { event, document: { ...document, content: document.content } };
+    }
+    if (!document.artifactId || document.artifactId !== document.id) return undefined;
+    const authoritative = assets.authoritativeRuntimeArtifactById(projectId, document.artifactId);
+    if (!authoritative || authoritative.artifact.id !== document.id ||
+        authoritative.artifact.title !== document.title ||
+        authoritative.artifact.mediaType !== document.mediaType ||
+        authoritative.artifact.byteLength !== document.byteLength ||
+        authoritative.artifact.originAgentId !== document.authorAgentId ||
+        authoritative.artifact.executionId !== document.executionId) return undefined;
+    const managed = store.getProjectArtifact(projectId, document.artifactId);
+    if (!managed || !managedProjectArtifactAgreesWithRuntime(managed, authoritative.artifact)) return undefined;
+    return { event, document: { ...document, content: authoritative.body.toString("utf8") } };
+  }
+
   app.get<{ Params: { documentId: string } }>("/api/agent-documents/:documentId", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
@@ -6622,7 +6671,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(401).send({ error: "invalid or expired agent document capability" });
     }
     const agent = store.getAgent(capability.agentId);
-    const found = agent ? store.getCommunicationDocument(agent.projectId, request.params.documentId) : undefined;
+    const found = agent ? authoritativeCommunicationDocument(agent.projectId, request.params.documentId) : undefined;
     if (!found || !agentCanReadDocument(found.event, capability.agentId)) return reply.code(404).send({ error: "document not found" });
     return { ...found.document };
   });
@@ -11730,7 +11779,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string; documentId: string } }>(
     "/api/projects/:projectId/communication-documents/:documentId",
     async (request, reply) => {
-      const found = store.getCommunicationDocument(request.params.projectId, request.params.documentId);
+      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
       if (!found) return reply.code(404).send({ error: "document not found" });
       const { content, ...metadata } = found.document;
       const root = `/api/projects/${encodeURIComponent(request.params.projectId)}/communication-documents/${encodeURIComponent(found.document.id)}`;
@@ -11741,7 +11790,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string; documentId: string } }>(
     "/api/projects/:projectId/communication-documents/:documentId/download",
     async (request, reply) => {
-      const found = store.getCommunicationDocument(request.params.projectId, request.params.documentId);
+      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
       if (!found) return reply.code(404).send({ error: "document not found" });
       return reply.type("text/markdown; charset=utf-8")
         .header("Content-Disposition", contentDisposition(`${found.document.title}.md`))
@@ -11757,16 +11806,23 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const project = store.getProject(projectId);
     const managed = store.getProjectArtifact(projectId, artifactId);
     if (project && managed) {
-      try {
-        const file = managedArtifactContentPath(opts.dataDir, projectId, artifactId);
-        const info = await fs.stat(file);
-        if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
+      if ((managed.originAgentId ?? managed.agentId) !== agentId) return undefined;
+      const runtime = assets.authoritativeRuntimeArtifactById(projectId, artifactId);
+      if (runtime) {
+        if (!managedProjectArtifactAgreesWithRuntime(managed, runtime.artifact)) return undefined;
         return {
-          body: await fs.readFile(file),
+          body: runtime.body,
           name: managed.summary ?? path.basename(managed.path),
           mediaType: managed.mediaType ?? "application/octet-stream",
         };
-      } catch { return undefined; }
+      }
+      if (managed.kind === "document" || managed.size === undefined || !managed.mediaType) return undefined;
+      const body = assets.managedArtifactContent(projectId, artifactId, managed.size);
+      return body ? {
+        body,
+        name: managed.summary ?? path.basename(managed.path),
+        mediaType: managed.mediaType,
+      } : undefined;
     }
     const agent = store.getAgent(agentId);
     if (!project || !agent || agent.projectId !== project.id) return undefined;
