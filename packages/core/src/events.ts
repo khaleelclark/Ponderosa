@@ -89,9 +89,6 @@ export type AgentEvent =
     }
   | { type: "error"; message: string };
 
-/** The literal `type` discriminants of {@link AgentEvent}. */
-export type AgentEventType = AgentEvent["type"];
-
 /**
  * One line of an agent's append-only event log (`events.jsonl`, SPEC §4/§7).
  * `seq` is monotonic per agent and doubles as the SSE event id for reconnect

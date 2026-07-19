@@ -16,7 +16,6 @@ import { AgentsTab } from "./AgentsTab";
 import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
-import { Sidebar } from "./Sidebar";
 import { WorkspaceReviewPane } from "./panes";
 
 interface AgentDialogState {
@@ -169,23 +168,6 @@ export function ProjectShell({
     writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), artifactId);
     navigate({ kind: "agent", projectId, agentId });
   };
-
-  const sidebarSelection = {
-    conversationId: route.kind === "conversation" ? route.conversationId : undefined,
-    agentsActive: route.kind === "agents" || route.kind === "agent",
-  };
-
-  const sidebar = (
-    <Sidebar
-      conversations={conversations}
-      agents={agents}
-      statusByAgentId={statusByAgentId}
-      selection={sidebarSelection}
-      onSelectConversation={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
-      onSelectAgents={() => navigate({ kind: "agents", projectId })}
-      onCreateConversation={() => setMasterDialogOpen(true)}
-    />
-  );
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
 

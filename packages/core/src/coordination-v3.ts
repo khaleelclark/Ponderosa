@@ -205,9 +205,6 @@ export function deriveAgentAvailability(input: {
   return "idle";
 }
 
-export type ActivationPriority = "human" | "urgent" | "actionable" | "request" | "ordinary";
-export type ActivationState = "pending" | "leased" | "attached" | "consumed" | "retry_pending" | "failed" | "outcome_unknown" | "cancelled";
-
 export type PromptInjectionState = "not_injected" | "injecting" | "injected";
 
 export function activationRetryDisposition(input: {

@@ -3,36 +3,17 @@
 // is append-only by construction — there is NO update or delete of events
 // (AGENTS.md invariant 3).
 
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeSync,
-} from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 
 /**
- * Read every stored event from a log file, in order. Skips blank/corrupt trailing
- * lines defensively (a crash mid-append can leave a partial last line).
+ * Read every stored event from a log file in order. Repairs a torn final append
+ * and fails on corruption anywhere earlier in the log.
  */
 export function readLog(file: string): StoredLogEvent[] {
-  if (!existsSync(file)) return [];
-  const text = readFileSync(file, "utf8");
-  const out: StoredLogEvent[] = [];
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    try {
-      out.push(JSON.parse(trimmed) as StoredLogEvent);
-    } catch {
-      // A partial final line from an interrupted append — ignore.
-    }
-  }
-  return out;
+  return readRepairableJsonl<StoredLogEvent>(file, "agent event log", true);
 }
 
 /** Read events with `seq > sinceSeq` (for SSE replay-from-last-seen). */
@@ -68,14 +49,7 @@ export class EventLog {
   /** Append one event; returns the stored form (with assigned seq + ts). */
   append(event: LogEvent, ts: string = new Date().toISOString()): StoredLogEvent {
     const stored: StoredLogEvent = { seq: this.nextSeq, ts, event };
-    const line = JSON.stringify(stored) + "\n";
-    const fd = openSync(this.file, "a");
-    try {
-      writeSync(fd, line);
-      fsyncSync(fd); // durability: don't ack an event we might lose on crash
-    } finally {
-      closeSync(fd);
-    }
+    appendFsyncedJsonl(this.file, [stored]);
     this.nextSeq += 1;
     return stored;
   }

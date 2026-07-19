@@ -283,34 +283,7 @@ export interface ProjectedCommunicationMessage {
   editRevision?: number;
 }
 
-export type CommunicationDeliveryStatus =
-  | "accepted"
-  | "routed"
-  | "available"
-  | "claimed"
-  | "acknowledged"
-  | "processed"
-  | "failed";
-
-/** Mutable operational state, deliberately outside the immutable event. */
-export interface CommunicationDelivery {
-  eventId: string;
-  recipient: { kind: "agent"; agentId: string } | { kind: "user"; userId: string };
-  status: CommunicationDeliveryStatus;
-  attempt: number;
-  updatedAt: string;
-  failure?: { code: string; message: string; retryable: boolean };
-}
-
 export type CommunicationContextPolicy = "local_only" | "organizational";
-
-/** Context eligibility is derived once from the event's immutable intent. */
-export interface CommunicationContextClassification {
-  eventId: string;
-  policy: CommunicationContextPolicy;
-  classifiedAt: string;
-  classifiedBy: CommunicationActor;
-}
 
 /** Integrity report computed entirely from canonical communication records. */
 export interface CommunicationReconciliationReport {
@@ -320,7 +293,6 @@ export interface CommunicationReconciliationReport {
   missingProjectionEventIds: string[];
   duplicateProjectionEventIds: string[];
   orphanProjectionEventIds: string[];
-  missingClassificationEventIds: string[];
   missingProjectionMetadataEventIds: string[];
   orphanRuntimeCommunicationEventIds: string[];
   orphanRequestCommunicationEventIds: string[];

@@ -1334,54 +1334,6 @@ function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
   </Box>;
 }
 
-/** The "Live Log" tab: a running feed of commands, tools, tests, files, errors. */
-export function LiveLogPane({
-  timeline,
-  connected,
-  running,
-}: {
-  timeline: ExecutionItem[];
-  connected: boolean;
-  running: boolean;
-}): JSX.Element {
-  return (
-    <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
-          Live Log
-        </Typography>
-        <Chip
-          size="small"
-          label={connected ? "Live" : "Reconnecting"}
-          color={connected ? "success" : "warning"}
-          variant={connected ? "filled" : "outlined"}
-        />
-        {running ? <Chip size="small" color="info" label="Working" /> : null}
-      </Stack>
-      {timeline.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No activity yet. When this agent runs, its commands, tool calls, test results, file
-          changes, errors, and completion events stream here in order.
-        </Typography>
-      ) : (
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            overflowY: "auto",
-            maxHeight: { xs: "62vh", md: "68vh" },
-            pr: 0.5,
-          }}
-        >
-          {timeline.map((item) => (
-            <EventLine key={item.id} item={item} />
-          ))}
-        </Box>
-      )}
-    </Stack>
-  );
-}
-
 /** Refresh-safe chronological projection of canonical execution events. */
 export function ActivityPane({ activity, connected, running, activeExecutionId }: {
   activity: AgentActivityDto[];

@@ -3367,7 +3367,6 @@ describe("server chunk F", () => {
       missingProjectionEventIds: ["legacy-event"],
       duplicateProjectionEventIds: [],
       orphanProjectionEventIds: [],
-      missingClassificationEventIds: [],
       missingProjectionMetadataEventIds: [],
       ok: false,
     });

@@ -51,23 +51,6 @@ export function orderedAgentOrganization(agents: AgentDto[]): AgentOrganizationR
   return rows;
 }
 
-export function agentDescendants(agentId: string, agents: AgentDto[]): AgentDto[] {
-  const children = new Map<string, AgentDto[]>();
-  for (const agent of agents) {
-    if (!agent.managerAgentId) continue;
-    children.set(agent.managerAgentId, [...(children.get(agent.managerAgentId) ?? []), agent]);
-  }
-  const descendants: AgentDto[] = [];
-  const visit = (parentId: string) => {
-    for (const child of children.get(parentId) ?? []) {
-      descendants.push(child);
-      visit(child.id);
-    }
-  };
-  visit(agentId);
-  return descendants;
-}
-
 export function agentBelongsToConversation(agent: AgentDto, conversationId: string): boolean {
   return agent.conversationIds.includes(conversationId);
 }
@@ -184,27 +167,6 @@ export function agentActivity(detail: AgentDetailDto | undefined): string | unde
   }
   const waitingItem = detail.workItems.find((item) => item.status === "waiting_approval");
   return waitingItem?.title;
-}
-
-/**
- * Derive a concise, human-readable agent name from the message that spawned it.
- * First line, collapsed whitespace, trailing punctuation trimmed, capitalized,
- * and truncated at a word boundary. Falls back to a generic name when empty.
- */
-export function agentNameFromMessage(message: string): string {
-  const firstLine = message.split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "";
-  const cleaned = firstLine.replace(/\s+/g, " ").replace(/[.!?,;:]+$/, "").trim();
-  if (!cleaned) {
-    return "New agent";
-  }
-  const capitalized = cleaned[0]!.toUpperCase() + cleaned.slice(1);
-  const maxLength = 60;
-  if (capitalized.length <= maxLength) {
-    return capitalized;
-  }
-  const truncated = capitalized.slice(0, maxLength);
-  const lastSpace = truncated.lastIndexOf(" ");
-  return `${(lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated).trimEnd()}…`;
 }
 
 export function relativeTime(iso: string | undefined): string {

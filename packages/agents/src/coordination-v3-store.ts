@@ -1094,44 +1094,6 @@ export class CoordinationV3Store {
       .map((row) => row.id);
   }
 
-  /**
-   * Return requesters that already received an authoritative terminal outcome
-   * from this exact provider execution. An ordinary message to one of these
-   * agents is a passive audit copy: the request or its Join owns the wake.
-   * Matching the execution ID keeps earlier outcomes and unrelated messages
-   * actionable, while callers may still explicitly override this for urgency.
-   */
-  terminalOutcomeRequesterIdsForRun(runId: string, agentId: string, executionId: string): string[] {
-    const requestIds = this.requestIdsAttachedToRun(runId, agentId);
-    if (requestIds.length === 0) return [];
-    const terminalStates = [...TERMINAL_REQUEST_STATES];
-    const requestPlaceholders = requestIds.map(() => "?").join(", ");
-    const terminalPlaceholders = terminalStates.map(() => "?").join(", ");
-    const rows = this.sqlite.prepare(`
-      SELECT DISTINCT request.requester_agent_id
-      FROM coordination_requests request
-      WHERE request.id IN (${requestPlaceholders}) AND request.recipient_agent_id = ?
-        AND request.requester_agent_id IS NOT NULL
-        AND EXISTS (
-          SELECT 1
-          FROM coordination_request_updates request_update
-          WHERE request_update.request_id = request.id
-            AND request_update.actor_kind = 'agent'
-            AND request_update.actor_id = ?
-            AND request_update.resulting_state IN (${terminalPlaceholders})
-            AND json_extract(request_update.payload_json, '$.executionId') = ?
-        )
-      ORDER BY request.requester_agent_id
-    `).all(
-      ...requestIds,
-      agentId,
-      agentId,
-      ...terminalStates,
-      executionId,
-    ) as Array<{ requester_agent_id: string }>;
-    return rows.map((row) => row.requester_agent_id);
-  }
-
   /** Ordinary recipient-to-requester messages during correlated work are
    * audit copies regardless of provider tool order. The Request or Join owns
    * the single actionable wake; urgent messages remain an explicit override. */
@@ -1866,10 +1828,8 @@ export class CoordinationV3Store {
     conversationId?: string;
     agentId?: string;
     limit?: number;
-    includeDetails?: boolean;
   }): { items: import("@ponderosa/core").AgentWorkItemDto[]; truncated: boolean } {
     const limit = Math.max(1, Math.min(input.limit ?? 300, 1_000));
-    const includeDetails = input.includeDetails !== false;
     const scopeKey = input.conversationId ? `conversation:${input.conversationId}` : undefined;
     type GraphKind = "request" | "join" | "activation" | "run" | "trigger";
     const graphLimit = Math.min(Math.max(limit * 4, limit), 4_000);
@@ -2034,12 +1994,9 @@ export class CoordinationV3Store {
       relationSets.get(left)!.add(right);
       relationSets.get(right)!.add(left);
     };
-    const details = inspectorDetails;
-
     const requestSelection = selection("request", "id");
     const requestRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT id, requester_agent_id, recipient_agent_id, state, version, lifetime_kind,
-        deadline_at, ${includeDetails ? "payload_json" : "NULL AS payload_json"}, communication_event_id, created_at, updated_at, terminal_at
+      SELECT id, requester_agent_id, recipient_agent_id, state, communication_event_id, created_at, updated_at
       FROM coordination_requests
       WHERE project_id = ?
         AND (? IS NULL OR conversation_id = ?)
@@ -2051,8 +2008,7 @@ export class CoordinationV3Store {
       ...requestSelection.params, queryLimit,
     ) as Array<{
       id: string; requester_agent_id: string | null; recipient_agent_id: string; state: string;
-      version: number; lifetime_kind: string; deadline_at: string | null; payload_json: string;
-      communication_event_id: string | null; created_at: string; updated_at: string; terminal_at: string | null;
+      communication_event_id: string | null; created_at: string; updated_at: string;
     }>);
     for (const row of requestRows) {
       const id = `request:${row.id}`;
@@ -2066,20 +2022,13 @@ export class CoordinationV3Store {
         ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
         recipientAgentId: row.recipient_agent_id,
         relatedItemIds: [],
-        ...(includeDetails ? { details: details(
-          ["Request ID", row.id], ["Requester Agent ID", row.requester_agent_id ?? "user"],
-          ["Recipient Agent ID", row.recipient_agent_id], ["Version", row.version], ["Lifetime", row.lifetime_kind],
-          ["Deadline", row.deadline_at], ["Communication event", row.communication_event_id],
-          ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at],
-        ) } : {}),
         createdAt: row.created_at, updatedAt: row.updated_at,
       });
     }
 
     const joinSelection = selection("join", "id");
     const joinRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT id, owner_agent_id, mode, wake_policy, quorum, satisfying_outcomes_json, state,
-        deadline_at, created_at, updated_at, terminal_at
+      SELECT id, owner_agent_id, state, created_at, updated_at
       FROM coordination_joins
       WHERE project_id = ? AND (? IS NULL OR conversation_id = ?) ${joinSelection.sql}
       ORDER BY CASE WHEN state = 'open' THEN 0 ELSE 1 END, updated_at DESC, id DESC LIMIT ?
@@ -2087,23 +2036,19 @@ export class CoordinationV3Store {
       input.projectId, input.conversationId ?? null, input.conversationId ?? null,
       ...joinSelection.params, queryLimit,
     ) as Array<{
-      id: string; owner_agent_id: string; mode: string; wake_policy: CoordinationJoinWakePolicy; quorum: number; satisfying_outcomes_json: string;
-      state: string; deadline_at: string | null; created_at: string; updated_at: string; terminal_at: string | null;
+      id: string; owner_agent_id: string; state: string; created_at: string; updated_at: string;
     }>);
     for (const row of joinRows) add({
       id: `join:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "join", state: row.state,
       title: "Waiting for work", summary: row.state === "open" ? "The Agent is holding until enough assigned work returns."
         : row.state === "satisfied" ? "The required results arrived." : `The wait ended ${row.state}.`,
       agentIds: [row.owner_agent_id], relatedItemIds: [],
-      ...(includeDetails ? { details: details(["Join ID", row.id], ["Mode", row.mode], ["Wake policy", inspectorWakePolicy(row.wake_policy)], ["Quorum", row.quorum],
-        ["Accepted outcomes", inspectorJson(row.satisfying_outcomes_json)], ["Deadline", row.deadline_at], ["Terminal time", row.terminal_at]) } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at,
     });
 
     const activationSelection = selection("activation", "id");
     const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT id, agent_id, kind, priority, dispatch_policy, prompt_class, state, ${includeDetails ? "payload_json" : "NULL AS payload_json"},
-        delivery_failures, last_delivery_error, terminal_outcome, terminal_at, created_at, updated_at
+      SELECT id, agent_id, state, created_at, updated_at
       FROM agent_activations
       WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
       ORDER BY CASE WHEN state IN ('pending', 'retry_pending', 'attached') THEN 0 ELSE 1 END,
@@ -2112,9 +2057,7 @@ export class CoordinationV3Store {
       input.projectId, scopeKey ?? null, scopeKey ?? null,
       ...activationSelection.params, queryLimit,
     ) as Array<{
-      id: string; agent_id: string; kind: string; priority: number; dispatch_policy: string; prompt_class: string;
-      state: string; payload_json: string; delivery_failures: number; last_delivery_error: string | null;
-      terminal_outcome: string | null; terminal_at: string | null; created_at: string; updated_at: string;
+      id: string; agent_id: string; state: string; created_at: string; updated_at: string;
     }>);
     for (const row of activationRows) add({
       id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
@@ -2122,20 +2065,13 @@ export class CoordinationV3Store {
         ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The wake-up was consumed by its Run."
           : `The wake-up ended ${row.state.replaceAll("_", " ")}.`,
       agentIds: [row.agent_id], relatedItemIds: [],
-      ...(includeDetails ? { details: details(["Activation ID", row.id], ["Kind", row.kind], ["Priority", row.priority],
-        ["Dispatch", row.dispatch_policy], ["Prompt class", row.prompt_class], ["Delivery failures", row.delivery_failures],
-        ["Terminal outcome", row.terminal_outcome], ["Last error", row.last_delivery_error],
-        ["Payload", inspectorJson(row.payload_json)], ["Terminal time", row.terminal_at]) } : {}),
       createdAt: row.created_at, updatedAt: row.updated_at,
     });
 
     const runSelection = selection("run", "scheduler.id");
     const runRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT scheduler.id, scheduler.agent_id, scheduler.status, scheduler.fencing_token,
-        scheduler.prompt_injection_state, scheduler.context_disposition, scheduler.lease_expires_at,
-        scheduler.created_at, scheduler.updated_at, scheduler.terminal_at,
-        provider.execution_id, provider.prompt_hash, execution.title, execution.status AS execution_status,
-        execution.wake_cause, execution.started_at, execution.completed_at
+      SELECT scheduler.id, scheduler.agent_id, scheduler.status, scheduler.created_at, scheduler.updated_at,
+        provider.execution_id, execution.title, execution.started_at
       FROM scheduler_runs scheduler
       LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
       LEFT JOIN runs execution ON execution.id = provider.execution_id AND execution.agent_id = scheduler.agent_id
@@ -2146,10 +2082,8 @@ export class CoordinationV3Store {
       input.projectId, scopeKey ?? null, scopeKey ?? null,
       ...runSelection.params, queryLimit,
     ) as Array<{
-      id: string; agent_id: string; status: string; fencing_token: number; prompt_injection_state: string;
-      context_disposition: string; lease_expires_at: string; created_at: string; updated_at: string; terminal_at: string | null;
-      execution_id: string | null; prompt_hash: string | null; title: string | null; execution_status: string | null;
-      wake_cause: string | null; started_at: string | null; completed_at: string | null;
+      id: string; agent_id: string; status: string; created_at: string; updated_at: string;
+      execution_id: string | null; title: string | null; started_at: string | null;
     }>);
     for (const row of runRows) {
       const recordId = row.execution_id ?? row.id;
@@ -2159,21 +2093,13 @@ export class CoordinationV3Store {
         summary: ["leased", "running"].includes(row.status) ? "The Agent is currently running."
           : row.status === "completed" ? "The Run finished." : `The Run ended ${row.status.replaceAll("_", " ")}.`,
         agentIds: [row.agent_id], relatedItemIds: [],
-        ...(includeDetails ? { details: details(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
-          ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
-          ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
-          ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
-          ["Lease expires", row.lease_expires_at], ["Scheduler terminal time", row.terminal_at],
-          ["Execution completed time", row.completed_at]) } : {}),
         createdAt: row.started_at ?? row.created_at, updatedAt: row.updated_at,
       });
     }
 
     const triggerSelection = selection("trigger", "occurrence.id");
     const occurrenceRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT occurrence.id, occurrence.trigger_id, occurrence.agent_id, occurrence.state, occurrence.attempts,
-        occurrence.activation_id, occurrence.last_error, occurrence.input_hash,
-        ${includeDetails ? "occurrence.trigger_snapshot_json" : "NULL AS trigger_snapshot_json"},
+      SELECT occurrence.id, occurrence.trigger_id, occurrence.agent_id, occurrence.state, occurrence.activation_id,
         CASE WHEN json_valid(occurrence.trigger_snapshot_json)
           THEN json_extract(occurrence.trigger_snapshot_json, '$.name') END AS snapshot_name,
         occurrence.occurred_at, occurrence.created_at, occurrence.updated_at,
@@ -2187,12 +2113,10 @@ export class CoordinationV3Store {
       input.projectId, scopeKey ?? null, scopeKey ?? null,
       ...triggerSelection.params, queryLimit,
     ) as Array<{
-      id: string; trigger_id: string; agent_id: string; state: string; attempts: number; activation_id: string | null;
-      last_error: string | null; input_hash: string; trigger_snapshot_json: string; occurred_at: string;
+      id: string; trigger_id: string; agent_id: string; state: string; activation_id: string | null; occurred_at: string;
       created_at: string; updated_at: string; name: string | null; snapshot_name: string | null;
     }>);
     for (const row of occurrenceRows) {
-      const snapshot = inspectorJson(row.trigger_snapshot_json);
       add({
         id: `trigger:${row.id}`, recordId: row.id, referenceIds: [row.id, row.trigger_id], kind: "trigger", state: row.state,
         title: row.name ?? row.snapshot_name ?? "Trigger occurrence",
@@ -2200,8 +2124,6 @@ export class CoordinationV3Store {
           : row.state === "pending" ? "This outside event is waiting to queue work."
             : `This outside event ended ${row.state.replaceAll("_", " ")}.`,
         agentIds: [row.agent_id], relatedItemIds: [],
-        ...(includeDetails ? { details: details(["Occurrence ID", row.id], ["Trigger ID", row.trigger_id], ["Attempts", row.attempts],
-          ["Input hash", row.input_hash], ["Last error", row.last_error], ["Trigger snapshot", snapshot]) } : {}),
         createdAt: row.occurred_at ?? row.created_at, updatedAt: row.updated_at,
       });
       if (row.activation_id) relate(`trigger:${row.id}`, `activation:${row.activation_id}`);

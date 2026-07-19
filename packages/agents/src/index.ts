@@ -39,7 +39,7 @@ export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { openDb } from "./db.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, attachmentPath, attachmentsDir,
-  communicationEventsPath, communicationContextPath,
+  communicationEventsPath,
   communicationProjectionsPath, communicationRevisionsPath,
 } from "./paths.js";
 export type { Db } from "./db.js";
@@ -61,10 +61,4 @@ export type {
   WorkItemRow,
   ArtifactRow,
   EventRow,
-  CoordinationRequestRow,
-  CoordinationJoinRow,
-  AgentActivationRow,
-  SchedulerRunRow,
-  TriggerDefinitionRow,
-  TriggerOccurrenceRow,
 } from "./schema.js";

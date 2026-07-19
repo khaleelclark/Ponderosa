@@ -288,7 +288,6 @@ describe("AgentStore — canonical communication events", () => {
     expect(message.document).toMatchObject({ id: "doc-1", title: "Architecture Review", previewUrl: expect.any(String) });
     expect(message.document).not.toHaveProperty("content");
     expect(store.getCommunicationDocument(project.id, "doc-1")?.document.content).toContain("Private detail");
-    expect(store.readContextClassifications(project.id)).toEqual([expect.objectContaining({ eventId: "doc-event", policy: "local_only" })]);
   });
 
   it("persists one fsynced project event and makes exact retries idempotent", () => {
@@ -310,9 +309,6 @@ describe("AgentStore — canonical communication events", () => {
     expect(store.appendCommunicationEvent({ ...event, eventId: "transport-retry", createdAt: "2026-07-12T00:00:01.000Z" }))
       .toEqual({ event, replayed: true });
     expect(store.readCommunicationEvents(project.id)).toEqual([event]);
-    expect(store.readContextClassifications(project.id)).toEqual([expect.objectContaining({
-      eventId: event.eventId, policy: "local_only",
-    })]);
     expect(readFileSync(communicationEventsPath(dir, project.id), "utf8").trim().split("\n")).toHaveLength(1);
     expect(() => store.appendCommunicationEvent({ ...event, text: "Collision" })).toThrow("collision");
   });
@@ -419,10 +415,6 @@ describe("AgentStore — canonical communication events", () => {
       .toEqual([userDm.eventId, agentDm.eventId]);
     expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id).map((message) => message.eventId))
       .toEqual([userDm.eventId, agentDm.eventId]);
-    expect(store.readContextClassifications(project.id)).toEqual([
-      expect.objectContaining({ eventId: userDm.eventId, policy: "local_only" }),
-      expect.objectContaining({ eventId: agentDm.eventId, policy: "local_only" }),
-    ]);
   });
 
   it("projects one user-authored group DM into each explicit agent audit", () => {
@@ -502,7 +494,6 @@ describe("AgentStore — canonical communication events", () => {
     store.updateAgent(archived.id, { archived: true });
     const before = () => ({
       events: store.readCommunicationEvents(project.id),
-      context: store.readContextClassifications(project.id),
       projections: store.readCommunicationProjections(project.id),
     });
     const initial = before();
@@ -576,9 +567,6 @@ describe("AgentStore — canonical communication events", () => {
       audience: { kind: "organization", organizationId: project.id },
     })).toThrow("communication event ID collision");
     expect(store.readCommunicationEvents(project.id)).toEqual([event]);
-    expect(store.readContextClassifications(project.id)).toEqual([
-      expect.objectContaining({ eventId: event.eventId, policy: "local_only" }),
-    ]);
   });
 
   it("accepts one event on multiple surfaces while deduplicating each projection tuple", () => {
