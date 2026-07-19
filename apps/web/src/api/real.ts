@@ -62,6 +62,8 @@ import type {
   ImportAgentPackageResponse,
   LetCurrentRunFinishRequest,
   LetCurrentRunFinishResponse,
+  RetryMessageDeliveryRequest,
+  RetryMessageDeliveryResponse,
   MultiAgentDirectMessageResponse,
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
@@ -329,6 +331,12 @@ export const realApi = {
   },
   letCurrentRunFinish(injectionId: string, request: LetCurrentRunFinishRequest): Promise<LetCurrentRunFinishResponse> {
     return requestJson(`/api/message-deliveries/${encodeURIComponent(injectionId)}/let-current-run-finish`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  retryMessageDelivery(activationId: string, request: RetryMessageDeliveryRequest): Promise<RetryMessageDeliveryResponse> {
+    return requestJson(`/api/message-deliveries/${encodeURIComponent(activationId)}/retry`, {
       method: "POST",
       body: JSON.stringify(request),
     });

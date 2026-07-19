@@ -478,6 +478,12 @@ export interface MessageDeliveryReceiptDto {
   targetAgentId: string;
   state: MessageDeliveryReceiptState;
   updatedAt: string;
+  /** Number of durable attempts for this message/recipient pair. */
+  attemptCount: number;
+  /** Only the latest terminal attempt may be retried. */
+  canRetry?: true;
+  /** The provider may have received this attempt despite missing acknowledgement. */
+  retryMayDuplicate?: true;
   injectionId?: string;
   recoveryAt?: string;
   canLetCurrentRunFinish?: boolean;
@@ -492,6 +498,27 @@ export interface LetCurrentRunFinishResponse {
   accepted: boolean;
   replayed: boolean;
   state: "waiting_for_run" | "recovery_queued" | "not_recoverable";
+}
+
+export interface RetryMessageDeliveryRequest {
+  idempotencyKey: string;
+}
+
+export type RetryMessageDeliveryRejectionReason =
+  | "not_found"
+  | "stale_attempt"
+  | "not_terminal"
+  | "not_operator_message"
+  | "recipient_unavailable";
+
+export interface RetryMessageDeliveryResponse {
+  accepted: boolean;
+  replayed: boolean;
+  state: "queued" | "not_retryable";
+  activationId?: string;
+  targetAgentId?: string;
+  retryMayDuplicate?: true;
+  rejectionReason?: RetryMessageDeliveryRejectionReason;
 }
 
 /** Engine-agnostic citation metadata emitted only after edge normalization/verification. */

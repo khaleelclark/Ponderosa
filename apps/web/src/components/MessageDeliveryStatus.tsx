@@ -2,7 +2,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
-import { Alert, Button, ButtonBase, Stack, Typography } from "@mui/material";
+import { Alert, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
@@ -56,6 +56,8 @@ export function MessageDeliveryStatus({
   const queryClient = useQueryClient();
   const [now, setNow] = useState(Date.now());
   const [pendingInjectionId, setPendingInjectionId] = useState<string>();
+  const [pendingRetryId, setPendingRetryId] = useState<string>();
+  const [confirmRetry, setConfirmRetry] = useState<MessageDeliveryReceiptDto>();
   const [error, setError] = useState<string>();
   const hasCountdown = receipts?.some((receipt) => receipt.state === "unconfirmed" && receipt.recoveryAt) ?? false;
   useEffect(() => {
@@ -80,6 +82,25 @@ export function MessageDeliveryStatus({
       setError(cause instanceof Error ? cause.message : "Could not change steering recovery.");
     } finally {
       setPendingInjectionId(undefined);
+    }
+  };
+  const retryDelivery = async (receipt: MessageDeliveryReceiptDto) => {
+    setError(undefined);
+    setPendingRetryId(receipt.activationId);
+    try {
+      await api.retryMessageDelivery(receipt.activationId, {
+        idempotencyKey: `operator-delivery-retry:${receipt.activationId}`,
+      });
+      setConfirmRetry(undefined);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent", receipt.targetAgentId] }),
+        queryClient.invalidateQueries({ queryKey: ["conversation"] }),
+        queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] }),
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not retry message delivery.");
+    } finally {
+      setPendingRetryId(undefined);
     }
   };
   return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
@@ -125,8 +146,38 @@ export function MessageDeliveryStatus({
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >Let current Run finish</Button> : null}
+        {receipt.canRetry ? <Button
+          color="error"
+          variant="text"
+          size="small"
+          disabled={pendingRetryId === receipt.activationId}
+          onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
+          sx={{ minHeight: 28, py: 0.25 }}
+        >{pendingRetryId === receipt.activationId ? "Retrying…" : "Retry"}</Button> : null}
       </Stack>;
     })}
     {error ? <Alert severity="error">{error}</Alert> : null}
+    <Dialog
+      open={Boolean(confirmRetry)}
+      onClose={() => pendingRetryId ? undefined : setConfirmRetry(undefined)}
+      maxWidth="xs"
+      fullWidth
+    >
+      <DialogTitle>Retry uncertain delivery?</DialogTitle>
+      <DialogContent>
+        <Typography variant="body2">
+          The previous attempt may have reached the provider even though Ponderosa did not receive an acknowledgement. The retry tells the agent to audit current state before repeating any work.
+        </Typography>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setConfirmRetry(undefined)} disabled={Boolean(pendingRetryId)}>Cancel</Button>
+        <Button
+          color="warning"
+          variant="contained"
+          onClick={() => confirmRetry && void retryDelivery(confirmRetry)}
+          disabled={Boolean(pendingRetryId)}
+        >{pendingRetryId ? "Retrying…" : "Retry anyway"}</Button>
+      </DialogActions>
+    </Dialog>
   </Stack>;
 }
