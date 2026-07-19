@@ -527,7 +527,10 @@ export class CoordinationV3Store {
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
     const now = input.now ?? new Date().toISOString();
     const activationInputs = [...(input.activation ? [input.activation] : []), ...(input.activations ?? [])];
+    const activationScopeKeys = activationInputs.map((activation) =>
+      input.scopeKey ?? this.communicationScopeKey(input.payload, activation.agentId));
     const canonical = {
+      projectId: input.projectId,
       sender: input.sender,
       intent: input.intent,
       audience: input.audience,
@@ -535,22 +538,36 @@ export class CoordinationV3Store {
       artifacts: input.artifacts ?? [],
       actionable: activationInputs.length > 0,
       activations: activationInputs,
+      activationScopeKeys,
     };
     const hash = payloadHash(canonical);
     return this.sqlite.transaction(() => {
       if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
       this.requireProject(input.projectId);
+      if (!this.runtimeCommunicationAuthorityAgrees({
+        projectId: input.projectId,
+        sender: input.sender,
+        audience: input.audience,
+        payload: input.payload,
+        activations: activationInputs.map((activation, index) => ({
+          agentId: activation.agentId,
+          scopeKey: activationScopeKeys[index]!,
+        })),
+      })) throw new Error("runtime communication authority does not agree on one Project");
       const existing = this.sqlite.prepare(`
-        SELECT payload_hash FROM runtime_communications WHERE id = ?
-      `).get(input.id) as { payload_hash: string } | undefined;
+        SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
+      `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
       if (existing) {
-        if (existing.payload_hash !== hash) throw new Error("runtime communication ID collision");
+        if (existing.project_id !== input.projectId || existing.payload_hash !== hash) {
+          throw new Error("runtime communication ID collision");
+        }
         const activations = this.sqlite.prepare(`
           SELECT a.id FROM agent_activations a
           JOIN activation_sources source ON source.activation_id = a.id
           WHERE source.source_kind = 'communication' AND source.source_id = ?
+            AND a.project_id = ?
           ORDER BY a.created_at, a.id
-        `).all(input.id) as Array<{ id: string }>;
+        `).all(input.id, input.projectId) as Array<{ id: string }>;
         return {
           id: input.id,
           ...(activations[0] ? { activationId: activations[0].id } : {}),
@@ -559,7 +576,6 @@ export class CoordinationV3Store {
           replayed: true,
         };
       }
-      for (const activation of activationInputs) this.requireAgent(input.projectId, activation.agentId);
       this.sqlite.prepare(`
         INSERT INTO runtime_communications (
           id, project_id, sender_json, intent, audience_json, payload_json,
@@ -589,7 +605,7 @@ export class CoordinationV3Store {
       const activationIds = activationInputs.map((activation, index) => this.createActivation({
         projectId: input.projectId,
         agentId: activation.agentId,
-        scopeKey: input.scopeKey ?? this.communicationScopeKey(input.payload, activation.agentId),
+        scopeKey: activationScopeKeys[index]!,
         kind: activation.kind,
         priority: activation.priority,
         dispatchPolicy: activation.dispatchPolicy,
@@ -686,19 +702,22 @@ export class CoordinationV3Store {
 
   /** Project immutable authored messages onto mutable, per-recipient delivery
    * evidence without rewriting the Communication or its chat projection. */
-  deliveryReceiptsForCommunication(communicationEventId: string): MessageDeliveryReceiptDto[] {
-    if (!communicationEventId.trim()) return [];
+  deliveryReceiptsForCommunication(projectId: string, communicationEventId: string): MessageDeliveryReceiptDto[] {
+    if (!projectId.trim() || !communicationEventId.trim()) return [];
     const activations = this.sqlite.prepare(`
       SELECT DISTINCT activation.id, activation.project_id, activation.agent_id,
         activation.scope_key, activation.state, activation.updated_at,
         activation.rowid AS row_sequence,
-        COALESCE(retry_lineage.attempt_number, 0) AS attempt_number
+        COALESCE(retry_lineage.attempt_number, 0) AS attempt_number,
+        runtime.sender_json, runtime.audience_json, runtime.payload_json
       FROM activation_sources source
       JOIN runtime_communications runtime ON runtime.id = source.source_id
       JOIN agent_activations activation ON activation.id = source.activation_id
       LEFT JOIN activation_delivery_retry_lineage retry_lineage
         ON retry_lineage.successor_activation_id = activation.id
       WHERE source.source_kind = 'communication'
+        AND runtime.project_id = ?
+        AND activation.project_id = runtime.project_id
         AND (
           runtime.id = ? OR
           CASE WHEN json_valid(runtime.payload_json)
@@ -707,12 +726,30 @@ export class CoordinationV3Store {
           END = ?
         )
       ORDER BY attempt_number, row_sequence
-    `).all(communicationEventId, communicationEventId) as Array<{
+    `).all(projectId, communicationEventId, communicationEventId) as Array<{
       id: string; project_id: string; agent_id: string; scope_key: string;
       state: string; updated_at: string; row_sequence: number; attempt_number: number;
+      sender_json: string; audience_json: string; payload_json: string;
     }>;
     const latestByRecipient = new Map<string, { activation: typeof activations[number]; attemptCount: number }>();
     for (const activation of activations) {
+      let sender: unknown;
+      let audience: unknown;
+      let payload: unknown;
+      try {
+        sender = JSON.parse(activation.sender_json) as unknown;
+        audience = JSON.parse(activation.audience_json) as unknown;
+        payload = JSON.parse(activation.payload_json) as unknown;
+      } catch {
+        continue;
+      }
+      if (!this.runtimeCommunicationAuthorityAgrees({
+        projectId,
+        sender,
+        audience,
+        payload,
+        activations: [{ agentId: activation.agent_id, scopeKey: activation.scope_key }],
+      }, false)) continue;
       latestByRecipient.set(activation.agent_id, {
         activation,
         attemptCount: activation.attempt_number + 1,
@@ -779,6 +816,7 @@ export class CoordinationV3Store {
   /** Create a new delivery attempt without duplicating the canonical user
    * message. Only the latest terminal attempt can advance the attempt chain. */
   retryMessageDelivery(input: {
+    projectId: string;
     activationId: string;
     idempotencyKey: string;
     now?: string;
@@ -789,8 +827,8 @@ export class CoordinationV3Store {
       const original = this.sqlite.prepare(`
         SELECT id, project_id, agent_id, scope_key, kind, priority, dispatch_policy,
           prompt_class, state, payload_json
-        FROM agent_activations WHERE id = ?
-      `).get(input.activationId) as Pick<ActivationRow,
+        FROM agent_activations WHERE id = ? AND project_id = ?
+      `).get(input.activationId, input.projectId) as Pick<ActivationRow,
         "id" | "project_id" | "agent_id" | "scope_key" | "kind" | "priority" |
         "dispatch_policy" | "prompt_class" | "state" | "payload_json"
       > | undefined;
@@ -798,23 +836,43 @@ export class CoordinationV3Store {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_found",
       };
 
-      const hash = payloadHash({ activationId: original.id });
+      const hash = payloadHash({ projectId: input.projectId, activationId: original.id });
       const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
-        original.project_id, "user:local-operator", "retry_message_delivery", input.idempotencyKey, hash,
+        input.projectId, "user:local-operator", "retry_message_delivery", input.idempotencyKey, hash,
       );
       if (replay) return { ...replay, replayed: true };
 
       const sources = this.sqlite.prepare(`
-        SELECT source.source_kind, source.source_id, runtime.sender_json, runtime.payload_json
+        SELECT source.source_kind, source.source_id, runtime.project_id AS runtime_project_id,
+          runtime.sender_json, runtime.audience_json, runtime.payload_json
         FROM activation_sources source
         LEFT JOIN runtime_communications runtime
           ON source.source_kind = 'communication' AND runtime.id = source.source_id
         WHERE source.activation_id = ?
         ORDER BY source.source_kind, source.source_id
       `).all(original.id) as Array<{
-        source_kind: string; source_id: string; sender_json: string | null; payload_json: string | null;
+        source_kind: string; source_id: string; runtime_project_id: string | null;
+        sender_json: string | null; audience_json: string | null; payload_json: string | null;
       }>;
       const communicationSources = sources.filter((source) => source.source_kind === "communication");
+      const communicationAuthorityAgrees = communicationSources.length > 0 && communicationSources.every((source) => {
+        if (source.runtime_project_id !== input.projectId || !source.sender_json ||
+          !source.audience_json || !source.payload_json) return false;
+        try {
+          return this.runtimeCommunicationAuthorityAgrees({
+            projectId: input.projectId,
+            sender: JSON.parse(source.sender_json) as unknown,
+            audience: JSON.parse(source.audience_json) as unknown,
+            payload: JSON.parse(source.payload_json) as unknown,
+            activations: [{ agentId: original.agent_id, scopeKey: original.scope_key }],
+          });
+        } catch {
+          return false;
+        }
+      });
+      if (!communicationAuthorityAgrees) return {
+        accepted: false, replayed: false, state: "not_retryable", rejectionReason: "recipient_unavailable",
+      };
       const authoredByOperator = communicationSources.some((source) => {
         if (!source.sender_json) return false;
         try {
@@ -828,7 +886,7 @@ export class CoordinationV3Store {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_operator_message",
       };
       if (!this.recipientAuthorizedForActivationScope(
-        original.project_id,
+        input.projectId,
         original.agent_id,
         original.scope_key,
       )) return {
@@ -926,7 +984,7 @@ export class CoordinationV3Store {
         ...(retryMayDuplicate ? { retryMayDuplicate: true } : {}),
       };
       this.recordIdempotency(
-        original.project_id, "user:local-operator", "retry_message_delivery",
+        input.projectId, "user:local-operator", "retry_message_delivery",
         input.idempotencyKey, hash, result, now,
       );
       return { ...result, replayed: false };
@@ -4161,6 +4219,101 @@ export class CoordinationV3Store {
       }
     }
     return `agent:${agentId}`;
+  }
+
+  /** Runtime communication rows, their actionable deliveries, and every
+   * structured identity they reference must remain inside one Project. */
+  private runtimeCommunicationAuthorityAgrees(input: {
+    projectId: string;
+    sender: unknown;
+    audience: unknown;
+    payload: unknown;
+    activations: Array<{ agentId: string; scopeKey: string }>;
+  }, requireCurrentAuthorization = true): boolean {
+    const record = (value: unknown): Record<string, unknown> | undefined =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined;
+    const sender = record(input.sender);
+    const audience = record(input.audience);
+    const payload = record(input.payload);
+    if (!sender || !audience || !payload) return false;
+
+    const embeddedCommunication = record(payload.communication);
+    const communication = embeddedCommunication ??
+      (payload.projectId !== undefined || payload.conversationId !== undefined ? payload : undefined);
+    if (embeddedCommunication && embeddedCommunication.projectId !== input.projectId) return false;
+    if (!embeddedCommunication && communication?.projectId !== undefined &&
+      communication.projectId !== input.projectId) return false;
+
+    const audienceProjectId = audience.kind === "organization"
+      ? audience.organizationId ?? audience.id
+      : audience.projectId;
+    if (audience.kind === "organization" && audienceProjectId === undefined) return false;
+    if (audienceProjectId !== undefined && audienceProjectId !== input.projectId) return false;
+
+    const audienceAgentIds = new Set<string>();
+    const addAudienceAgentId = (value: unknown): boolean => {
+      if (value === undefined) return true;
+      if (typeof value !== "string" || !value) return false;
+      audienceAgentIds.add(value);
+      return true;
+    };
+    if (!addAudienceAgentId(audience.agentId)) return false;
+    if (audience.kind === "agent" && !addAudienceAgentId(audience.id)) return false;
+    if (audience.agentIds !== undefined) {
+      if (!Array.isArray(audience.agentIds) ||
+        audience.agentIds.some((agentId) => !addAudienceAgentId(agentId))) return false;
+    }
+    const identityAgentIds = new Set(audienceAgentIds);
+    if (sender.kind === "agent") {
+      if (typeof sender.agentId !== "string" || !sender.agentId) return false;
+      identityAgentIds.add(sender.agentId);
+    }
+    for (const agentId of identityAgentIds) {
+      if (!this.sqlite.prepare(`
+        SELECT 1 FROM agents WHERE id = ? AND project_id = ?
+          AND (? = 0 OR archived = 0)
+      `).get(agentId, input.projectId, requireCurrentAuthorization ? 1 : 0)) return false;
+    }
+
+    const conversationIds = new Set<string>();
+    const addConversationId = (value: unknown): boolean => {
+      if (value === undefined || value === null) return true;
+      if (typeof value !== "string" || !value) return false;
+      conversationIds.add(value);
+      return true;
+    };
+    if (!addConversationId(communication?.conversationId)) return false;
+    const dispatch = record(payload.dispatch);
+    if (!addConversationId(dispatch?.conversationId) ||
+      !addConversationId(dispatch?.sourceConversationId)) return false;
+    for (const conversationId of conversationIds) {
+      if (!this.sqlite.prepare(`
+        SELECT 1 FROM conversations
+        WHERE id = ? AND project_id = ? AND (? = 0 OR archived = 0)
+      `).get(conversationId, input.projectId, requireCurrentAuthorization ? 1 : 0)) return false;
+    }
+
+    const audienceIsOrganization = audience.kind === "organization";
+    for (const activation of input.activations) {
+      if (!audienceIsOrganization && !audienceAgentIds.has(activation.agentId)) return false;
+      if (requireCurrentAuthorization) {
+        if (!this.recipientAuthorizedForActivationScope(
+          input.projectId,
+          activation.agentId,
+          activation.scopeKey,
+        )) return false;
+      } else if (activation.scopeKey !== `agent:${activation.agentId}`) {
+        const conversationPrefix = "conversation:";
+        if (!activation.scopeKey.startsWith(conversationPrefix)) return false;
+        const conversationId = activation.scopeKey.slice(conversationPrefix.length);
+        if (!conversationId || !this.sqlite.prepare(`
+          SELECT 1 FROM conversations WHERE id = ? AND project_id = ?
+        `).get(conversationId, input.projectId)) return false;
+      }
+    }
+    return true;
   }
 
   /** One fail-closed authority boundary for every Activation consumer. */

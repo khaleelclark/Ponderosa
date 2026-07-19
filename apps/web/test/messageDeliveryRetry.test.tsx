@@ -33,6 +33,7 @@ describe("message delivery retry", () => {
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><MessageDeliveryStatus
+        projectId="project-a"
         receipts={[{
           activationId: "uncertain-activation",
           targetAgentId: "manager",
@@ -54,7 +55,7 @@ describe("message delivery retry", () => {
 
     await act(async () => { await buttonNamed("Retry anyway").props.onClick(); });
     expect(retry).toHaveBeenCalledOnce();
-    expect(retry).toHaveBeenCalledWith("uncertain-activation", {
+    expect(retry).toHaveBeenCalledWith("project-a", "uncertain-activation", {
       idempotencyKey: "operator-delivery-retry:uncertain-activation",
     });
     view.unmount();

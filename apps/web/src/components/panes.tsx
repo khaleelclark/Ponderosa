@@ -947,6 +947,7 @@ export function ChatPane({
                 showTimestamp={fromUser}
                 value={message.createdAt}
                 status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
+                  projectId={projectId ?? previewScope?.projectId}
                   receipts={message.deliveryReceipts}
                   recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
                   onOpenAgent={onOpenAgent}

@@ -335,8 +335,8 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
-  retryMessageDelivery(activationId: string, request: RetryMessageDeliveryRequest): Promise<RetryMessageDeliveryResponse> {
-    return requestJson(`/api/message-deliveries/${encodeURIComponent(activationId)}/retry`, {
+  retryMessageDelivery(projectId: string, activationId: string, request: RetryMessageDeliveryRequest): Promise<RetryMessageDeliveryResponse> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/message-deliveries/${encodeURIComponent(activationId)}/retry`, {
       method: "POST",
       body: JSON.stringify(request),
     });

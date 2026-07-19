@@ -44,6 +44,38 @@ function seed(): void {
   membership.run(recipientB, conversationId);
 }
 
+function seedAdditionalProject(label: string): {
+  projectId: string;
+  conversationId: string;
+  agentId: string;
+} {
+  const additionalProjectId = randomUUID();
+  const additionalConversationId = randomUUID();
+  const additionalAgentId = randomUUID();
+  opened.client.prepare(`
+    INSERT INTO projects (id, label, host_path, created_at, default_engine)
+    VALUES (?, ?, '/repo', '2026-07-15T00:00:00.000Z', 'codex')
+  `).run(additionalProjectId, label);
+  opened.client.prepare(`
+    INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+    VALUES (?, ?, ?, '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+  `).run(additionalConversationId, additionalProjectId, `${label} chat`);
+  opened.client.prepare(`
+    INSERT INTO agents (
+      id, project_id, title, active_engine, created_at, updated_at, archived
+    ) VALUES (?, ?, ?, 'codex', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+  `).run(additionalAgentId, additionalProjectId, `${label} agent`);
+  opened.client.prepare(`
+    INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position)
+    VALUES (?, ?, 0)
+  `).run(additionalAgentId, additionalConversationId);
+  return {
+    projectId: additionalProjectId,
+    conversationId: additionalConversationId,
+    agentId: additionalAgentId,
+  };
+}
+
 function createTrigger(id: string, sourceKind: "webhook" | "filesystem" | "schedule" = "webhook"): void {
   store.createTriggerDefinition({
     id, projectId, conversationId, agentId: recipientA,
@@ -95,7 +127,10 @@ function createUncertainHumanSteer(eventId: string, now: string) {
     sender: { kind: "user", userId: "local-operator" },
     intent: "user_dm",
     audience: { agentId: recipientA },
-    payload: { communication: { eventId }, dispatch: { text: "Change direction" } },
+    payload: {
+      communication: { eventId, projectId },
+      dispatch: { text: "Change direction" },
+    },
     activation: {
       agentId: recipientA, kind: "human_message", priority: 100,
       dispatchPolicy: "steer_or_run", promptClass: "human",
@@ -1401,7 +1436,7 @@ describe("CoordinationV3Store scheduler", () => {
     const now = "2026-07-15T00:00:00.000Z";
     const eventId = "uncertain-human-steer";
     const { run, steering, activationId } = createUncertainHumanSteer(eventId, now);
-    expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+    expect(store.deliveryReceiptsForCommunication(projectId, eventId)).toEqual([expect.objectContaining({
       activationId,
       targetAgentId: recipientA,
       state: "unconfirmed",
@@ -1418,7 +1453,7 @@ describe("CoordinationV3Store scheduler", () => {
       SELECT COUNT(*) AS count FROM provider_operation_outbox
       WHERE run_id = ? AND operation = 'interrupt' AND state = 'pending'
     `).get(run.runId)).toEqual({ count: 1 });
-    const recoveryReceipt = store.deliveryReceiptsForCommunication(eventId)[0]!;
+    const recoveryReceipt = store.deliveryReceiptsForCommunication(projectId, eventId)[0]!;
     expect(recoveryReceipt).toMatchObject({
       activationId,
       state: "recovery_queued",
@@ -1461,7 +1496,7 @@ describe("CoordinationV3Store scheduler", () => {
     expect(opened.client.prepare("SELECT status FROM scheduler_runs WHERE id = ?").get(run.runId))
       .toEqual({ status: "running" });
     expect(store.leaseNextRun({ workerId: "worker-2", now: "2026-07-15T00:00:02.000Z" })).toBeUndefined();
-    const waitingReceipt = store.deliveryReceiptsForCommunication(eventId)[0]!;
+    const waitingReceipt = store.deliveryReceiptsForCommunication(projectId, eventId)[0]!;
     expect(waitingReceipt).toMatchObject({
       state: "waiting_for_run",
     });
@@ -1475,7 +1510,7 @@ describe("CoordinationV3Store scheduler", () => {
     const eventId = "historical-uncertain-steer";
     const { steering } = createUncertainHumanSteer(eventId, "2026-07-15T00:00:00.000Z");
     opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?").run(steering.injectionId);
-    const historicalReceipt = store.deliveryReceiptsForCommunication(eventId)[0]!;
+    const historicalReceipt = store.deliveryReceiptsForCommunication(projectId, eventId)[0]!;
     expect(historicalReceipt).toMatchObject({
       state: "undelivered",
       injectionId: steering.injectionId,
@@ -1492,7 +1527,7 @@ describe("CoordinationV3Store scheduler", () => {
     const { activationId, steering } = createUncertainHumanSteer(eventId, "2026-07-15T00:00:00.000Z");
     opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?").run(steering.injectionId);
 
-    expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+    expect(store.deliveryReceiptsForCommunication(projectId, eventId)).toEqual([expect.objectContaining({
       activationId,
       state: "undelivered",
       attemptCount: 1,
@@ -1509,7 +1544,7 @@ describe("CoordinationV3Store scheduler", () => {
     });
     const beforeRetry = countRetryState();
     const retry = store.retryMessageDelivery({
-      activationId, idempotencyKey: "retry-once", now: "2026-07-14T23:59:59.000Z",
+      projectId, activationId, idempotencyKey: "retry-once", now: "2026-07-14T23:59:59.000Z",
     });
     expect(retry).toMatchObject({
       accepted: true, replayed: false, state: "queued", targetAgentId: recipientA,
@@ -1521,10 +1556,10 @@ describe("CoordinationV3Store scheduler", () => {
       idempotency: beforeRetry.idempotency + 1,
     });
     expect(store.retryMessageDelivery({
-      activationId, idempotencyKey: "retry-once", now: "2026-07-15T00:00:21.000Z",
+      projectId, activationId, idempotencyKey: "retry-once", now: "2026-07-15T00:00:21.000Z",
     })).toEqual({ ...retry, replayed: true });
     expect(store.retryMessageDelivery({
-      activationId, idempotencyKey: "competing-retry", now: "2026-07-15T00:00:21.000Z",
+      projectId, activationId, idempotencyKey: "competing-retry", now: "2026-07-15T00:00:21.000Z",
     })).toMatchObject({
       accepted: false, state: "not_retryable", rejectionReason: "stale_attempt",
     });
@@ -1544,7 +1579,7 @@ describe("CoordinationV3Store scheduler", () => {
       attempt_number: 1,
     }]);
 
-    const latest = store.deliveryReceiptsForCommunication(eventId);
+    const latest = store.deliveryReceiptsForCommunication(projectId, eventId);
     expect(latest).toEqual([expect.objectContaining({
       activationId: retry.activationId,
       state: "queued",
@@ -1573,11 +1608,11 @@ describe("CoordinationV3Store scheduler", () => {
       UPDATE agent_activations SET state = 'failed', updated_at = ? WHERE id = ?
     `).run("2026-07-15T00:00:22.000Z", retry.activationId);
     const third = store.retryMessageDelivery({
-      activationId: retry.activationId!, idempotencyKey: "retry-after-failure",
+      projectId, activationId: retry.activationId!, idempotencyKey: "retry-after-failure",
       now: "2026-07-15T00:00:23.000Z",
     });
     expect(third).toMatchObject({ accepted: true, replayed: false, state: "queued" });
-    expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+    expect(store.deliveryReceiptsForCommunication(projectId, eventId)).toEqual([expect.objectContaining({
       activationId: third.activationId,
       attemptCount: 3,
       state: "queued",
@@ -1603,6 +1638,200 @@ describe("CoordinationV3Store scheduler", () => {
     ]);
   });
 
+  it("isolates colliding communication event IDs and retry admission by authoritative Project", () => {
+    const foreign = seedAdditionalProject("Foreign retry Project");
+    const eventId = "same-event-id-in-two-projects";
+    const recordDelivery = (input: {
+      runtimeId: string;
+      projectId: string;
+      conversationId: string;
+      agentId: string;
+    }) => store.recordRuntimeCommunication({
+      id: input.runtimeId,
+      projectId: input.projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: input.agentId },
+      payload: {
+        communication: {
+          eventId,
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+        },
+        dispatch: { conversationId: input.conversationId, text: `Work in ${input.projectId}` },
+      },
+      activation: {
+        agentId: input.agentId,
+        kind: "ordinary_message",
+        priority: 50,
+        dispatchPolicy: "next_run",
+        promptClass: "ordinary",
+      },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const localDelivery = recordDelivery({
+      runtimeId: "runtime:local-collision",
+      projectId,
+      conversationId,
+      agentId: recipientA,
+    });
+    const foreignDelivery = recordDelivery({
+      runtimeId: "runtime:foreign-collision",
+      projectId: foreign.projectId,
+      conversationId: foreign.conversationId,
+      agentId: foreign.agentId,
+    });
+    opened.client.prepare(`
+      UPDATE agent_activations SET state = 'failed', updated_at = ? WHERE id IN (?, ?)
+    `).run(
+      "2026-07-15T00:00:01.000Z",
+      localDelivery.activationId,
+      foreignDelivery.activationId,
+    );
+
+    expect(store.deliveryReceiptsForCommunication(projectId, eventId)).toEqual([
+      expect.objectContaining({
+        activationId: localDelivery.activationId,
+        targetAgentId: recipientA,
+        state: "failed",
+        canRetry: true,
+      }),
+    ]);
+    expect(store.deliveryReceiptsForCommunication(foreign.projectId, eventId)).toEqual([
+      expect.objectContaining({
+        activationId: foreignDelivery.activationId,
+        targetAgentId: foreign.agentId,
+        state: "failed",
+        canRetry: true,
+      }),
+    ]);
+
+    const mutationCounts = () => ({
+      activations: (opened.client.prepare(`SELECT COUNT(*) AS count FROM agent_activations`).get() as { count: number }).count,
+      outbox: (opened.client.prepare(`SELECT COUNT(*) AS count FROM activation_outbox`).get() as { count: number }).count,
+      idempotency: (opened.client.prepare(`
+        SELECT COUNT(*) AS count FROM coordination_idempotency
+        WHERE operation = 'retry_message_delivery'
+      `).get() as { count: number }).count,
+    });
+    const beforeForeignRetry = mutationCounts();
+    expect(store.retryMessageDelivery({
+      projectId,
+      activationId: foreignDelivery.activationId!,
+      idempotencyKey: "foreign-project-retry",
+      now: "2026-07-15T00:00:02.000Z",
+    })).toEqual({
+      accepted: false,
+      replayed: false,
+      state: "not_retryable",
+      rejectionReason: "not_found",
+    });
+    expect(mutationCounts()).toEqual(beforeForeignRetry);
+    expect(store.leaseNextRun({
+      workerId: "foreign-project-retry-worker",
+      now: "2026-07-15T00:00:03.000Z",
+    })).toBeUndefined();
+    expect(opened.client.prepare(`SELECT COUNT(*) AS count FROM scheduler_runs`).get())
+      .toEqual({ count: 0 });
+
+    const communicationBefore = opened.client.prepare(`
+      SELECT * FROM runtime_communications WHERE id = 'runtime:local-collision'
+    `).get();
+    const accepted = store.retryMessageDelivery({
+      projectId,
+      activationId: localDelivery.activationId!,
+      idempotencyKey: "local-project-retry",
+      now: "2026-07-15T00:00:04.000Z",
+    });
+    expect(accepted).toMatchObject({
+      accepted: true,
+      replayed: false,
+      state: "queued",
+      targetAgentId: recipientA,
+    });
+    expect(store.deliveryReceiptsForCommunication(projectId, eventId)).toEqual([
+      expect.objectContaining({
+        activationId: accepted.activationId,
+        targetAgentId: recipientA,
+        state: "queued",
+        attemptCount: 2,
+      }),
+    ]);
+    expect(store.leaseNextRun({
+      workerId: "local-project-retry-worker",
+      now: "2026-07-15T00:00:05.000Z",
+    })).toMatchObject({
+      projectId,
+      agentId: recipientA,
+      activationIds: [accepted.activationId],
+    });
+    expect(opened.client.prepare(`
+      SELECT * FROM runtime_communications WHERE id = 'runtime:local-collision'
+    `).get()).toEqual(communicationBefore);
+  });
+
+  it("rejects runtime communication identities that cross the Project boundary", () => {
+    const foreign = seedAdditionalProject("Foreign authority Project");
+    const countState = () => ({
+      communications: (opened.client.prepare(`SELECT COUNT(*) AS count FROM runtime_communications`).get() as { count: number }).count,
+      activations: (opened.client.prepare(`SELECT COUNT(*) AS count FROM agent_activations`).get() as { count: number }).count,
+      outbox: (opened.client.prepare(`SELECT COUNT(*) AS count FROM activation_outbox`).get() as { count: number }).count,
+    });
+    const before = countState();
+    const baseInput = {
+      projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: recipientA },
+      activation: {
+        agentId: recipientA,
+        kind: "ordinary_message",
+        priority: 50,
+        dispatchPolicy: "next_run" as const,
+        promptClass: "ordinary" as const,
+      },
+    };
+    expect(() => store.recordRuntimeCommunication({
+      ...baseInput,
+      id: "foreign-embedded-project",
+      payload: {
+        communication: {
+          eventId: "foreign-embedded-project",
+          projectId: foreign.projectId,
+          conversationId,
+        },
+      },
+    })).toThrow("does not agree on one Project");
+    expect(() => store.recordRuntimeCommunication({
+      ...baseInput,
+      id: "foreign-conversation",
+      payload: {
+        communication: {
+          eventId: "foreign-conversation",
+          projectId,
+          conversationId: foreign.conversationId,
+        },
+      },
+    })).toThrow("does not agree on one Project");
+    expect(() => store.recordRuntimeCommunication({
+      ...baseInput,
+      id: "foreign-scope",
+      scopeKey: `conversation:${foreign.conversationId}`,
+      payload: {
+        communication: { eventId: "foreign-scope", projectId, conversationId },
+      },
+    })).toThrow("does not agree on one Project");
+    expect(() => store.recordRuntimeCommunication({
+      ...baseInput,
+      id: "foreign-audience",
+      audience: { agentId: foreign.agentId },
+      payload: {
+        communication: { eventId: "foreign-audience", projectId, conversationId },
+      },
+    })).toThrow("does not agree on one Project");
+    expect(countState()).toEqual(before);
+  });
+
   it("keeps a queued delivery retry and its single-flight fence across restart", () => {
     const directory = mkdtempSync(join(tmpdir(), "ponderosa-delivery-retry-"));
     const databasePath = join(directory, "retry.sqlite");
@@ -1615,19 +1844,19 @@ describe("CoordinationV3Store scheduler", () => {
       const { activationId, steering } = createUncertainHumanSteer(eventId, "2026-07-15T00:00:00.000Z");
       opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?").run(steering.injectionId);
       const retry = store.retryMessageDelivery({
-        activationId, idempotencyKey: "restart-retry", now: "2026-07-15T00:00:20.000Z",
+        projectId, activationId, idempotencyKey: "restart-retry", now: "2026-07-15T00:00:20.000Z",
       });
       opened.client.close();
 
       opened = openDb(databasePath);
       store = new CoordinationV3Store(opened.client);
-      expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+      expect(store.deliveryReceiptsForCommunication(projectId, eventId)).toEqual([expect.objectContaining({
         activationId: retry.activationId,
         attemptCount: 2,
         state: "queued",
       })]);
       expect(store.retryMessageDelivery({
-        activationId, idempotencyKey: "restart-competing-retry", now: "2026-07-15T00:00:21.000Z",
+        projectId, activationId, idempotencyKey: "restart-competing-retry", now: "2026-07-15T00:00:21.000Z",
       })).toMatchObject({
         accepted: false, state: "not_retryable", rejectionReason: "stale_attempt",
       });
@@ -1642,7 +1871,7 @@ describe("CoordinationV3Store scheduler", () => {
   it("rejects delivery retries while recovery is active, after recipient deletion, and for non-operator sources", () => {
     const active = createUncertainHumanSteer("active-recovery-not-retryable", "2026-07-15T00:00:00.000Z");
     expect(store.retryMessageDelivery({
-      activationId: active.activationId, idempotencyKey: "too-early",
+      projectId, activationId: active.activationId, idempotencyKey: "too-early",
       now: "2026-07-15T00:00:01.000Z",
     })).toMatchObject({ accepted: false, rejectionReason: "not_terminal" });
 
@@ -1650,7 +1879,7 @@ describe("CoordinationV3Store scheduler", () => {
       .run(active.steering.injectionId);
     opened.client.prepare("UPDATE agents SET archived = 1 WHERE id = ?").run(recipientA);
     expect(store.retryMessageDelivery({
-      activationId: active.activationId, idempotencyKey: "missing-recipient",
+      projectId, activationId: active.activationId, idempotencyKey: "missing-recipient",
       now: "2026-07-15T00:00:02.000Z",
     })).toMatchObject({ accepted: false, rejectionReason: "recipient_unavailable" });
     opened.client.prepare("UPDATE agents SET archived = 0 WHERE id = ?").run(recipientA);
@@ -1658,7 +1887,10 @@ describe("CoordinationV3Store scheduler", () => {
     const nonOperator = store.recordRuntimeCommunication({
       id: "agent-authored-delivery", projectId,
       sender: { kind: "agent", agentId: requesterId }, intent: "direct",
-      audience: { agentId: recipientA }, payload: { communication: { eventId: "agent-authored" } },
+      audience: { agentId: recipientA },
+      payload: {
+        communication: { eventId: "agent-authored", projectId, conversationId },
+      },
       activation: {
         agentId: recipientA, kind: "ordinary_message", priority: 50,
         dispatchPolicy: "next_run", promptClass: "ordinary",
@@ -1668,7 +1900,7 @@ describe("CoordinationV3Store scheduler", () => {
     opened.client.prepare("UPDATE agent_activations SET state = 'failed' WHERE id = ?")
       .run(nonOperator.activationId);
     expect(store.retryMessageDelivery({
-      activationId: nonOperator.activationId!, idempotencyKey: "agent-authored-retry",
+      projectId, activationId: nonOperator.activationId!, idempotencyKey: "agent-authored-retry",
       now: "2026-07-15T00:00:04.000Z",
     })).toMatchObject({ accepted: false, rejectionReason: "not_operator_message" });
   });
@@ -1691,7 +1923,7 @@ describe("CoordinationV3Store scheduler", () => {
       intent: "user_dm",
       audience: { agentId: recipientA },
       payload: {
-        communication: { eventId: failedEventId, conversationId },
+        communication: { eventId: failedEventId, projectId, conversationId },
         dispatch: { text: "Retry this only while membership remains active" },
       },
       activation: {
@@ -1705,7 +1937,7 @@ describe("CoordinationV3Store scheduler", () => {
       SET state = 'failed', updated_at = '2026-07-15T00:00:01.000Z'
       WHERE id = ?
     `).run(failed.activationId);
-    expect(store.deliveryReceiptsForCommunication(failedEventId)[0]).toMatchObject({
+    expect(store.deliveryReceiptsForCommunication(projectId, failedEventId)[0]).toMatchObject({
       activationId: failed.activationId,
       state: "failed",
       canRetry: true,
@@ -1718,7 +1950,7 @@ describe("CoordinationV3Store scheduler", () => {
       intent: "user_dm",
       audience: { agentId: recipientA },
       payload: {
-        communication: { eventId: "removed-scope-pending", conversationId },
+        communication: { eventId: "removed-scope-pending", projectId, conversationId },
         dispatch: { text: "Must not lease after removal" },
       },
       activation: {
@@ -1734,7 +1966,7 @@ describe("CoordinationV3Store scheduler", () => {
       intent: "user_dm",
       audience: { agentId: recipientA },
       payload: {
-        communication: { eventId: "other-scope-pending", conversationId: otherConversationId },
+        communication: { eventId: "other-scope-pending", projectId, conversationId: otherConversationId },
         dispatch: { text: "Other-chat work remains authorized" },
       },
       activation: {
@@ -1755,11 +1987,12 @@ describe("CoordinationV3Store scheduler", () => {
       SELECT 1 AS present FROM agent_conversation_memberships
       WHERE agent_id = ? AND conversation_id = ?
     `).get(recipientA, otherConversationId)).toEqual({ present: 1 });
-    expect(store.deliveryReceiptsForCommunication(failedEventId)[0]).not.toHaveProperty("canRetry");
+    expect(store.deliveryReceiptsForCommunication(projectId, failedEventId)[0]).not.toHaveProperty("canRetry");
     const activationCount = (opened.client.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations
     `).get() as { count: number }).count;
     expect(store.retryMessageDelivery({
+      projectId,
       activationId: failed.activationId!,
       idempotencyKey: "removed-scope-retry",
       now: "2026-07-15T00:00:04.000Z",
@@ -1813,7 +2046,7 @@ describe("CoordinationV3Store scheduler", () => {
       intent: "user_dm",
       audience: { agentId: recipientA },
       payload: {
-        communication: { eventId: "removed-scope-steering", conversationId },
+        communication: { eventId: "removed-scope-steering", projectId, conversationId },
         dispatch: { text: "Must not steer after removal" },
       },
       activation: {
@@ -2044,7 +2277,10 @@ describe("CoordinationV3Store scheduler", () => {
       intent: "user_dm",
       audience: { agentId: recipientA },
       payload: {
-        communication: { eventId: "queued-communication", sender: { kind: "user", userId: "local-operator" }, text: "old" },
+        communication: {
+          eventId: "queued-communication", projectId,
+          sender: { kind: "user", userId: "local-operator" }, text: "old",
+        },
         dispatch: { text: "old" },
       },
       activation: { agentId: recipientA, kind: "human_message", priority: 100, dispatchPolicy: "next_run" },

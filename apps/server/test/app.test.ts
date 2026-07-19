@@ -2410,7 +2410,7 @@ describe("persistent engine steering", () => {
 
     const first = await app.inject({
       method: "POST",
-      url: `/api/message-deliveries/${uncertain.activationId}/retry`,
+      url: `/api/projects/${project.id}/message-deliveries/${uncertain.activationId}/retry`,
       payload: { idempotencyKey: `operator-delivery-retry:${uncertain.activationId}` },
     });
     expect(first.statusCode).toBe(202);
@@ -2421,18 +2421,153 @@ describe("persistent engine steering", () => {
     });
     const replay = await app.inject({
       method: "POST",
-      url: `/api/message-deliveries/${uncertain.activationId}/retry`,
+      url: `/api/projects/${project.id}/message-deliveries/${uncertain.activationId}/retry`,
       payload: { idempotencyKey: `operator-delivery-retry:${uncertain.activationId}` },
     });
     expect(replay.statusCode).toBe(202);
     expect(replay.json()).toEqual({ ...accepted, replayed: true });
     const competing = await app.inject({
       method: "POST",
-      url: `/api/message-deliveries/${uncertain.activationId}/retry`,
+      url: `/api/projects/${project.id}/message-deliveries/${uncertain.activationId}/retry`,
       payload: { idempotencyKey: "competing-delivery-retry" },
     });
     expect(competing.statusCode).toBe(409);
     expect(competing.json()).toMatchObject({ accepted: false, rejectionReason: "stale_attempt" });
+    await app.close();
+  });
+
+  it("keeps colliding delivery receipts and retry admission inside the presented Project", async () => {
+    const firstProject = store.createProject({ label: "First receipt Project", hostPath: repoDir });
+    const firstConversation = store.createConversation(firstProject.id, { title: "First room" });
+    const firstAgent = store.createAgent(firstProject.id, {
+      title: "First agent",
+      engine: "codex",
+      conversationId: firstConversation.id,
+    });
+    const secondProject = store.createProject({ label: "Second receipt Project", hostPath: repoDir });
+    const secondConversation = store.createConversation(secondProject.id, { title: "Second room" });
+    const secondAgent = store.createAgent(secondProject.id, {
+      title: "Second agent",
+      engine: "codex",
+      conversationId: secondConversation.id,
+    });
+    const eventId = "same-user-facing-event-id";
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const record = (input: {
+      runtimeId: string;
+      projectId: string;
+      conversationId: string;
+      agentId: string;
+      text: string;
+    }) => {
+      const communication: CommunicationEvent = {
+        eventId,
+        schemaVersion: 2,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        sender: { kind: "user", userId: "local-operator" },
+        intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: input.agentId },
+        text: input.text,
+        createdAt: "2026-07-19T00:00:00.000Z",
+      };
+      store.appendCommunicationEvent(communication);
+      store.appendConversationMessage(
+        input.conversationId,
+        { text: input.text },
+        undefined,
+        "main",
+        [{ targetAgentId: input.agentId, relayDepth: 0, mentionTrail: [], kind: "direct" }],
+        undefined,
+        eventId,
+      );
+      return coordination.recordRuntimeCommunication({
+        id: input.runtimeId,
+        projectId: input.projectId,
+        sender: communication.sender,
+        intent: communication.intent,
+        audience: { agentId: input.agentId },
+        payload: {
+          communication,
+          dispatch: { conversationId: input.conversationId, text: input.text },
+        },
+        activation: {
+          agentId: input.agentId,
+          kind: "ordinary_message",
+          priority: 50,
+          dispatchPolicy: "next_run",
+          promptClass: "ordinary",
+        },
+        now: communication.createdAt,
+      });
+    };
+    const firstDelivery = record({
+      runtimeId: "runtime:first-project-collision",
+      projectId: firstProject.id,
+      conversationId: firstConversation.id,
+      agentId: firstAgent.id,
+      text: "First Project message",
+    });
+    const secondDelivery = record({
+      runtimeId: "runtime:second-project-collision",
+      projectId: secondProject.id,
+      conversationId: secondConversation.id,
+      agentId: secondAgent.id,
+      text: "Second Project message",
+    });
+    store.sqlite.prepare(`
+      UPDATE agent_activations SET state = 'failed', updated_at = ? WHERE id IN (?, ?)
+    `).run(
+      "2026-07-19T00:00:01.000Z",
+      firstDelivery.activationId,
+      secondDelivery.activationId,
+    );
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const firstDetail = (await app.inject({
+      method: "GET",
+      url: `/api/conversations/${firstConversation.id}`,
+    })).json<ConversationDetailDto>();
+    expect(firstDetail.messages.find((message) => message.communicationEventId === eventId)?.deliveryReceipts)
+      .toEqual([expect.objectContaining({
+        activationId: firstDelivery.activationId,
+        targetAgentId: firstAgent.id,
+        canRetry: true,
+      })]);
+    expect(JSON.stringify(firstDetail)).not.toContain(secondAgent.id);
+    expect(JSON.stringify(firstDetail)).not.toContain(secondDelivery.activationId);
+
+    const mutationCounts = () => ({
+      activations: (store.sqlite.prepare(`SELECT COUNT(*) AS count FROM agent_activations`).get() as { count: number }).count,
+      outbox: (store.sqlite.prepare(`SELECT COUNT(*) AS count FROM activation_outbox`).get() as { count: number }).count,
+      idempotency: (store.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM coordination_idempotency
+        WHERE operation = 'retry_message_delivery'
+      `).get() as { count: number }).count,
+    });
+    const beforeForeignRetry = mutationCounts();
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/projects/${firstProject.id}/message-deliveries/${secondDelivery.activationId}/retry`,
+      payload: { idempotencyKey: "cross-project-public-retry" },
+    });
+    expect(rejected.statusCode).toBe(404);
+    expect(rejected.json()).toMatchObject({ accepted: false, rejectionReason: "not_found" });
+    expect(mutationCounts()).toEqual(beforeForeignRetry);
+    expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM scheduler_runs`).get())
+      .toEqual({ count: 0 });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/projects/${firstProject.id}/message-deliveries/${firstDelivery.activationId}/retry`,
+      payload: { idempotencyKey: "same-project-public-retry" },
+    });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({
+      accepted: true,
+      targetAgentId: firstAgent.id,
+      activationId: expect.any(String),
+    });
     await app.close();
   });
 
