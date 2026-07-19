@@ -7170,13 +7170,13 @@ describe("server chunk F", () => {
         assets.compensateRuntimeCommunicationReservation(receipt),
     };
     const competingHash = "f".repeat(64);
-    const insertCompetingCommunication = (id: string): void => {
+    const insertCompetingCommunication = (id: string, payload: unknown = {}): void => {
       store.sqlite.prepare(`
         INSERT INTO runtime_communications (
           id, project_id, sender_json, intent, audience_json, payload_json,
           payload_hash, actionable, created_at
-        ) VALUES (?, ?, '{}', 'broadcast', '{}', '{}', ?, 0, ?)
-      `).run(id, project.id, competingHash, "2026-07-19T00:00:00.000Z");
+        ) VALUES (?, ?, '{}', 'broadcast', '{}', ?, ?, 0, ?)
+      `).run(id, project.id, JSON.stringify(payload), competingHash, "2026-07-19T00:00:00.000Z");
     };
     const schedulerWithImmediateHook = (hook: (attempt: number) => void): Database.Database => {
       let attempts = 0;
@@ -7301,7 +7301,12 @@ describe("server chunk F", () => {
     const commitFailureScheduler = schedulerWithImmediateHook((attempt) => {
       if (attempt !== 2) return;
       store.sqlite.exec("DROP TRIGGER pr246_fail_runtime_communication_commit");
-      insertCompetingCommunication(commitFailureId);
+      insertCompetingCommunication(commitFailureId, {
+        communication: {
+          ...commitFailureEvent,
+          text: "different winning payload using the same attachment",
+        },
+      });
     });
     const commitFailure = new CoordinationV3Store(commitFailureScheduler, {
       attachmentAuthority: authorityOptions,
@@ -7318,10 +7323,11 @@ describe("server chunk F", () => {
     expect(store.sqlite.prepare(`
       SELECT payload_hash payloadHash FROM runtime_communications WHERE id=?
     `).get(commitFailureId)).toEqual({ payloadHash: competingHash });
-    expect(assets.authoritativeRuntimeCommunicationAttachments(commitFailureId)).toEqual([]);
+    expect(assets.authoritativeRuntimeCommunicationAttachments(commitFailureId)).toHaveLength(1);
     expect(durableMutationState(store, dataDir, project.id)).toEqual({
       ...beforeCommitFailure,
       communications: beforeCommitFailure.communications + 1,
+      attachmentAssociations: beforeCommitFailure.attachmentAssociations + 1,
     });
     assets.close();
   });

@@ -841,15 +841,17 @@ export class CoordinationV3Store {
             // reservation and publication, so another attempt cannot observe
             // or reuse an association that this attempt may release.
             const committed = this.sqlite.prepare(`
-              SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
-            `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
+              SELECT project_id, payload_hash, payload_json FROM runtime_communications WHERE id = ?
+            `).get(input.id) as { project_id: string; payload_hash: string; payload_json: string } | undefined;
             // A row inserted by this callback is still visible here but will
             // roll back when the callback throws. Only a genuinely pre-existing
             // committed replay owns its association across this failure.
-            if (insertedCommunication || !committed ||
-                committed.project_id !== input.projectId || committed.payload_hash !== hash) {
-              attachmentAuthority.compensateCommunication(reservationReceipt);
-            }
+            const compensationReceipt = insertedCommunication
+              ? reservationReceipt
+              : this.compensationReceiptForCommittedRuntimeCommunication(
+                reservationReceipt, committed, input.projectId, hash,
+              );
+            if (compensationReceipt) attachmentAuthority.compensateCommunication(compensationReceipt);
             } catch (compensationError) {
               throw new AggregateError(
                 [schedulerError, compensationError],
@@ -870,11 +872,12 @@ export class CoordinationV3Store {
           // when no concurrent attempt committed the Communication.
           this.sqlite.transaction(() => {
             const committed = this.sqlite.prepare(`
-              SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
-            `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
-            if (!committed || committed.project_id !== input.projectId || committed.payload_hash !== hash) {
-              attachmentAuthority.compensateCommunication(reservationReceipt!);
-            }
+              SELECT project_id, payload_hash, payload_json FROM runtime_communications WHERE id = ?
+            `).get(input.id) as { project_id: string; payload_hash: string; payload_json: string } | undefined;
+            const compensationReceipt = this.compensationReceiptForCommittedRuntimeCommunication(
+              reservationReceipt!, committed, input.projectId, hash,
+            );
+            if (compensationReceipt) attachmentAuthority.compensateCommunication(compensationReceipt);
           }).immediate();
         } catch (compensationError) {
           throw new AggregateError(
@@ -4696,6 +4699,46 @@ export class CoordinationV3Store {
     }, bindings };
     if (communication === payload) return { payload: nextCommunication, bindings };
     return { payload: nextDispatch ? { ...payload, dispatch: nextDispatch } : payloadValue, bindings };
+  }
+
+  private compensationReceiptForCommittedRuntimeCommunication(
+    receipt: RuntimeAttachmentReservationReceiptV3,
+    committed: { project_id: string; payload_hash: string; payload_json: string } | undefined,
+    expectedProjectId: string,
+    expectedPayloadHash: string,
+  ): RuntimeAttachmentReservationReceiptV3 | undefined {
+    if (!committed) return receipt;
+    if (committed.project_id === expectedProjectId && committed.payload_hash === expectedPayloadHash) {
+      return undefined;
+    }
+    try {
+      const activationAgents = this.sqlite.prepare(`
+        SELECT activation.agent_id agentId
+        FROM agent_activations activation
+        JOIN activation_sources source ON source.activation_id = activation.id
+        WHERE source.source_kind = 'communication' AND source.source_id = ?
+          AND activation.project_id = ?
+        ORDER BY activation.created_at, activation.id
+      `).all(receipt.communicationId, committed.project_id) as Array<{ agentId: string }>;
+      const requiredBindings = this.bindRuntimeAttachments(
+        committed.project_id,
+        JSON.parse(committed.payload_json) as unknown,
+        activationAgents.map((row) => row.agentId),
+      ).bindings;
+      const requiredKeys = new Set(requiredBindings.map((binding) => stableJson(binding)));
+      const unusedBindings = receipt.bindings.filter((binding) => !requiredKeys.has(stableJson({
+        projectId: binding.projectId,
+        agentId: binding.agentId,
+        attachmentId: binding.attachmentId,
+        contentHash: binding.contentHash,
+        byteLength: binding.byteLength,
+      })));
+      return unusedBindings.length ? { ...receipt, bindings: unusedBindings } : undefined;
+    } catch {
+      // A committed payload whose attachment requirements cannot be proven
+      // must not inherit authority from a different failed publication.
+      return receipt;
+    }
   }
 
   private revalidateRuntimeAttachments(
