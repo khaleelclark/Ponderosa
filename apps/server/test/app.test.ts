@@ -7169,6 +7169,36 @@ describe("server chunk F", () => {
       compensateCommunication: (receipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3) =>
         assets.compensateRuntimeCommunicationReservation(receipt),
     };
+    const competingHash = "f".repeat(64);
+    const insertCompetingCommunication = (id: string): void => {
+      store.sqlite.prepare(`
+        INSERT INTO runtime_communications (
+          id, project_id, sender_json, intent, audience_json, payload_json,
+          payload_hash, actionable, created_at
+        ) VALUES (?, ?, '{}', 'broadcast', '{}', '{}', ?, 0, ?)
+      `).run(id, project.id, competingHash, "2026-07-19T00:00:00.000Z");
+    };
+    const schedulerWithImmediateHook = (hook: (attempt: number) => void): Database.Database => {
+      let attempts = 0;
+      return new Proxy(store.sqlite, {
+        get(target, property) {
+          if (property === "transaction") {
+            return (callback: () => unknown) => {
+              const transaction = target.transaction(callback);
+              return {
+                immediate: () => {
+                  attempts += 1;
+                  hook(attempts);
+                  return transaction.immediate();
+                },
+              };
+            };
+          }
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }) as Database.Database;
+    };
     const saturated = new CoordinationV3Store(store.sqlite, {
       maxPendingActivationsPerAgent: 1,
       attachmentAuthority: authorityOptions,
@@ -7213,6 +7243,36 @@ describe("server chunk F", () => {
     expect(assets.authoritativeRuntimeCommunicationAttachments(postInsertId)).toEqual([]);
     expect(durableMutationState(store, dataDir, project.id)).toEqual(beforePostInsertFailure);
 
+    const collisionId = "runtime-distinct-payload-wins-before-fence";
+    const collisionEvent: CommunicationEvent = {
+      ...postInsertEvent,
+      eventId: collisionId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "losing payload must release its attachment",
+    };
+    const collisionBaseline = durableMutationState(store, dataDir, project.id);
+    const collisionStore = new CoordinationV3Store(schedulerWithImmediateHook((attempt) => {
+      if (attempt === 1) insertCompetingCommunication(collisionId);
+    }), { attachmentAuthority: authorityOptions });
+    expect(() => collisionStore.recordRuntimeCommunication({
+      id: collisionId,
+      projectId: project.id,
+      sender: collisionEvent.sender,
+      intent: collisionEvent.intent,
+      audience: collisionEvent.audience,
+      payload: { communication: collisionEvent },
+    })).toThrow("runtime communication ID collision");
+    expect(store.sqlite.prepare(`
+      SELECT payload_hash payloadHash FROM runtime_communications WHERE id=?
+    `).get(collisionId)).toEqual({ payloadHash: competingHash });
+    expect(assets.authoritativeRuntimeCommunicationAttachments(collisionId)).toEqual([]);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual({
+      ...collisionBaseline,
+      communications: collisionBaseline.communications + 1,
+    });
+
     const commitFailureId = "runtime-commit-failure";
     store.sqlite.exec(`
       CREATE TABLE pr246_commit_failure_parent (id TEXT PRIMARY KEY);
@@ -7238,7 +7298,12 @@ describe("server chunk F", () => {
       audience: { kind: "organization", organizationId: project.id },
       text: "must roll back at commit",
     };
-    const commitFailure = new CoordinationV3Store(store.sqlite, {
+    const commitFailureScheduler = schedulerWithImmediateHook((attempt) => {
+      if (attempt !== 2) return;
+      store.sqlite.exec("DROP TRIGGER pr246_fail_runtime_communication_commit");
+      insertCompetingCommunication(commitFailureId);
+    });
+    const commitFailure = new CoordinationV3Store(commitFailureScheduler, {
       attachmentAuthority: authorityOptions,
     });
     const beforeCommitFailure = durableMutationState(store, dataDir, project.id);
@@ -7250,9 +7315,14 @@ describe("server chunk F", () => {
       audience: commitFailureEvent.audience,
       payload: { communication: commitFailureEvent },
     })).toThrow(/FOREIGN KEY constraint failed/);
-    expect(commitFailure.runtimeCommunication(commitFailureId)).toBeUndefined();
+    expect(store.sqlite.prepare(`
+      SELECT payload_hash payloadHash FROM runtime_communications WHERE id=?
+    `).get(commitFailureId)).toEqual({ payloadHash: competingHash });
     expect(assets.authoritativeRuntimeCommunicationAttachments(commitFailureId)).toEqual([]);
-    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforeCommitFailure);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual({
+      ...beforeCommitFailure,
+      communications: beforeCommitFailure.communications + 1,
+    });
     assets.close();
   });
 

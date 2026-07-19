@@ -841,12 +841,13 @@ export class CoordinationV3Store {
             // reservation and publication, so another attempt cannot observe
             // or reuse an association that this attempt may release.
             const committed = this.sqlite.prepare(`
-              SELECT 1 FROM runtime_communications WHERE id = ?
-            `).get(input.id);
+              SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
+            `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
             // A row inserted by this callback is still visible here but will
             // roll back when the callback throws. Only a genuinely pre-existing
             // committed replay owns its association across this failure.
-            if (insertedCommunication || !committed) {
+            if (insertedCommunication || !committed ||
+                committed.project_id !== input.projectId || committed.payload_hash !== hash) {
               attachmentAuthority.compensateCommunication(reservationReceipt);
             }
             } catch (compensationError) {
@@ -869,9 +870,11 @@ export class CoordinationV3Store {
           // when no concurrent attempt committed the Communication.
           this.sqlite.transaction(() => {
             const committed = this.sqlite.prepare(`
-              SELECT 1 FROM runtime_communications WHERE id = ?
-            `).get(input.id);
-            if (!committed) attachmentAuthority.compensateCommunication(reservationReceipt!);
+              SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
+            `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
+            if (!committed || committed.project_id !== input.projectId || committed.payload_hash !== hash) {
+              attachmentAuthority.compensateCommunication(reservationReceipt!);
+            }
           }).immediate();
         } catch (compensationError) {
           throw new AggregateError(
